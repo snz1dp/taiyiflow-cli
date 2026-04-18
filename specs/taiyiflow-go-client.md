@@ -230,15 +230,16 @@ taiyiflow version
 首版客户端默认依赖 sibling 目录 ../taiyiflow/src/backend/base 中的后台实现，尤其是以下文件和接口约定：
 
 - taiyiflow/api/v1/endpoints.py
-	负责核心流式端点 POST /api/v1/run/{flow_id_or_name}/stream，以及辅助端点 GET /api/v1/run/{flow_id_or_name}/metadata。
+  - 负责核心流式端点 POST /api/v1/run/{flow_id_or_name}/stream，以及辅助端点 GET /api/v1/run/{flow_id_or_name}/metadata。
+  - 获取默认的流程服务（default_flow_id）、欢迎语、功能列表、智能体选项等元信息的接口也需要对齐。
 - taiyiflow/api/v1/schemas.py
-	负责请求与事件流结构定义，客户端首版至少需要对齐 SimplifiedAPIRequest、RunResponse、StreamData 等结构。
+  负责请求与事件流结构定义，客户端首版至少需要对齐 SimplifiedAPIRequest、RunResponse、StreamData 等结构。
 - taiyiflow/processing/process.py
-	负责事件流产生逻辑，客户端需要按其真实行为处理 message、error、close 三类事件，并兼容 chunk、message、error、type 等数据字段。
+  负责事件流产生逻辑，客户端需要按其真实行为处理 message、error、close 三类事件，并兼容 chunk、message、error、type 等数据字段。
 - taiyiflow/utils/constants.py
-	负责会话请求头常量定义，客户端需要读取 X-TaiyiFlow-Session-id 响应头并据此恢复会话。
+  负责会话请求头常量定义，客户端需要读取 X-TaiyiFlow-Session-id 响应头并据此恢复会话。
 - taiyiflow/api/v1/agent_chat.py
-	提供 agents/flows、sessions 等辅助接口，用于主入口之外的元数据查询、智能体列表和会话管理。
+  提供 agents/flows、xsessions 等辅助接口，用于主入口之外的元数据查询、智能体列表和会话管理。
 
 首版协议兼容要求：
 
