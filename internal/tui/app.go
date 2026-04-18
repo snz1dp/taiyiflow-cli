@@ -3,13 +3,16 @@ package tui
 import (
 	"context"
 	cryptorand "crypto/rand"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/progress"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -20,6 +23,8 @@ import (
 type Snapshot struct {
 	Version          string
 	BackendURL       string
+	ServerPackage    string
+	ServerVersion    string
 	DefaultFlow      string
 	DefaultFlowLabel string
 	Workdir          string
@@ -35,10 +40,17 @@ type FlowItem struct {
 	Type        string
 }
 
+type slashCommand struct {
+	Trigger     string
+	Completion  string
+	Description string
+}
+
 type EventKind string
 
 const (
 	EventAssistantChunk EventKind = "assistant_chunk"
+	EventProgressNote   EventKind = "progress_note"
 	EventSystemNote     EventKind = "system_note"
 	EventErrorNote      EventKind = "error_note"
 	EventSessionUpdate  EventKind = "session_update"
@@ -108,9 +120,17 @@ type ConfirmRequest struct {
 	Detail  string
 }
 
+type LocalCommandResult struct {
+	Handled      bool
+	ClearHistory bool
+	Events       []Event
+}
+
 type Runner func(ctx context.Context, request Request, emit func(Event), confirm func(ConfirmRequest) bool) error
 
 type FlowChangeHandler func(ctx context.Context, flowID string) (Snapshot, error)
+
+type LocalCommandHandler func(ctx context.Context, command string, snapshot Snapshot) (LocalCommandResult, error)
 
 type entry struct {
 	role    string
@@ -167,14 +187,16 @@ type model struct {
 	flows          []FlowItem
 	runner         Runner
 	flowChange     FlowChangeHandler
+	localCommand   LocalCommandHandler
 	eventCh        chan tea.Msg
 	entries        []entry
-	input          textinput.Model
+	input          textarea.Model
 	flowFilter     textinput.Model
 	viewport       viewport.Model
 	progress       progress.Model
 	markdown       *glamour.TermRenderer
 	state          progressState
+	activityHint   string
 	requestStats   RequestMetrics
 	width          int
 	height         int
@@ -183,88 +205,152 @@ type model struct {
 	quitting       bool
 	showFlowPicker bool
 	flowCursor     int
+	commandCursor  int
 	pendingConfirm *confirmState
+	requestCancel  context.CancelFunc
+	interrupting   bool
 }
 
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("230")).
-			Background(lipgloss.Color("24")).
+			Foreground(lipgloss.Color("#F1F8E9")).
+			Background(lipgloss.Color("#2E7D32")).
 			Padding(0, 1)
 
 	panelStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("24")).
+			BorderForeground(lipgloss.Color("#2E7D32")).
+			Background(lipgloss.Color("#102418")).
 			Padding(1, 2)
 
 	overlayStyle = lipgloss.NewStyle().
 			Border(lipgloss.ThickBorder()).
-			BorderForeground(lipgloss.Color("62")).
-			Background(lipgloss.Color("236")).
+			BorderForeground(lipgloss.Color("#4CAF50")).
+			Background(lipgloss.Color("#102418")).
 			Padding(1, 2)
 
-	labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	valueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	hintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#81C784"))
+	valueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#E8F5E9"))
+	hintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#A5D6A7"))
 
 	userStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("229")).
+			Foreground(lipgloss.Color("#C8E6C9")).
 			Bold(true)
 
-	assistantStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	systemStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("110"))
-	errorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true)
+	assistantStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#F1F8E9"))
+	progressNoteStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#A5D6A7"))
+	systemStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#81C784"))
+	errorStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true)
+
+	userMessageStyle = lipgloss.NewStyle().
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderLeft(true).
+				BorderForeground(lipgloss.Color("#66BB6A")).
+				PaddingLeft(1).
+				Foreground(lipgloss.Color("#C8E6C9"))
+
+	assistantMessageStyle = lipgloss.NewStyle().
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderLeft(true).
+				BorderForeground(lipgloss.Color("#AED581")).
+				PaddingLeft(1)
+
+	systemMessageStyle = lipgloss.NewStyle().
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderLeft(true).
+				BorderForeground(lipgloss.Color("#2E7D32")).
+				PaddingLeft(1).
+				Foreground(lipgloss.Color("#81C784"))
+
+	errorMessageStyle = lipgloss.NewStyle().
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderLeft(true).
+				BorderForeground(lipgloss.Color("203")).
+				PaddingLeft(1).
+				Foreground(lipgloss.Color("203")).
+				Bold(true)
 
 	inputStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("62")).
-			Padding(1, 2)
+			BorderForeground(lipgloss.Color("#2E7D32")).
+			Padding(0, 1)
 
 	selectedFlowStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("230")).
-				Background(lipgloss.Color("24")).
+				Foreground(lipgloss.Color("#F1F8E9")).
+				Background(lipgloss.Color("#2E7D32")).
 				Bold(true)
 
 	progressLabelStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("110")).
+				Foreground(lipgloss.Color("#81C784")).
 				Bold(true)
 
 	headerBarStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("230")).
-			Background(lipgloss.Color("24")).
+			Foreground(lipgloss.Color("#F1F8E9")).
+			Background(lipgloss.Color("#1B5E20")).
 			Bold(true).
 			Padding(0, 1)
 
 	statusBarStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252")).
-			Background(lipgloss.Color("236")).
+			Foreground(lipgloss.Color("#E8F5E9")).
+			Background(lipgloss.Color("#16351F")).
 			Padding(0, 1)
 
 	statusBarDimStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("244")).
-				Background(lipgloss.Color("236"))
+				Foreground(lipgloss.Color("#A5D6A7")).
+				Background(lipgloss.Color("#16351F"))
 
 	historyFrameStyle = lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder()).
-				BorderForeground(lipgloss.Color("239")).
+				BorderForeground(lipgloss.Color("#2E7D32")).
 				Padding(0, 1)
 
 	minimalHistoryStyle = lipgloss.NewStyle()
 
 	inlineProgressStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("110")).
+				Foreground(lipgloss.Color("#A5D6A7")).
 				Padding(0, 1)
+
+	statusAccentStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#F1F8E9")).
+				Background(lipgloss.Color("#2E7D32")).
+				Bold(true).
+				Padding(0, 1)
+
+	commandHintStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#A5D6A7"))
+
+	selectedCommandStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#F1F8E9")).
+				Background(lipgloss.Color("#2E7D32")).
+				Bold(true)
 )
 
-func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, flowChange FlowChangeHandler) error {
-	inputModel := textinput.New()
-	inputModel.Placeholder = "例如：帮我总结当前仓库状态"
+var slashCommands = []slashCommand{
+	{Trigger: "/agents", Completion: "/agents ", Description: "打开智能体选择，或用 /agents <名称> 直接切换"},
+	{Trigger: "/command", Completion: "/command ", Description: "在当前目录执行本地 shell 命令"},
+	{Trigger: "/new", Completion: "/new", Description: "重置当前智能体的本地会话"},
+	{Trigger: "/session", Completion: "/session", Description: "显示当前会话状态"},
+	{Trigger: "/sessions", Completion: "/sessions ", Description: "列出当前智能体的服务端会话，可附页码"},
+	{Trigger: "/help", Completion: "/help", Description: "显示可用命令帮助"},
+	{Trigger: "/clear", Completion: "/clear", Description: "清空当前界面消息"},
+	{Trigger: "/exit", Completion: "/exit", Description: "退出当前 TUI 会话"},
+}
+
+func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, flowChange FlowChangeHandler, localCommand LocalCommandHandler) error {
+	inputModel := textarea.New()
+	inputModel.Placeholder = "输入内容后回车发送"
 	inputModel.Prompt = "> "
+	inputModel.ShowLineNumbers = false
+	focusedStyle, blurredStyle := fixedTextareaStyles()
+	inputModel.FocusedStyle = focusedStyle
+	inputModel.BlurredStyle = blurredStyle
+	inputModel.SetWidth(60)
+	inputModel.SetHeight(1)
 	inputModel.Focus()
 
 	flowFilterModel := textinput.New()
-	flowFilterModel.Placeholder = "输入名称、类型或描述筛选 flow"
+	flowFilterModel.Placeholder = "输入名称或描述筛选智能体"
 	flowFilterModel.Prompt = "搜索> "
 	flowFilterModel.Blur()
 
@@ -275,26 +361,32 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 
 	initialEntries := buildInitialEntries(snapshot)
 	program := tea.NewProgram(model{
-		ctx:        ctx,
-		snapshot:   snapshot,
-		flows:      flows,
-		runner:     runner,
-		flowChange: flowChange,
-		eventCh:    make(chan tea.Msg),
-		entries:    initialEntries,
-		input:      inputModel,
-		flowFilter: flowFilterModel,
-		viewport:   viewportModel,
-		progress:   progressModel,
-		state:      newProgressState(progressIdle),
-		flowCursor: currentFlowIndex(flows, snapshot.DefaultFlow),
+		ctx:          ctx,
+		snapshot:     snapshot,
+		flows:        flows,
+		runner:       runner,
+		flowChange:   flowChange,
+		localCommand: localCommand,
+		eventCh:      make(chan tea.Msg),
+		entries:      initialEntries,
+		input:        inputModel,
+		flowFilter:   flowFilterModel,
+		viewport:     viewportModel,
+		progress:     progressModel,
+		state:        newProgressState(progressIdle),
+		flowCursor:   currentFlowIndex(flows, snapshot.DefaultFlow),
 	}, tea.WithAltScreen())
-	_, err := program.Run()
+	finalModel, err := program.Run()
+	if err == nil {
+		if finalState, ok := finalModel.(model); ok && finalState.quitting {
+			fmt.Println("再见～")
+		}
+	}
 	return err
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, m.progress.SetPercent(m.state.percent))
+	return tea.Batch(textinput.Blink, m.input.Focus(), m.progress.SetPercent(m.state.percent))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -321,14 +413,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	case streamFailedMsg:
+		if m.interrupting || errors.Is(typed.err, context.Canceled) {
+			progressCmd := m.completeInterruptedRequest()
+			m.input.Focus()
+			return m, progressCmd
+		}
 		m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
 		m.finishRequestStats()
+		m.activityHint = ""
+		m.requestCancel = nil
 		m.syncViewport()
 		progressCmd := m.transitionProgress(progressFailed)
 		m.input.Focus()
 		return m, progressCmd
 	case streamDoneMsg:
+		if m.interrupting {
+			progressCmd := m.completeInterruptedRequest()
+			m.input.Focus()
+			return m, progressCmd
+		}
 		m.finishRequestStats()
+		m.activityHint = ""
+		m.requestCancel = nil
 		progressCmd := m.transitionProgress(progressIdle)
 		m.input.Focus()
 		return m, progressCmd
@@ -349,8 +455,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flowFilter.SetValue("")
 		m.flowFilter.Blur()
 		m.requestStats = RequestMetrics{}
+		m.activityHint = ""
 		m.entries = buildInitialEntries(m.snapshot)
-		m.entries = append(m.entries, entry{role: "system", content: fmt.Sprintf("已切换默认 flow: %s -> %s", fallback(previousFlow, "<未配置>"), fallback(m.snapshot.DefaultFlowLabel, sanitizeFlowLabel(m.snapshot.DefaultFlow)))})
+		m.entries = append(m.entries, entry{role: "system", content: fmt.Sprintf("已切换默认智能体: %s -> %s", fallback(previousFlow, "<未配置>"), fallback(m.snapshot.DefaultFlowLabel, sanitizeFlowLabel(m.snapshot.DefaultFlow)))})
 		m.showFlowPicker = false
 		m.syncViewport()
 		m.input.Focus()
@@ -369,32 +476,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c", "q":
+	case "ctrl+c":
+		if m.isBusy() && m.requestCancel != nil {
+			m.interrupting = true
+			m.requestCancel()
+			m.activityHint = "请求已中断"
+			return m, nil
+		}
 		m.quitting = true
 		return m, tea.Quit
 	case "esc":
 		if m.isBusy() {
 			return m, nil
 		}
-		m.quitting = true
-		return m, tea.Quit
-	case "ctrl+o":
-		if m.isBusy() {
-			m.entries = append(m.entries, entry{role: "system", content: "当前正在处理请求，暂时不能切换 flow。"})
-			m.syncViewport()
-			return m, nil
+		if strings.TrimSpace(m.input.Value()) != "" {
+			m.input.SetValue("")
+			m.syncLayout()
 		}
-		if len(m.flows) == 0 {
-			m.entries = append(m.entries, entry{role: "error", content: "当前没有可切换的 flow 列表。"})
-			m.syncViewport()
-			return m, nil
-		}
-		m.showFlowPicker = true
-		m.flowFilter.SetValue("")
-		m.flowFilter.Focus()
-		m.flowCursor = m.currentFilteredFlowCursor()
-		m.input.Blur()
 		return m, nil
+	case "ctrl+o":
+		return m, m.openFlowPicker()
 	case "pgup":
 		m.viewport.HalfViewUp()
 		return m, nil
@@ -402,9 +503,17 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewport.HalfViewDown()
 		return m, nil
 	case "up":
+		if m.showSlashCommandHints() {
+			m.moveSlashCommandCursor(-1)
+			return m, nil
+		}
 		m.viewport.LineUp(1)
 		return m, nil
 	case "down":
+		if m.showSlashCommandHints() {
+			m.moveSlashCommandCursor(1)
+			return m, nil
+		}
 		m.viewport.LineDown(1)
 		return m, nil
 	case "home":
@@ -412,6 +521,19 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "end":
 		m.viewport.GotoBottom()
+		return m, nil
+	case "tab":
+		if m.showSlashCommandHints() && m.applySelectedSlashCommand() {
+			m.syncLayout()
+			return m, nil
+		}
+		return m, nil
+	case "shift+enter", "alt+enter", "ctrl+j":
+		if m.isBusy() {
+			return m, nil
+		}
+		m.input.InsertString("\n")
+		m.syncLayout()
 		return m, nil
 	case "enter":
 		if m.isBusy() {
@@ -421,28 +543,39 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if input == "" {
 			return m, nil
 		}
-		if strings.HasPrefix(input, "/flow ") {
-			flowID := strings.TrimSpace(strings.TrimPrefix(input, "/flow "))
-			if flowID == "" {
-				m.entries = append(m.entries, entry{role: "error", content: "用法: /flow <名称>"})
-				m.syncViewport()
-				m.input.SetValue("")
-				return m, nil
+		if m.showSlashCommandHints() && !isExecutableSlashCommandInput(input) {
+			if m.applySelectedSlashCommand() {
+				m.syncLayout()
 			}
-			m.input.SetValue("")
-			return m, tea.Batch(m.transitionProgress(progressSwitching), changeFlowCmd(m.ctx, flowID, m.flowChange))
+			return m, nil
+		}
+		if strings.EqualFold(input, "/exit") {
+			m.quitting = true
+			return m, tea.Quit
+		}
+		if commandHandled, cmd := m.handleSlashCommand(input); commandHandled {
+			return m, cmd
 		}
 		m.entries = append(m.entries, entry{role: "user", content: input})
 		m.input.SetValue("")
+		m.activityHint = ""
+		m.interrupting = false
 		runID := newRequestRunID()
 		m.startRequestStats(input, runID)
 		m.syncViewport()
 		request := Request{Input: input, FlowID: m.snapshot.DefaultFlow, RunID: runID}
-		return m, tea.Batch(m.transitionProgress(progressSending), startStream(m.ctx, request, m.runner, m.eventCh))
+		requestCtx, cancel := context.WithCancel(m.ctx)
+		m.requestCancel = cancel
+		return m, tea.Batch(m.transitionProgress(progressSending), startStream(requestCtx, request, m.runner, m.eventCh))
 	}
 
+	wasShowingCommandHints := m.showSlashCommandHints()
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	if !wasShowingCommandHints && m.showSlashCommandHints() {
+		m.commandCursor = 0
+	}
+	m.clampSlashCommandCursor()
 	return m, cmd
 }
 
@@ -453,7 +586,7 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		close(m.pendingConfirm.responseCh)
 		m.pendingConfirm = nil
 		return m, tea.Batch(m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
-	case "n", "N", "esc", "ctrl+c":
+	case "n", "N", "q", "esc", "ctrl+c":
 		m.pendingConfirm.responseCh <- false
 		close(m.pendingConfirm.responseCh)
 		m.pendingConfirm = nil
@@ -465,7 +598,7 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m model) handleFlowPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc":
+	case "esc", "q", "ctrl+c":
 		m.showFlowPicker = false
 		m.flowFilter.SetValue("")
 		m.flowFilter.Blur()
@@ -504,6 +637,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 	var cmd tea.Cmd
 	switch event.Kind {
 	case EventAssistantChunk:
+		m.activityHint = ""
 		if m.state.phase != progressStreaming {
 			cmd = m.transitionProgress(progressStreaming)
 		}
@@ -514,9 +648,17 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		} else {
 			m.entries[len(m.entries)-1].content += event.Text
 		}
+	case EventProgressNote:
+		if strings.TrimSpace(event.Text) != "" {
+			m.activityHint = strings.TrimSpace(event.Text)
+		}
 	case EventSystemNote:
 		if strings.TrimSpace(event.Text) != "" {
-			m.entries = append(m.entries, entry{role: "system", content: event.Text})
+			if isTransientSystemStatus(event.Text) {
+				m.applyEvent(Event{Kind: EventProgressNote, Text: event.Text})
+			} else {
+				m.entries = append(m.entries, entry{role: "system", content: event.Text})
+			}
 		}
 	case EventErrorNote:
 		if strings.TrimSpace(event.Text) != "" {
@@ -524,14 +666,10 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		}
 	case EventToolCall:
 		m.requestStats.ToolCallCount++
-		if strings.TrimSpace(event.Text) != "" {
-			m.entries = append(m.entries, entry{role: "system", content: event.Text})
-		}
+		m.activityHint = "执行中"
 	case EventBuiltInCall, EventClientToolCall:
 		m.requestStats.CommandCount++
-		if strings.TrimSpace(event.Text) != "" {
-			m.entries = append(m.entries, entry{role: "system", content: event.Text})
-		}
+		m.activityHint = "执行中"
 	case EventStatsUpdate:
 		if event.Stats != nil {
 			if strings.TrimSpace(event.Stats.RunID) != "" {
@@ -545,12 +683,20 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 			}
 		}
 	case EventSessionUpdate:
-		if strings.TrimSpace(event.SessionID) != "" {
-			m.snapshot.SessionID = event.SessionID
-		}
+		m.snapshot.SessionID = strings.TrimSpace(event.SessionID)
 	}
 	m.syncViewport()
 	return cmd
+}
+
+func (m *model) completeInterruptedRequest() tea.Cmd {
+	m.finishRequestStats()
+	m.activityHint = ""
+	m.requestCancel = nil
+	m.interrupting = false
+	m.entries = append(m.entries, entry{role: "system", content: "请求已中断"})
+	m.syncViewport()
+	return m.transitionProgress(progressIdle)
 }
 
 func (m *model) syncLayout() {
@@ -573,9 +719,10 @@ func (m *model) syncLayout() {
 	if viewportWidth < 20 {
 		viewportWidth = 20
 	}
-	fixedHeight := 7
+	inputHeight := m.currentInputHeight()
+	fixedHeight := 7 + maxInt(0, inputHeight-1)
 	if !m.useMinimalChrome() {
-		fixedHeight = 9
+		fixedHeight = 8 + maxInt(0, inputHeight-1)
 	}
 	if m.showProgressLine() {
 		fixedHeight += 2
@@ -594,7 +741,8 @@ func (m *model) syncLayout() {
 	if inputWidth < 20 {
 		inputWidth = 20
 	}
-	m.input.Width = inputWidth
+	m.input.SetWidth(inputWidth)
+	m.input.SetHeight(inputHeight)
 	m.flowFilter.Width = minInt(contentWidth-16, 48)
 	if m.flowFilter.Width < 18 {
 		m.flowFilter.Width = 18
@@ -607,8 +755,12 @@ func (m *model) syncLayout() {
 }
 
 func (m *model) syncViewport() {
-	content := renderEntries(m.entries, m.viewport.Width, m.markdown)
+	content := renderEntries(m.entries, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot)
 	m.viewport.SetContent(content)
+	if m.shouldPinHistoryTop() {
+		m.viewport.GotoTop()
+		return
+	}
 	m.viewport.GotoBottom()
 }
 
@@ -619,15 +771,13 @@ func (m model) View() string {
 
 	header := m.renderHeader()
 	history := m.renderHistoryPane()
-	inputTitle := "输入并回车发送"
-	if m.state.hint != "" {
-		inputTitle = m.state.hint
-	}
 	inputView := m.input.View()
 	if m.pendingConfirm != nil || m.showFlowPicker {
 		inputView = hintStyle.Render("当前有未处理的弹层，请先完成操作。")
+	} else if commandHints := m.renderSlashCommandHints(); commandHints != "" {
+		inputView = lipgloss.JoinVertical(lipgloss.Left, inputView, "", commandHints)
 	}
-	inputBox := inputStyle.Width(m.contentWidth - 6).Render(labelStyle.Render(inputTitle) + "\n" + inputView)
+	inputBox := inputStyle.Width(m.contentWidth - 6).Render(inputView)
 	parts := []string{header, history}
 	if m.showProgressLine() {
 		parts = append(parts, m.renderProgressLine())
@@ -646,12 +796,26 @@ func (m model) View() string {
 
 func (m model) renderHeader() string {
 	flowLabel := fallback(m.snapshot.DefaultFlowLabel, "未配置")
-	left := fmt.Sprintf("太乙智启 CLI  ·  %s", flowLabel)
-	right := fmt.Sprintf("%s  ·  %s", fallback(filepath.Base(m.snapshot.Workdir), "."), fallback(m.snapshot.Version, "dev"))
+	clientVersion := fallback(m.snapshot.Version, "0.1.0")
+	serverVersion := m.serverVersionLabel()
+	workdir := fallback(filepath.Base(m.snapshot.Workdir), ".")
+	headline := joinStatusSegments([]string{
+		"太乙智启 Terminal",
+		"C " + clientVersion,
+		"S " + serverVersion,
+	}, "  ·  ")
+	contextLine := joinStatusSegments([]string{
+		"智能体 " + flowLabel,
+		"目录 " + workdir,
+	}, "  ·  ")
 	if m.useMinimalChrome() {
-		return headerBarStyle.Width(m.contentWidth).Render(trimForWidth(left, m.contentWidth-2))
+		lines := []string{
+			trimForWidth(headline, m.contentWidth-2),
+			trimForWidth(contextLine, m.contentWidth-2),
+		}
+		return headerBarStyle.Width(m.contentWidth).Render(strings.Join(lines, "\n"))
 	}
-	line := joinStatusSegments([]string{left, right}, "    ")
+	line := joinStatusSegments([]string{headline, contextLine}, "  |  ")
 	return headerBarStyle.Width(m.contentWidth).Render(trimForWidth(line, m.contentWidth-2))
 }
 
@@ -667,18 +831,40 @@ func (m model) renderHistoryPane() string {
 }
 
 func (m model) renderProgressLine() string {
-	line := joinStatusSegments([]string{
-		m.state.label,
-		m.progress.ViewAs(m.state.percent),
-		m.state.hint,
-	}, "  ")
-	return inlineProgressStyle.Width(m.contentWidth).Render(trimForWidth(line, m.contentWidth-2))
+	return inlineProgressStyle.Width(m.contentWidth).Render(trimForWidth(strings.TrimSpace(m.activityHint), m.contentWidth-2))
 }
 
 func (m model) renderStatusBar() string {
 	segments := m.statusBarSegments()
-	text := trimForWidth(joinStatusSegments(segments, " │ "), m.contentWidth-2)
-	return statusBarStyle.Width(m.contentWidth).Render(text)
+	stateChip := statusAccentStyle.Render(m.state.label)
+	bodyWidth := m.contentWidth - lipgloss.Width(stateChip) - 3
+	if bodyWidth < 12 {
+		bodyWidth = 12
+	}
+	body := trimForWidth(joinStatusSegments(segments, "  ·  "), bodyWidth)
+	line := lipgloss.JoinHorizontal(lipgloss.Left, stateChip, " ", statusBarDimStyle.Render(body))
+	return statusBarStyle.Width(m.contentWidth).Render(trimForWidth(line, m.contentWidth-2))
+}
+
+func (m model) renderSlashCommandHints() string {
+	if !m.showSlashCommandHints() {
+		return ""
+	}
+	commands := m.visibleSlashCommands()
+	lines := []string{commandHintStyle.Render("命令提示：上下键选择，Tab 补全，Enter 应用")}
+	for index, command := range commands {
+		line := fmt.Sprintf("%s  %s", flowCursor(index == m.commandCursor), command.Trigger)
+		if strings.TrimSpace(command.Description) != "" {
+			line += "  " + command.Description
+		}
+		if index == m.commandCursor {
+			line = selectedCommandStyle.Render(trimForWidth(line, m.contentWidth-12))
+		} else {
+			line = commandHintStyle.Render(trimForWidth(line, m.contentWidth-12))
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m model) renderOverlay() string {
@@ -702,26 +888,23 @@ func (m model) renderOverlay() string {
 
 func (m model) renderFlowPicker() string {
 	if len(m.flows) == 0 {
-		return "当前没有可选 flow。"
+		return "当前没有可切换的智能体。"
 	}
 	filtered := m.filteredFlowIndices()
 	lines := []string{
-		"选择默认 flow",
-		"输入关键词筛选，使用方向键或 j/k 选择，Enter 确认，Esc 取消。",
+		"选择默认智能体",
+		"输入关键词筛选，使用方向键或 j/k 选择，Enter 确认，Esc 或 q 取消。",
 		m.flowFilter.View(),
 		fmt.Sprintf("匹配 %d / %d", len(filtered), len(m.flows)),
 		"",
 	}
 	if len(filtered) == 0 {
-		lines = append(lines, hintStyle.Render("没有匹配的 flow，可继续修改搜索关键词。"))
+		lines = append(lines, hintStyle.Render("没有匹配的智能体，可继续修改搜索关键词。"))
 		return strings.Join(lines, "\n")
 	}
 	for position, index := range filtered {
 		item := m.flows[index]
-		line := fmt.Sprintf("%s  %s", flowCursor(position == m.flowCursor), fallback(item.Name, item.Type))
-		if strings.TrimSpace(item.Type) != "" {
-			line += fmt.Sprintf("  (%s)", item.Type)
-		}
+		line := fmt.Sprintf("%s  %s", flowCursor(position == m.flowCursor), fallback(item.Name, item.ID))
 		if item.ID == m.snapshot.DefaultFlow || item.Name == m.snapshot.DefaultFlow {
 			line += "  [当前]"
 		}
@@ -737,7 +920,11 @@ func (m model) renderFlowPicker() string {
 }
 
 func (m model) statusBarSegments() []string {
-	segments := []string{"⚕ " + fallback(m.snapshot.DefaultFlowLabel, "未配置")}
+	segments := []string{}
+	if strings.TrimSpace(m.snapshot.SessionID) != "" {
+		segments = append(segments, ""+compactSessionID(m.snapshot.SessionID))
+	}
+	segments = append(segments, ""+approvalModeLabel(m.snapshot.ApprovalMode))
 	if contextSegment := m.contextUsageSegment(); contextSegment != "" {
 		segments = append(segments, contextSegment)
 	}
@@ -751,50 +938,43 @@ func (m model) statusBarSegments() []string {
 		segments = append(segments, compressionSegment)
 	}
 	if m.useMinimalChrome() {
-		minimal := []string{segments[0]}
-		if len(segments) > 1 {
-			minimal = append(minimal, segments[1:]...)
-		}
-		minimal = append(minimal, "状态 "+m.state.label)
-		return minimal
+		return segments
 	}
-	if strings.TrimSpace(m.snapshot.SessionID) != "" {
-		segments = append(segments, "会话 "+compactSessionID(m.snapshot.SessionID))
-	}
-	segments = append(segments, "审批 "+fallback(m.snapshot.ApprovalMode, "confirm"))
-	segments = append(segments, "状态 "+m.state.label)
+	segments = append([]string{"" + fallback(m.snapshot.DefaultFlowLabel, "未配置")}, segments...)
 	return segments
 }
 
 func (m model) showProgressLine() bool {
-	return m.state.phase != progressIdle || m.state.phase == progressFailed
+	return strings.TrimSpace(m.activityHint) != ""
 }
 
 func (m model) useMinimalChrome() bool {
 	return m.width > 0 && m.width < 76
 }
 
-func renderEntries(entries []entry, width int, renderer *glamour.TermRenderer) string {
+func renderEntries(entries []entry, width int, height int, renderer *glamour.TermRenderer, snapshot Snapshot) string {
 	if len(entries) == 0 {
 		return hintStyle.Render("还没有消息。")
 	}
 	blocks := make([]string, 0, len(entries))
 	for _, item := range entries {
-		blocks = append(blocks, renderEntry(item, width, renderer))
+		blocks = append(blocks, renderEntry(item, width, height, renderer, snapshot))
 	}
 	return strings.Join(blocks, "\n\n")
 }
 
-func renderEntry(item entry, width int, renderer *glamour.TermRenderer) string {
+func renderEntry(item entry, width int, height int, renderer *glamour.TermRenderer, snapshot Snapshot) string {
 	switch item.role {
+	case "welcome":
+		return renderWelcomePane(snapshot, item.content, width, height)
 	case "user":
-		return userStyle.Render("你") + "\n" + valueStyle.Render(item.content)
+		return userMessageStyle.Render(item.content)
 	case "assistant":
-		return assistantStyle.Render("助理") + "\n" + renderMarkdown(item.content, width, renderer)
+		return assistantMessageStyle.Render(renderMarkdown(item.content, width, renderer))
 	case "error":
-		return errorStyle.Render("错误") + "\n" + errorStyle.Render(item.content)
+		return errorMessageStyle.Render(item.content)
 	default:
-		return systemStyle.Render("系统") + "\n" + systemStyle.Render(item.content)
+		return systemMessageStyle.Render(item.content)
 	}
 }
 
@@ -808,7 +988,7 @@ func startStream(ctx context.Context, request Request, runner Runner, eventCh ch
 				eventCh <- confirmRequestMsg{request: request, responseCh: responseCh}
 				return <-responseCh
 			})
-			if err != nil {
+			if err != nil && !errors.Is(err, context.Canceled) {
 				eventCh <- streamFailedMsg{err: err}
 			}
 			eventCh <- streamDoneMsg{}
@@ -824,6 +1004,135 @@ func changeFlowCmd(ctx context.Context, flowID string, handler FlowChangeHandler
 	}
 }
 
+func (m *model) openFlowPicker() tea.Cmd {
+	if m.isBusy() {
+		m.entries = append(m.entries, entry{role: "system", content: "当前正在处理请求，暂时不能切换智能体。"})
+		m.syncViewport()
+		return nil
+	}
+	if len(m.flows) == 0 {
+		m.entries = append(m.entries, entry{role: "error", content: "当前没有可切换的智能体列表。"})
+		m.syncViewport()
+		return nil
+	}
+	m.showFlowPicker = true
+	m.flowFilter.SetValue("")
+	m.flowFilter.Focus()
+	m.flowCursor = m.currentFilteredFlowCursor()
+	m.input.Blur()
+	return nil
+}
+
+func (m *model) handleSlashCommand(input string) (bool, tea.Cmd) {
+	trimmed := strings.TrimSpace(input)
+	switch {
+	case strings.EqualFold(trimmed, "/agents"):
+		m.input.SetValue("")
+		return true, m.openFlowPicker()
+	case strings.HasPrefix(trimmed, "/agents "):
+		flowID := strings.TrimSpace(strings.TrimPrefix(trimmed, "/agents "))
+		if flowID == "" {
+			m.entries = append(m.entries, entry{role: "error", content: "用法: /agents <名称>"})
+			m.syncViewport()
+			m.input.SetValue("")
+			return true, nil
+		}
+		m.input.SetValue("")
+		return true, tea.Batch(m.transitionProgress(progressSwitching), changeFlowCmd(m.ctx, flowID, m.flowChange))
+	default:
+		return m.handleLocalSlashCommand(trimmed)
+	}
+}
+
+func (m *model) handleLocalSlashCommand(command string) (bool, tea.Cmd) {
+	if m.localCommand == nil {
+		return false, nil
+	}
+	result, err := m.localCommand(m.ctx, command, m.snapshot)
+	m.input.SetValue("")
+	if err != nil {
+		m.entries = append(m.entries, entry{role: "error", content: err.Error()})
+		m.syncViewport()
+		return true, nil
+	}
+	if !result.Handled {
+		return false, nil
+	}
+	if result.ClearHistory {
+		m.entries = buildInitialEntries(m.snapshot)
+	}
+	for _, event := range result.Events {
+		m.applyEvent(event)
+	}
+	m.syncViewport()
+	return true, nil
+}
+
+func (m model) showSlashCommandHints() bool {
+	if m.pendingConfirm != nil || m.showFlowPicker || m.isBusy() {
+		return false
+	}
+	trimmed := strings.TrimSpace(m.input.Value())
+	if trimmed == "" || strings.Contains(trimmed, "\n") || !strings.HasPrefix(trimmed, "/") {
+		return false
+	}
+	return len(m.visibleSlashCommands()) > 0
+}
+
+func (m model) visibleSlashCommands() []slashCommand {
+	query := slashCommandQuery(m.input.Value())
+	visible := make([]slashCommand, 0, len(slashCommands))
+	for _, command := range slashCommands {
+		trigger := strings.ToLower(command.Trigger)
+		description := strings.ToLower(command.Description)
+		if query == "" || strings.HasPrefix(trigger, query) || strings.Contains(description, query) {
+			visible = append(visible, command)
+		}
+	}
+	return visible
+}
+
+func (m *model) moveSlashCommandCursor(delta int) {
+	commands := m.visibleSlashCommands()
+	if len(commands) == 0 {
+		m.commandCursor = 0
+		return
+	}
+	m.commandCursor += delta
+	if m.commandCursor < 0 {
+		m.commandCursor = len(commands) - 1
+		return
+	}
+	if m.commandCursor >= len(commands) {
+		m.commandCursor = 0
+	}
+}
+
+func (m *model) clampSlashCommandCursor() {
+	commands := m.visibleSlashCommands()
+	if len(commands) == 0 {
+		m.commandCursor = 0
+		return
+	}
+	if m.commandCursor < 0 {
+		m.commandCursor = 0
+	}
+	if m.commandCursor >= len(commands) {
+		m.commandCursor = len(commands) - 1
+	}
+}
+
+func (m *model) applySelectedSlashCommand() bool {
+	commands := m.visibleSlashCommands()
+	if len(commands) == 0 {
+		return false
+	}
+	m.clampSlashCommandCursor()
+	selected := commands[m.commandCursor]
+	m.input.SetValue(selected.Completion)
+	return true
+}
+
 func waitForStream(eventCh chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		return <-eventCh
@@ -831,10 +1140,17 @@ func waitForStream(eventCh chan tea.Msg) tea.Cmd {
 }
 
 func buildInitialEntries(snapshot Snapshot) []entry {
-	if strings.TrimSpace(snapshot.WelcomeMessage) != "" {
-		return []entry{{role: "system", content: snapshot.WelcomeMessage}}
+	return []entry{{role: "welcome", content: strings.TrimSpace(snapshot.WelcomeMessage)}}
+}
+
+func (m model) shouldPinHistoryTop() bool {
+	for _, item := range m.entries {
+		switch item.role {
+		case "user", "assistant", "error":
+			return false
+		}
 	}
-	return []entry{{role: "system", content: "已进入 TUI。直接输入内容并回车发送，Ctrl+O 可切换默认 flow。"}}
+	return len(m.entries) > 0 && m.entries[0].role == "welcome"
 }
 
 func newProgressState(phase progressPhase) progressState {
@@ -846,9 +1162,9 @@ func newProgressState(phase progressPhase) progressState {
 	case progressConfirming:
 		return progressState{phase: phase, label: "等待命令确认", hint: "请先确认客户端命令执行", percent: 0.34}
 	case progressExecuting:
-		return progressState{phase: phase, label: "执行客户端命令", hint: "客户端命令正在本地运行", percent: 0.86}
+		return progressState{phase: phase, label: "处理中", hint: "", percent: 0.86}
 	case progressSwitching:
-		return progressState{phase: phase, label: "切换 flow 中", hint: "正在更新默认 flow 和会话上下文", percent: 0.46}
+		return progressState{phase: phase, label: "切换智能体中", hint: "正在更新默认智能体和会话上下文", percent: 0.46}
 	case progressFailed:
 		return progressState{phase: phase, label: "执行失败", hint: "当前可继续输入新的请求", percent: 1}
 	default:
@@ -890,7 +1206,7 @@ func (m *model) updateMarkdownRenderer(width int) {
 		width = 20
 	}
 	renderer, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStandardStyle("dark"),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
@@ -898,6 +1214,150 @@ func (m *model) updateMarkdownRenderer(width int) {
 		return
 	}
 	m.markdown = renderer
+}
+
+func fixedTextareaStyles() (textarea.Style, textarea.Style) {
+	focused := textarea.Style{
+		Base:             lipgloss.NewStyle(),
+		CursorLine:       lipgloss.NewStyle(),
+		CursorLineNumber: lipgloss.NewStyle().Foreground(lipgloss.Color("#81C784")),
+		EndOfBuffer:      lipgloss.NewStyle().Foreground(lipgloss.Color("#2E7D32")),
+		LineNumber:       lipgloss.NewStyle().Foreground(lipgloss.Color("#81C784")),
+		Placeholder:      lipgloss.NewStyle().Foreground(lipgloss.Color("#66BB6A")),
+		Prompt:           lipgloss.NewStyle().Foreground(lipgloss.Color("#E8F5E9")),
+		Text:             lipgloss.NewStyle().Foreground(lipgloss.Color("#F1F8E9")),
+	}
+	blurred := textarea.Style{
+		Base:             lipgloss.NewStyle(),
+		CursorLine:       lipgloss.NewStyle(),
+		CursorLineNumber: lipgloss.NewStyle().Foreground(lipgloss.Color("#81C784")),
+		EndOfBuffer:      lipgloss.NewStyle().Foreground(lipgloss.Color("#2E7D32")),
+		LineNumber:       lipgloss.NewStyle().Foreground(lipgloss.Color("#81C784")),
+		Placeholder:      lipgloss.NewStyle().Foreground(lipgloss.Color("#66BB6A")),
+		Prompt:           lipgloss.NewStyle().Foreground(lipgloss.Color("#A5D6A7")),
+		Text:             lipgloss.NewStyle().Foreground(lipgloss.Color("#C8E6C9")),
+	}
+	return focused, blurred
+}
+
+func (m model) serverVersionLabel() string {
+	return snapshotServerVersion(m.snapshot)
+}
+
+func (m model) currentInputHeight() int {
+	return inputHeightForValue(m.input.Value(), m.input.Prompt, m.contentWidth-10)
+}
+
+func snapshotServerVersion(snapshot Snapshot) string {
+	version := strings.TrimSpace(snapshot.ServerVersion)
+	if version == "" {
+		version = "未知"
+	}
+	if pkg := strings.TrimSpace(snapshot.ServerPackage); pkg != "" {
+		return " 服务版本：v" + version
+	}
+	return version
+}
+
+func renderWelcomePane(snapshot Snapshot, welcomeMessage string, width int, height int) string {
+	if width < 36 {
+		width = 36
+	}
+	if height < 12 {
+		height = 12
+	}
+	targetHeight := maxInt(10, height*4/5)
+	if targetHeight > height {
+		targetHeight = height
+	}
+	innerWidth := width - 6
+	if innerWidth < 28 {
+		innerWidth = 28
+	}
+	contentHeight := targetHeight - 4
+	if contentHeight < 8 {
+		contentHeight = 8
+	}
+	bannerBlock := buildWelcomeBanner(innerWidth)
+	bannerAreaHeight := contentHeight * 4 / 5
+	bannerMinHeight := lipgloss.Height(bannerBlock) + 2
+	if bannerAreaHeight < bannerMinHeight {
+		bannerAreaHeight = bannerMinHeight
+	}
+	footerHeight := contentHeight - bannerAreaHeight
+	if footerHeight < 4 {
+		footerHeight = 4
+		bannerAreaHeight = contentHeight - footerHeight
+	}
+	if bannerAreaHeight < bannerMinHeight {
+		bannerAreaHeight = bannerMinHeight
+		footerHeight = maxInt(3, contentHeight-bannerAreaHeight)
+	}
+
+	footerLines := []string{
+		hintStyle.Render(centerText(trimForWidth(
+			"太乙智启 CLI v"+fallback(snapshot.Version, "0.1.0")+
+				" · "+snapshotServerVersion(snapshot), innerWidth), innerWidth)),
+		"",
+		hintStyle.Render(centerText(trimForWidth(joinStatusSegments([]string{
+			"" + fallback(snapshot.DefaultFlowLabel, "未配置"),
+			"" + compactSessionID(snapshot.SessionID),
+		}, "  ·  "), innerWidth), innerWidth)),
+		hintStyle.Render(centerText(trimForWidth("/agents /command /session /new /exit", innerWidth), innerWidth)),
+	}
+	if strings.TrimSpace(welcomeMessage) != "" {
+		footerLines = append(footerLines, "", hintStyle.Render(centerText(trimForWidth(strings.TrimSpace(welcomeMessage), innerWidth), innerWidth)))
+	}
+
+	bannerSection := lipgloss.Place(innerWidth, bannerAreaHeight, lipgloss.Center, lipgloss.Bottom, bannerBlock)
+	footerBlock := lipgloss.JoinVertical(lipgloss.Left, footerLines...)
+	footerSection := lipgloss.Place(innerWidth, footerHeight, lipgloss.Center, lipgloss.Top, footerBlock)
+	panel := panelStyle.Width(width).Render(lipgloss.JoinVertical(lipgloss.Left, bannerSection, footerSection))
+
+	panelHeight := lipgloss.Height(panel)
+	topGap := 0
+	bottomGap := 0
+	if height > panelHeight {
+		topGap = (height - panelHeight) / 2
+		bottomGap = height - panelHeight - topGap
+	}
+	parts := []string{}
+	if topGap > 0 {
+		parts = append(parts, strings.Repeat("\n", topGap))
+	}
+	parts = append(parts, panel)
+	if bottomGap > 0 {
+		parts = append(parts, strings.Repeat("\n", bottomGap))
+	}
+	return strings.Join(parts, "")
+}
+
+func inputHeightForValue(value string, prompt string, inputWidth int) int {
+	availableWidth := inputWidth - lipgloss.Width(prompt) - 2
+	if availableWidth < 12 {
+		availableWidth = 12
+	}
+	trimmed := value
+	if trimmed == "" {
+		return 1
+	}
+	lines := strings.Split(trimmed, "\n")
+	visualLines := 0
+	for _, line := range lines {
+		runes := utf8.RuneCountInString(line)
+		if runes == 0 {
+			visualLines++
+			continue
+		}
+		visualLines += (runes-1)/availableWidth + 1
+	}
+	if visualLines < 1 {
+		visualLines = 1
+	}
+	if visualLines > 6 {
+		visualLines = 6
+	}
+	return visualLines
 }
 
 func (m model) filteredFlowIndices() []int {
@@ -975,10 +1435,7 @@ func (m model) requestStatsSegment() string {
 	if !m.requestStats.CompletedAt.IsZero() {
 		duration = m.requestStats.CompletedAt.Sub(m.requestStats.StartedAt)
 	}
-	parts := []string{"请求 " + formatDuration(duration)}
-	if m.requestStats.ChunkCount > 0 {
-		parts = append(parts, fmt.Sprintf("%d 块", m.requestStats.ChunkCount))
-	}
+	parts := []string{"耗时" + formatDuration(duration)}
 	if m.requestStats.ToolCallCount > 0 {
 		parts = append(parts, fmt.Sprintf("%d 工具", m.requestStats.ToolCallCount))
 	}
@@ -1044,6 +1501,34 @@ func renderMarkdown(content string, width int, renderer *glamour.TermRenderer) s
 		return assistantStyle.Render(trimmed)
 	}
 	return strings.TrimRight(rendered, "\n")
+}
+
+func isTransientSystemStatus(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	stageKeywords := []string{
+		"开始运行",
+		"多模态推理",
+		"共享知识库",
+		"个人知识库",
+		"联网搜索",
+		"大模型推理",
+		"执行对话输出",
+		"对话输出",
+	}
+	hasStageKeyword := false
+	for _, keyword := range stageKeywords {
+		if strings.Contains(trimmed, keyword) {
+			hasStageKeyword = true
+			break
+		}
+	}
+	if !hasStageKeyword {
+		return false
+	}
+	return strings.HasSuffix(trimmed, "...") || strings.HasPrefix(trimmed, "完成")
 }
 
 func flowMatchesQuery(item FlowItem, query string) bool {
@@ -1114,6 +1599,51 @@ func flowCursor(selected bool) string {
 	return " "
 }
 
+func slashCommandQuery(input string) string {
+	trimmed := strings.TrimSpace(input)
+	if !strings.HasPrefix(trimmed, "/") {
+		return ""
+	}
+	command := trimmed
+	if index := strings.IndexAny(trimmed, " \t"); index >= 0 {
+		command = trimmed[:index]
+	}
+	return strings.ToLower(command)
+}
+
+func isExecutableSlashCommandInput(input string) bool {
+	trimmed := strings.TrimSpace(input)
+	switch {
+	case strings.EqualFold(trimmed, "/agents"):
+		return true
+	case strings.HasPrefix(strings.ToLower(trimmed), "/command "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/command ")) != ""
+	case strings.EqualFold(trimmed, "/new"):
+		return true
+	case strings.EqualFold(trimmed, "/session"):
+		return true
+	case strings.EqualFold(trimmed, "/sessions"):
+		return true
+	case strings.HasPrefix(strings.ToLower(trimmed), "/sessions "):
+		page := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(trimmed), "/sessions "))
+		if page == "" {
+			return false
+		}
+		value, err := strconv.Atoi(page)
+		return err == nil && value >= 1
+	case strings.EqualFold(trimmed, "/help"):
+		return true
+	case strings.EqualFold(trimmed, "/clear"):
+		return true
+	case strings.EqualFold(trimmed, "/exit"):
+		return true
+	case strings.HasPrefix(strings.ToLower(trimmed), "/agents "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/agents ")) != ""
+	default:
+		return false
+	}
+}
+
 func trimText(content string, maxLen int) string {
 	content = strings.TrimSpace(strings.ReplaceAll(content, "\n", " "))
 	if len(content) <= maxLen {
@@ -1125,6 +1655,39 @@ func trimText(content string, maxLen int) string {
 	return content[:maxLen-3] + "..."
 }
 
+func centerText(text string, width int) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || width <= 0 {
+		return trimmed
+	}
+	return lipgloss.Place(width, 1, lipgloss.Center, lipgloss.Top, trimmed)
+}
+
+func buildWelcomeBanner(width int) string {
+	primaryStyle := valueStyle.Copy().Bold(true)
+	secondaryStyle := hintStyle.Copy()
+	if width < 24 {
+		return primaryStyle.Render("TAIYIFLOW")
+	}
+
+	boxWidth := minInt(width, 38)
+	if boxWidth < 26 {
+		boxWidth = width
+	}
+	innerWidth := boxWidth - 2
+	if innerWidth < 18 {
+		return primaryStyle.Render("TAIYIFLOW")
+	}
+
+	centered := lipgloss.NewStyle().Width(innerWidth).Align(lipgloss.Center)
+	top := hintStyle.Render("╭" + strings.Repeat("─", innerWidth) + "╮")
+	middleTop := hintStyle.Render("│") + primaryStyle.Render(centered.Render("TaiyiFlow")) + hintStyle.Render("│")
+	middleBottom := hintStyle.Render("│") + secondaryStyle.Render(centered.Render("太乙智启 CLI")) + hintStyle.Render("│")
+	bottom := hintStyle.Render("╰" + strings.Repeat("─", innerWidth) + "╯")
+
+	return strings.Join([]string{top, middleTop, middleBottom, bottom}, "\n")
+}
+
 func minInt(left int, right int) int {
 	if left < right {
 		return left
@@ -1132,8 +1695,28 @@ func minInt(left int, right int) int {
 	return right
 }
 
+func maxInt(left int, right int) int {
+	if left > right {
+		return left
+	}
+	return right
+}
+
 func row(label string, value string) string {
 	return fmt.Sprintf("%s %s", labelStyle.Render(label+":"), valueStyle.Render(value))
+}
+
+func approvalModeLabel(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "auto":
+		return "自动执行任何命令"
+	case "readonly":
+		return "自动执行只读命令"
+	case "confirm", "":
+		return "命令执行需要确认"
+	default:
+		return strings.TrimSpace(value)
+	}
 }
 
 func fallback(value string, defaultValue string) string {

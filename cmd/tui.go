@@ -3,7 +3,10 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
+	"strconv"
 	"strings"
+	"time"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
@@ -22,6 +25,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	}
 
 	providerClient := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+	config, err = a.ensureDefaultFlow(ctx, providerClient, config)
+	if err != nil {
+		return err
+	}
 	snapshot, err := a.buildTUISnapshot(ctx, providerClient, config, strings.TrimSpace(config.DefaultFlow))
 	if err != nil {
 		return err
@@ -43,7 +50,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	runner := func(runCtx context.Context, request tui.Request, emit func(tui.Event), confirm func(tui.ConfirmRequest) bool) error {
 		currentFlow := strings.TrimSpace(request.FlowID)
 		if currentFlow == "" {
-			return fmt.Errorf("未配置默认 flow，请先执行 taiyiflow flows use <名称>")
+			return fmt.Errorf("未配置默认智能体，请先执行 taiyiflow agents use <名称>")
 		}
 
 		localConfig, err := a.configManager.Load()
@@ -60,6 +67,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		defer logWriter.Flush()
 
 		runtimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), logWriter, logWriter)
+		quietRuntimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), io.Discard, io.Discard)
 		stream, streamSession, err := providerClient.Stream(runCtx, provider.StreamRequest{
 			FlowID:                 currentFlow,
 			Input:                  request.Input,
@@ -69,7 +77,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			RunID:                  request.RunID,
 			RequestType:            "agent",
 			CommandExecutionTarget: "client",
-			ClientMCPServers:       runtimeClient.ClientMCPServers(),
+			ClientMCPServers:       quietRuntimeClient.ClientMCPServers(),
 		})
 		if err != nil {
 			return err
@@ -89,13 +97,13 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			case provider.EventMessage:
 				if chunk, ok := event.Data["chunk"].(string); ok && chunk != "" {
 					emit(tui.Event{Kind: tui.EventAssistantChunk, Text: chunk})
+					continue
+				}
+				if message, ok := event.Data["message"].(string); ok && strings.TrimSpace(message) != "" {
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: message})
 				}
 			case provider.EventToolCall:
-				if text, ok := event.Data["text"].(string); ok && strings.TrimSpace(text) != "" {
-					emit(tui.Event{Kind: tui.EventToolCall, Text: "工具调用: " + text})
-				} else {
-					emit(tui.Event{Kind: tui.EventToolCall})
-				}
+				emit(tui.Event{Kind: tui.EventToolCall})
 			case provider.EventBuiltIn:
 				emit(tui.Event{Kind: tui.EventBuiltInCall})
 				if requiresTUICommandConfirmation(localConfig, event.Data) {
@@ -109,12 +117,12 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					}
 					execConfig := localConfig
 					execConfig.ApprovalMode = "auto"
-					if err := runtimeClient.HandleBuiltInEvent(runCtx, providerClient, execConfig, event.Data); err != nil {
+					if err := quietRuntimeClient.HandleBuiltInEvent(runCtx, providerClient, execConfig, event.Data); err != nil {
 						return err
 					}
 					continue
 				}
-				if err := runtimeClient.HandleBuiltInEvent(runCtx, providerClient, localConfig, event.Data); err != nil {
+				if err := quietRuntimeClient.HandleBuiltInEvent(runCtx, providerClient, localConfig, event.Data); err != nil {
 					return err
 				}
 			case provider.EventClientTool:
@@ -151,7 +159,116 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		return a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, updatedConfig.DefaultFlow)
 	}
 
-	return tui.Run(ctx, snapshot, flowItems, runner, flowChange)
+	localCommand := func(commandCtx context.Context, command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
+		trimmed := strings.TrimSpace(command)
+		switch {
+		case trimmed == "/help":
+			return tui.LocalCommandResult{
+				Handled: true,
+				Events: []tui.Event{{Kind: tui.EventSystemNote, Text: strings.Join([]string{
+					"可用命令:",
+					"/agents 或 /agents <名称> 选择智能体",
+					"/command <shell 命令> 在当前目录执行本地命令",
+					"/session 查看当前会话",
+					"/sessions [页码] 查看当前智能体的服务端会话列表",
+					"/new 重置当前智能体的本地会话",
+					"/clear 清空当前界面消息",
+					"/exit 退出",
+				}, "\n")}},
+			}, nil
+		case trimmed == "/command":
+			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "/command 用法: /command <shell 命令>"}}}, nil
+		case strings.HasPrefix(trimmed, "/command "):
+			rawCommand := strings.TrimSpace(strings.TrimPrefix(trimmed, "/command "))
+			if rawCommand == "" {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "/command 用法: /command <shell 命令>"}}}, nil
+			}
+			localConfig, err := a.configManager.Load()
+			if err != nil {
+				return tui.LocalCommandResult{}, err
+			}
+			runtimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), io.Discard, io.Discard)
+			result, err := runtimeClient.ExecuteShellCommand(commandCtx, localConfig, rawCommand)
+			if err != nil {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
+			}
+			_ = result
+			return tui.LocalCommandResult{Handled: true}, nil
+		case trimmed == "/clear":
+			return tui.LocalCommandResult{Handled: true, ClearHistory: true}, nil
+		case trimmed == "/session":
+			agentLabel := snapshot.DefaultFlowLabel
+			if strings.TrimSpace(agentLabel) == "" {
+				agentLabel = sanitizeFlowDisplay(snapshot.DefaultFlow)
+			}
+			text := fmt.Sprintf("当前智能体: %s\n当前会话: %s", sanitizeFlowDisplay(agentLabel), firstNonEmpty(strings.TrimSpace(snapshot.SessionID), "<未建立>"))
+			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: text}}}, nil
+		case strings.EqualFold(trimmed, "/sessions") || strings.HasPrefix(strings.ToLower(trimmed), "/sessions "):
+			page, err := parseSessionsPage(trimmed)
+			if err != nil {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
+			}
+			flowID := strings.TrimSpace(snapshot.DefaultFlow)
+			if flowID == "" {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "当前未选择智能体，无法获取服务端会话。"}}}, nil
+			}
+			const pageSize = 10
+			offset := (page - 1) * pageSize
+			sessions, err := providerClient.ListSessions(commandCtx, flowID, offset, pageSize)
+			if err != nil {
+				return tui.LocalCommandResult{}, err
+			}
+			agentLabel := snapshot.DefaultFlowLabel
+			if strings.TrimSpace(agentLabel) == "" {
+				agentLabel = sanitizeFlowDisplay(flowID)
+			}
+			if sessions == nil || len(sessions.Items) == 0 {
+				if sessions != nil && sessions.Total > 0 && page > 1 {
+					return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: fmt.Sprintf("页码超出范围，请输入 1 到 %d。", totalPages(sessions.Total, pageSize))}}}, nil
+				}
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: fmt.Sprintf("智能体 %s 当前没有服务端会话。", sanitizeFlowDisplay(agentLabel))}}}, nil
+			}
+			pages := totalPages(sessions.Total, pageSize)
+			if pages == 0 {
+				pages = 1
+			}
+			lines := []string{fmt.Sprintf("会话列表（%s，第 %d/%d 页）", sanitizeFlowDisplay(agentLabel), page, pages)}
+			for _, item := range sessions.Items {
+				name := strings.TrimSpace(item.Name)
+				if name == "" {
+					name = "<未命名会话>"
+				}
+				recentAt := item.UpdatedAt
+				if recentAt.IsZero() {
+					recentAt = item.CreatedAt
+				}
+				line := fmt.Sprintf("- %s · %s", name, formatRelativeTimeChinese(recentAt))
+				lines = append(lines, line)
+			}
+			if pages > 1 {
+				lines = append(lines, "", fmt.Sprintf("使用 /sessions <页码> 翻页，例如 /sessions %d", nextSessionsPage(page, pages)))
+			}
+			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: strings.Join(lines, "\n")}}}, nil
+		case trimmed == "/new":
+			if strings.TrimSpace(snapshot.DefaultFlow) == "" {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "当前未选择默认智能体，无法重置会话。"}}}, nil
+			}
+			if err := a.sessionStore.Delete(snapshot.DefaultFlow); err != nil {
+				return tui.LocalCommandResult{}, err
+			}
+			return tui.LocalCommandResult{
+				Handled: true,
+				Events: []tui.Event{
+					{Kind: tui.EventSessionUpdate, SessionID: ""},
+					{Kind: tui.EventSystemNote, Text: "已重置当前智能体的本地会话。"},
+				},
+			}, nil
+		default:
+			return tui.LocalCommandResult{}, nil
+		}
+	}
+
+	return tui.Run(ctx, snapshot, flowItems, runner, flowChange, localCommand)
 }
 
 func (a *App) buildTUISnapshot(
@@ -167,6 +284,10 @@ func (a *App) buildTUISnapshot(
 		DefaultFlowLabel: sanitizeFlowDisplay(flowID),
 		Workdir:          config.Workdir,
 		ApprovalMode:     config.ApprovalMode,
+	}
+	if versionInfo, err := providerClient.GetVersionInfo(ctx); err == nil && versionInfo != nil {
+		snapshot.ServerPackage = strings.TrimSpace(versionInfo.Package)
+		snapshot.ServerVersion = firstNonEmpty(strings.TrimSpace(versionInfo.MainVersion), strings.TrimSpace(versionInfo.Version))
 	}
 	if strings.TrimSpace(flowID) == "" {
 		return snapshot, nil
@@ -203,7 +324,7 @@ func (w *tuiLogWriter) Write(content []byte) (int, error) {
 
 	for _, line := range lines[:len(lines)-1] {
 		trimmed := strings.TrimSpace(line)
-		if trimmed != "" {
+		if trimmed != "" && !shouldSuppressTUILogLine(trimmed) {
 			w.emit(tui.Event{Kind: tui.EventSystemNote, Text: trimmed})
 		}
 	}
@@ -213,10 +334,14 @@ func (w *tuiLogWriter) Write(content []byte) (int, error) {
 
 func (w *tuiLogWriter) Flush() {
 	trimmed := strings.TrimSpace(w.pending)
-	if trimmed != "" {
+	if trimmed != "" && !shouldSuppressTUILogLine(trimmed) {
 		w.emit(tui.Event{Kind: tui.EventSystemNote, Text: trimmed})
 	}
 	w.pending = ""
+}
+
+func shouldSuppressTUILogLine(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), "[执行客户端命令]")
 }
 
 func requiresTUICommandConfirmation(config internalconfig.Config, payload map[string]any) bool {
@@ -248,7 +373,7 @@ func buildTUIConfirmRequest(payload map[string]any) tui.ConfirmRequest {
 	request := tui.ConfirmRequest{
 		Title:   "客户端命令待确认",
 		Command: previewBuiltInCommand(payload),
-		Detail:  "该命令由服务端通过 run_command_via_client 下发，是否允许在本地执行？",
+		Detail:  "该命令由服务端下发，是否允许在本地执行？",
 	}
 	return request
 }
@@ -369,4 +494,62 @@ func buildTUIRequestMetrics(runID string, stats *provider.RunStats) *tui.Request
 		}
 	}
 	return metrics
+}
+
+func parseSessionsPage(command string) (int, error) {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 1 {
+		return 1, nil
+	}
+	if len(fields) != 2 {
+		return 0, fmt.Errorf("/sessions 用法: /sessions [页码]")
+	}
+	page, err := strconv.Atoi(strings.TrimSpace(fields[1]))
+	if err != nil || page < 1 {
+		return 0, fmt.Errorf("/sessions 页码必须是大于等于 1 的数字")
+	}
+	return page, nil
+}
+
+func totalPages(total int, pageSize int) int {
+	if total <= 0 || pageSize <= 0 {
+		return 0
+	}
+	return (total + pageSize - 1) / pageSize
+}
+
+func nextSessionsPage(current int, pages int) int {
+	if current < pages {
+		return current + 1
+	}
+	if pages > 1 {
+		return pages - 1
+	}
+	return 1
+}
+
+func formatRelativeTimeChinese(value time.Time) string {
+	if value.IsZero() {
+		return "刚刚"
+	}
+	delta := time.Since(value)
+	if delta < 0 {
+		delta = 0
+	}
+	if delta < time.Minute {
+		return "刚刚"
+	}
+	if delta < time.Hour {
+		return fmt.Sprintf("%d 分钟前", int(delta/time.Minute))
+	}
+	if delta < 24*time.Hour {
+		return fmt.Sprintf("%d 小时前", int(delta/time.Hour))
+	}
+	if delta < 30*24*time.Hour {
+		return fmt.Sprintf("%d 天前", int(delta/(24*time.Hour)))
+	}
+	if delta < 365*24*time.Hour {
+		return fmt.Sprintf("%d 个月前", int(delta/(30*24*time.Hour)))
+	}
+	return fmt.Sprintf("%d 年前", int(delta/(365*24*time.Hour)))
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -73,6 +74,43 @@ func (s *SessionStore) Delete(flowID string) error {
 		return fmt.Errorf("删除会话失败: %w", err)
 	}
 	return nil
+}
+
+func (s *SessionStore) List() ([]SessionState, error) {
+	entries, err := os.ReadDir(s.rootDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []SessionState{}, nil
+		}
+		return nil, fmt.Errorf("读取会话目录失败: %w", err)
+	}
+
+	states := make([]SessionState, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+
+		content, readErr := os.ReadFile(filepath.Join(s.rootDir, entry.Name()))
+		if readErr != nil {
+			return nil, fmt.Errorf("读取会话文件失败: %w", readErr)
+		}
+
+		var state SessionState
+		if err := json.Unmarshal(content, &state); err != nil {
+			return nil, fmt.Errorf("解析会话文件失败: %w", err)
+		}
+		if strings.TrimSpace(state.FlowID) == "" {
+			state.FlowID = strings.TrimSuffix(entry.Name(), ".json")
+		}
+		states = append(states, state)
+	}
+
+	sort.Slice(states, func(i, j int) bool {
+		return states[i].UpdatedAt.After(states[j].UpdatedAt)
+	})
+
+	return states, nil
 }
 
 func (s *SessionStore) filePath(flowID string) string {

@@ -60,16 +60,20 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	}
 
 	switch args[0] {
-	case "cli":
+	case "task":
 		return a.runTask(ctx, args[1:])
+	case "cli":
+		return errors.New("`cli` 子命令已移除，请改用 `taiyiflow task`")
 	case "config":
 		return a.runConfig(args[1:])
 	case "doctor":
 		return a.runDoctor(args[1:])
+	case "agents":
+		return a.runAgents(ctx, args[1:])
 	case "flows":
-		return a.runFlows(ctx, args[1:])
+		return errors.New("`flows` 子命令已移除，请改用 `taiyiflow agents`")
 	case "tui":
-		return a.runTUI(ctx, args[1:])
+		return errors.New("`tui` 子命令已移除，请直接执行 `taiyiflow`")
 	case "version":
 		return a.runVersion(args[1:])
 	case "help", "--help", "-h":
@@ -85,7 +89,8 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	flagSet.SetOutput(a.stderr)
 
 	var options rootOptions
-	flagSet.StringVar(&options.Flow, "flow", "", "指定要运行的智能服务 ID 或名称")
+	flagSet.StringVar(&options.Flow, "agent", "", "指定要运行的智能体 ID 或名称")
+	flagSet.StringVar(&options.Flow, "flow", "", "兼容旧参数：指定要运行的智能体 ID 或名称")
 	flagSet.BoolVar(&options.NewSession, "new", false, "忽略已有会话并新建会话")
 	flagSet.BoolVar(&options.Continue, "continue", false, "继续当前会话")
 
@@ -106,13 +111,17 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	if err != nil {
 		return err
 	}
+	providerClient := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+	config, err = a.ensureDefaultFlow(ctx, providerClient, config)
+	if err != nil {
+		return err
+	}
 
 	flowID, err := resolveFlowID(options.Flow, config.DefaultFlow)
 	if err != nil {
 		return err
 	}
 
-	providerClient := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
 	sessionState, err := a.prepareSession(flowID, options.NewSession)
 	if err != nil {
 		return err
@@ -131,7 +140,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	}
 
 	reader := bufio.NewScanner(a.stdin)
-	fmt.Fprintln(a.stdout, "进入交互模式，输入 /exit 退出，输入 /new 新建会话。")
+	fmt.Fprintln(a.stdout, "进入交互模式，输入 /exit 退出，输入 /new 新建会话，输入 /sessions 查看本地会话。")
 
 	for {
 		fmt.Fprint(a.stdout, "> ")
@@ -148,8 +157,11 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 		}
 
 		switch line {
-		case "/exit", "/quit":
+		case "/exit":
 			return nil
+		case "/agents":
+			fmt.Fprintln(a.stdout, "请使用 `taiyiflow agents` 查看或切换默认智能体。")
+			continue
 		case "/help":
 			a.printInteractiveUsage(flowDisplayName, sessionState)
 			continue
@@ -158,6 +170,11 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			continue
 		case "/session":
 			a.printSessionStatus(flowDisplayName, sessionState)
+			continue
+		case "/sessions":
+			if err := a.printSavedSessions(flowID, sessionState.SessionID); err != nil {
+				return err
+			}
 			continue
 		case "/new":
 			sessionState = agent.SessionState{FlowID: flowID}
@@ -182,13 +199,17 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	if err != nil {
 		return err
 	}
+	providerClient := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+	config, err = a.ensureDefaultFlow(ctx, providerClient, config)
+	if err != nil {
+		return err
+	}
 
 	flowID, err := resolveFlowID(options.Flow, config.DefaultFlow)
 	if err != nil {
 		return err
 	}
 
-	providerClient := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
 	sessionState, err := a.prepareSession(flowID, options.NewSession)
 	if err != nil {
 		return err
@@ -243,6 +264,10 @@ func (a *App) streamTask(
 		case provider.EventMessage:
 			if chunk, ok := event.Data["chunk"].(string); ok && chunk != "" {
 				fmt.Fprint(a.stdout, chunk)
+				continue
+			}
+			if message, ok := event.Data["message"].(string); ok && strings.TrimSpace(message) != "" {
+				fmt.Fprintf(a.stdout, "\n[进度] %s\n", strings.TrimSpace(message))
 			}
 		case provider.EventError:
 			fmt.Fprintln(a.stderr)
@@ -270,38 +295,72 @@ func (a *App) streamTask(
 func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "用法:")
 	fmt.Fprintln(a.stdout, "  taiyiflow")
-	fmt.Fprintln(a.stdout, "  taiyiflow cli [--flow FLOW] [--new] [--continue] [任务描述]")
+	fmt.Fprintln(a.stdout, "  taiyiflow task [--agent AGENT] [--new] [--continue] [任务描述]")
 	fmt.Fprintln(a.stdout, "  taiyiflow config [show|init|path|set]")
 	fmt.Fprintln(a.stdout, "  taiyiflow doctor")
-	fmt.Fprintln(a.stdout, "  taiyiflow flows [list|current|use] [参数]")
-	fmt.Fprintln(a.stdout, "  taiyiflow tui")
+	fmt.Fprintln(a.stdout, "  taiyiflow agents [list|current|use] [参数]")
 	fmt.Fprintln(a.stdout, "  taiyiflow version")
 	fmt.Fprintf(a.stdout, "当前版本: %s\n", buildinfo.Version)
 }
 
 func (a *App) printInteractiveUsage(flowDisplayName string, sessionState agent.SessionState) {
 	fmt.Fprintln(a.stdout, "会话内命令:")
+	fmt.Fprintln(a.stdout, "  /agents   显示智能体切换说明")
 	fmt.Fprintln(a.stdout, "  /help     显示帮助")
 	fmt.Fprintln(a.stdout, "  /session  显示当前会话状态")
-	fmt.Fprintln(a.stdout, "  /new      重置当前 flow 的本地会话")
+	fmt.Fprintln(a.stdout, "  /sessions 显示本地已保存会话")
+	fmt.Fprintln(a.stdout, "  /new      重置当前智能体的本地会话")
 	fmt.Fprintln(a.stdout, "  /clear    清屏")
 	fmt.Fprintln(a.stdout, "  /exit     退出")
+	fmt.Fprintln(a.stdout, "  提示: 交互模式下请使用 `taiyiflow agents` 管理默认智能体。")
 	a.printSessionStatus(flowDisplayName, sessionState)
 }
 
 func (a *App) printSessionStatus(flowDisplayName string, sessionState agent.SessionState) {
-	fmt.Fprintf(a.stdout, "当前 flow: %s\n", sanitizeFlowDisplay(flowDisplayName))
+	fmt.Fprintf(a.stdout, "当前智能体: %s\n", sanitizeFlowDisplay(flowDisplayName))
 	if strings.TrimSpace(sessionState.SessionID) == "" {
-		fmt.Fprintln(a.stdout, "当前 session: <未建立>")
+		fmt.Fprintln(a.stdout, "当前会话: <未建立>")
 		return
 	}
-	fmt.Fprintf(a.stdout, "当前 session: %s\n", sessionState.SessionID)
+	fmt.Fprintf(a.stdout, "当前会话: %s\n", sessionState.SessionID)
+}
+
+func (a *App) printSavedSessions(currentFlowID string, currentSessionID string) error {
+	states, err := a.sessionStore.List()
+	if err != nil {
+		return err
+	}
+	if len(states) == 0 {
+		fmt.Fprintln(a.stdout, "当前没有已保存的本地会话。")
+		return nil
+	}
+
+	fmt.Fprintln(a.stdout, "本地已保存会话:")
+	for _, state := range states {
+		line := fmt.Sprintf("- %s", sanitizeFlowDisplay(state.FlowID))
+		if strings.TrimSpace(state.SessionID) != "" {
+			line += fmt.Sprintf(" | 会话 %s", state.SessionID)
+		} else {
+			line += " | 会话 <未建立>"
+		}
+		if !state.UpdatedAt.IsZero() {
+			line += fmt.Sprintf(" | 更新时间 %s", state.UpdatedAt.Format("2006-01-02 15:04:05"))
+		}
+		if state.FlowID == currentFlowID {
+			line += " | 当前智能体"
+		}
+		if strings.TrimSpace(currentSessionID) != "" && state.SessionID == currentSessionID {
+			line += " | 当前会话"
+		}
+		fmt.Fprintln(a.stdout, line)
+	}
+	return nil
 }
 
 func resolveFlowID(inputFlow string, defaultFlow string) (string, error) {
 	flowID := strings.TrimSpace(firstNonEmpty(inputFlow, defaultFlow))
 	if flowID == "" {
-		return "", errors.New("未配置默认 flow，请先执行 `taiyiflow flows` 查看可用智能服务，再执行 `taiyiflow flows use <名称>` 或使用 `--flow` 指定")
+		return "", errors.New("未配置默认智能体，请先执行 `taiyiflow agents` 查看可用智能体，再执行 `taiyiflow agents use <名称>` 或使用 `--agent` 指定")
 	}
 	return flowID, nil
 }

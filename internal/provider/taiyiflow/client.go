@@ -33,6 +33,12 @@ type metadataResponse struct {
 	IsChat         bool   `json:"is_chat"`
 }
 
+type versionInfoResponse struct {
+	Package     string `json:"package"`
+	Version     string `json:"version"`
+	MainVersion string `json:"main_version"`
+}
+
 type flowItemResponse struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -44,6 +50,20 @@ type flowListResponse struct {
 	Total  int                `json:"total"`
 	Offset int                `json:"offset"`
 	Data   []flowItemResponse `json:"data"`
+}
+
+type sessionItemResponse struct {
+	ID          string `json:"id"`
+	SessionName string `json:"session_name"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	ClientType  string `json:"client_type"`
+}
+
+type sessionListResponse struct {
+	Total  int                   `json:"total"`
+	Offset int                   `json:"offset"`
+	Data   []sessionItemResponse `json:"data"`
 }
 
 type sessionMessageResponse struct {
@@ -144,13 +164,13 @@ func (c *Client) ListFlows(ctx context.Context, filter string, agentType string,
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("创建 flows 请求失败: %w", err)
+		return nil, fmt.Errorf("请求失败: %w", err)
 	}
 	c.applyAuth(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("请求 flows 失败: %w", err)
+		return nil, fmt.Errorf("请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -180,27 +200,125 @@ func (c *Client) ListFlows(ctx context.Context, filter string, agentType string,
 	}, nil
 }
 
-func (c *Client) GetMetadata(ctx context.Context, flowID string) (*provider.Metadata, error) {
-	endpoint := fmt.Sprintf("%s/api/v1/run/%s/metadata", c.baseURL, url.PathEscape(flowID))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+func (c *Client) ListSessions(ctx context.Context, flowID string, offset, limit int) (*provider.SessionList, error) {
+	flowID = strings.TrimSpace(flowID)
+	if flowID == "" {
+		return nil, fmt.Errorf("获取服务端会话列表失败: 智能体不能为空")
+	}
+
+	endpoint, err := url.Parse(fmt.Sprintf("%s/api/v1/agents/flows/%s/sessions", c.baseURL, url.PathEscape(flowID)))
 	if err != nil {
-		return nil, fmt.Errorf("创建 metadata 请求失败: %w", err)
+		return nil, fmt.Errorf("构造 sessions 请求地址失败: %w", err)
+	}
+
+	query := endpoint.Query()
+	query.Set("orderby", "updated_at desc")
+	if offset > 0 {
+		query.Set("offset", strconv.Itoa(offset))
+	}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	endpoint.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
 	}
 	c.applyAuth(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("请求 metadata 失败: %w", err)
+		return nil, fmt.Errorf("请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, readHTTPError("获取 metadata 失败", resp)
+		return nil, readHTTPError("获取服务端会话列表失败", resp)
+	}
+
+	var payload sessionListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析服务端会话列表响应失败: %w", err)
+	}
+
+	items := make([]provider.SessionSummary, 0, len(payload.Data))
+	for _, item := range payload.Data {
+		createdAt, err := parseTaiyiTime(item.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("解析服务端会话创建时间失败: %w", err)
+		}
+		updatedAt, err := parseTaiyiTime(item.UpdatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("解析服务端会话更新时间失败: %w", err)
+		}
+		items = append(items, provider.SessionSummary{
+			ID:         item.ID,
+			Name:       item.SessionName,
+			CreatedAt:  createdAt,
+			UpdatedAt:  updatedAt,
+			ClientType: item.ClientType,
+		})
+	}
+
+	return &provider.SessionList{
+		Total:  payload.Total,
+		Offset: payload.Offset,
+		Items:  items,
+	}, nil
+}
+
+func (c *Client) GetVersionInfo(ctx context.Context) (*provider.ServiceVersion, error) {
+	endpoint := fmt.Sprintf("%s/api/v1/version", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("获取版本信息失败", resp)
+	}
+
+	var payload versionInfoResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析版本信息响应失败: %w", err)
+	}
+
+	return &provider.ServiceVersion{
+		Package:     payload.Package,
+		Version:     payload.Version,
+		MainVersion: payload.MainVersion,
+	}, nil
+}
+
+func (c *Client) GetMetadata(ctx context.Context, flowID string) (*provider.Metadata, error) {
+	endpoint := fmt.Sprintf("%s/api/v1/run/%s/metadata", c.baseURL, url.PathEscape(flowID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("获取失败", resp)
 	}
 
 	var payload metadataResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("解析 metadata 响应失败: %w", err)
+		return nil, fmt.Errorf("解析失败: %w", err)
 	}
 
 	return &provider.Metadata{
@@ -255,12 +373,12 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 
 	resp, err := c.httpClient.Do(httpRequest)
 	if err != nil {
-		return nil, nil, fmt.Errorf("请求 stream 接口失败: %w", err)
+		return nil, nil, fmt.Errorf("请求失败: %w", err)
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		defer resp.Body.Close()
-		return nil, nil, readHTTPError("请求 stream 接口失败", resp)
+		return nil, nil, readHTTPError("请求失败", resp)
 	}
 
 	streamSession := &provider.StreamSession{SessionID: resp.Header.Get(SessionHeader)}
@@ -472,6 +590,30 @@ func firstNonEmpty(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func parseTaiyiTime(value string) (time.Time, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return time.Time{}, nil
+	}
+
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05.999999999-0700",
+		"2006-01-02T15:04:05.999999-0700",
+		"2006-01-02T15:04:05.999-0700",
+		"2006-01-02T15:04:05-0700",
+	}
+	for _, layout := range layouts {
+		parsed, err := time.Parse(layout, trimmed)
+		if err == nil {
+			return parsed, nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("无法识别的时间格式: %s", trimmed)
 }
 
 func parseTokenUsage(payload map[string]any) *provider.TokenUsage {

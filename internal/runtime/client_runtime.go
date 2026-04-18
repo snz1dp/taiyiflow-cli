@@ -135,6 +135,20 @@ func (r *ClientRuntime) HandleClientToolEvent(
 	return r.submitCallback(ctx, providerClient, payload, true, result, "")
 }
 
+func (r *ClientRuntime) ExecuteShellCommand(
+	ctx context.Context,
+	config internalconfig.Config,
+	rawCommand string,
+) (map[string]any, error) {
+	if strings.TrimSpace(rawCommand) == "" {
+		return nil, fmt.Errorf("/command 用法: /command <shell 命令>")
+	}
+	if strings.TrimSpace(config.ApprovalMode) == "readonly" {
+		return nil, fmt.Errorf("当前审批模式为只读，不能执行本地命令")
+	}
+	return r.runCommand(ctx, config, map[string]any{"raw_command": strings.TrimSpace(rawCommand)})
+}
+
 func (r *ClientRuntime) submitCallback(
 	ctx context.Context,
 	providerClient provider.Provider,

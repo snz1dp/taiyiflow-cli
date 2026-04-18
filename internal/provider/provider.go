@@ -1,6 +1,9 @@
 package provider
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type StreamEventType string
 
@@ -61,6 +64,12 @@ type Metadata struct {
 	IsChat         bool
 }
 
+type ServiceVersion struct {
+	Package     string
+	Version     string
+	MainVersion string
+}
+
 type ContextWindowUsage struct {
 	MaxInputTokens              int
 	ShortTermContextTokens      int
@@ -112,6 +121,20 @@ type FlowList struct {
 	Items  []FlowSummary
 }
 
+type SessionSummary struct {
+	ID         string
+	Name       string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	ClientType string
+}
+
+type SessionList struct {
+	Total  int
+	Offset int
+	Items  []SessionSummary
+}
+
 type ClientCallResult struct {
 	FlowID       string
 	SessionID    string
@@ -126,6 +149,8 @@ type ClientCallResult struct {
 type Provider interface {
 	Name() string
 	ListFlows(ctx context.Context, filter string, agentType string, offset, limit int) (*FlowList, error)
+	ListSessions(ctx context.Context, flowID string, offset, limit int) (*SessionList, error)
+	GetVersionInfo(ctx context.Context) (*ServiceVersion, error)
 	GetMetadata(ctx context.Context, flowID string) (*Metadata, error)
 	Stream(ctx context.Context, request StreamRequest) (<-chan StreamEvent, *StreamSession, error)
 	GetRunStats(ctx context.Context, flowID string, sessionID string, runID string) (*RunStats, error)
