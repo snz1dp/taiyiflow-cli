@@ -10,11 +10,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/taiyiflow/taiyiflow-cli/internal/agent"
-	"github.com/taiyiflow/taiyiflow-cli/internal/buildinfo"
-	internalconfig "github.com/taiyiflow/taiyiflow-cli/internal/config"
-	"github.com/taiyiflow/taiyiflow-cli/internal/provider"
-	providerclient "github.com/taiyiflow/taiyiflow-cli/internal/provider/taiyiflow"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
+	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
+	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
+	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
 )
 
 type App struct {
@@ -23,6 +24,7 @@ type App struct {
 	stdout        io.Writer
 	stderr        io.Writer
 	stdin         io.Reader
+	runtime       *clientruntime.ClientRuntime
 }
 
 type rootOptions struct {
@@ -48,6 +50,7 @@ func NewApp() (*App, error) {
 		stdout:        os.Stdout,
 		stderr:        os.Stderr,
 		stdin:         os.Stdin,
+		runtime:       clientruntime.NewClientRuntime(os.Stdin, os.Stdout, os.Stderr),
 	}, nil
 }
 
@@ -63,6 +66,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.runDoctor(args[1:])
 	case "flows":
 		return a.runFlows(ctx, args[1:])
+	case "tui":
+		return a.runTUI(ctx, args[1:])
 	case "version":
 		return a.runVersion(args[1:])
 	case "help", "--help", "-h":
@@ -157,7 +162,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			continue
 		}
 
-		updatedState, err := a.streamTask(ctx, providerClient, flowID, line, sessionState)
+		updatedState, err := a.streamTask(ctx, providerClient, config, flowID, line, sessionState)
 		if err != nil {
 			fmt.Fprintf(a.stderr, "执行任务失败: %v\n", err)
 			continue
@@ -183,7 +188,7 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 		return err
 	}
 
-	_, err = a.streamTask(ctx, providerClient, flowID, task, sessionState)
+	_, err = a.streamTask(ctx, providerClient, config, flowID, task, sessionState)
 	return err
 }
 
@@ -200,6 +205,7 @@ func (a *App) prepareSession(flowID string, newSession bool) (agent.SessionState
 func (a *App) streamTask(
 	ctx context.Context,
 	providerClient provider.Provider,
+	config internalconfig.Config,
 	flowID string,
 	task string,
 	sessionState agent.SessionState,
@@ -207,9 +213,12 @@ func (a *App) streamTask(
 	stream, streamSession, err := providerClient.Stream(ctx, provider.StreamRequest{
 		FlowID:                 flowID,
 		Input:                  task,
+		InputType:              "any",
+		OutputType:             "any",
 		SessionID:              sessionState.SessionID,
 		RequestType:            "agent",
 		CommandExecutionTarget: "client",
+		ClientMCPServers:       a.runtime.ClientMCPServers(),
 	})
 	if err != nil {
 		return sessionState, err
@@ -235,6 +244,18 @@ func (a *App) streamTask(
 		case provider.EventError:
 			fmt.Fprintln(a.stderr)
 			return sessionState, fmt.Errorf("后端返回错误: %v", event.Data["error"])
+		case provider.EventBuiltIn:
+			if err := a.runtime.HandleBuiltInEvent(ctx, providerClient, config, event.Data); err != nil {
+				return sessionState, err
+			}
+		case provider.EventClientTool:
+			if err := a.runtime.HandleClientToolEvent(ctx, providerClient, config, event.Data); err != nil {
+				return sessionState, err
+			}
+		case provider.EventToolCall:
+			if text, ok := event.Data["text"].(string); ok && text != "" {
+				fmt.Fprintf(a.stdout, "\n[工具调用] %s\n", text)
+			}
 		case provider.EventClose:
 			fmt.Fprintln(a.stdout)
 		}
@@ -249,6 +270,7 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "  taiyiflow config [show|init|path|set]")
 	fmt.Fprintln(a.stdout, "  taiyiflow doctor")
 	fmt.Fprintln(a.stdout, "  taiyiflow flows [list|current|use] [参数]")
+	fmt.Fprintln(a.stdout, "  taiyiflow tui")
 	fmt.Fprintln(a.stdout, "  taiyiflow version")
 	fmt.Fprintf(a.stdout, "当前版本: %s\n", buildinfo.Version)
 }

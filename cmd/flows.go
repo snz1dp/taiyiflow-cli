@@ -6,7 +6,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	providerclient "github.com/taiyiflow/taiyiflow-cli/internal/provider/taiyiflow"
+	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 )
 
 func (a *App) runFlows(ctx context.Context, args []string) error {

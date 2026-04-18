@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/taiyiflow/taiyiflow-cli/internal/provider"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
 
 const SessionHeader = "X-TaiyiFlow-Session-id"
@@ -47,10 +47,39 @@ type flowListResponse struct {
 }
 
 type streamRequestBody struct {
-	InputValue             string `json:"input_value,omitempty"`
-	SessionID              string `json:"session_id,omitempty"`
-	RequestType            string `json:"request_type,omitempty"`
-	CommandExecutionTarget string `json:"command_execution_target,omitempty"`
+	InputValue             string         `json:"input_value,omitempty"`
+	InputType              string         `json:"input_type,omitempty"`
+	Files                  []string       `json:"files,omitempty"`
+	InternetSearch         bool           `json:"internet_search,omitempty"`
+	KnowledgeScopes        []string       `json:"knowledge_scopes,omitempty"`
+	KnowledgeDocs          []string       `json:"knowledge_docs,omitempty"`
+	OutputType             string         `json:"output_type,omitempty"`
+	OutputComponent        string         `json:"output_component,omitempty"`
+	SessionID              string         `json:"session_id,omitempty"`
+	RunID                  string         `json:"run_id,omitempty"`
+	RequestType            string         `json:"request_type,omitempty"`
+	CommandExecutionTarget string         `json:"command_execution_target,omitempty"`
+	MaxIterations          int            `json:"max_iterations,omitempty"`
+	AgentContinueWindows   int            `json:"agent_continue_windows,omitempty"`
+	MessageID              string         `json:"message_id,omitempty"`
+	RequestedSkillNames    []string       `json:"requested_skill_names,omitempty"`
+	AgentInputs            map[string]any `json:"agent_inputs,omitempty"`
+	Reasoning              bool           `json:"reasoning,omitempty"`
+	MasterFlowID           string         `json:"master_flow_id,omitempty"`
+	AvailableTools         []any          `json:"available_tools,omitempty"`
+	ClientMCPServers       map[string]any `json:"client_mcp_servers,omitempty"`
+	ClientSkillPackages    any            `json:"client_skill_packages,omitempty"`
+}
+
+type clientCallResultBody struct {
+	FlowID       string `json:"flow_id"`
+	SessionID    string `json:"session_id,omitempty"`
+	MessageID    string `json:"message_id,omitempty"`
+	RunID        string `json:"run_id"`
+	CallID       string `json:"call_id"`
+	Success      bool   `json:"success"`
+	Result       any    `json:"result,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 func NewClient(baseURL, apiKey string) *Client {
@@ -160,9 +189,27 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 	endpoint := fmt.Sprintf("%s/api/v1/run/%s/stream", c.baseURL, url.PathEscape(request.FlowID))
 	body := streamRequestBody{
 		InputValue:             request.Input,
+		InputType:              firstNonEmpty(request.InputType, "any"),
+		Files:                  request.InputFiles,
+		InternetSearch:         request.InternetSearch,
+		KnowledgeScopes:        request.KnowledgeScopes,
+		KnowledgeDocs:          request.KnowledgeDocs,
+		OutputType:             firstNonEmpty(request.OutputType, "any"),
+		OutputComponent:        request.OutputComponent,
 		SessionID:              request.SessionID,
+		RunID:                  request.RunID,
 		RequestType:            firstNonEmpty(request.RequestType, "agent"),
 		CommandExecutionTarget: firstNonEmpty(request.CommandExecutionTarget, "client"),
+		MaxIterations:          request.MaxIterations,
+		AgentContinueWindows:   request.AgentContinueWindows,
+		MessageID:              request.MessageID,
+		RequestedSkillNames:    request.RequestedSkillNames,
+		AgentInputs:            request.AgentInputs,
+		Reasoning:              request.ReasoningEnabled,
+		MasterFlowID:           request.MasterFlowID,
+		AvailableTools:         request.AvailableTools,
+		ClientMCPServers:       request.ClientMCPServers,
+		ClientSkillPackages:    request.ClientSkillPackages,
 	}
 
 	content, err := json.Marshal(body)
@@ -204,6 +251,43 @@ func (c *Client) applyAuth(req *http.Request) {
 	if c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
+}
+
+func (c *Client) SubmitClientCallResult(ctx context.Context, result provider.ClientCallResult) error {
+	body := clientCallResultBody{
+		FlowID:       result.FlowID,
+		SessionID:    result.SessionID,
+		MessageID:    result.MessageID,
+		RunID:        result.RunID,
+		CallID:       result.CallID,
+		Success:      result.Success,
+		Result:       result.Result,
+		ErrorMessage: result.ErrorMessage,
+	}
+
+	content, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("序列化客户端回调结果失败: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("%s/api/v1/agents/client/call/result", c.baseURL)
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(content))
+	if err != nil {
+		return fmt.Errorf("创建客户端回调请求失败: %w", err)
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	c.applyAuth(httpRequest)
+
+	resp, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return fmt.Errorf("提交客户端回调结果失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return readHTTPError("提交客户端回调结果失败", resp)
+	}
+	return nil
 }
 
 func readSSE(reader io.Reader, output chan<- provider.StreamEvent) {

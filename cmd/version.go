@@ -3,7 +3,7 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/taiyiflow/taiyiflow-cli/internal/buildinfo"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 )
 
 func (a *App) runVersion(args []string) error {

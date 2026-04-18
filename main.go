@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/taiyiflow/taiyiflow-cli/cmd"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/cmd"
 )
 
 func main() {

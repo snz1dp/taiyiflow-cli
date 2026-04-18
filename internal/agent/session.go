@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	internalconfig "github.com/taiyiflow/taiyiflow-cli/internal/config"
+	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 )
 
 type SessionState struct {
