@@ -96,7 +96,8 @@ func (c *Client) Name() string {
 	return "taiyiflow"
 }
 
-func (c *Client) ListFlows(ctx context.Context, filter string, offset, limit int) (*provider.FlowList, error) {
+func (c *Client) ListFlows(ctx context.Context, filter string, agentType string, offset, limit int) (*provider.FlowList, error) {
+	// 这里显式走用户侧智能体接口，不走 /api/v1/flows 这类管理接口。
 	endpoint, err := url.Parse(fmt.Sprintf("%s/api/v1/agents/flows", c.baseURL))
 	if err != nil {
 		return nil, fmt.Errorf("构造 flows 请求地址失败: %w", err)
@@ -105,6 +106,9 @@ func (c *Client) ListFlows(ctx context.Context, filter string, offset, limit int
 	query := endpoint.Query()
 	if strings.TrimSpace(filter) != "" {
 		query.Set("filter", strings.TrimSpace(filter))
+	}
+	if strings.TrimSpace(agentType) != "" {
+		query.Set("type", strings.TrimSpace(agentType))
 	}
 	if offset > 0 {
 		query.Set("offset", strconv.Itoa(offset))
@@ -127,12 +131,12 @@ func (c *Client) ListFlows(ctx context.Context, filter string, offset, limit int
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, readHTTPError("获取 flows 列表失败", resp)
+		return nil, readHTTPError("获取用户侧智能体列表失败", resp)
 	}
 
 	var payload flowListResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("解析 flows 响应失败: %w", err)
+		return nil, fmt.Errorf("解析用户侧智能体列表响应失败: %w", err)
 	}
 
 	items := make([]provider.FlowSummary, 0, len(payload.Data))

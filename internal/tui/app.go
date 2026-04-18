@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,13 +13,14 @@ import (
 )
 
 type Snapshot struct {
-	Version        string
-	BackendURL     string
-	DefaultFlow    string
-	Workdir        string
-	ApprovalMode   string
-	SessionID      string
-	WelcomeMessage string
+	Version          string
+	BackendURL       string
+	DefaultFlow      string
+	DefaultFlowLabel string
+	Workdir          string
+	ApprovalMode     string
+	SessionID        string
+	WelcomeMessage   string
 }
 
 type FlowItem struct {
@@ -88,6 +90,25 @@ type flowChangedMsg struct {
 	err      error
 }
 
+type progressPhase string
+
+const (
+	progressIdle       progressPhase = "idle"
+	progressSending    progressPhase = "sending"
+	progressStreaming  progressPhase = "streaming"
+	progressConfirming progressPhase = "confirming"
+	progressExecuting  progressPhase = "executing"
+	progressSwitching  progressPhase = "switching"
+	progressFailed     progressPhase = "failed"
+)
+
+type progressState struct {
+	phase   progressPhase
+	label   string
+	hint    string
+	percent float64
+}
+
 type model struct {
 	ctx            context.Context
 	snapshot       Snapshot
@@ -98,13 +119,13 @@ type model struct {
 	entries        []entry
 	input          textinput.Model
 	viewport       viewport.Model
+	progress       progress.Model
+	state          progressState
 	width          int
 	height         int
 	contentWidth   int
 	ready          bool
 	quitting       bool
-	submitting     bool
-	changingFlow   bool
 	showFlowPicker bool
 	flowCursor     int
 	pendingConfirm *confirmState
@@ -149,6 +170,10 @@ var (
 				Foreground(lipgloss.Color("230")).
 				Background(lipgloss.Color("24")).
 				Bold(true)
+
+	progressLabelStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("110")).
+				Bold(true)
 )
 
 func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, flowChange FlowChangeHandler) error {
@@ -159,6 +184,8 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 
 	viewportModel := viewport.New(0, 0)
 	viewportModel.Style = lipgloss.NewStyle()
+
+	progressModel := progress.New(progress.WithDefaultGradient())
 
 	initialEntries := buildInitialEntries(snapshot)
 	program := tea.NewProgram(model{
@@ -171,6 +198,8 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 		entries:    initialEntries,
 		input:      inputModel,
 		viewport:   viewportModel,
+		progress:   progressModel,
+		state:      newProgressState(progressIdle),
 		flowCursor: currentFlowIndex(flows, snapshot.DefaultFlow),
 	}, tea.WithAltScreen())
 	_, err := program.Run()
@@ -178,11 +207,20 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 }
 
 func (m model) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(textinput.Blink, m.progress.SetPercent(m.state.percent))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch typed := msg.(type) {
+	case progress.FrameMsg:
+		var cmd tea.Cmd
+		updated, nextCmd := m.progress.Update(typed)
+		progressModel, ok := updated.(progress.Model)
+		if ok {
+			m.progress = progressModel
+		}
+		cmd = nextCmd
+		return m, cmd
 	case tea.WindowSizeMsg:
 		m.width = typed.Width
 		m.height = typed.Height
@@ -190,42 +228,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncLayout()
 		return m, nil
 	case streamEventMsg:
-		m.applyEvent(typed.event)
-		if m.submitting {
-			return m, waitForStream(m.eventCh)
+		cmd := m.applyEvent(typed.event)
+		if m.isBusy() {
+			return m, tea.Batch(cmd, waitForStream(m.eventCh))
 		}
-		return m, nil
+		return m, cmd
 	case streamFailedMsg:
-		m.submitting = false
 		m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
 		m.syncViewport()
+		progressCmd := m.transitionProgress(progressFailed)
 		m.input.Focus()
-		return m, nil
+		return m, progressCmd
 	case streamDoneMsg:
-		m.submitting = false
+		progressCmd := m.transitionProgress(progressIdle)
 		m.input.Focus()
-		return m, nil
+		return m, progressCmd
 	case confirmRequestMsg:
 		m.pendingConfirm = &confirmState{request: typed.request, responseCh: typed.responseCh}
 		m.input.Blur()
-		return m, waitForStream(m.eventCh)
+		return m, tea.Batch(m.transitionProgress(progressConfirming), waitForStream(m.eventCh))
 	case flowChangedMsg:
-		m.changingFlow = false
 		if typed.err != nil {
 			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
 			m.syncViewport()
 			m.input.Focus()
-			return m, nil
+			return m, m.transitionProgress(progressFailed)
 		}
-		previousFlow := m.snapshot.DefaultFlow
+		previousFlow := fallback(m.snapshot.DefaultFlowLabel, sanitizeFlowLabel(m.snapshot.DefaultFlow))
 		m.snapshot = typed.snapshot
 		m.flowCursor = currentFlowIndex(m.flows, m.snapshot.DefaultFlow)
 		m.entries = buildInitialEntries(m.snapshot)
-		m.entries = append(m.entries, entry{role: "system", content: fmt.Sprintf("已切换默认 flow: %s -> %s", fallback(previousFlow, "<未配置>"), fallback(m.snapshot.DefaultFlow, "<未配置>"))})
+		m.entries = append(m.entries, entry{role: "system", content: fmt.Sprintf("已切换默认 flow: %s -> %s", fallback(previousFlow, "<未配置>"), fallback(m.snapshot.DefaultFlowLabel, sanitizeFlowLabel(m.snapshot.DefaultFlow)))})
 		m.showFlowPicker = false
 		m.syncViewport()
 		m.input.Focus()
-		return m, nil
+		return m, m.transitionProgress(progressIdle)
 	case tea.KeyMsg:
 		if m.pendingConfirm != nil {
 			return m.handleConfirmKey(typed)
@@ -244,13 +281,13 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	case "esc":
-		if m.submitting {
+		if m.isBusy() {
 			return m, nil
 		}
 		m.quitting = true
 		return m, tea.Quit
 	case "ctrl+o":
-		if m.submitting || m.changingFlow {
+		if m.isBusy() {
 			m.entries = append(m.entries, entry{role: "system", content: "当前正在处理请求，暂时不能切换 flow。"})
 			m.syncViewport()
 			return m, nil
@@ -283,7 +320,7 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 		return m, nil
 	case "enter":
-		if m.submitting {
+		if m.isBusy() {
 			return m, nil
 		}
 		input := strings.TrimSpace(m.input.Value())
@@ -299,15 +336,13 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.input.SetValue("")
-			m.changingFlow = true
-			return m, changeFlowCmd(m.ctx, flowID, m.flowChange)
+			return m, tea.Batch(m.transitionProgress(progressSwitching), changeFlowCmd(m.ctx, flowID, m.flowChange))
 		}
 		m.entries = append(m.entries, entry{role: "user", content: input})
 		m.input.SetValue("")
-		m.submitting = true
 		m.syncViewport()
 		request := Request{Input: input, FlowID: m.snapshot.DefaultFlow}
-		return m, startStream(m.ctx, request, m.runner, m.eventCh)
+		return m, tea.Batch(m.transitionProgress(progressSending), startStream(m.ctx, request, m.runner, m.eventCh))
 	}
 
 	var cmd tea.Cmd
@@ -321,12 +356,12 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pendingConfirm.responseCh <- true
 		close(m.pendingConfirm.responseCh)
 		m.pendingConfirm = nil
-		return m, waitForStream(m.eventCh)
+		return m, tea.Batch(m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
 	case "n", "N", "esc", "ctrl+c":
 		m.pendingConfirm.responseCh <- false
 		close(m.pendingConfirm.responseCh)
 		m.pendingConfirm = nil
-		return m, waitForStream(m.eventCh)
+		return m, tea.Batch(m.transitionProgress(progressStreaming), waitForStream(m.eventCh))
 	default:
 		return m, nil
 	}
@@ -355,16 +390,19 @@ func (m model) handleFlowPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		selected := m.flows[m.flowCursor]
-		m.changingFlow = true
-		return m, changeFlowCmd(m.ctx, selected.ID, m.flowChange)
+		return m, tea.Batch(m.transitionProgress(progressSwitching), changeFlowCmd(m.ctx, selected.ID, m.flowChange))
 	default:
 		return m, nil
 	}
 }
 
-func (m *model) applyEvent(event Event) {
+func (m *model) applyEvent(event Event) tea.Cmd {
+	var cmd tea.Cmd
 	switch event.Kind {
 	case EventAssistantChunk:
+		if m.state.phase != progressStreaming {
+			cmd = m.transitionProgress(progressStreaming)
+		}
 		if len(m.entries) == 0 || m.entries[len(m.entries)-1].role != "assistant" {
 			m.entries = append(m.entries, entry{role: "assistant", content: event.Text})
 		} else {
@@ -384,6 +422,7 @@ func (m *model) applyEvent(event Event) {
 		}
 	}
 	m.syncViewport()
+	return cmd
 }
 
 func (m *model) syncLayout() {
@@ -421,6 +460,10 @@ func (m *model) syncLayout() {
 		inputWidth = 20
 	}
 	m.input.Width = inputWidth
+	m.progress.Width = contentWidth - 18
+	if m.progress.Width < 12 {
+		m.progress.Width = 12
+	}
 	m.syncViewport()
 }
 
@@ -439,19 +482,17 @@ func (m model) View() string {
 	status := panelStyle.Width(m.contentWidth - 6).Render(strings.Join([]string{
 		row("版本", fallback(m.snapshot.Version, "dev")),
 		row("后端地址", fallback(m.snapshot.BackendURL, "未配置")),
-		row("当前 flow", fallback(m.snapshot.DefaultFlow, "未配置")),
+		row("当前 flow", fallback(m.snapshot.DefaultFlowLabel, "未配置")),
 		row("工作目录", fallback(m.snapshot.Workdir, "当前目录")),
 		row("审批模式", fallback(m.snapshot.ApprovalMode, "confirm")),
 		row("本地会话", fallback(m.snapshot.SessionID, "未建立")),
-	}, "\n"))
+		row("进度状态", m.state.label),
+	}, "\n") + "\n\n" + m.renderProgress())
 
 	history := panelStyle.Width(m.contentWidth - 6).Render(m.viewport.View())
 	inputTitle := "输入并回车发送"
-	if m.submitting {
-		inputTitle = "正在等待流式响应完成"
-	}
-	if m.changingFlow {
-		inputTitle = "正在切换 flow"
+	if m.state.hint != "" {
+		inputTitle = m.state.hint
 	}
 	inputView := m.input.View()
 	if m.pendingConfirm != nil || m.showFlowPicker {
@@ -469,6 +510,15 @@ func (m model) View() string {
 	}
 
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, content)
+}
+
+func (m model) renderProgress() string {
+	parts := []string{
+		progressLabelStyle.Render("状态进度"),
+		m.progress.ViewAs(m.state.percent),
+		hintStyle.Render(m.state.hint),
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (m model) renderOverlay() string {
@@ -496,7 +546,10 @@ func (m model) renderFlowPicker() string {
 	}
 	lines := []string{"选择默认 flow", "使用方向键或 j/k 选择，Enter 确认，Esc 取消。", ""}
 	for index, item := range m.flows {
-		line := fmt.Sprintf("%s  %s  (%s)", flowCursor(index == m.flowCursor), item.ID, fallback(item.Name, item.Type))
+		line := fmt.Sprintf("%s  %s", flowCursor(index == m.flowCursor), fallback(item.Name, item.Type))
+		if strings.TrimSpace(item.Type) != "" {
+			line += fmt.Sprintf("  (%s)", item.Type)
+		}
 		if item.ID == m.snapshot.DefaultFlow {
 			line += "  [当前]"
 		}
@@ -574,6 +627,39 @@ func buildInitialEntries(snapshot Snapshot) []entry {
 	return []entry{{role: "system", content: "已进入 TUI。直接输入内容并回车发送，Ctrl+O 可切换默认 flow。"}}
 }
 
+func newProgressState(phase progressPhase) progressState {
+	switch phase {
+	case progressSending:
+		return progressState{phase: phase, label: "请求已发出", hint: "正在向后端发起请求", percent: 0.18}
+	case progressStreaming:
+		return progressState{phase: phase, label: "流式响应中", hint: "正在接收模型输出", percent: 0.72}
+	case progressConfirming:
+		return progressState{phase: phase, label: "等待命令确认", hint: "请先确认客户端命令执行", percent: 0.34}
+	case progressExecuting:
+		return progressState{phase: phase, label: "执行客户端命令", hint: "客户端命令正在本地运行", percent: 0.86}
+	case progressSwitching:
+		return progressState{phase: phase, label: "切换 flow 中", hint: "正在更新默认 flow 和会话上下文", percent: 0.46}
+	case progressFailed:
+		return progressState{phase: phase, label: "执行失败", hint: "当前可继续输入新的请求", percent: 1}
+	default:
+		return progressState{phase: progressIdle, label: "空闲", hint: "等待输入", percent: 0}
+	}
+}
+
+func (m *model) transitionProgress(phase progressPhase) tea.Cmd {
+	m.state = newProgressState(phase)
+	return m.progress.SetPercent(m.state.percent)
+}
+
+func (m model) isBusy() bool {
+	switch m.state.phase {
+	case progressSending, progressStreaming, progressConfirming, progressExecuting, progressSwitching:
+		return true
+	default:
+		return false
+	}
+}
+
 func currentFlowIndex(flows []FlowItem, current string) int {
 	for index, item := range flows {
 		if item.ID == current {
@@ -617,4 +703,12 @@ func fallback(value string, defaultValue string) string {
 		return defaultValue
 	}
 	return value
+}
+
+func sanitizeFlowLabel(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "<未配置>"
+	}
+	return "<已配置>"
 }

@@ -1,7 +1,6 @@
 # 太乙智启命令行（CLI）客户端
 
-太乙智启命令行（CLI）客户端是一个面向本地终端的智能体客户端项目，目标是构建单入口、本地优先、代码任务优先的命令行（CLI）工具。
-项目当前仍处于规划阶段，尚未开始首版代码实现。
+太乙智启命令行（CLI）客户端是一个面向本地终端的智能体客户端项目，当前已完成 Go 客户端基础骨架、TaiyiFlow stream 对接、本地工具回调链路，以及 Bubble Tea 单入口 TUI 主界面。
 
 ## 特性目标
 
@@ -12,9 +11,16 @@
 
 ## 当前状态
 
-- 状态：规划中
-- 主语言方向：Go
+- 状态：开发中
+- 主语言：Go
 - 首版联调基线：../taiyiflow/src/backend/base
+- 默认界面：Bubble Tea TUI
+
+## 构建
+
+- VS Code 默认构建任务：build taiyiflow
+- 命令行构建产物：go build -o taiyiflow-cli .
+- 运行：./taiyiflow-cli
 
 ## 文档
 

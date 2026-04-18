@@ -87,7 +87,7 @@ type ClientCallResult struct {
 
 type Provider interface {
 	Name() string
-	ListFlows(ctx context.Context, filter string, offset, limit int) (*FlowList, error)
+	ListFlows(ctx context.Context, filter string, agentType string, offset, limit int) (*FlowList, error)
 	GetMetadata(ctx context.Context, flowID string) (*Metadata, error)
 	Stream(ctx context.Context, request StreamRequest) (<-chan StreamEvent, *StreamSession, error)
 	SubmitClientCallResult(ctx context.Context, result ClientCallResult) error

@@ -117,10 +117,14 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	if err != nil {
 		return err
 	}
+	flowDisplayName := sanitizeFlowDisplay(flowID)
 
 	metadata, err := providerClient.GetMetadata(ctx, flowID)
 	if err == nil && metadata.WelcomeMessage != "" {
 		fmt.Fprintln(a.stdout, metadata.WelcomeMessage)
+	}
+	if err == nil && strings.TrimSpace(metadata.Name) != "" {
+		flowDisplayName = metadata.Name
 	}
 	if err != nil {
 		fmt.Fprintf(a.stderr, "提示: 获取元信息失败，继续进入交互模式: %v\n", err)
@@ -147,13 +151,13 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 		case "/exit", "/quit":
 			return nil
 		case "/help":
-			a.printInteractiveUsage(flowID, sessionState)
+			a.printInteractiveUsage(flowDisplayName, sessionState)
 			continue
 		case "/clear":
 			fmt.Fprint(a.stdout, "\033[H\033[2J")
 			continue
 		case "/session":
-			a.printSessionStatus(flowID, sessionState)
+			a.printSessionStatus(flowDisplayName, sessionState)
 			continue
 		case "/new":
 			sessionState = agent.SessionState{FlowID: flowID}
@@ -278,18 +282,18 @@ func (a *App) printRootUsage() {
 	fmt.Fprintf(a.stdout, "当前版本: %s\n", buildinfo.Version)
 }
 
-func (a *App) printInteractiveUsage(flowID string, sessionState agent.SessionState) {
+func (a *App) printInteractiveUsage(flowDisplayName string, sessionState agent.SessionState) {
 	fmt.Fprintln(a.stdout, "会话内命令:")
 	fmt.Fprintln(a.stdout, "  /help     显示帮助")
 	fmt.Fprintln(a.stdout, "  /session  显示当前会话状态")
 	fmt.Fprintln(a.stdout, "  /new      重置当前 flow 的本地会话")
 	fmt.Fprintln(a.stdout, "  /clear    清屏")
 	fmt.Fprintln(a.stdout, "  /exit     退出")
-	a.printSessionStatus(flowID, sessionState)
+	a.printSessionStatus(flowDisplayName, sessionState)
 }
 
-func (a *App) printSessionStatus(flowID string, sessionState agent.SessionState) {
-	fmt.Fprintf(a.stdout, "当前 flow: %s\n", flowID)
+func (a *App) printSessionStatus(flowDisplayName string, sessionState agent.SessionState) {
+	fmt.Fprintf(a.stdout, "当前 flow: %s\n", sanitizeFlowDisplay(flowDisplayName))
 	if strings.TrimSpace(sessionState.SessionID) == "" {
 		fmt.Fprintln(a.stdout, "当前 session: <未建立>")
 		return
@@ -300,7 +304,7 @@ func (a *App) printSessionStatus(flowID string, sessionState agent.SessionState)
 func resolveFlowID(inputFlow string, defaultFlow string) (string, error) {
 	flowID := strings.TrimSpace(firstNonEmpty(inputFlow, defaultFlow))
 	if flowID == "" {
-		return "", errors.New("未配置默认 flow，请先执行 `taiyiflow flows` 查看可用智能服务，再执行 `taiyiflow flows use <ID>` 或使用 `--flow` 指定")
+		return "", errors.New("未配置默认 flow，请先执行 `taiyiflow flows` 查看可用智能服务，再执行 `taiyiflow flows use <名称>` 或使用 `--flow` 指定")
 	}
 	return flowID, nil
 }

@@ -28,7 +28,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	}
 
 	flowItems := []tui.FlowItem{}
-	flows, flowErr := providerClient.ListFlows(ctx, "", 0, 100)
+	flows, flowErr := providerClient.ListFlows(ctx, "", "chat", 0, 100)
 	if flowErr == nil {
 		for _, item := range flows.Items {
 			flowItems = append(flowItems, tui.FlowItem{
@@ -152,11 +152,12 @@ func (a *App) buildTUISnapshot(
 	flowID string,
 ) (tui.Snapshot, error) {
 	snapshot := tui.Snapshot{
-		Version:      buildinfo.Version,
-		BackendURL:   config.BackendBaseURL,
-		DefaultFlow:  flowID,
-		Workdir:      config.Workdir,
-		ApprovalMode: config.ApprovalMode,
+		Version:          buildinfo.Version,
+		BackendURL:       config.BackendBaseURL,
+		DefaultFlow:      flowID,
+		DefaultFlowLabel: sanitizeFlowDisplay(flowID),
+		Workdir:          config.Workdir,
+		ApprovalMode:     config.ApprovalMode,
 	}
 	if strings.TrimSpace(flowID) == "" {
 		return snapshot, nil
@@ -171,6 +172,9 @@ func (a *App) buildTUISnapshot(
 	metadata, err := providerClient.GetMetadata(ctx, flowID)
 	if err == nil {
 		snapshot.WelcomeMessage = metadata.WelcomeMessage
+		if strings.TrimSpace(metadata.Name) != "" {
+			snapshot.DefaultFlowLabel = metadata.Name
+		}
 	}
 	return snapshot, nil
 }
