@@ -241,10 +241,7 @@ func (a *App) streamTask(
 	for event := range stream {
 		switch event.Type {
 		case provider.EventMessage:
-			if message, ok := event.Data["message"].(string); ok && message != "" {
-				fmt.Fprintf(a.stdout, "\n[%s]\n", message)
-			}
-			if chunk, ok := event.Data["chunk"].(string); ok {
+			if chunk, ok := event.Data["chunk"].(string); ok && chunk != "" {
 				fmt.Fprint(a.stdout, chunk)
 			}
 		case provider.EventError:

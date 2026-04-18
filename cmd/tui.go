@@ -43,7 +43,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	runner := func(runCtx context.Context, request tui.Request, emit func(tui.Event), confirm func(tui.ConfirmRequest) bool) error {
 		currentFlow := strings.TrimSpace(request.FlowID)
 		if currentFlow == "" {
-			return fmt.Errorf("未配置默认 flow，请先执行 taiyiflow flows use <ID>")
+			return fmt.Errorf("未配置默认 flow，请先执行 taiyiflow flows use <名称>")
 		}
 
 		localConfig, err := a.configManager.Load()
@@ -66,6 +66,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			InputType:              "any",
 			OutputType:             "any",
 			SessionID:              sessionState.SessionID,
+			RunID:                  request.RunID,
 			RequestType:            "agent",
 			CommandExecutionTarget: "client",
 			ClientMCPServers:       runtimeClient.ClientMCPServers(),
@@ -86,17 +87,17 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		for event := range stream {
 			switch event.Type {
 			case provider.EventMessage:
-				if message, ok := event.Data["message"].(string); ok && strings.TrimSpace(message) != "" {
-					emit(tui.Event{Kind: tui.EventSystemNote, Text: message})
-				}
 				if chunk, ok := event.Data["chunk"].(string); ok && chunk != "" {
 					emit(tui.Event{Kind: tui.EventAssistantChunk, Text: chunk})
 				}
 			case provider.EventToolCall:
 				if text, ok := event.Data["text"].(string); ok && strings.TrimSpace(text) != "" {
-					emit(tui.Event{Kind: tui.EventSystemNote, Text: "工具调用: " + text})
+					emit(tui.Event{Kind: tui.EventToolCall, Text: "工具调用: " + text})
+				} else {
+					emit(tui.Event{Kind: tui.EventToolCall})
 				}
 			case provider.EventBuiltIn:
+				emit(tui.Event{Kind: tui.EventBuiltInCall})
 				if requiresTUICommandConfirmation(localConfig, event.Data) {
 					approved := confirm(buildTUIConfirmRequest(event.Data))
 					if !approved {
@@ -117,6 +118,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					return err
 				}
 			case provider.EventClientTool:
+				emit(tui.Event{Kind: tui.EventClientToolCall})
 				if err := runtimeClient.HandleClientToolEvent(runCtx, providerClient, localConfig, event.Data); err != nil {
 					return err
 				}
@@ -124,6 +126,13 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				return fmt.Errorf("后端返回错误: %v", event.Data["error"])
 			case provider.EventClose:
 				return nil
+			}
+		}
+
+		if request.RunID != "" && strings.TrimSpace(sessionState.SessionID) != "" {
+			stats, statsErr := providerClient.GetRunStats(runCtx, currentFlow, sessionState.SessionID, request.RunID)
+			if statsErr == nil && stats != nil {
+				emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: buildTUIRequestMetrics(request.RunID, stats)})
 			}
 		}
 
@@ -317,4 +326,47 @@ func nestedStringValue(payload map[string]any, keys ...string) string {
 		current = next
 	}
 	return ""
+}
+
+func buildTUIRequestMetrics(runID string, stats *provider.RunStats) *tui.RequestMetrics {
+	if stats == nil {
+		return nil
+	}
+	resolvedRunID := strings.TrimSpace(stats.RunID)
+	if resolvedRunID == "" {
+		resolvedRunID = runID
+	}
+	metrics := &tui.RequestMetrics{RunID: resolvedRunID}
+	if stats.TokenUsage != nil {
+		metrics.TokenUsage = &tui.TokenUsage{
+			InputTokens:  stats.TokenUsage.InputTokens,
+			OutputTokens: stats.TokenUsage.OutputTokens,
+			TotalTokens:  stats.TokenUsage.TotalTokens,
+			StopReason:   stats.TokenUsage.StopReason,
+			ModelName:    stats.TokenUsage.ModelName,
+		}
+		if stats.TokenUsage.ContextWindow != nil {
+			metrics.TokenUsage.ContextWindow = &tui.ContextWindow{
+				MaxInputTokens:              stats.TokenUsage.ContextWindow.MaxInputTokens,
+				ShortTermContextTokens:      stats.TokenUsage.ContextWindow.ShortTermContextTokens,
+				CurrentRoundInputTokens:     stats.TokenUsage.ContextWindow.CurrentRoundInputTokens,
+				NextRoundAvailableTokens:    stats.TokenUsage.ContextWindow.NextRoundAvailableTokens,
+				CurrentRoundAvailableTokens: stats.TokenUsage.ContextWindow.CurrentRoundAvailableTokens,
+				HistoryMessageCount:         stats.TokenUsage.ContextWindow.HistoryMessageCount,
+				PreparedMessageCount:        stats.TokenUsage.ContextWindow.PreparedMessageCount,
+			}
+		}
+	}
+	if len(stats.Compressions) > 0 {
+		latest := stats.Compressions[len(stats.Compressions)-1]
+		metrics.Compression = &tui.CompressionStats{
+			Count:            len(stats.Compressions),
+			BeforeTokens:     latest.BeforeTokens,
+			AfterTokens:      latest.AfterTokens,
+			RemainingTokens:  latest.RemainingTokens,
+			CompressionRatio: latest.CompressionRatio,
+			TargetType:       latest.TargetType,
+		}
+	}
+	return metrics
 }

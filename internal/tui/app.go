@@ -2,13 +2,18 @@ package tui
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"fmt"
+	"path/filepath"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -37,17 +42,64 @@ const (
 	EventSystemNote     EventKind = "system_note"
 	EventErrorNote      EventKind = "error_note"
 	EventSessionUpdate  EventKind = "session_update"
+	EventToolCall       EventKind = "tool_call"
+	EventBuiltInCall    EventKind = "built_in_call"
+	EventClientToolCall EventKind = "client_tool_call"
+	EventStatsUpdate    EventKind = "stats_update"
 )
 
 type Event struct {
 	Kind      EventKind
 	Text      string
 	SessionID string
+	Stats     *RequestMetrics
 }
 
 type Request struct {
 	Input  string
 	FlowID string
+	RunID  string
+}
+
+type ContextWindow struct {
+	MaxInputTokens              int
+	ShortTermContextTokens      int
+	CurrentRoundInputTokens     int
+	NextRoundAvailableTokens    int
+	CurrentRoundAvailableTokens int
+	HistoryMessageCount         int
+	PreparedMessageCount        int
+}
+
+type TokenUsage struct {
+	InputTokens   int
+	OutputTokens  int
+	TotalTokens   int
+	StopReason    string
+	ModelName     string
+	ContextWindow *ContextWindow
+}
+
+type CompressionStats struct {
+	Count            int
+	BeforeTokens     int
+	AfterTokens      int
+	RemainingTokens  int
+	CompressionRatio float64
+	TargetType       string
+}
+
+type RequestMetrics struct {
+	RunID         string
+	StartedAt     time.Time
+	CompletedAt   time.Time
+	InputChars    int
+	OutputChars   int
+	ChunkCount    int
+	ToolCallCount int
+	CommandCount  int
+	TokenUsage    *TokenUsage
+	Compression   *CompressionStats
 }
 
 type ConfirmRequest struct {
@@ -118,9 +170,12 @@ type model struct {
 	eventCh        chan tea.Msg
 	entries        []entry
 	input          textinput.Model
+	flowFilter     textinput.Model
 	viewport       viewport.Model
 	progress       progress.Model
+	markdown       *glamour.TermRenderer
 	state          progressState
+	requestStats   RequestMetrics
 	width          int
 	height         int
 	contentWidth   int
@@ -174,6 +229,32 @@ var (
 	progressLabelStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("110")).
 				Bold(true)
+
+	headerBarStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("230")).
+			Background(lipgloss.Color("24")).
+			Bold(true).
+			Padding(0, 1)
+
+	statusBarStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("252")).
+			Background(lipgloss.Color("236")).
+			Padding(0, 1)
+
+	statusBarDimStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("244")).
+				Background(lipgloss.Color("236"))
+
+	historyFrameStyle = lipgloss.NewStyle().
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("239")).
+				Padding(0, 1)
+
+	minimalHistoryStyle = lipgloss.NewStyle()
+
+	inlineProgressStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("110")).
+				Padding(0, 1)
 )
 
 func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, flowChange FlowChangeHandler) error {
@@ -181,6 +262,11 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 	inputModel.Placeholder = "例如：帮我总结当前仓库状态"
 	inputModel.Prompt = "> "
 	inputModel.Focus()
+
+	flowFilterModel := textinput.New()
+	flowFilterModel.Placeholder = "输入名称、类型或描述筛选 flow"
+	flowFilterModel.Prompt = "搜索> "
+	flowFilterModel.Blur()
 
 	viewportModel := viewport.New(0, 0)
 	viewportModel.Style = lipgloss.NewStyle()
@@ -197,6 +283,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 		eventCh:    make(chan tea.Msg),
 		entries:    initialEntries,
 		input:      inputModel,
+		flowFilter: flowFilterModel,
 		viewport:   viewportModel,
 		progress:   progressModel,
 		state:      newProgressState(progressIdle),
@@ -235,11 +322,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case streamFailedMsg:
 		m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
+		m.finishRequestStats()
 		m.syncViewport()
 		progressCmd := m.transitionProgress(progressFailed)
 		m.input.Focus()
 		return m, progressCmd
 	case streamDoneMsg:
+		m.finishRequestStats()
 		progressCmd := m.transitionProgress(progressIdle)
 		m.input.Focus()
 		return m, progressCmd
@@ -257,6 +346,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		previousFlow := fallback(m.snapshot.DefaultFlowLabel, sanitizeFlowLabel(m.snapshot.DefaultFlow))
 		m.snapshot = typed.snapshot
 		m.flowCursor = currentFlowIndex(m.flows, m.snapshot.DefaultFlow)
+		m.flowFilter.SetValue("")
+		m.flowFilter.Blur()
+		m.requestStats = RequestMetrics{}
 		m.entries = buildInitialEntries(m.snapshot)
 		m.entries = append(m.entries, entry{role: "system", content: fmt.Sprintf("已切换默认 flow: %s -> %s", fallback(previousFlow, "<未配置>"), fallback(m.snapshot.DefaultFlowLabel, sanitizeFlowLabel(m.snapshot.DefaultFlow)))})
 		m.showFlowPicker = false
@@ -298,7 +390,9 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.showFlowPicker = true
-		m.flowCursor = currentFlowIndex(m.flows, m.snapshot.DefaultFlow)
+		m.flowFilter.SetValue("")
+		m.flowFilter.Focus()
+		m.flowCursor = m.currentFilteredFlowCursor()
 		m.input.Blur()
 		return m, nil
 	case "pgup":
@@ -330,7 +424,7 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if strings.HasPrefix(input, "/flow ") {
 			flowID := strings.TrimSpace(strings.TrimPrefix(input, "/flow "))
 			if flowID == "" {
-				m.entries = append(m.entries, entry{role: "error", content: "用法: /flow <ID>"})
+				m.entries = append(m.entries, entry{role: "error", content: "用法: /flow <名称>"})
 				m.syncViewport()
 				m.input.SetValue("")
 				return m, nil
@@ -340,8 +434,10 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.entries = append(m.entries, entry{role: "user", content: input})
 		m.input.SetValue("")
+		runID := newRequestRunID()
+		m.startRequestStats(input, runID)
 		m.syncViewport()
-		request := Request{Input: input, FlowID: m.snapshot.DefaultFlow}
+		request := Request{Input: input, FlowID: m.snapshot.DefaultFlow, RunID: runID}
 		return m, tea.Batch(m.transitionProgress(progressSending), startStream(m.ctx, request, m.runner, m.eventCh))
 	}
 
@@ -371,6 +467,8 @@ func (m model) handleFlowPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.showFlowPicker = false
+		m.flowFilter.SetValue("")
+		m.flowFilter.Blur()
 		m.input.Focus()
 		return m, nil
 	case "up", "k":
@@ -384,15 +482,21 @@ func (m model) handleFlowPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "enter":
-		if len(m.flows) == 0 {
+		filtered := m.filteredFlowIndices()
+		if len(filtered) == 0 {
 			m.showFlowPicker = false
+			m.flowFilter.SetValue("")
+			m.flowFilter.Blur()
 			m.input.Focus()
 			return m, nil
 		}
-		selected := m.flows[m.flowCursor]
+		selected := m.flows[filtered[m.flowCursor]]
 		return m, tea.Batch(m.transitionProgress(progressSwitching), changeFlowCmd(m.ctx, selected.ID, m.flowChange))
 	default:
-		return m, nil
+		var cmd tea.Cmd
+		m.flowFilter, cmd = m.flowFilter.Update(msg)
+		m.clampFlowCursor()
+		return m, cmd
 	}
 }
 
@@ -403,6 +507,8 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		if m.state.phase != progressStreaming {
 			cmd = m.transitionProgress(progressStreaming)
 		}
+		m.requestStats.OutputChars += utf8.RuneCountInString(event.Text)
+		m.requestStats.ChunkCount++
 		if len(m.entries) == 0 || m.entries[len(m.entries)-1].role != "assistant" {
 			m.entries = append(m.entries, entry{role: "assistant", content: event.Text})
 		} else {
@@ -415,6 +521,28 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 	case EventErrorNote:
 		if strings.TrimSpace(event.Text) != "" {
 			m.entries = append(m.entries, entry{role: "error", content: event.Text})
+		}
+	case EventToolCall:
+		m.requestStats.ToolCallCount++
+		if strings.TrimSpace(event.Text) != "" {
+			m.entries = append(m.entries, entry{role: "system", content: event.Text})
+		}
+	case EventBuiltInCall, EventClientToolCall:
+		m.requestStats.CommandCount++
+		if strings.TrimSpace(event.Text) != "" {
+			m.entries = append(m.entries, entry{role: "system", content: event.Text})
+		}
+	case EventStatsUpdate:
+		if event.Stats != nil {
+			if strings.TrimSpace(event.Stats.RunID) != "" {
+				m.requestStats.RunID = event.Stats.RunID
+			}
+			if event.Stats.TokenUsage != nil {
+				m.requestStats.TokenUsage = event.Stats.TokenUsage
+			}
+			if event.Stats.Compression != nil {
+				m.requestStats.Compression = event.Stats.Compression
+			}
 		}
 	case EventSessionUpdate:
 		if strings.TrimSpace(event.SessionID) != "" {
@@ -429,9 +557,9 @@ func (m *model) syncLayout() {
 	if !m.ready || m.width == 0 || m.height == 0 {
 		return
 	}
-	contentWidth := m.width - 6
-	if contentWidth < 60 {
-		contentWidth = m.width - 2
+	contentWidth := m.width - 4
+	if !m.useMinimalChrome() {
+		contentWidth = m.width - 6
 	}
 	if contentWidth > 120 {
 		contentWidth = 120
@@ -445,9 +573,15 @@ func (m *model) syncLayout() {
 	if viewportWidth < 20 {
 		viewportWidth = 20
 	}
-	fixedHeight := 17
-	if m.pendingConfirm != nil || m.showFlowPicker {
+	fixedHeight := 7
+	if !m.useMinimalChrome() {
+		fixedHeight = 9
+	}
+	if m.showProgressLine() {
 		fixedHeight += 2
+	}
+	if m.pendingConfirm != nil || m.showFlowPicker {
+		fixedHeight += 3
 	}
 	historyHeight := m.height - fixedHeight
 	if historyHeight < 8 {
@@ -455,11 +589,16 @@ func (m *model) syncLayout() {
 	}
 	m.viewport.Width = viewportWidth
 	m.viewport.Height = historyHeight
+	m.updateMarkdownRenderer(viewportWidth - 2)
 	inputWidth := contentWidth - 10
 	if inputWidth < 20 {
 		inputWidth = 20
 	}
 	m.input.Width = inputWidth
+	m.flowFilter.Width = minInt(contentWidth-16, 48)
+	if m.flowFilter.Width < 18 {
+		m.flowFilter.Width = 18
+	}
 	m.progress.Width = contentWidth - 18
 	if m.progress.Width < 12 {
 		m.progress.Width = 12
@@ -468,7 +607,7 @@ func (m *model) syncLayout() {
 }
 
 func (m *model) syncViewport() {
-	content := renderEntries(m.entries)
+	content := renderEntries(m.entries, m.viewport.Width, m.markdown)
 	m.viewport.SetContent(content)
 	m.viewport.GotoBottom()
 }
@@ -478,18 +617,8 @@ func (m model) View() string {
 		return "\n"
 	}
 
-	header := titleStyle.Render("太乙智启命令行（CLI）")
-	status := panelStyle.Width(m.contentWidth - 6).Render(strings.Join([]string{
-		row("版本", fallback(m.snapshot.Version, "dev")),
-		row("后端地址", fallback(m.snapshot.BackendURL, "未配置")),
-		row("当前 flow", fallback(m.snapshot.DefaultFlowLabel, "未配置")),
-		row("工作目录", fallback(m.snapshot.Workdir, "当前目录")),
-		row("审批模式", fallback(m.snapshot.ApprovalMode, "confirm")),
-		row("本地会话", fallback(m.snapshot.SessionID, "未建立")),
-		row("进度状态", m.state.label),
-	}, "\n") + "\n\n" + m.renderProgress())
-
-	history := panelStyle.Width(m.contentWidth - 6).Render(m.viewport.View())
+	header := m.renderHeader()
+	history := m.renderHistoryPane()
 	inputTitle := "输入并回车发送"
 	if m.state.hint != "" {
 		inputTitle = m.state.hint
@@ -499,9 +628,12 @@ func (m model) View() string {
 		inputView = hintStyle.Render("当前有未处理的弹层，请先完成操作。")
 	}
 	inputBox := inputStyle.Width(m.contentWidth - 6).Render(labelStyle.Render(inputTitle) + "\n" + inputView)
-	footer := hintStyle.Render("按 Enter 发送，Ctrl+O 打开 flow 选择，PgUp/PgDn 或方向键滚动消息，按 q 退出。")
-
-	content := lipgloss.JoinVertical(lipgloss.Left, header, "", status, "", history, "", inputBox, "", footer)
+	parts := []string{header, history}
+	if m.showProgressLine() {
+		parts = append(parts, m.renderProgressLine())
+	}
+	parts = append(parts, inputBox, m.renderStatusBar())
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	if overlay := m.renderOverlay(); overlay != "" {
 		content = lipgloss.JoinVertical(lipgloss.Left, content, "", overlay)
 	}
@@ -512,13 +644,41 @@ func (m model) View() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, content)
 }
 
-func (m model) renderProgress() string {
-	parts := []string{
-		progressLabelStyle.Render("状态进度"),
-		m.progress.ViewAs(m.state.percent),
-		hintStyle.Render(m.state.hint),
+func (m model) renderHeader() string {
+	flowLabel := fallback(m.snapshot.DefaultFlowLabel, "未配置")
+	left := fmt.Sprintf("太乙智启 CLI  ·  %s", flowLabel)
+	right := fmt.Sprintf("%s  ·  %s", fallback(filepath.Base(m.snapshot.Workdir), "."), fallback(m.snapshot.Version, "dev"))
+	if m.useMinimalChrome() {
+		return headerBarStyle.Width(m.contentWidth).Render(trimForWidth(left, m.contentWidth-2))
 	}
-	return strings.Join(parts, "\n")
+	line := joinStatusSegments([]string{left, right}, "    ")
+	return headerBarStyle.Width(m.contentWidth).Render(trimForWidth(line, m.contentWidth-2))
+}
+
+func (m model) renderHistoryPane() string {
+	width := m.contentWidth - 6
+	if width < 20 {
+		width = m.contentWidth
+	}
+	if m.useMinimalChrome() {
+		return minimalHistoryStyle.Width(width).Render(m.viewport.View())
+	}
+	return historyFrameStyle.Width(width).Render(m.viewport.View())
+}
+
+func (m model) renderProgressLine() string {
+	line := joinStatusSegments([]string{
+		m.state.label,
+		m.progress.ViewAs(m.state.percent),
+		m.state.hint,
+	}, "  ")
+	return inlineProgressStyle.Width(m.contentWidth).Render(trimForWidth(line, m.contentWidth-2))
+}
+
+func (m model) renderStatusBar() string {
+	segments := m.statusBarSegments()
+	text := trimForWidth(joinStatusSegments(segments, " │ "), m.contentWidth-2)
+	return statusBarStyle.Width(m.contentWidth).Render(text)
 }
 
 func (m model) renderOverlay() string {
@@ -544,43 +704,93 @@ func (m model) renderFlowPicker() string {
 	if len(m.flows) == 0 {
 		return "当前没有可选 flow。"
 	}
-	lines := []string{"选择默认 flow", "使用方向键或 j/k 选择，Enter 确认，Esc 取消。", ""}
-	for index, item := range m.flows {
-		line := fmt.Sprintf("%s  %s", flowCursor(index == m.flowCursor), fallback(item.Name, item.Type))
+	filtered := m.filteredFlowIndices()
+	lines := []string{
+		"选择默认 flow",
+		"输入关键词筛选，使用方向键或 j/k 选择，Enter 确认，Esc 取消。",
+		m.flowFilter.View(),
+		fmt.Sprintf("匹配 %d / %d", len(filtered), len(m.flows)),
+		"",
+	}
+	if len(filtered) == 0 {
+		lines = append(lines, hintStyle.Render("没有匹配的 flow，可继续修改搜索关键词。"))
+		return strings.Join(lines, "\n")
+	}
+	for position, index := range filtered {
+		item := m.flows[index]
+		line := fmt.Sprintf("%s  %s", flowCursor(position == m.flowCursor), fallback(item.Name, item.Type))
 		if strings.TrimSpace(item.Type) != "" {
 			line += fmt.Sprintf("  (%s)", item.Type)
 		}
-		if item.ID == m.snapshot.DefaultFlow {
+		if item.ID == m.snapshot.DefaultFlow || item.Name == m.snapshot.DefaultFlow {
 			line += "  [当前]"
 		}
-		if index == m.flowCursor {
+		if position == m.flowCursor {
 			line = selectedFlowStyle.Render(line)
 		}
 		lines = append(lines, line)
-		if description := strings.TrimSpace(item.Description); description != "" && index == m.flowCursor {
+		if description := strings.TrimSpace(item.Description); description != "" && position == m.flowCursor {
 			lines = append(lines, hintStyle.Render(trimText(description, 100)))
 		}
 	}
 	return strings.Join(lines, "\n")
 }
 
-func renderEntries(entries []entry) string {
+func (m model) statusBarSegments() []string {
+	segments := []string{"⚕ " + fallback(m.snapshot.DefaultFlowLabel, "未配置")}
+	if contextSegment := m.contextUsageSegment(); contextSegment != "" {
+		segments = append(segments, contextSegment)
+	}
+	if tokenSegment := m.tokenUsageSegment(); tokenSegment != "" {
+		segments = append(segments, tokenSegment)
+	}
+	if requestSegment := m.requestStatsSegment(); requestSegment != "" {
+		segments = append(segments, requestSegment)
+	}
+	if compressionSegment := m.compressionSegment(); compressionSegment != "" {
+		segments = append(segments, compressionSegment)
+	}
+	if m.useMinimalChrome() {
+		minimal := []string{segments[0]}
+		if len(segments) > 1 {
+			minimal = append(minimal, segments[1:]...)
+		}
+		minimal = append(minimal, "状态 "+m.state.label)
+		return minimal
+	}
+	if strings.TrimSpace(m.snapshot.SessionID) != "" {
+		segments = append(segments, "会话 "+compactSessionID(m.snapshot.SessionID))
+	}
+	segments = append(segments, "审批 "+fallback(m.snapshot.ApprovalMode, "confirm"))
+	segments = append(segments, "状态 "+m.state.label)
+	return segments
+}
+
+func (m model) showProgressLine() bool {
+	return m.state.phase != progressIdle || m.state.phase == progressFailed
+}
+
+func (m model) useMinimalChrome() bool {
+	return m.width > 0 && m.width < 76
+}
+
+func renderEntries(entries []entry, width int, renderer *glamour.TermRenderer) string {
 	if len(entries) == 0 {
 		return hintStyle.Render("还没有消息。")
 	}
 	blocks := make([]string, 0, len(entries))
 	for _, item := range entries {
-		blocks = append(blocks, renderEntry(item))
+		blocks = append(blocks, renderEntry(item, width, renderer))
 	}
 	return strings.Join(blocks, "\n\n")
 }
 
-func renderEntry(item entry) string {
+func renderEntry(item entry, width int, renderer *glamour.TermRenderer) string {
 	switch item.role {
 	case "user":
 		return userStyle.Render("你") + "\n" + valueStyle.Render(item.content)
 	case "assistant":
-		return assistantStyle.Render("助理") + "\n" + assistantStyle.Render(item.content)
+		return assistantStyle.Render("助理") + "\n" + renderMarkdown(item.content, width, renderer)
 	case "error":
 		return errorStyle.Render("错误") + "\n" + errorStyle.Render(item.content)
 	default:
@@ -660,13 +870,241 @@ func (m model) isBusy() bool {
 	}
 }
 
+func (m *model) startRequestStats(input string, runID string) {
+	m.requestStats = RequestMetrics{
+		RunID:      runID,
+		StartedAt:  time.Now(),
+		InputChars: utf8.RuneCountInString(input),
+	}
+}
+
+func (m *model) finishRequestStats() {
+	if m.requestStats.StartedAt.IsZero() || !m.requestStats.CompletedAt.IsZero() {
+		return
+	}
+	m.requestStats.CompletedAt = time.Now()
+}
+
+func (m *model) updateMarkdownRenderer(width int) {
+	if width < 20 {
+		width = 20
+	}
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		m.markdown = nil
+		return
+	}
+	m.markdown = renderer
+}
+
+func (m model) filteredFlowIndices() []int {
+	query := strings.ToLower(strings.TrimSpace(m.flowFilter.Value()))
+	indices := make([]int, 0, len(m.flows))
+	for index, item := range m.flows {
+		if query == "" || flowMatchesQuery(item, query) {
+			indices = append(indices, index)
+		}
+	}
+	return indices
+}
+
+func (m model) currentFilteredFlowCursor() int {
+	filtered := m.filteredFlowIndices()
+	current := currentFlowIndex(m.flows, m.snapshot.DefaultFlow)
+	for position, index := range filtered {
+		if index == current {
+			return position
+		}
+	}
+	return 0
+}
+
+func (m *model) clampFlowCursor() {
+	filtered := m.filteredFlowIndices()
+	if len(filtered) == 0 {
+		m.flowCursor = 0
+		return
+	}
+	if m.flowCursor < 0 {
+		m.flowCursor = 0
+	}
+	if m.flowCursor >= len(filtered) {
+		m.flowCursor = len(filtered) - 1
+	}
+}
+
+func (m model) contextUsageSegment() string {
+	usage := m.requestStats.TokenUsage
+	if usage == nil || usage.ContextWindow == nil || usage.ContextWindow.MaxInputTokens <= 0 {
+		return ""
+	}
+	current := usage.ContextWindow.CurrentRoundInputTokens
+	if current <= 0 {
+		current = usage.ContextWindow.ShortTermContextTokens
+	}
+	maxTokens := usage.ContextWindow.MaxInputTokens
+	if maxTokens <= 0 {
+		return ""
+	}
+	percent := float64(current) / float64(maxTokens) * 100
+	return fmt.Sprintf("上下文 %s/%s %.0f%%", formatCompactInt(current), formatCompactInt(maxTokens), percent)
+}
+
+func (m model) tokenUsageSegment() string {
+	usage := m.requestStats.TokenUsage
+	if usage == nil {
+		return ""
+	}
+	if usage.TotalTokens > 0 {
+		return fmt.Sprintf("Token %s/%s/%s", formatCompactInt(usage.InputTokens), formatCompactInt(usage.OutputTokens), formatCompactInt(usage.TotalTokens))
+	}
+	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+		return fmt.Sprintf("Token %s/%s", formatCompactInt(usage.InputTokens), formatCompactInt(usage.OutputTokens))
+	}
+	return ""
+}
+
+func (m model) requestStatsSegment() string {
+	if m.requestStats.StartedAt.IsZero() {
+		return ""
+	}
+	duration := time.Since(m.requestStats.StartedAt)
+	if !m.requestStats.CompletedAt.IsZero() {
+		duration = m.requestStats.CompletedAt.Sub(m.requestStats.StartedAt)
+	}
+	parts := []string{"请求 " + formatDuration(duration)}
+	if m.requestStats.ChunkCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d 块", m.requestStats.ChunkCount))
+	}
+	if m.requestStats.ToolCallCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d 工具", m.requestStats.ToolCallCount))
+	}
+	if m.requestStats.CommandCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d 命令", m.requestStats.CommandCount))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (m model) compressionSegment() string {
+	compression := m.requestStats.Compression
+	if compression == nil || compression.Count == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("压缩 %d 次 %s→%s", compression.Count, formatCompactInt(compression.BeforeTokens), formatCompactInt(compression.AfterTokens))
+	if compression.CompressionRatio > 0 {
+		line += fmt.Sprintf(" %.0f%%", compression.CompressionRatio*100)
+	}
+	return line
+}
+
 func currentFlowIndex(flows []FlowItem, current string) int {
 	for index, item := range flows {
-		if item.ID == current {
+		if item.ID == current || item.Name == current {
 			return index
 		}
 	}
 	return 0
+}
+
+func compactSessionID(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "未建立"
+	}
+	if len(trimmed) <= 10 {
+		return trimmed
+	}
+	return trimmed[:4] + "…" + trimmed[len(trimmed)-4:]
+}
+
+func joinStatusSegments(parts []string, separator string) string {
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
+		filtered = append(filtered, part)
+	}
+	return strings.Join(filtered, separator)
+}
+
+func renderMarkdown(content string, width int, renderer *glamour.TermRenderer) string {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return ""
+	}
+	if renderer == nil {
+		return assistantStyle.Render(trimmed)
+	}
+	rendered, err := renderer.Render(trimmed)
+	if err != nil {
+		return assistantStyle.Render(trimmed)
+	}
+	return strings.TrimRight(rendered, "\n")
+}
+
+func flowMatchesQuery(item FlowItem, query string) bool {
+	fields := []string{item.Name, item.Type, item.Description, item.ID}
+	for _, field := range fields {
+		if strings.Contains(strings.ToLower(strings.TrimSpace(field)), query) {
+			return true
+		}
+	}
+	return false
+}
+
+func formatCompactInt(value int) string {
+	if value < 1000 {
+		return fmt.Sprintf("%d", value)
+	}
+	if value < 10000 {
+		return fmt.Sprintf("%.1fk", float64(value)/1000)
+	}
+	return fmt.Sprintf("%dk", value/1000)
+}
+
+func formatDuration(duration time.Duration) string {
+	if duration < time.Second {
+		return fmt.Sprintf("%dms", duration.Milliseconds())
+	}
+	if duration < time.Minute {
+		return fmt.Sprintf("%.1fs", duration.Seconds())
+	}
+	minutes := int(duration / time.Minute)
+	seconds := int((duration % time.Minute) / time.Second)
+	return fmt.Sprintf("%dm%02ds", minutes, seconds)
+}
+
+func newRequestRunID() string {
+	raw := make([]byte, 16)
+	if _, err := cryptorand.Read(raw); err != nil {
+		fallback := time.Now().UnixNano()
+		return fmt.Sprintf("run-%d", fallback)
+	}
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
+}
+
+func trimForWidth(text string, width int) string {
+	if width <= 0 {
+		return text
+	}
+	if lipgloss.Width(text) <= width {
+		return text
+	}
+	ellipsis := "..."
+	if width <= lipgloss.Width(ellipsis) {
+		return ellipsis[:width]
+	}
+	trimmed := text
+	for lipgloss.Width(trimmed)+lipgloss.Width(ellipsis) > width && len(trimmed) > 0 {
+		trimmed = trimmed[:len(trimmed)-1]
+	}
+	return trimmed + ellipsis
 }
 
 func flowCursor(selected bool) string {

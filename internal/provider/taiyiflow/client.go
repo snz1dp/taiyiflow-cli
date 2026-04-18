@@ -46,6 +46,30 @@ type flowListResponse struct {
 	Data   []flowItemResponse `json:"data"`
 }
 
+type sessionMessageResponse struct {
+	ID         string         `json:"id"`
+	RunID      string         `json:"run_id"`
+	TokenUsage map[string]any `json:"token_usage"`
+}
+
+type sessionMessagePageResponse struct {
+	Total  int                      `json:"total"`
+	Offset int                      `json:"offset"`
+	Data   []sessionMessageResponse `json:"data"`
+}
+
+type compressionRecordResponse struct {
+	TriggerReason         string  `json:"trigger_reason"`
+	CompressionStrategy   string  `json:"compression_strategy"`
+	TargetType            string  `json:"target_type"`
+	BeforeTokens          int     `json:"before_tokens"`
+	TargetTokens          int     `json:"target_tokens"`
+	AfterTokens           int     `json:"after_tokens"`
+	RemainingTokens       int     `json:"remaining_tokens"`
+	CompressionRatio      float64 `json:"compression_ratio"`
+	ReservedHistoryTokens int     `json:"reserved_history_tokens"`
+}
+
 type streamRequestBody struct {
 	InputValue             string         `json:"input_value,omitempty"`
 	InputType              string         `json:"input_type,omitempty"`
@@ -251,6 +275,97 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 	return stream, streamSession, nil
 }
 
+func (c *Client) GetRunStats(ctx context.Context, flowID string, sessionID string, runID string) (*provider.RunStats, error) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return &provider.RunStats{}, nil
+	}
+
+	stats := &provider.RunStats{RunID: runID}
+
+	if strings.TrimSpace(flowID) != "" && strings.TrimSpace(sessionID) != "" {
+		messageEndpoint := fmt.Sprintf(
+			"%s/api/v1/agents/flows/%s/sessions/%s/messages?orderby=timestamp&offset=0&limit=100",
+			c.baseURL,
+			url.PathEscape(flowID),
+			url.PathEscape(sessionID),
+		)
+		messageRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, messageEndpoint, nil)
+		if err != nil {
+			return nil, fmt.Errorf("创建消息统计请求失败: %w", err)
+		}
+		c.applyAuth(messageRequest)
+
+		messageResponse, err := c.httpClient.Do(messageRequest)
+		if err != nil {
+			return nil, fmt.Errorf("请求消息统计失败: %w", err)
+		}
+		defer messageResponse.Body.Close()
+
+		if messageResponse.StatusCode >= http.StatusBadRequest {
+			return nil, readHTTPError("获取消息统计失败", messageResponse)
+		}
+
+		var messagePayload sessionMessagePageResponse
+		if err := json.NewDecoder(messageResponse.Body).Decode(&messagePayload); err != nil {
+			return nil, fmt.Errorf("解析消息统计响应失败: %w", err)
+		}
+
+		for _, item := range messagePayload.Data {
+			if strings.TrimSpace(item.RunID) != runID {
+				continue
+			}
+			stats.MessageID = item.ID
+			if usage := parseTokenUsage(item.TokenUsage); usage != nil {
+				stats.TokenUsage = usage
+			}
+		}
+	}
+
+	compressionEndpoint := fmt.Sprintf(
+		"%s/api/v1/agents/dialogue/%s/compressions",
+		c.baseURL,
+		url.PathEscape(runID),
+	)
+	compressionRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, compressionEndpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建上下文压缩统计请求失败: %w", err)
+	}
+	c.applyAuth(compressionRequest)
+
+	compressionResponse, err := c.httpClient.Do(compressionRequest)
+	if err != nil {
+		return nil, fmt.Errorf("请求上下文压缩统计失败: %w", err)
+	}
+	defer compressionResponse.Body.Close()
+
+	if compressionResponse.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("获取上下文压缩统计失败", compressionResponse)
+	}
+
+	var compressionPayload []compressionRecordResponse
+	if err := json.NewDecoder(compressionResponse.Body).Decode(&compressionPayload); err != nil {
+		return nil, fmt.Errorf("解析上下文压缩统计响应失败: %w", err)
+	}
+
+	stats.Compressions = make([]provider.CompressionRecord, 0, len(compressionPayload))
+	for _, item := range compressionPayload {
+		stats.Compressions = append(stats.Compressions, provider.CompressionRecord{
+			TriggerReason:         item.TriggerReason,
+			CompressionStrategy:   item.CompressionStrategy,
+			TargetType:            item.TargetType,
+			BeforeTokens:          item.BeforeTokens,
+			TargetTokens:          item.TargetTokens,
+			AfterTokens:           item.AfterTokens,
+			RemainingTokens:       item.RemainingTokens,
+			CompressionRatio:      item.CompressionRatio,
+			ReservedHistoryTokens: item.ReservedHistoryTokens,
+		})
+	}
+
+	return stats, nil
+}
+
 func (c *Client) applyAuth(req *http.Request) {
 	if c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
@@ -357,4 +472,76 @@ func firstNonEmpty(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func parseTokenUsage(payload map[string]any) *provider.TokenUsage {
+	if len(payload) == 0 {
+		return nil
+	}
+
+	usage := &provider.TokenUsage{
+		InputTokens:  intValue(payload["input"]),
+		OutputTokens: intValue(payload["output"]),
+		TotalTokens:  intValue(payload["total"]),
+		StopReason:   stringValue(payload["stop_reason"]),
+		ModelName:    stringValue(payload["model_name"]),
+	}
+
+	if contextWindow, ok := payload["context_window"].(map[string]any); ok {
+		usage.ContextWindow = &provider.ContextWindowUsage{
+			MaxInputTokens:              intValue(contextWindow["max_input_tokens"]),
+			ShortTermContextTokens:      intValue(contextWindow["short_term_context_tokens"]),
+			CurrentRoundInputTokens:     intValue(contextWindow["current_round_input_tokens"]),
+			NextRoundAvailableTokens:    intValue(contextWindow["next_round_available_tokens"]),
+			CurrentRoundAvailableTokens: intValue(contextWindow["current_round_available_tokens"]),
+			HistoryMessageCount:         intValue(contextWindow["history_message_count"]),
+			PreparedMessageCount:        intValue(contextWindow["prepared_message_count"]),
+		}
+	}
+
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.TotalTokens == 0 && usage.StopReason == "" && usage.ModelName == "" && usage.ContextWindow == nil {
+		return nil
+	}
+
+	return usage
+}
+
+func intValue(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int8:
+		return int(typed)
+	case int16:
+		return int(typed)
+	case int32:
+		return int(typed)
+	case int64:
+		return int(typed)
+	case float32:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		parsed, _ := typed.Int64()
+		return int(parsed)
+	case string:
+		parsed, _ := strconv.Atoi(strings.TrimSpace(typed))
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func stringValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case fmt.Stringer:
+		return strings.TrimSpace(typed.String())
+	case nil:
+		return ""
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", typed))
+	}
 }

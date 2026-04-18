@@ -61,6 +61,44 @@ type Metadata struct {
 	IsChat         bool
 }
 
+type ContextWindowUsage struct {
+	MaxInputTokens              int
+	ShortTermContextTokens      int
+	CurrentRoundInputTokens     int
+	NextRoundAvailableTokens    int
+	CurrentRoundAvailableTokens int
+	HistoryMessageCount         int
+	PreparedMessageCount        int
+}
+
+type TokenUsage struct {
+	InputTokens   int
+	OutputTokens  int
+	TotalTokens   int
+	StopReason    string
+	ModelName     string
+	ContextWindow *ContextWindowUsage
+}
+
+type CompressionRecord struct {
+	TriggerReason         string
+	CompressionStrategy   string
+	TargetType            string
+	BeforeTokens          int
+	TargetTokens          int
+	AfterTokens           int
+	RemainingTokens       int
+	CompressionRatio      float64
+	ReservedHistoryTokens int
+}
+
+type RunStats struct {
+	RunID        string
+	MessageID    string
+	TokenUsage   *TokenUsage
+	Compressions []CompressionRecord
+}
+
 type FlowSummary struct {
 	ID          string
 	Name        string
@@ -90,5 +128,6 @@ type Provider interface {
 	ListFlows(ctx context.Context, filter string, agentType string, offset, limit int) (*FlowList, error)
 	GetMetadata(ctx context.Context, flowID string) (*Metadata, error)
 	Stream(ctx context.Context, request StreamRequest) (<-chan StreamEvent, *StreamSession, error)
+	GetRunStats(ctx context.Context, flowID string, sessionID string, runID string) (*RunStats, error)
 	SubmitClientCallResult(ctx context.Context, result ClientCallResult) error
 }
