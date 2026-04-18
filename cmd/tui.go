@@ -22,24 +22,38 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	}
 
 	providerClient := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
-	flowID := strings.TrimSpace(config.DefaultFlow)
-	sessionState, err := a.prepareSession(flowID, false)
+	snapshot, err := a.buildTUISnapshot(ctx, providerClient, config, strings.TrimSpace(config.DefaultFlow))
 	if err != nil {
 		return err
 	}
 
-	welcomeMessage := ""
-	if flowID != "" {
-		metadata, metadataErr := providerClient.GetMetadata(ctx, flowID)
-		if metadataErr == nil {
-			welcomeMessage = metadata.WelcomeMessage
+	flowItems := []tui.FlowItem{}
+	flows, flowErr := providerClient.ListFlows(ctx, "", 0, 100)
+	if flowErr == nil {
+		for _, item := range flows.Items {
+			flowItems = append(flowItems, tui.FlowItem{
+				ID:          item.ID,
+				Name:        item.Name,
+				Description: item.Description,
+				Type:        item.Type,
+			})
 		}
 	}
 
-	runner := func(runCtx context.Context, input string, emit func(tui.Event)) error {
-		currentFlow := strings.TrimSpace(config.DefaultFlow)
+	runner := func(runCtx context.Context, request tui.Request, emit func(tui.Event), confirm func(tui.ConfirmRequest) bool) error {
+		currentFlow := strings.TrimSpace(request.FlowID)
 		if currentFlow == "" {
 			return fmt.Errorf("未配置默认 flow，请先执行 taiyiflow flows use <ID>")
+		}
+
+		localConfig, err := a.configManager.Load()
+		if err != nil {
+			return err
+		}
+
+		sessionState, err := a.prepareSession(currentFlow, false)
+		if err != nil {
+			return err
 		}
 
 		logWriter := &tuiLogWriter{emit: emit}
@@ -48,13 +62,13 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		runtimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), logWriter, logWriter)
 		stream, streamSession, err := providerClient.Stream(runCtx, provider.StreamRequest{
 			FlowID:                 currentFlow,
-			Input:                  input,
+			Input:                  request.Input,
 			InputType:              "any",
 			OutputType:             "any",
 			SessionID:              sessionState.SessionID,
 			RequestType:            "agent",
 			CommandExecutionTarget: "client",
-			ClientMCPServers:       a.runtime.ClientMCPServers(),
+			ClientMCPServers:       runtimeClient.ClientMCPServers(),
 		})
 		if err != nil {
 			return err
@@ -83,18 +97,27 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					emit(tui.Event{Kind: tui.EventSystemNote, Text: "工具调用: " + text})
 				}
 			case provider.EventBuiltIn:
-				if requiresTUICommandConfirmation(config, event.Data) {
-					emit(tui.Event{Kind: tui.EventErrorNote, Text: "TUI 当前不支持交互式命令确认，已拒绝本次客户端命令。可将 approval_mode 设为 auto 或 readonly。"})
-					if err := submitTUIClientCallFailure(runCtx, providerClient, event.Data, "TUI 当前不支持交互式命令确认"); err != nil {
+				if requiresTUICommandConfirmation(localConfig, event.Data) {
+					approved := confirm(buildTUIConfirmRequest(event.Data))
+					if !approved {
+						emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端命令执行。"})
+						if err := submitTUIClientCallFailure(runCtx, providerClient, event.Data, "用户在 TUI 中拒绝执行客户端命令"); err != nil {
+							return err
+						}
+						continue
+					}
+					execConfig := localConfig
+					execConfig.ApprovalMode = "auto"
+					if err := runtimeClient.HandleBuiltInEvent(runCtx, providerClient, execConfig, event.Data); err != nil {
 						return err
 					}
 					continue
 				}
-				if err := runtimeClient.HandleBuiltInEvent(runCtx, providerClient, config, event.Data); err != nil {
+				if err := runtimeClient.HandleBuiltInEvent(runCtx, providerClient, localConfig, event.Data); err != nil {
 					return err
 				}
 			case provider.EventClientTool:
-				if err := runtimeClient.HandleClientToolEvent(runCtx, providerClient, config, event.Data); err != nil {
+				if err := runtimeClient.HandleClientToolEvent(runCtx, providerClient, localConfig, event.Data); err != nil {
 					return err
 				}
 			case provider.EventError:
@@ -107,15 +130,49 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		return nil
 	}
 
-	return tui.Run(ctx, tui.Snapshot{
-		Version:        buildinfo.Version,
-		BackendURL:     config.BackendBaseURL,
-		DefaultFlow:    config.DefaultFlow,
-		Workdir:        config.Workdir,
-		ApprovalMode:   config.ApprovalMode,
-		SessionID:      sessionState.SessionID,
-		WelcomeMessage: welcomeMessage,
-	}, runner)
+	flowChange := func(changeCtx context.Context, flowID string) (tui.Snapshot, error) {
+		updatedConfig, err := a.configManager.Load()
+		if err != nil {
+			return tui.Snapshot{}, err
+		}
+		updatedConfig.DefaultFlow = strings.TrimSpace(flowID)
+		if err := a.configManager.Save(updatedConfig); err != nil {
+			return tui.Snapshot{}, err
+		}
+		return a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, updatedConfig.DefaultFlow)
+	}
+
+	return tui.Run(ctx, snapshot, flowItems, runner, flowChange)
+}
+
+func (a *App) buildTUISnapshot(
+	ctx context.Context,
+	providerClient provider.Provider,
+	config internalconfig.Config,
+	flowID string,
+) (tui.Snapshot, error) {
+	snapshot := tui.Snapshot{
+		Version:      buildinfo.Version,
+		BackendURL:   config.BackendBaseURL,
+		DefaultFlow:  flowID,
+		Workdir:      config.Workdir,
+		ApprovalMode: config.ApprovalMode,
+	}
+	if strings.TrimSpace(flowID) == "" {
+		return snapshot, nil
+	}
+
+	sessionState, err := a.prepareSession(flowID, false)
+	if err != nil {
+		return tui.Snapshot{}, err
+	}
+	snapshot.SessionID = sessionState.SessionID
+
+	metadata, err := providerClient.GetMetadata(ctx, flowID)
+	if err == nil {
+		snapshot.WelcomeMessage = metadata.WelcomeMessage
+	}
+	return snapshot, nil
 }
 
 type tuiLogWriter struct {
@@ -172,6 +229,42 @@ func requiresTUICommandConfirmation(config internalconfig.Config, payload map[st
 		return strings.EqualFold(strings.TrimSpace(text), "true")
 	}
 	return true
+}
+
+func buildTUIConfirmRequest(payload map[string]any) tui.ConfirmRequest {
+	request := tui.ConfirmRequest{
+		Title:   "客户端命令待确认",
+		Command: previewBuiltInCommand(payload),
+		Detail:  "该命令由服务端通过 run_command_via_client 下发，是否允许在本地执行？",
+	}
+	return request
+}
+
+func previewBuiltInCommand(payload map[string]any) string {
+	commandPayload, ok := payload["command"].(map[string]any)
+	if !ok {
+		return "<未知命令>"
+	}
+	arguments, ok := commandPayload["arguments"].(map[string]any)
+	if !ok {
+		return "<未知命令>"
+	}
+	if rawCommand, ok := arguments["raw_command"].(string); ok && strings.TrimSpace(rawCommand) != "" {
+		return strings.TrimSpace(rawCommand)
+	}
+	parts := []string{}
+	if commandName, ok := arguments["command"].(string); ok && strings.TrimSpace(commandName) != "" {
+		parts = append(parts, strings.TrimSpace(commandName))
+	}
+	if rawArgs, ok := arguments["args"].([]any); ok {
+		for _, item := range rawArgs {
+			parts = append(parts, fmt.Sprintf("%v", item))
+		}
+	}
+	if len(parts) == 0 {
+		return "<未知命令>"
+	}
+	return strings.Join(parts, " ")
 }
 
 func submitTUIClientCallFailure(

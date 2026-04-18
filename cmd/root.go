@@ -56,10 +56,12 @@ func NewApp() (*App, error) {
 
 func (a *App) Run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return a.runInteractive(ctx, rootOptions{})
+		return a.runTUI(ctx, nil)
 	}
 
 	switch args[0] {
+	case "cli":
+		return a.runTask(ctx, args[1:])
 	case "config":
 		return a.runConfig(args[1:])
 	case "doctor":
@@ -266,7 +268,8 @@ func (a *App) streamTask(
 
 func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "用法:")
-	fmt.Fprintln(a.stdout, "  taiyiflow [--flow FLOW] [--new] [--continue] [任务描述]")
+	fmt.Fprintln(a.stdout, "  taiyiflow")
+	fmt.Fprintln(a.stdout, "  taiyiflow cli [--flow FLOW] [--new] [--continue] [任务描述]")
 	fmt.Fprintln(a.stdout, "  taiyiflow config [show|init|path|set]")
 	fmt.Fprintln(a.stdout, "  taiyiflow doctor")
 	fmt.Fprintln(a.stdout, "  taiyiflow flows [list|current|use] [参数]")
