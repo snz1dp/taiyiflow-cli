@@ -76,6 +76,37 @@ type ApprovalPickerState struct {
 	Options []ApprovalOption
 }
 
+type ConfigFormValues struct {
+	BackendBaseURL string
+	APIKey         string
+	DefaultFlow    string
+	ApprovalMode   string
+	Workdir        string
+	OutputLanguage string
+}
+
+type ConfigChoice struct {
+	Value       string
+	Label       string
+	Description string
+}
+
+type ConfigFormState struct {
+	Title       string
+	Hint        string
+	Path        string
+	Values      ConfigFormValues
+	HasAPIKey   bool
+	SubmitText  string
+	FlowOptions []ConfigChoice
+}
+
+type ConfigFormSubmission struct {
+	Values      ConfigFormValues
+	KeepAPIKey  bool
+	ClearAPIKey bool
+}
+
 type slashCommand struct {
 	Trigger     string
 	Completion  string
@@ -162,6 +193,10 @@ type LocalCommandResult struct {
 	Events         []Event
 	SessionPicker  *SessionPickerState
 	ApprovalPicker *ApprovalPickerState
+	ConfigForm     *ConfigFormState
+	Snapshot       *Snapshot
+	Flows          []FlowItem
+	RebuildEntries bool
 }
 
 type Runner func(ctx context.Context, request Request, emit func(Event), confirm func(ConfirmRequest) bool) error
@@ -171,6 +206,8 @@ type FlowChangeHandler func(ctx context.Context, flowID string) (Snapshot, error
 type SessionChangeHandler func(ctx context.Context, snapshot Snapshot, sessionID string) (Snapshot, error)
 
 type ApprovalChangeHandler func(ctx context.Context, mode string) (Snapshot, error)
+
+type ConfigFormSubmitHandler func(ctx context.Context, snapshot Snapshot, submission ConfigFormSubmission) (LocalCommandResult, error)
 
 type LocalCommandHandler func(ctx context.Context, command string, snapshot Snapshot) (LocalCommandResult, error)
 
@@ -225,6 +262,11 @@ type approvalChangedMsg struct {
 	err      error
 }
 
+type configFormSavedMsg struct {
+	result LocalCommandResult
+	err    error
+}
+
 type backendRetryTickMsg struct{}
 
 type snapshotRefreshedMsg struct {
@@ -255,41 +297,73 @@ type progressState struct {
 }
 
 type model struct {
-	ctx            context.Context
-	snapshot       Snapshot
-	flows          []FlowItem
-	runner         Runner
-	refreshSnapshot SnapshotRefreshHandler
-	flowChange     FlowChangeHandler
-	sessionChange  SessionChangeHandler
-	approvalChange ApprovalChangeHandler
-	localCommand   LocalCommandHandler
-	eventCh        chan tea.Msg
-	entries        []entry
-	input          textarea.Model
-	flowFilter     textinput.Model
-	viewport       viewport.Model
-	progress       progress.Model
-	markdown       *glamour.TermRenderer
-	state          progressState
-	activityHint   string
-	requestStats   RequestMetrics
-	width          int
-	height         int
-	contentWidth   int
-	ready          bool
-	quitting       bool
-	showFlowPicker bool
-	sessionPicker  *SessionPickerState
-	approvalPicker *ApprovalPickerState
-	flowCursor     int
-	sessionCursor  int
-	approvalCursor int
-	commandCursor  int
-	pendingConfirm *confirmState
-	requestCancel  context.CancelFunc
-	interrupting   bool
+	ctx              context.Context
+	snapshot         Snapshot
+	flows            []FlowItem
+	runner           Runner
+	refreshSnapshot  SnapshotRefreshHandler
+	flowChange       FlowChangeHandler
+	sessionChange    SessionChangeHandler
+	approvalChange   ApprovalChangeHandler
+	configFormSubmit ConfigFormSubmitHandler
+	localCommand     LocalCommandHandler
+	eventCh          chan tea.Msg
+	entries          []entry
+	input            textarea.Model
+	flowFilter       textinput.Model
+	viewport         viewport.Model
+	progress         progress.Model
+	markdown         *glamour.TermRenderer
+	state            progressState
+	activityHint     string
+	requestStats     RequestMetrics
+	width            int
+	height           int
+	contentWidth     int
+	ready            bool
+	quitting         bool
+	showFlowPicker   bool
+	sessionPicker    *SessionPickerState
+	approvalPicker   *ApprovalPickerState
+	configForm       *configFormState
+	flowCursor       int
+	sessionCursor    int
+	approvalCursor   int
+	commandCursor    int
+	pendingConfirm   *confirmState
+	requestCancel    context.CancelFunc
+	interrupting     bool
 }
+
+type configFormState struct {
+	title          string
+	hint           string
+	path           string
+	hasAPIKey      bool
+	submitText     string
+	inputs         []textinput.Model
+	cursor         int
+	flowOptions    []ConfigChoice
+	flowCursor     int
+	flowOpen       bool
+	approvalCursor int
+}
+
+type configFieldSpec struct {
+	label       string
+	placeholder string
+	description string
+}
+
+const (
+	configFieldBackendBaseURL = iota
+	configFieldAPIKey
+	configFieldDefaultFlow
+	configFieldApprovalMode
+	configFieldWorkdir
+	configFieldOutputLanguage
+	configFieldCount
+)
 
 var (
 	titleStyle = lipgloss.NewStyle().
@@ -409,6 +483,7 @@ var (
 
 var slashCommands = []slashCommand{
 	{Trigger: "/agents", Completion: "/agents ", Description: "打开智能体选择，或用 /agents <名称> 直接切换"},
+	{Trigger: "/config", Completion: "/config ", Description: "查看或更新服务端地址、API Key 等配置"},
 	{Trigger: "/mode", Completion: "/mode", Description: "打开命令执行模式选择"},
 	{Trigger: "/new", Completion: "/new", Description: "重置当前智能体的本地会话"},
 	{Trigger: "/session", Completion: "/session", Description: "显示当前会话状态"},
@@ -418,12 +493,12 @@ var slashCommands = []slashCommand{
 	{Trigger: "/exit", Completion: "/exit", Description: "退出当前智能对话"},
 }
 
-func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, refreshSnapshot SnapshotRefreshHandler, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, localCommand LocalCommandHandler) error {
+func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, refreshSnapshot SnapshotRefreshHandler, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, configFormSubmit ConfigFormSubmitHandler, localCommand LocalCommandHandler) error {
 	inputModel := textarea.New()
 	if snapshot.BackendAvailable {
 		inputModel.Placeholder = "输入内容后回车发送"
 	} else {
-		inputModel.Placeholder = "服务端不可用，当前为只读模式，仅支持 /help、/clear、/exit"
+		inputModel.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/help、/clear、/exit"
 	}
 	inputModel.Prompt = "> "
 	inputModel.ShowLineNumbers = false
@@ -446,23 +521,24 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 
 	initialEntries := buildInitialEntries(snapshot)
 	program := tea.NewProgram(model{
-		ctx:            ctx,
-		snapshot:       snapshot,
-		flows:          flows,
-		runner:         runner,
-		refreshSnapshot: refreshSnapshot,
-		flowChange:     flowChange,
-		sessionChange:  sessionChange,
-		approvalChange: approvalChange,
-		localCommand:   localCommand,
-		eventCh:        make(chan tea.Msg),
-		entries:        initialEntries,
-		input:          inputModel,
-		flowFilter:     flowFilterModel,
-		viewport:       viewportModel,
-		progress:       progressModel,
-		state:          newProgressState(progressIdle),
-		flowCursor:     currentFlowIndex(flows, snapshot.DefaultFlow),
+		ctx:              ctx,
+		snapshot:         snapshot,
+		flows:            flows,
+		runner:           runner,
+		refreshSnapshot:  refreshSnapshot,
+		flowChange:       flowChange,
+		sessionChange:    sessionChange,
+		approvalChange:   approvalChange,
+		configFormSubmit: configFormSubmit,
+		localCommand:     localCommand,
+		eventCh:          make(chan tea.Msg),
+		entries:          initialEntries,
+		input:            inputModel,
+		flowFilter:       flowFilterModel,
+		viewport:         viewportModel,
+		progress:         progressModel,
+		state:            newProgressState(progressIdle),
+		flowCursor:       currentFlowIndex(flows, snapshot.DefaultFlow),
 	}, tea.WithAltScreen())
 	finalModel, err := program.Run()
 	if err == nil {
@@ -625,9 +701,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.transitionProgress(progressIdle)
 		}
 		return m, nil
+	case configFormSavedMsg:
+		if typed.err != nil {
+			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
+			m.syncViewport()
+			return m, tea.Batch(m.transitionProgress(progressFailed), textinput.Blink)
+		}
+		m.closeConfigForm()
+		m.applyLocalCommandResult(typed.result)
+		return m, tea.Batch(m.transitionProgress(progressIdle), textinput.Blink)
 	case tea.KeyMsg:
 		if m.pendingConfirm != nil {
 			return m.handleConfirmKey(typed)
+		}
+		if m.configForm != nil {
+			return m.handleConfigFormKey(typed)
 		}
 		if m.approvalPicker != nil {
 			return m.handleApprovalPickerKey(typed)
@@ -842,6 +930,108 @@ func (m model) handleApprovalPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.configForm == nil {
+		return m, nil
+	}
+	if m.configForm.flowOpen {
+		return m.handleConfigFlowDropdownKey(msg)
+	}
+
+	switch msg.String() {
+	case "esc", "q":
+		m.closeConfigForm()
+		return m, nil
+	case "ctrl+c":
+		if activeConfigFormValue(m.configForm) != "" {
+			var cmd tea.Cmd
+			m.configForm.inputs[m.configForm.cursor], cmd = m.configForm.inputs[m.configForm.cursor].Update(msg)
+			m.syncLayout()
+			return m, cmd
+		}
+		m.closeConfigForm()
+		return m, nil
+	case "shift+tab", "up", "k":
+		m.moveConfigFormCursor(-1)
+		return m, nil
+	case "tab", "down", "j":
+		m.moveConfigFormCursor(1)
+		return m, nil
+	case "left", "h":
+		if m.configForm.cursor == configFieldApprovalMode {
+			m.moveConfigApprovalCursor(-1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldDefaultFlow {
+			m.moveConfigFlowCursor(-1)
+			return m, nil
+		}
+	case "right", "l":
+		if m.configForm.cursor == configFieldApprovalMode {
+			m.moveConfigApprovalCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldDefaultFlow {
+			m.moveConfigFlowCursor(1)
+			return m, nil
+		}
+	case "enter":
+		if m.configForm.cursor == configFieldDefaultFlow {
+			m.openConfigFlowDropdown()
+			return m, nil
+		}
+		if m.configForm.cursor < configFieldCount-1 {
+			m.moveConfigFormCursor(1)
+			return m, nil
+		}
+		return m.submitConfigForm()
+	case " ":
+		if m.configForm.cursor == configFieldDefaultFlow {
+			m.openConfigFlowDropdown()
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldApprovalMode {
+			m.moveConfigApprovalCursor(1)
+			return m, nil
+		}
+	case "ctrl+s":
+		return m.submitConfigForm()
+	default:
+		if !isConfigTextField(m.configForm.cursor) {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.configForm.inputs[m.configForm.cursor], cmd = m.configForm.inputs[m.configForm.cursor].Update(msg)
+		m.syncLayout()
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m model) handleConfigFlowDropdownKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.configForm == nil {
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc", "q":
+		m.configForm.flowOpen = false
+		m.syncLayout()
+		return m, nil
+	case "up", "k":
+		m.moveConfigFlowCursor(-1)
+		return m, nil
+	case "down", "j", "tab":
+		m.moveConfigFlowCursor(1)
+		return m, nil
+	case "enter", " ":
+		m.configForm.flowOpen = false
+		m.syncLayout()
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
 func (m model) handleSessionPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.sessionPicker == nil {
 		return m, nil
@@ -1038,7 +1228,7 @@ func (m *model) syncLayout() {
 	if !m.snapshot.BackendAvailable {
 		fixedHeight += 1
 	}
-	if m.pendingConfirm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil {
+	if m.pendingConfirm != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil {
 		fixedHeight += 3
 	}
 	historyHeight := m.height - fixedHeight
@@ -1057,6 +1247,15 @@ func (m *model) syncLayout() {
 	m.flowFilter.Width = minInt(contentWidth-16, 48)
 	if m.flowFilter.Width < 18 {
 		m.flowFilter.Width = 18
+	}
+	if m.configForm != nil {
+		formWidth := minInt(contentWidth-16, 72)
+		if formWidth < 24 {
+			formWidth = 24
+		}
+		for index := range m.configForm.inputs {
+			m.configForm.inputs[index].Width = formWidth
+		}
 	}
 	m.progress.Width = contentWidth - 18
 	if m.progress.Width < 12 {
@@ -1093,7 +1292,7 @@ func (m model) View() string {
 	header := m.renderHeader()
 	history := m.renderHistoryPane()
 	inputView := m.input.View()
-	if m.pendingConfirm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil {
+	if m.pendingConfirm != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil {
 		inputView = hintStyle.Render("当前有未处理的弹层，请先完成操作。")
 	} else if commandHints := m.renderSlashCommandHints(); commandHints != "" {
 		inputView = lipgloss.JoinVertical(lipgloss.Left, inputView, "", commandHints)
@@ -1295,6 +1494,9 @@ func (m model) renderOverlay() string {
 	if m.pendingConfirm != nil {
 		return overlayStyle.Width(minInt(m.contentWidth-6, 90)).Render(m.renderConfirmOverlay())
 	}
+	if m.configForm != nil {
+		return overlayStyle.Width(minInt(m.contentWidth-6, 92)).Render(m.renderConfigForm())
+	}
 	if m.approvalPicker != nil {
 		return overlayStyle.Width(minInt(m.contentWidth-6, 90)).Render(m.renderApprovalPicker())
 	}
@@ -1350,6 +1552,114 @@ func (m model) renderApprovalPicker() string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m model) renderConfigForm() string {
+	if m.configForm == nil {
+		return ""
+	}
+
+	lines := []string{fallback(strings.TrimSpace(m.configForm.title), "配置设置")}
+	if strings.TrimSpace(m.configForm.hint) != "" {
+		lines = append(lines, strings.TrimSpace(m.configForm.hint))
+	}
+	if strings.TrimSpace(m.configForm.path) != "" {
+		lines = append(lines, hintStyle.Render(trimForWidth("配置文件: "+strings.TrimSpace(m.configForm.path), m.contentWidth-14)))
+	}
+	lines = append(lines, "")
+
+	for index, spec := range configFormFieldSpecs(m.configForm.hasAPIKey) {
+		label := spec.label
+		if index == m.configForm.cursor {
+			label = selectedFlowStyle.Render(trimForWidth(label, m.contentWidth-16))
+		} else {
+			label = labelStyle.Render(trimForWidth(label, m.contentWidth-16))
+		}
+		lines = append(lines, label)
+		switch index {
+		case configFieldDefaultFlow:
+			lines = append(lines, m.renderConfigFlowField())
+			if m.configForm.flowOpen {
+				lines = append(lines, m.renderConfigFlowDropdown())
+			}
+		case configFieldApprovalMode:
+			lines = append(lines, m.renderConfigApprovalField())
+		default:
+			lines = append(lines, m.configForm.inputs[index].View())
+		}
+		if strings.TrimSpace(spec.description) != "" {
+			lines = append(lines, hintStyle.Render(trimForWidth(spec.description, m.contentWidth-16)))
+		}
+		lines = append(lines, "")
+	}
+
+	submitText := strings.TrimSpace(m.configForm.submitText)
+	if submitText == "" {
+		submitText = "保存配置"
+	}
+	lines = append(lines,
+		commandHintStyle.Render(submitText+"，Esc 关闭，Tab 切换字段，Enter 下一项，Ctrl+S 保存。"),
+	)
+	return strings.Join(lines, "\n")
+}
+
+func (m model) renderConfigFlowField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	selected := configChoiceLabel(m.configForm.flowOptions, m.configForm.flowCursor, "自动选择")
+	line := fmt.Sprintf("%s  %s", flowCursor(m.configForm.cursor == configFieldDefaultFlow), selected)
+	if m.configForm.flowOpen {
+		line += "  [展开中]"
+	} else {
+		line += "  [Enter 选择]"
+	}
+	if m.configForm.cursor == configFieldDefaultFlow {
+		return selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-16))
+	}
+	return commandHintStyle.Render(trimForWidth(line, m.contentWidth-16))
+}
+
+func (m model) renderConfigFlowDropdown() string {
+	if m.configForm == nil || len(m.configForm.flowOptions) == 0 {
+		return hintStyle.Render("暂无可选智能体。")
+	}
+	lines := []string{hintStyle.Render("选择默认智能体：上下键移动，Enter 确认。")}
+	for index, option := range m.configForm.flowOptions {
+		line := fmt.Sprintf("%s  %s", flowCursor(index == m.configForm.flowCursor), option.Label)
+		if index == m.configForm.flowCursor {
+			lines = append(lines, selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-20)))
+		} else {
+			lines = append(lines, commandHintStyle.Render(trimForWidth(line, m.contentWidth-20)))
+		}
+		if description := strings.TrimSpace(option.Description); description != "" && index == m.configForm.flowCursor {
+			lines = append(lines, hintStyle.Render(trimForWidth(description, m.contentWidth-20)))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m model) renderConfigApprovalField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(configApprovalChoices()))
+	for index, option := range configApprovalChoices() {
+		selected := index == m.configForm.approvalCursor
+		marker := "( )"
+		if selected {
+			marker = "(*)"
+		}
+		item := marker + " " + option.Label
+		if m.configForm.cursor == configFieldApprovalMode && selected {
+			parts = append(parts, selectedFlowStyle.Render(item))
+		} else if selected {
+			parts = append(parts, valueStyle.Render(item))
+		} else {
+			parts = append(parts, commandHintStyle.Render(item))
+		}
+	}
+	return strings.Join(parts, "  ")
 }
 
 func (m model) renderSessionPicker() string {
@@ -1460,7 +1770,7 @@ func buildBackendStatusEntries(snapshot Snapshot) []entry {
 	if reason := strings.TrimSpace(snapshot.BackendStatusReason); reason != "" {
 		message += "\n原因: " + reason
 	}
-	message += "\n可用命令: /help /clear /exit"
+	message += "\n可用命令: /config /help /clear /exit"
 	return []entry{{role: "error", content: message}}
 }
 
@@ -1469,14 +1779,16 @@ func (m model) backendUnavailableMessage() string {
 	if reason := strings.TrimSpace(m.snapshot.BackendStatusReason); reason != "" {
 		message += " 原因: " + reason
 	}
-	message += " 可用命令: /help /clear /exit"
+	message += " 可用命令: /config /help /clear /exit"
 	return message
 }
 
 func isAvailableInReadOnlyMode(input string) bool {
 	trimmed := strings.TrimSpace(strings.ToLower(input))
-	switch trimmed {
-	case "/help", "/clear", "/exit":
+	switch {
+	case trimmed == "/help", trimmed == "/clear", trimmed == "/exit":
+		return true
+	case trimmed == "/config", strings.HasPrefix(trimmed, "/config "):
 		return true
 	default:
 		return false
@@ -1492,9 +1804,9 @@ func backendStatusLabel(snapshot Snapshot) string {
 
 func welcomeCommandsLabel(snapshot Snapshot) string {
 	if snapshot.BackendAvailable {
-		return "/agents /mode /session /new /exit"
+		return "/agents /config /mode /session /new /exit"
 	}
-	return "/help /clear /exit"
+	return "/config /help /clear /exit"
 }
 
 func (m model) useMinimalChrome() bool {
@@ -1622,16 +1934,44 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) {
 		m.activityHint = ""
 		m.requestStats = RequestMetrics{}
 	}
+	if result.ConfigForm != nil {
+		m.configForm = newConfigFormState(*result.ConfigForm)
+		m.approvalPicker = nil
+		m.sessionPicker = nil
+		m.showFlowPicker = false
+		m.flowFilter.Blur()
+		m.input.Blur()
+		m.syncLayout()
+	}
+	if result.Snapshot != nil {
+		m.snapshot = *result.Snapshot
+		m.flows = result.Flows
+		m.flowCursor = currentFlowIndex(m.flows, m.snapshot.DefaultFlow)
+		m.syncInputPlaceholder()
+		if !m.snapshot.BackendAvailable {
+			m.showFlowPicker = false
+			m.sessionPicker = nil
+			m.approvalPicker = nil
+			m.flowFilter.Blur()
+		}
+		if result.RebuildEntries {
+			m.entries = buildInitialEntries(m.snapshot)
+			m.activityHint = ""
+			m.requestStats = RequestMetrics{}
+		}
+	}
 	if result.SessionPicker != nil {
 		m.sessionPicker = result.SessionPicker
 		m.sessionCursor = 0
 		m.approvalPicker = nil
+		m.configForm = nil
 		m.input.Blur()
 	}
 	if result.ApprovalPicker != nil {
 		m.approvalPicker = result.ApprovalPicker
 		m.approvalCursor = 0
 		m.sessionPicker = nil
+		m.configForm = nil
 		m.input.Blur()
 	}
 	for _, event := range result.Events {
@@ -1641,7 +1981,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) {
 }
 
 func (m model) showSlashCommandHints() bool {
-	if m.pendingConfirm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil || m.isBusy() {
+	if m.pendingConfirm != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil || m.isBusy() {
 		return false
 	}
 	trimmed := strings.TrimSpace(m.input.Value())
@@ -1745,6 +2085,16 @@ func changeApprovalModeCmd(ctx context.Context, mode string, handler ApprovalCha
 	}
 }
 
+func submitConfigFormCmd(ctx context.Context, snapshot Snapshot, submission ConfigFormSubmission, handler ConfigFormSubmitHandler) tea.Cmd {
+	if handler == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		result, err := handler(ctx, snapshot, submission)
+		return configFormSavedMsg{result: result, err: err}
+	}
+}
+
 func (m *model) loadSessionPickerPage(page int) tea.Cmd {
 	if m.localCommand == nil {
 		return nil
@@ -1758,10 +2108,255 @@ func (m *model) closeSessionPicker() {
 	m.input.Focus()
 }
 
+func (m *model) closeConfigForm() {
+	m.configForm = nil
+	m.input.Focus()
+	m.syncLayout()
+}
+
 func (m *model) closeApprovalPicker() {
 	m.approvalPicker = nil
 	m.approvalCursor = 0
 	m.input.Focus()
+}
+
+func (m *model) moveConfigFormCursor(delta int) {
+	if m.configForm == nil || len(m.configForm.inputs) == 0 {
+		return
+	}
+	if m.configForm.flowOpen {
+		m.configForm.flowOpen = false
+	}
+	current := m.configForm.cursor
+	if isConfigTextField(current) {
+		m.configForm.inputs[current].Blur()
+	}
+	m.configForm.cursor += delta
+	if m.configForm.cursor < 0 {
+		m.configForm.cursor = len(m.configForm.inputs) - 1
+	} else if m.configForm.cursor >= len(m.configForm.inputs) {
+		m.configForm.cursor = 0
+	}
+	if isConfigTextField(m.configForm.cursor) {
+		m.configForm.inputs[m.configForm.cursor].Focus()
+	}
+	m.syncLayout()
+}
+
+func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
+	if m.configForm == nil {
+		return m, nil
+	}
+	submission := ConfigFormSubmission{Values: configFormValuesFromInputs(m.configForm.inputs)}
+	if m.configForm.flowCursor >= 0 && m.configForm.flowCursor < len(m.configForm.flowOptions) {
+		submission.Values.DefaultFlow = strings.TrimSpace(m.configForm.flowOptions[m.configForm.flowCursor].Value)
+	}
+	approvalChoices := configApprovalChoices()
+	if m.configForm.approvalCursor >= 0 && m.configForm.approvalCursor < len(approvalChoices) {
+		submission.Values.ApprovalMode = strings.TrimSpace(approvalChoices[m.configForm.approvalCursor].Value)
+	}
+	apiKey := strings.TrimSpace(submission.Values.APIKey)
+	if m.configForm.hasAPIKey && apiKey == "" {
+		submission.KeepAPIKey = true
+	}
+	if apiKey == "-" {
+		submission.Values.APIKey = ""
+		submission.ClearAPIKey = true
+		submission.KeepAPIKey = false
+	}
+	return m, tea.Batch(m.transitionProgress(progressExecuting), submitConfigFormCmd(m.ctx, m.snapshot, submission, m.configFormSubmit))
+}
+
+func newConfigFormState(state ConfigFormState) *configFormState {
+	values := state.Values
+	models := make([]textinput.Model, 0, len(configFormFieldSpecs(state.HasAPIKey)))
+	for index, spec := range configFormFieldSpecs(state.HasAPIKey) {
+		input := textinput.New()
+		input.Prompt = ""
+		input.Placeholder = spec.placeholder
+		input.CharLimit = 512
+		input.SetValue(configFormFieldValue(index, values, state.HasAPIKey))
+		if index == 0 {
+			input.Focus()
+		} else {
+			input.Blur()
+		}
+		models = append(models, input)
+	}
+	flowOptions := normalizeConfigFlowChoices(state.FlowOptions, values.DefaultFlow)
+	return &configFormState{
+		title:          state.Title,
+		hint:           state.Hint,
+		path:           state.Path,
+		hasAPIKey:      state.HasAPIKey,
+		submitText:     state.SubmitText,
+		inputs:         models,
+		cursor:         0,
+		flowOptions:    flowOptions,
+		flowCursor:     configChoiceIndex(flowOptions, values.DefaultFlow),
+		approvalCursor: configChoiceIndex(configApprovalChoices(), values.ApprovalMode),
+	}
+}
+
+func configFormFieldSpecs(hasAPIKey bool) []configFieldSpec {
+	apiDescription := "留空表示不修改。"
+	if hasAPIKey {
+		apiDescription = "已配置 API Key。留空表示保持不变，输入 - 表示清空并保存。"
+	}
+	return []configFieldSpec{
+		{label: "服务端地址", placeholder: "http://localhost:7860", description: "必须是完整的 HTTP 或 HTTPS 地址。"},
+		{label: "API Key", placeholder: "可选", description: apiDescription},
+		{label: "默认智能体", placeholder: "", description: "按 Enter 打开下拉列表，留空项表示自动选择。"},
+		{label: "命令执行模式", placeholder: "", description: "左右键或空格切换单选项。"},
+		{label: "工作目录", placeholder: "留空表示当前目录", description: "默认使用当前工作目录。"},
+		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
+	}
+}
+
+func configFormFieldValue(index int, values ConfigFormValues, hasAPIKey bool) string {
+	switch index {
+	case 0:
+		return strings.TrimSpace(values.BackendBaseURL)
+	case 1:
+		if hasAPIKey {
+			return ""
+		}
+		return strings.TrimSpace(values.APIKey)
+	case 2:
+		return ""
+	case 3:
+		return ""
+	case 4:
+		return strings.TrimSpace(values.Workdir)
+	case 5:
+		return strings.TrimSpace(values.OutputLanguage)
+	default:
+		return ""
+	}
+}
+
+func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
+	values := ConfigFormValues{}
+	if len(inputs) > 0 {
+		values.BackendBaseURL = strings.TrimSpace(inputs[0].Value())
+	}
+	if len(inputs) > 1 {
+		values.APIKey = strings.TrimSpace(inputs[1].Value())
+	}
+	if len(inputs) > 4 {
+		values.Workdir = strings.TrimSpace(inputs[4].Value())
+	}
+	if len(inputs) > 5 {
+		values.OutputLanguage = strings.TrimSpace(inputs[5].Value())
+	}
+	return values
+}
+
+func isConfigTextField(index int) bool {
+	switch index {
+	case configFieldBackendBaseURL, configFieldAPIKey, configFieldWorkdir, configFieldOutputLanguage:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *model) openConfigFlowDropdown() {
+	if m.configForm == nil {
+		return
+	}
+	m.configForm.flowOpen = true
+	m.syncLayout()
+}
+
+func (m *model) moveConfigFlowCursor(delta int) {
+	if m.configForm == nil || len(m.configForm.flowOptions) == 0 {
+		return
+	}
+	m.configForm.flowCursor += delta
+	if m.configForm.flowCursor < 0 {
+		m.configForm.flowCursor = len(m.configForm.flowOptions) - 1
+	} else if m.configForm.flowCursor >= len(m.configForm.flowOptions) {
+		m.configForm.flowCursor = 0
+	}
+	m.syncLayout()
+}
+
+func (m *model) moveConfigApprovalCursor(delta int) {
+	choices := configApprovalChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.approvalCursor += delta
+	if m.configForm.approvalCursor < 0 {
+		m.configForm.approvalCursor = len(choices) - 1
+	} else if m.configForm.approvalCursor >= len(choices) {
+		m.configForm.approvalCursor = 0
+	}
+	m.syncLayout()
+}
+
+func normalizeConfigFlowChoices(options []ConfigChoice, currentValue string) []ConfigChoice {
+	choices := []ConfigChoice{{Value: "", Label: "自动选择", Description: "保存为空，启动时自动选择一个可用智能体。"}}
+	seen := map[string]struct{}{"": {}}
+	for _, option := range options {
+		value := strings.TrimSpace(option.Value)
+		label := strings.TrimSpace(option.Label)
+		if value == "" && label == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		if label == "" {
+			label = value
+		}
+		choices = append(choices, ConfigChoice{Value: value, Label: label, Description: strings.TrimSpace(option.Description)})
+		seen[value] = struct{}{}
+	}
+	trimmedCurrent := strings.TrimSpace(currentValue)
+	if trimmedCurrent != "" {
+		if _, ok := seen[trimmedCurrent]; !ok {
+			choices = append(choices, ConfigChoice{Value: trimmedCurrent, Label: trimmedCurrent, Description: "当前配置值，未在已加载智能体列表中命中。"})
+		}
+	}
+	return choices
+}
+
+func configApprovalChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: "confirm", Label: "每次确认", Description: "执行本地命令前逐次确认。"},
+		{Value: "auto", Label: "自动执行", Description: "自动执行本地命令。"},
+		{Value: "readonly", Label: "只读模式", Description: "禁止执行本地命令。"},
+	}
+}
+
+func configChoiceIndex(options []ConfigChoice, value string) int {
+	trimmedValue := strings.TrimSpace(value)
+	for index, option := range options {
+		if strings.TrimSpace(option.Value) == trimmedValue {
+			return index
+		}
+	}
+	return 0
+}
+
+func configChoiceLabel(options []ConfigChoice, index int, fallbackLabel string) string {
+	if index >= 0 && index < len(options) {
+		label := strings.TrimSpace(options[index].Label)
+		if label != "" {
+			return label
+		}
+		return strings.TrimSpace(options[index].Value)
+	}
+	return fallbackLabel
+}
+
+func activeConfigFormValue(form *configFormState) string {
+	if form == nil || form.cursor < 0 || form.cursor >= len(form.inputs) {
+		return ""
+	}
+	return strings.TrimSpace(form.inputs[form.cursor].Value())
 }
 
 func buildInitialEntries(snapshot Snapshot) []entry {
@@ -1837,7 +2432,7 @@ func (m *model) syncInputPlaceholder() {
 		m.input.Placeholder = "输入内容后回车发送"
 		return
 	}
-	m.input.Placeholder = "服务端不可用，当前为只读模式，仅支持 /help、/clear、/exit"
+	m.input.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/help、/clear、/exit"
 }
 
 func (m model) scheduleBackendRetry() tea.Cmd {

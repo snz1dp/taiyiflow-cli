@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
+
+	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 
 	"gopkg.in/yaml.v3"
 )
@@ -29,6 +32,8 @@ func (a *App) runConfig(args []string) error {
 		return nil
 	case "set":
 		return a.setConfig(args[1:])
+	case "unset", "clear":
+		return a.unsetConfig(args[1:])
 	default:
 		return fmt.Errorf("不支持的 config 子命令: %s", args[0])
 	}
@@ -53,35 +58,184 @@ func (a *App) setConfig(args []string) error {
 		return fmt.Errorf("用法: taiyiflow config set <key> <value>")
 	}
 
-	config, err := a.configManager.Load()
-	if err != nil {
+	key := strings.TrimSpace(args[0])
+	value := strings.TrimSpace(strings.Join(args[1:], " "))
+	if _, err := a.updateConfigValue(key, value); err != nil {
 		return err
+	}
+
+	fmt.Fprintf(a.stdout, "已更新配置项 %s\n", normalizeConfigKey(key))
+	return nil
+}
+
+func (a *App) unsetConfig(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("用法: taiyiflow config unset <key>")
 	}
 
 	key := strings.TrimSpace(args[0])
-	value := strings.TrimSpace(strings.Join(args[1:], " "))
-
-	switch key {
-	case "backend_base_url":
-		config.BackendBaseURL = value
-	case "api_key":
-		config.APIKey = value
-	case "default_flow":
-		config.DefaultFlow = value
-	case "approval_mode":
-		config.ApprovalMode = value
-	case "workdir":
-		config.Workdir = value
-	case "output_language":
-		config.OutputLanguage = value
-	default:
-		return fmt.Errorf("不支持的配置项: %s", key)
-	}
-
-	if err := a.configManager.Save(config); err != nil {
+	if _, err := a.clearConfigValue(key); err != nil {
 		return err
 	}
 
-	fmt.Fprintf(a.stdout, "已更新配置项 %s\n", key)
+	fmt.Fprintf(a.stdout, "已清空配置项 %s\n", normalizeConfigKey(key))
 	return nil
+}
+
+func (a *App) updateConfigValue(key string, value string) (internalconfig.Config, error) {
+	config, err := a.configManager.Load()
+	if err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if err := assignConfigValue(&config, key, value); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if err := a.configManager.Save(config); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	return config, nil
+}
+
+func (a *App) clearConfigValue(key string) (internalconfig.Config, error) {
+	config, err := a.configManager.Load()
+	if err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if err := resetConfigValue(&config, key); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if err := a.configManager.Save(config); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	return config, nil
+}
+
+func assignConfigValue(config *internalconfig.Config, key string, value string) error {
+	normalizedKey := normalizeConfigKey(key)
+	trimmedValue := strings.TrimSpace(value)
+
+	switch normalizedKey {
+	case "backend_base_url":
+		normalizedURL, err := normalizeBackendBaseURL(trimmedValue)
+		if err != nil {
+			return err
+		}
+		config.BackendBaseURL = normalizedURL
+	case "api_key":
+		if trimmedValue == "" {
+			return fmt.Errorf("api_key 不能为空，如需清空请使用 taiyiflow config unset api_key")
+		}
+		config.APIKey = trimmedValue
+	case "default_flow":
+		if trimmedValue == "" {
+			return fmt.Errorf("default_flow 不能为空，如需清空请使用 taiyiflow config unset default_flow")
+		}
+		config.DefaultFlow = trimmedValue
+	case "approval_mode":
+		normalizedMode := strings.ToLower(trimmedValue)
+		switch normalizedMode {
+		case "confirm", "auto", "readonly":
+			config.ApprovalMode = normalizedMode
+		default:
+			return fmt.Errorf("approval_mode 仅支持 confirm、auto、readonly")
+		}
+	case "workdir":
+		if trimmedValue == "" {
+			return fmt.Errorf("workdir 不能为空，如需清空请使用 taiyiflow config unset workdir")
+		}
+		config.Workdir = trimmedValue
+	case "output_language":
+		if trimmedValue == "" {
+			return fmt.Errorf("output_language 不能为空，如需重置请使用 taiyiflow config unset output_language")
+		}
+		config.OutputLanguage = trimmedValue
+	default:
+		return fmt.Errorf("不支持的配置项: %s", normalizedKey)
+	}
+
+	return nil
+}
+
+func resetConfigValue(config *internalconfig.Config, key string) error {
+	defaults := internalconfig.Default()
+
+	switch normalizeConfigKey(key) {
+	case "backend_base_url":
+		config.BackendBaseURL = defaults.BackendBaseURL
+	case "api_key":
+		config.APIKey = ""
+	case "default_flow":
+		config.DefaultFlow = ""
+	case "approval_mode":
+		config.ApprovalMode = defaults.ApprovalMode
+	case "workdir":
+		config.Workdir = ""
+	case "output_language":
+		config.OutputLanguage = defaults.OutputLanguage
+	default:
+		return fmt.Errorf("不支持的配置项: %s", normalizeConfigKey(key))
+	}
+
+	return nil
+}
+
+func normalizeConfigKey(key string) string {
+	return strings.ToLower(strings.TrimSpace(key))
+}
+
+func normalizeBackendBaseURL(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", fmt.Errorf("backend_base_url 不能为空")
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil || strings.TrimSpace(parsed.Scheme) == "" || strings.TrimSpace(parsed.Host) == "" {
+		return "", fmt.Errorf("backend_base_url 必须是完整的 HTTP 地址，例如 http://localhost:7860")
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", fmt.Errorf("backend_base_url 仅支持 http 或 https")
+	}
+
+	return strings.TrimRight(trimmed, "/"), nil
+}
+
+func renderConfigSummary(path string, config internalconfig.Config) string {
+	lines := []string{
+		fmt.Sprintf("配置路径: %s", path),
+		fmt.Sprintf("服务端地址: %s", fallbackConfigValue(config.BackendBaseURL, internalconfig.Default().BackendBaseURL)),
+		fmt.Sprintf("API Key: %s", maskConfigSecret(config.APIKey)),
+		fmt.Sprintf("默认智能体: %s", fallbackConfigValue(config.DefaultFlow, "<未配置>")),
+		fmt.Sprintf("命令执行模式: %s", fallbackConfigValue(config.ApprovalMode, internalconfig.Default().ApprovalMode)),
+		fmt.Sprintf("工作目录: %s", fallbackConfigValue(config.Workdir, "<当前目录>")),
+		fmt.Sprintf("输出语言: %s", fallbackConfigValue(config.OutputLanguage, internalconfig.Default().OutputLanguage)),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func maskConfigSecret(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "<未配置>"
+	}
+	if len(trimmed) <= 6 {
+		return "***"
+	}
+	return trimmed[:3] + strings.Repeat("*", len(trimmed)-6) + trimmed[len(trimmed)-3:]
+}
+
+func fallbackConfigValue(value string, defaultValue string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return defaultValue
+	}
+	return trimmed
 }

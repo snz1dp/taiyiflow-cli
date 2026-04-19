@@ -144,7 +144,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	}
 
 	reader := bufio.NewScanner(a.stdin)
-	fmt.Fprintln(a.stdout, "进入交互模式，输入 /exit 退出，输入 /new 新建会话，输入 /sessions 查看本地会话。")
+	fmt.Fprintln(a.stdout, "进入交互模式，输入 /config 管理服务端配置，输入 /exit 退出，输入 /new 新建会话，输入 /sessions 查看本地会话。")
 
 	for {
 		fmt.Fprint(a.stdout, "> ")
@@ -160,32 +160,76 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			continue
 		}
 
-		switch line {
-		case "/exit":
+		switch {
+		case line == "/exit":
 			return nil
-		case "/agents":
+		case line == "/agents":
 			fmt.Fprintln(a.stdout, "请使用 `taiyiflow agents` 查看或切换默认智能体。")
 			continue
-		case "/help":
+		case line == "/help":
 			a.printInteractiveUsage(ctx, providerClient, flowDisplayName, flowID, sessionState)
 			continue
-		case "/clear":
+		case line == "/clear":
 			fmt.Fprint(a.stdout, "\033[H\033[2J")
 			continue
-		case "/session":
+		case line == "/session":
 			a.printSessionStatus(ctx, providerClient, flowDisplayName, flowID, sessionState)
 			continue
-		case "/sessions":
+		case line == "/sessions":
 			if err := a.printSavedSessions(flowID, sessionState.SessionID, workdir); err != nil {
 				return err
 			}
 			continue
-		case "/new":
+		case line == "/new":
 			sessionState = agent.SessionState{FlowID: flowID, Workdir: workdir}
 			if err := a.sessionStore.Delete(flowID, workdir); err != nil {
 				return err
 			}
 			fmt.Fprintln(a.stdout, "已重置本地会话。")
+			continue
+		case line == "/config" || strings.HasPrefix(strings.ToLower(line), "/config "):
+			if err := a.runInteractiveConfigCommand(line); err != nil {
+				fmt.Fprintf(a.stderr, "配置命令执行失败: %v\n", err)
+				continue
+			}
+			if !isMutatingSlashConfigCommand(line) {
+				continue
+			}
+
+			updatedConfig, err := a.configManager.Load()
+			if err != nil {
+				return err
+			}
+			config = updatedConfig
+			providerClient = providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+			workdir = resolveLocalWorkdir(config.Workdir)
+
+			if err := a.ensureBackendAvailable(ctx, providerClient, config.BackendBaseURL); err != nil {
+				flowID = strings.TrimSpace(firstNonEmpty(options.Flow, config.DefaultFlow))
+				flowDisplayName = sanitizeFlowDisplay(flowID)
+				sessionState = agent.SessionState{FlowID: flowID, Workdir: workdir}
+				fmt.Fprintf(a.stderr, "提示: 新配置尚未连通服务端: %v\n", err)
+				continue
+			}
+
+			config, err = a.ensureDefaultFlow(ctx, providerClient, config)
+			if err != nil {
+				fmt.Fprintf(a.stderr, "提示: 刷新默认智能体失败: %v\n", err)
+				continue
+			}
+			flowID, err = resolveFlowID(options.Flow, config.DefaultFlow)
+			if err != nil {
+				fmt.Fprintf(a.stderr, "提示: %v\n", err)
+				continue
+			}
+			flowDisplayName = sanitizeFlowDisplay(flowID)
+			if metadata, err := providerClient.GetMetadata(ctx, flowID); err == nil && strings.TrimSpace(metadata.Name) != "" {
+				flowDisplayName = metadata.Name
+			}
+			sessionState, err = a.prepareSession(flowID, false, workdir)
+			if err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -306,7 +350,7 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "用法:")
 	fmt.Fprintln(a.stdout, "  taiyiflow")
 	fmt.Fprintln(a.stdout, "  taiyiflow task [--agent AGENT] [--new] [--continue] [任务描述]")
-	fmt.Fprintln(a.stdout, "  taiyiflow config [show|init|path|set]")
+	fmt.Fprintln(a.stdout, "  taiyiflow config [show|init|path|set|unset]")
 	fmt.Fprintln(a.stdout, "  taiyiflow doctor")
 	fmt.Fprintln(a.stdout, "  taiyiflow agents [list|current|use] [参数]")
 	fmt.Fprintln(a.stdout, "  taiyiflow version")
@@ -316,6 +360,7 @@ func (a *App) printRootUsage() {
 func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider.Provider, flowDisplayName string, flowID string, sessionState agent.SessionState) {
 	fmt.Fprintln(a.stdout, "会话内命令:")
 	fmt.Fprintln(a.stdout, "  /agents   显示智能体切换说明")
+	fmt.Fprintln(a.stdout, "  /config   查看或更新服务端配置")
 	fmt.Fprintln(a.stdout, "  /help     显示帮助")
 	fmt.Fprintln(a.stdout, "  /session  显示当前会话状态")
 	fmt.Fprintln(a.stdout, "  /sessions 显示本地已保存会话")
@@ -392,6 +437,35 @@ func firstNonEmpty(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func (a *App) runInteractiveConfigCommand(command string) error {
+	return a.runConfig(parseSlashConfigArgs(command))
+}
+
+func parseSlashConfigArgs(command string) []string {
+	trimmed := strings.TrimSpace(command)
+	if !strings.HasPrefix(strings.ToLower(trimmed), "/config") {
+		return nil
+	}
+	remainder := strings.TrimSpace(trimmed[len("/config"):])
+	if remainder == "" {
+		return nil
+	}
+	return strings.Fields(remainder)
+}
+
+func isMutatingSlashConfigCommand(command string) bool {
+	args := parseSlashConfigArgs(command)
+	if len(args) == 0 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(args[0])) {
+	case "init", "set", "unset", "clear":
+		return true
+	default:
+		return false
+	}
 }
 
 func lookupSessionTitle(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string) (string, error) {

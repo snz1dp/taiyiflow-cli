@@ -242,6 +242,26 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		return a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, updatedConfig.DefaultFlow, backendStatus{Available: true})
 	}
 
+	configFormSubmit := func(changeCtx context.Context, snapshot tui.Snapshot, submission tui.ConfigFormSubmission) (tui.LocalCommandResult, error) {
+		updatedConfig, err := a.applyConfigFormSubmission(submission)
+		if err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+
+		updatedSnapshot, updatedFlows, err := refreshSnapshot(changeCtx, snapshot)
+		if err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+
+		return tui.LocalCommandResult{
+			Handled:        true,
+			Snapshot:       &updatedSnapshot,
+			Flows:          updatedFlows,
+			RebuildEntries: true,
+			Events:         []tui.Event{{Kind: tui.EventSystemNote, Text: fmt.Sprintf("已更新配置\n%s", renderConfigSummary(a.configManager.Path(), updatedConfig))}},
+		}, nil
+	}
+
 	localCommand := func(commandCtx context.Context, command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
 		trimmed := strings.TrimSpace(command)
 		switch {
@@ -249,6 +269,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			helpLines := []string{
 				"可用命令:",
 				"/agents 或 /agents <名称> 选择智能体",
+				"/config 打开服务端配置弹窗",
 				"!<shell 命令> 在当前目录执行本地命令",
 				"/mode 打开命令执行模式选择",
 				"/session 查看当前会话",
@@ -266,6 +287,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					"当前处于只读模式。",
 					"原因: " + reason,
 					"可用命令:",
+					"/config 打开当前配置弹窗",
 					"/help 查看当前提示",
 					"/clear 清空当前界面消息",
 					"/exit 退出",
@@ -275,6 +297,14 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				Handled: true,
 				Events:  []tui.Event{{Kind: tui.EventSystemNote, Text: strings.Join(helpLines, "\n")}},
 			}, nil
+		case trimmed == "/config" || strings.EqualFold(trimmed, "/config show"):
+			formState, err := a.buildTUIConfigFormState(commandCtx, providerClient, snapshot)
+			if err != nil {
+				return tui.LocalCommandResult{}, err
+			}
+			return tui.LocalCommandResult{Handled: true, ConfigForm: formState}, nil
+		case strings.HasPrefix(strings.ToLower(trimmed), "/config "):
+			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "TUI 中请直接输入 /config 打开弹窗表单。"}}}, nil
 		case trimmed == "/mode":
 			return tui.LocalCommandResult{Handled: true, ApprovalPicker: buildApprovalPicker(snapshot)}, nil
 		case trimmed == "!":
@@ -386,7 +416,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}
 	}
 
-	return tui.Run(ctx, snapshot, flowItems, runner, refreshSnapshot, flowChange, sessionChange, approvalChange, localCommand)
+	return tui.Run(ctx, snapshot, flowItems, runner, refreshSnapshot, flowChange, sessionChange, approvalChange, configFormSubmit, localCommand)
 }
 
 func (a *App) buildTUISnapshot(
@@ -734,6 +764,106 @@ func parseSessionsPage(command string) (int, error) {
 		return 0, fmt.Errorf("/sessions 页码必须是大于等于 1 的数字")
 	}
 	return page, nil
+}
+
+func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provider.Provider, snapshot tui.Snapshot) (*tui.ConfigFormState, error) {
+	config, err := a.configManager.Load()
+	if err != nil {
+		return nil, err
+	}
+
+	flowOptions := []tui.ConfigChoice{}
+	if snapshot.BackendAvailable && providerClient != nil {
+		flows, flowErr := providerClient.ListFlows(ctx, "", "chat", 0, 100)
+		if flowErr == nil && flows != nil {
+			for _, item := range flows.Items {
+				value := strings.TrimSpace(item.ID)
+				if value == "" {
+					value = strings.TrimSpace(item.Name)
+				}
+				if value == "" {
+					continue
+				}
+				label := strings.TrimSpace(item.Name)
+				if label == "" {
+					label = value
+				}
+				flowOptions = append(flowOptions, tui.ConfigChoice{
+					Value:       value,
+					Label:       label,
+					Description: strings.TrimSpace(item.Description),
+				})
+			}
+		}
+	}
+
+	return &tui.ConfigFormState{
+		Title:       "配置服务端连接",
+		Hint:        "修改服务端地址、鉴权和运行默认项。保存后会立即刷新连接状态。",
+		Path:        a.configManager.Path(),
+		HasAPIKey:   strings.TrimSpace(config.APIKey) != "",
+		SubmitText:  "Ctrl+S 保存配置",
+		FlowOptions: flowOptions,
+		Values: tui.ConfigFormValues{
+			BackendBaseURL: strings.TrimSpace(config.BackendBaseURL),
+			DefaultFlow:    strings.TrimSpace(config.DefaultFlow),
+			ApprovalMode:   strings.TrimSpace(config.ApprovalMode),
+			Workdir:        strings.TrimSpace(config.Workdir),
+			OutputLanguage: strings.TrimSpace(config.OutputLanguage),
+		},
+	}, nil
+}
+
+func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (internalconfig.Config, error) {
+	config, err := a.configManager.Load()
+	if err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if err := assignConfigValue(&config, "backend_base_url", submission.Values.BackendBaseURL); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if submission.ClearAPIKey {
+		config.APIKey = ""
+	} else if !submission.KeepAPIKey {
+		trimmedAPIKey := strings.TrimSpace(submission.Values.APIKey)
+		if trimmedAPIKey != "" {
+			if err := assignConfigValue(&config, "api_key", trimmedAPIKey); err != nil {
+				return internalconfig.Config{}, err
+			}
+		}
+	}
+
+	if strings.TrimSpace(submission.Values.DefaultFlow) == "" {
+		config.DefaultFlow = ""
+	} else if err := assignConfigValue(&config, "default_flow", submission.Values.DefaultFlow); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if strings.TrimSpace(submission.Values.ApprovalMode) == "" {
+		config.ApprovalMode = internalconfig.Default().ApprovalMode
+	} else if err := assignConfigValue(&config, "approval_mode", submission.Values.ApprovalMode); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if strings.TrimSpace(submission.Values.Workdir) == "" {
+		config.Workdir = ""
+	} else if err := assignConfigValue(&config, "workdir", submission.Values.Workdir); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if strings.TrimSpace(submission.Values.OutputLanguage) == "" {
+		config.OutputLanguage = internalconfig.Default().OutputLanguage
+	} else if err := assignConfigValue(&config, "output_language", submission.Values.OutputLanguage); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if err := a.configManager.Save(config); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	return config, nil
 }
 
 func totalPages(total int, pageSize int) int {
