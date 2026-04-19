@@ -121,8 +121,9 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	if err != nil {
 		return err
 	}
+	workdir := resolveLocalWorkdir(config.Workdir)
 
-	sessionState, err := a.prepareSession(flowID, options.NewSession)
+	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir)
 	if err != nil {
 		return err
 	}
@@ -172,13 +173,13 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			a.printSessionStatus(ctx, providerClient, flowDisplayName, flowID, sessionState)
 			continue
 		case "/sessions":
-			if err := a.printSavedSessions(flowID, sessionState.SessionID); err != nil {
+			if err := a.printSavedSessions(flowID, sessionState.SessionID, workdir); err != nil {
 				return err
 			}
 			continue
 		case "/new":
-			sessionState = agent.SessionState{FlowID: flowID}
-			if err := a.sessionStore.Delete(flowID); err != nil {
+			sessionState = agent.SessionState{FlowID: flowID, Workdir: workdir}
+			if err := a.sessionStore.Delete(flowID, workdir); err != nil {
 				return err
 			}
 			fmt.Fprintln(a.stdout, "已重置本地会话。")
@@ -209,8 +210,9 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	if err != nil {
 		return err
 	}
+	workdir := resolveLocalWorkdir(config.Workdir)
 
-	sessionState, err := a.prepareSession(flowID, options.NewSession)
+	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir)
 	if err != nil {
 		return err
 	}
@@ -219,14 +221,15 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	return err
 }
 
-func (a *App) prepareSession(flowID string, newSession bool) (agent.SessionState, error) {
+func (a *App) prepareSession(flowID string, newSession bool, workdir string) (agent.SessionState, error) {
+	resolvedWorkdir := resolveLocalWorkdir(workdir)
 	if newSession {
-		if err := a.sessionStore.Delete(flowID); err != nil {
+		if err := a.sessionStore.Delete(flowID, resolvedWorkdir); err != nil {
 			return agent.SessionState{}, err
 		}
-		return agent.SessionState{FlowID: flowID}, nil
+		return agent.SessionState{FlowID: flowID, Workdir: resolvedWorkdir}, nil
 	}
-	return a.sessionStore.Load(flowID)
+	return a.sessionStore.Load(flowID, resolvedWorkdir)
 }
 
 func (a *App) streamTask(
@@ -254,6 +257,7 @@ func (a *App) streamTask(
 	if streamSession != nil && streamSession.SessionID != "" {
 		sessionState.SessionID = streamSession.SessionID
 		sessionState.FlowID = flowID
+		sessionState.Workdir = resolveLocalWorkdir(config.Workdir)
 		if err := a.sessionStore.Save(sessionState); err != nil {
 			return sessionState, err
 		}
@@ -330,7 +334,7 @@ func (a *App) printSessionStatus(ctx context.Context, providerClient provider.Pr
 	fmt.Fprintf(a.stdout, "当前会话: %s\n", sessionState.SessionID)
 }
 
-func (a *App) printSavedSessions(currentFlowID string, currentSessionID string) error {
+func (a *App) printSavedSessions(currentFlowID string, currentSessionID string, currentWorkdir string) error {
 	states, err := a.sessionStore.List()
 	if err != nil {
 		return err
@@ -340,6 +344,7 @@ func (a *App) printSavedSessions(currentFlowID string, currentSessionID string) 
 		return nil
 	}
 
+	resolvedWorkdir := resolveLocalWorkdir(currentWorkdir)
 	fmt.Fprintln(a.stdout, "本地已保存会话:")
 	for _, state := range states {
 		line := fmt.Sprintf("- %s", sanitizeFlowDisplay(state.FlowID))
@@ -348,11 +353,17 @@ func (a *App) printSavedSessions(currentFlowID string, currentSessionID string) 
 		} else {
 			line += " | 会话 <未建立>"
 		}
+		if strings.TrimSpace(state.Workdir) != "" {
+			line += fmt.Sprintf(" | 目录 %s", state.Workdir)
+		}
 		if !state.UpdatedAt.IsZero() {
 			line += fmt.Sprintf(" | 更新时间 %s", state.UpdatedAt.Format("2006-01-02 15:04:05"))
 		}
 		if state.FlowID == currentFlowID {
 			line += " | 当前智能体"
+		}
+		if strings.TrimSpace(state.Workdir) != "" && state.Workdir == resolvedWorkdir {
+			line += " | 当前目录"
 		}
 		if strings.TrimSpace(currentSessionID) != "" && state.SessionID == currentSessionID {
 			line += " | 当前会话"

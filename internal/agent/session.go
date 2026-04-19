@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"crypto/sha1"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 type SessionState struct {
 	FlowID    string    `json:"flow_id"`
 	SessionID string    `json:"session_id"`
+	Workdir   string    `json:"workdir,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -31,11 +33,12 @@ func NewSessionStore() (*SessionStore, error) {
 	return &SessionStore{rootDir: filepath.Join(rootDir, "sessions")}, nil
 }
 
-func (s *SessionStore) Load(flowID string) (SessionState, error) {
-	content, err := os.ReadFile(s.filePath(flowID))
+func (s *SessionStore) Load(flowID string, workdir string) (SessionState, error) {
+	normalizedWorkdir := normalizeWorkdir(workdir)
+	content, err := os.ReadFile(s.filePath(flowID, normalizedWorkdir))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return SessionState{FlowID: flowID}, nil
+			return SessionState{FlowID: flowID, Workdir: normalizedWorkdir}, nil
 		}
 		return SessionState{}, fmt.Errorf("读取会话失败: %w", err)
 	}
@@ -47,6 +50,9 @@ func (s *SessionStore) Load(flowID string) (SessionState, error) {
 	if state.FlowID == "" {
 		state.FlowID = flowID
 	}
+	if strings.TrimSpace(state.Workdir) == "" {
+		state.Workdir = normalizedWorkdir
+	}
 	return state, nil
 }
 
@@ -54,6 +60,7 @@ func (s *SessionStore) Save(state SessionState) error {
 	if state.FlowID == "" {
 		return errors.New("flow_id 不能为空")
 	}
+	state.Workdir = normalizeWorkdir(state.Workdir)
 	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
 		return fmt.Errorf("创建会话目录失败: %w", err)
 	}
@@ -62,14 +69,14 @@ func (s *SessionStore) Save(state SessionState) error {
 	if err != nil {
 		return fmt.Errorf("序列化会话失败: %w", err)
 	}
-	if err := os.WriteFile(s.filePath(state.FlowID), content, 0o644); err != nil {
+	if err := os.WriteFile(s.filePath(state.FlowID, state.Workdir), content, 0o644); err != nil {
 		return fmt.Errorf("写入会话失败: %w", err)
 	}
 	return nil
 }
 
-func (s *SessionStore) Delete(flowID string) error {
-	err := os.Remove(s.filePath(flowID))
+func (s *SessionStore) Delete(flowID string, workdir string) error {
+	err := os.Remove(s.filePath(flowID, normalizeWorkdir(workdir)))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("删除会话失败: %w", err)
 	}
@@ -113,7 +120,29 @@ func (s *SessionStore) List() ([]SessionState, error) {
 	return states, nil
 }
 
-func (s *SessionStore) filePath(flowID string) string {
+func (s *SessionStore) filePath(flowID string, workdir string) string {
+	workdirHash := sha1.Sum([]byte(normalizeWorkdir(workdir)))
 	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_")
-	return filepath.Join(s.rootDir, replacer.Replace(flowID)+".json")
+	fileName := fmt.Sprintf("%s-%x.json", replacer.Replace(flowID), workdirHash[:6])
+	return filepath.Join(s.rootDir, fileName)
+}
+
+func normalizeWorkdir(workdir string) string {
+	trimmed := strings.TrimSpace(workdir)
+	if trimmed == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "."
+		}
+		trimmed = cwd
+	}
+	absPath, err := filepath.Abs(trimmed)
+	if err != nil {
+		return trimmed
+	}
+	resolvedPath, err := filepath.EvalSymlinks(absPath)
+	if err == nil && strings.TrimSpace(resolvedPath) != "" {
+		return resolvedPath
+	}
+	return absPath
 }

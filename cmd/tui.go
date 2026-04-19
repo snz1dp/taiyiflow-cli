@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +32,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	workdir := resolveLocalWorkdir(config.Workdir)
 	snapshot, err := a.buildTUISnapshot(ctx, providerClient, config, strings.TrimSpace(config.DefaultFlow))
 	if err != nil {
 		return err
@@ -54,7 +57,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			return fmt.Errorf("未配置默认智能体，请先执行 taiyiflow agents use <名称>")
 		}
 
-		sessionState, err := a.prepareSession(currentFlow, false)
+		sessionState, err := a.prepareSession(currentFlow, false, workdir)
 		if err != nil {
 			return err
 		}
@@ -82,6 +85,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if streamSession != nil && strings.TrimSpace(streamSession.SessionID) != "" {
 			sessionState.SessionID = streamSession.SessionID
 			sessionState.FlowID = currentFlow
+			sessionState.Workdir = workdir
 			if err := a.sessionStore.Save(sessionState); err != nil {
 				return err
 			}
@@ -110,7 +114,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					approved := confirm(buildTUIConfirmRequest(event.Data))
 					if !approved {
 						emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端命令执行。"})
-						if err := submitTUIClientCallFailure(runCtx, providerClient, event.Data, "用户在 TUI 中拒绝执行客户端命令"); err != nil {
+						if err := submitTUIClientCallFailure(runCtx, providerClient, event.Data, "用户拒绝执行客户端命令"); err != nil {
 							return err
 						}
 						continue
@@ -168,7 +172,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if flowID == "" {
 			return tui.Snapshot{}, fmt.Errorf("当前未选择智能体，无法切换会话")
 		}
-		if err := a.sessionStore.Save(agent.SessionState{FlowID: flowID, SessionID: strings.TrimSpace(sessionID)}); err != nil {
+		if err := a.sessionStore.Save(agent.SessionState{FlowID: flowID, SessionID: strings.TrimSpace(sessionID), Workdir: current.Workdir}); err != nil {
 			return tui.Snapshot{}, err
 		}
 		updatedConfig, err := a.configManager.Load()
@@ -226,8 +230,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if err != nil {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
 			}
-			_ = result
-			return tui.LocalCommandResult{Handled: true}, nil
+			return tui.LocalCommandResult{Handled: true, Events: buildLocalShellCommandEvents(result)}, nil
 		case trimmed == "/clear":
 			return tui.LocalCommandResult{Handled: true, ClearHistory: true}, nil
 		case trimmed == "/session":
@@ -305,7 +308,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if strings.TrimSpace(snapshot.DefaultFlow) == "" {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "当前未选择默认智能体，无法重置会话。"}}}, nil
 			}
-			if err := a.sessionStore.Delete(snapshot.DefaultFlow); err != nil {
+			if err := a.sessionStore.Delete(snapshot.DefaultFlow, snapshot.Workdir); err != nil {
 				return tui.LocalCommandResult{}, err
 			}
 			return tui.LocalCommandResult{
@@ -334,7 +337,7 @@ func (a *App) buildTUISnapshot(
 		BackendURL:       config.BackendBaseURL,
 		DefaultFlow:      flowID,
 		DefaultFlowLabel: sanitizeFlowDisplay(flowID),
-		Workdir:          config.Workdir,
+		Workdir:          resolveLocalWorkdir(config.Workdir),
 		ApprovalMode:     config.ApprovalMode,
 	}
 	if versionInfo, err := providerClient.GetVersionInfo(ctx); err == nil && versionInfo != nil {
@@ -345,7 +348,7 @@ func (a *App) buildTUISnapshot(
 		return snapshot, nil
 	}
 
-	sessionState, err := a.prepareSession(flowID, false)
+	sessionState, err := a.prepareSession(flowID, false, snapshot.Workdir)
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
@@ -366,6 +369,50 @@ func (a *App) buildTUISnapshot(
 		}
 	}
 	return snapshot, nil
+}
+
+func buildLocalShellCommandEvents(result map[string]any) []tui.Event {
+	events := []tui.Event{}
+	if stdout, ok := result["stdout"].(string); ok {
+		stdout = strings.TrimRight(stdout, "\n")
+		if stdout != "" {
+			events = append(events, tui.Event{Kind: tui.EventSystemNote, Text: stdout})
+		}
+	}
+	if stderr, ok := result["stderr"].(string); ok {
+		stderr = strings.TrimRight(stderr, "\n")
+		if stderr != "" {
+			events = append(events, tui.Event{Kind: tui.EventErrorNote, Text: stderr})
+		}
+	}
+	return events
+}
+
+func resolveLocalWorkdir(configured string) string {
+	base := strings.TrimSpace(configured)
+	if base == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "."
+		}
+		base = cwd
+	}
+
+	absPath, err := filepath.Abs(base)
+	if err != nil {
+		return base
+	}
+
+	resolvedPath, err := filepath.EvalSymlinks(absPath)
+	if err == nil && strings.TrimSpace(resolvedPath) != "" {
+		absPath = resolvedPath
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil || !info.IsDir() {
+		return absPath
+	}
+	return absPath
 }
 
 func loadRecentSessionHistory(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string) []tui.HistoryEntry {
@@ -521,7 +568,7 @@ func submitTUIClientCallFailure(
 		ErrorMessage: errorMessage,
 	}
 	if result.FlowID == "" || result.RunID == "" || result.CallID == "" {
-		return fmt.Errorf("TUI 模式下客户端回调缺少关键字段")
+		return fmt.Errorf("客户端回调缺少关键字段")
 	}
 	return providerClient.SubmitClientCallResult(ctx, result)
 }

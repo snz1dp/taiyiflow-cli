@@ -396,7 +396,7 @@ var slashCommands = []slashCommand{
 	{Trigger: "/sessions", Completion: "/sessions ", Description: "列出当前智能体的服务端会话，可附页码"},
 	{Trigger: "/help", Completion: "/help", Description: "显示可用命令帮助"},
 	{Trigger: "/clear", Completion: "/clear", Description: "清空当前界面消息"},
-	{Trigger: "/exit", Completion: "/exit", Description: "退出当前 TUI 会话"},
+	{Trigger: "/exit", Completion: "/exit", Description: "退出当前智能对话"},
 }
 
 func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, localCommand LocalCommandHandler) error {
@@ -1047,26 +1047,101 @@ func (m model) View() string {
 func (m model) renderHeader() string {
 	flowLabel := fallback(m.snapshot.DefaultFlowLabel, "未配置")
 	clientVersion := fallback(m.snapshot.Version, "0.1.0")
-	serverVersion := m.serverVersionLabel()
+	serverVersion := formatHeaderServerVersion(m.serverVersionLabel())
+	sessionTitle := strings.TrimSpace(m.snapshot.SessionTitle)
+	if sessionTitle == "" {
+		sessionTitle = fallback(m.snapshot.SessionID, "<未建立会话>")
+	}
 	workdir := fallback(strings.TrimSpace(m.snapshot.Workdir), ".")
-	workdirWidth := maxInt(18, m.contentWidth/2)
-	headline := joinStatusSegments([]string{
-		"太乙智启 CLI v" + clientVersion,
+	flowLabelDisplay := trimForWidth(flowLabel, maxInt(8, m.contentWidth/6))
+	versionLine := joinStatusSegments([]string{
+		"CLI v" + clientVersion,
 		serverVersion,
 	}, "  ·  ")
-	contextLine := joinStatusSegments([]string{
-		" " + flowLabel,
-		" " + trimLeftForWidth(workdir, workdirWidth),
-	}, "  ·  ")
+	contentWidth := maxInt(18, m.contentWidth-2)
+	workdirWidth := maxInt(24, contentWidth/2)
+	workdirDisplay := trimLeftForWidth(workdir, workdirWidth)
 	if m.useMinimalChrome() {
 		lines := []string{
-			trimForWidth(headline, m.contentWidth-2),
-			trimForWidth(contextLine, m.contentWidth-2),
+			trimForWidth(sessionTitle, contentWidth),
+			trimForWidth(versionLine, contentWidth),
+			trimForWidth(flowLabelDisplay, contentWidth),
+			trimLeftForWidth(workdir, contentWidth),
 		}
 		return headerBarStyle.Width(m.contentWidth).Render(strings.Join(lines, "\n"))
 	}
-	line := joinStatusSegments([]string{headline, contextLine}, "  |  ")
-	return headerBarStyle.Width(m.contentWidth).Render(trimForWidth(line, m.contentWidth-2))
+	line1 := renderHeaderLine(sessionTitle, flowLabelDisplay, contentWidth, false)
+	line2 := renderHeaderLine(workdirDisplay, versionLine, contentWidth, true)
+	return headerBarStyle.Width(m.contentWidth).Render(strings.Join([]string{line1, line2}, "\n"))
+}
+
+func renderHeaderLine(left string, right string, width int, preferRight bool) string {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if width <= 0 {
+		return ""
+	}
+	if left == "" {
+		return trimForWidth(right, width)
+	}
+	if right == "" {
+		return trimForWidth(left, width)
+	}
+
+	gapWidth := 2
+	available := width - gapWidth
+	if available <= 0 {
+		return trimForWidth(left+" "+right, width)
+	}
+
+	rightWidth := lipgloss.Width(right)
+	if preferRight {
+		maxRightWidth := available - 12
+		if maxRightWidth < 18 {
+			maxRightWidth = available
+		}
+		if rightWidth > maxRightWidth {
+			rightWidth = maxRightWidth
+		}
+	} else {
+		maxRightWidth := maxInt(18, available/3)
+		if maxRightWidth > available {
+			maxRightWidth = available
+		}
+		if rightWidth > maxRightWidth {
+			rightWidth = maxRightWidth
+		}
+	}
+
+	rightRendered := trimForWidth(right, rightWidth)
+	leftWidth := available - lipgloss.Width(rightRendered)
+	if leftWidth < 0 {
+		leftWidth = 0
+	}
+	leftRendered := ""
+	if leftWidth > 0 {
+		leftRendered = trimLeftForWidth(left, leftWidth)
+	}
+	if strings.TrimSpace(leftRendered) == "" {
+		return trimForWidth(rightRendered, width)
+	}
+
+	spaces := width - lipgloss.Width(leftRendered) - lipgloss.Width(rightRendered)
+	if spaces < gapWidth {
+		spaces = gapWidth
+	}
+	return leftRendered + strings.Repeat(" ", spaces) + rightRendered
+}
+
+func formatHeaderServerVersion(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "服务端 未知"
+	}
+	if strings.Contains(trimmed, "服务") {
+		return trimmed
+	}
+	return "服务端 " + trimmed
 }
 
 func (m model) renderHistoryPane() string {
@@ -1668,7 +1743,7 @@ func snapshotServerVersion(snapshot Snapshot) string {
 		version = "未知"
 	}
 	if pkg := strings.TrimSpace(snapshot.ServerPackage); pkg != "" {
-		return "服务版本 v" + version
+		return "SERVER v" + version
 	}
 	return version
 }
@@ -1999,9 +2074,11 @@ func trimForWidth(text string, width int) string {
 	if width <= lipgloss.Width(ellipsis) {
 		return ellipsis[:width]
 	}
-	trimmed := text
-	for lipgloss.Width(trimmed)+lipgloss.Width(ellipsis) > width && len(trimmed) > 0 {
-		trimmed = trimmed[:len(trimmed)-1]
+	runes := []rune(text)
+	trimmed := string(runes)
+	for lipgloss.Width(trimmed)+lipgloss.Width(ellipsis) > width && len(runes) > 0 {
+		runes = runes[:len(runes)-1]
+		trimmed = string(runes)
 	}
 	return trimmed + ellipsis
 }
@@ -2017,9 +2094,11 @@ func trimLeftForWidth(text string, width int) string {
 	if width <= lipgloss.Width(ellipsis) {
 		return ellipsis[:width]
 	}
-	trimmed := text
-	for lipgloss.Width(trimmed)+lipgloss.Width(ellipsis) > width && len(trimmed) > 0 {
-		trimmed = trimmed[1:]
+	runes := []rune(text)
+	trimmed := string(runes)
+	for lipgloss.Width(trimmed)+lipgloss.Width(ellipsis) > width && len(runes) > 0 {
+		runes = runes[1:]
+		trimmed = string(runes)
 	}
 	return ellipsis + trimmed
 }
@@ -2145,7 +2224,7 @@ func approvalModeLabel(value string) string {
 	case "readonly":
 		return "禁止执行任何命令"
 	case "confirm", "":
-		return "每次执行需要确认"
+		return "命令需要用户确认"
 	default:
 		return strings.TrimSpace(value)
 	}
