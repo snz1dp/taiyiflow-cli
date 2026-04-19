@@ -330,7 +330,7 @@ func (r *ClientRuntime) searchFiles(
 
 	matches := parseSearchMatches(output, baseDir, glob, maxResults)
 
-	fmt.Fprintf(r.stdout, "\n[本地搜索][%s]：%s, 命中 %d 条\n", searchEngine, query, len(matches))
+	fmt.Fprintf(r.stdout, "\n[%s]:%s, 命中 %d 条\n", searchEngine, query, len(matches))
 	return map[string]any{
 		"matches": matches,
 		"count":   len(matches),
@@ -346,7 +346,7 @@ func detectSearchEngine() (string, error) {
 	if _, err := exec.LookPath("grep"); err == nil {
 		return "grep", nil
 	}
-	return "", fmt.Errorf("search_files 需要可用的搜索工具：未找到 rg 或 grep")
+	return "", fmt.Errorf("文件搜索需要可用的搜索工具：系统未找到 rg 或 grep")
 }
 
 func runRipgrep(

@@ -1943,7 +1943,8 @@ func renderEntry(item entry, width int, height int, renderer *glamour.TermRender
 	case "user":
 		return userMessageStyle.Render(wrapped)
 	case "assistant":
-		return assistantMessageStyle.Render(renderMarkdown(content, textWidth, renderer))
+		rendered := renderMarkdown(hardWrapText(content, textWidth), textWidth, renderer)
+		return assistantMessageStyle.Render(rendered)
 	case "error":
 		return errorMessageStyle.Render(wrapped)
 	default:
@@ -1972,14 +1973,48 @@ func hardWrapText(content string, width int) string {
 			wrapped = append(wrapped, "")
 			continue
 		}
-		runes := []rune(line)
-		for len(runes) > width {
-			wrapped = append(wrapped, string(runes[:width]))
-			runes = runes[width:]
+
+		prefix := leadingIndent(line)
+		body := strings.TrimPrefix(line, prefix)
+		if body == "" {
+			wrapped = append(wrapped, prefix)
+			continue
 		}
-		wrapped = append(wrapped, string(runes))
+
+		bodyWidth := width - lipgloss.Width(prefix)
+		if bodyWidth < 1 {
+			bodyWidth = 1
+		}
+
+		runes := []rune(body)
+		segment := make([]rune, 0, len(runes))
+		for _, current := range runes {
+			candidate := string(append(segment, current))
+			if lipgloss.Width(candidate) > bodyWidth {
+				if len(segment) == 0 {
+					wrapped = append(wrapped, prefix+string(current))
+					continue
+				}
+				wrapped = append(wrapped, prefix+string(segment))
+				segment = []rune{current}
+				continue
+			}
+			segment = append(segment, current)
+		}
+		if len(segment) > 0 {
+			wrapped = append(wrapped, prefix+string(segment))
+		}
 	}
 	return strings.Join(wrapped, "\n")
+}
+
+func leadingIndent(line string) string {
+	for i, r := range line {
+		if r != ' ' && r != '\t' {
+			return line[:i]
+		}
+	}
+	return line
 }
 
 func startStream(ctx context.Context, request Request, runner Runner, eventCh chan tea.Msg) tea.Cmd {

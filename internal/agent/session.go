@@ -58,7 +58,7 @@ func (s *SessionStore) Load(flowID string, workdir string) (SessionState, error)
 
 func (s *SessionStore) Save(state SessionState) error {
 	if state.FlowID == "" {
-		return errors.New("flow_id 不能为空")
+		return errors.New("智能体不能为空")
 	}
 	state.Workdir = normalizeWorkdir(state.Workdir)
 	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
