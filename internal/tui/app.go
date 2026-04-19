@@ -1332,34 +1332,10 @@ func (m model) View() string {
 
 	base := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, content)
 	if overlay := m.renderOverlay(); overlay != "" {
-		overlayCanvas := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay)
-		return mergeOverlayCanvas(base, overlayCanvas)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay)
 	}
 
 	return base
-}
-
-func mergeOverlayCanvas(base, overlay string) string {
-	baseLines := strings.Split(base, "\n")
-	overlayLines := strings.Split(overlay, "\n")
-	lineCount := maxInt(len(baseLines), len(overlayLines))
-	merged := make([]string, 0, lineCount)
-	for i := range lineCount {
-		baseLine := ""
-		if i < len(baseLines) {
-			baseLine = baseLines[i]
-		}
-		overlayLine := ""
-		if i < len(overlayLines) {
-			overlayLine = overlayLines[i]
-		}
-		if strings.TrimSpace(overlayLine) != "" {
-			merged = append(merged, overlayLine)
-			continue
-		}
-		merged = append(merged, baseLine)
-	}
-	return strings.Join(merged, "\n")
 }
 
 func (m model) renderBackendAlertBar() string {
