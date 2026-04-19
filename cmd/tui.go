@@ -118,7 +118,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					return configErr
 				}
 				emit(tui.Event{Kind: tui.EventBuiltInCall})
-				emit(tui.Event{Kind: tui.EventSystemNote, Text: "执行回调: run_command_via_client"})
+				emit(tui.Event{Kind: tui.EventProgressNote, Text: "正在执行本地命令..."})
 				if requiresTUICommandConfirmation(localConfig, event.Data) {
 					approved := confirm(buildTUIConfirmRequest(event.Data))
 					if !approved {

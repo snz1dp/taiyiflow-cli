@@ -374,7 +374,7 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 func (a *App) printSessionStatus(ctx context.Context, providerClient provider.Provider, flowDisplayName string, flowID string, sessionState agent.SessionState) {
 	_ = flowDisplayName
 	if strings.TrimSpace(sessionState.SessionID) == "" {
-		fmt.Fprintln(a.stdout, "当前会话: <未建立>")
+		fmt.Fprintln(a.stdout, "当前会话: 新会话（未同步服务端）")
 		return
 	}
 	if title, err := lookupSessionTitle(ctx, providerClient, flowID, sessionState.SessionID); err == nil && strings.TrimSpace(title) != "" {
@@ -402,7 +402,7 @@ func (a *App) printSavedSessions(currentFlowID string, currentSessionID string, 
 		if strings.TrimSpace(state.SessionID) != "" {
 			line += fmt.Sprintf(" | 会话 %s", state.SessionID)
 		} else {
-			line += " | 会话 <未建立>"
+			line += " | 新会话（未同步服务端）"
 		}
 		if strings.TrimSpace(state.Workdir) != "" {
 			line += fmt.Sprintf(" | 目录 %s", state.Workdir)

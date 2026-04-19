@@ -5,6 +5,7 @@ import (
 	cryptorand "crypto/rand"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -372,6 +373,9 @@ const (
 )
 
 var (
+	ansiCSIRegexp = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+	ansiOSCRegexp = regexp.MustCompile(`\x1b\][^\a]*(\a|\x1b\\)`)
+
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#F1F8E9")).
@@ -1198,7 +1202,7 @@ func RenderSessionStatusText(snapshot Snapshot, prefix string) string {
 	}
 	sessionID := strings.TrimSpace(snapshot.SessionID)
 	if sessionID == "" {
-		lines = append(lines, "当前会话: <未建立>")
+		lines = append(lines, "当前会话: 新会话")
 		return strings.Join(lines, "\n")
 	}
 	lines = append(lines, fmt.Sprintf("当前会话: %s", sessionID))
@@ -1234,26 +1238,41 @@ func (m *model) syncLayout() {
 	}
 	m.contentWidth = contentWidth
 
-	viewportWidth := contentWidth - 6
+	historyWidth := m.historyPaneWidth()
+	viewportWidth := historyWidth
+	if !m.useMinimalChrome() {
+		viewportWidth = historyWidth - 4
+	}
 	if viewportWidth < 20 {
 		viewportWidth = 20
 	}
 	inputHeight := m.currentInputHeight()
-	fixedHeight := 7 + maxInt(0, inputHeight-1)
-	if !m.useMinimalChrome() {
-		fixedHeight = 8 + maxInt(0, inputHeight-1)
-	}
+	alertHeight := 0
 	if !m.snapshot.BackendAvailable {
-		fixedHeight += 1
+		alertHeight = 1
 	}
-	historyHeight := m.height - fixedHeight
-	if historyHeight < 8 {
-		historyHeight = 8
+	headerHeight := 2
+	if m.useMinimalChrome() {
+		headerHeight = 4
+	}
+	historyFrameHeight := 2
+	if m.useMinimalChrome() {
+		historyFrameHeight = 0
+	}
+	inputBoxHeight := inputHeight + 2
+	statusBarHeight := 1
+
+	historyHeight := m.height - (alertHeight + headerHeight + historyFrameHeight + inputBoxHeight + statusBarHeight)
+	if historyHeight < 3 {
+		historyHeight = 3
 	}
 	m.viewport.Width = viewportWidth
 	m.viewport.Height = historyHeight
 	m.updateMarkdownRenderer(viewportWidth - 2)
-	inputWidth := contentWidth - 10
+	inputWidth := historyWidth - 4
+	if inputWidth <= 0 {
+		inputWidth = contentWidth - 10
+	}
 	if inputWidth < 20 {
 		inputWidth = 20
 	}
@@ -1310,11 +1329,18 @@ func (m model) View() string {
 		return "\n"
 	}
 
-	parts := []string{}
+	topParts := []string{}
 	if alert := m.renderBackendAlertBar(); alert != "" {
-		parts = append(parts, alert)
+		topParts = append(topParts, alert)
 	}
 	header := m.renderHeader()
+	if strings.TrimSpace(header) == "" {
+		header = headerBarStyle.Width(maxInt(40, m.contentWidth)).Render("太乙智启")
+	}
+	topParts = append(topParts, header)
+	topBlock := lipgloss.JoinVertical(lipgloss.Left, topParts...)
+
+	bodyParts := []string{}
 	history := m.renderHistoryPane()
 	inputView := m.input.View()
 	if m.pendingConfirm != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil {
@@ -1322,15 +1348,28 @@ func (m model) View() string {
 	} else if commandHints := m.renderSlashCommandHints(); commandHints != "" {
 		inputView = lipgloss.JoinVertical(lipgloss.Left, inputView, "", commandHints)
 	}
-	inputBox := inputStyle.Width(m.contentWidth - 6).Render(inputView)
-	parts = append(parts, header, history)
-	parts = append(parts, inputBox, m.renderStatusBar())
-	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	inputBoxWidth := m.historyPaneWidth()
+	if inputBoxWidth <= 0 {
+		inputBoxWidth = m.contentWidth - 6
+	}
+	if inputBoxWidth < 20 {
+		inputBoxWidth = 20
+	}
+	inputBox := inputStyle.Width(inputBoxWidth).Render(inputView)
+	bodyParts = append(bodyParts, history, inputBox, m.renderStatusBar())
+	bodyContent := lipgloss.JoinVertical(lipgloss.Left, bodyParts...)
+	content := lipgloss.JoinVertical(lipgloss.Left, topBlock, bodyContent)
 	if !m.ready || m.width == 0 {
 		return "\n" + content + "\n"
 	}
 
-	base := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, content)
+	topPlaced := lipgloss.Place(m.width, lipgloss.Height(topBlock), lipgloss.Center, lipgloss.Top, topBlock)
+	bodyHeight := m.height - lipgloss.Height(topPlaced)
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+	bodyPlaced := lipgloss.Place(m.width, bodyHeight, lipgloss.Center, lipgloss.Top, bodyContent)
+	base := lipgloss.JoinVertical(lipgloss.Left, topPlaced, bodyPlaced)
 	if overlay := m.renderOverlay(); overlay != "" {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay)
 	}
@@ -1347,7 +1386,10 @@ func (m model) renderBackendAlertBar() string {
 		reason = "当前无法连接服务端"
 	}
 	message := joinStatusSegments([]string{"服务端未连接", reason, "每 5 秒自动重试"}, "  ·  ")
-	width := m.contentWidth
+	width := m.width
+	if width <= 0 {
+		width = m.contentWidth
+	}
 	if width <= 0 {
 		width = 60
 	}
@@ -1355,20 +1397,27 @@ func (m model) renderBackendAlertBar() string {
 }
 
 func (m model) renderHeader() string {
+	renderWidth := m.width
+	if renderWidth <= 0 {
+		renderWidth = m.contentWidth
+	}
+	if renderWidth <= 0 {
+		renderWidth = 80
+	}
 	flowLabel := fallback(m.snapshot.DefaultFlowLabel, "未配置")
 	clientVersion := fallback(m.snapshot.Version, "0.1.0")
 	serverVersion := formatHeaderServerVersion(m.serverVersionLabel())
 	sessionTitle := strings.TrimSpace(m.snapshot.SessionTitle)
 	if sessionTitle == "" {
-		sessionTitle = fallback(m.snapshot.SessionID, "<未建立会话>")
+		sessionTitle = fallback(m.snapshot.SessionID, "新会话")
 	}
 	workdir := fallback(strings.TrimSpace(m.snapshot.Workdir), ".")
-	flowLabelDisplay := trimForWidth(flowLabel, maxInt(8, m.contentWidth/6))
+	flowLabelDisplay := trimForWidth(flowLabel, maxInt(8, renderWidth/6))
 	versionLine := joinStatusSegments([]string{
 		"CLI v" + clientVersion,
 		serverVersion,
 	}, "  ·  ")
-	contentWidth := maxInt(18, m.contentWidth-2)
+	contentWidth := maxInt(18, renderWidth-2)
 	workdirWidth := maxInt(24, contentWidth/2)
 	workdirDisplay := trimLeftForWidth(workdir, workdirWidth)
 	if m.useMinimalChrome() {
@@ -1378,11 +1427,11 @@ func (m model) renderHeader() string {
 			trimForWidth(flowLabelDisplay, contentWidth),
 			trimLeftForWidth(workdir, contentWidth),
 		}
-		return headerBarStyle.Width(m.contentWidth).Render(strings.Join(lines, "\n"))
+		return headerBarStyle.Width(renderWidth).Render(strings.Join(lines, "\n"))
 	}
 	line1 := renderHeaderLine(sessionTitle, flowLabelDisplay, contentWidth, false)
 	line2 := renderHeaderLine(workdirDisplay, versionLine, contentWidth, true)
-	return headerBarStyle.Width(m.contentWidth).Render(strings.Join([]string{line1, line2}, "\n"))
+	return headerBarStyle.Width(renderWidth).Render(strings.Join([]string{line1, line2}, "\n"))
 }
 
 func renderHeaderLine(left string, right string, width int, preferRight bool) string {
@@ -1446,23 +1495,31 @@ func renderHeaderLine(left string, right string, width int, preferRight bool) st
 func formatHeaderServerVersion(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return "服务端 未知"
+		return "SERVER v0.1.0"
 	}
 	if strings.Contains(trimmed, "服务") {
-		return trimmed
+		return strings.ReplaceAll(trimmed, "服务", "SERVER")
 	}
-	return "服务端 " + trimmed
+	return "SERVER " + trimmed
 }
 
 func (m model) renderHistoryPane() string {
-	width := m.contentWidth - 6
-	if width < 20 {
-		width = m.contentWidth
-	}
+	width := m.historyPaneWidth()
 	if m.useMinimalChrome() {
 		return minimalHistoryStyle.Width(width).Render(m.viewport.View())
 	}
 	return historyFrameStyle.Width(width).Render(m.viewport.View())
+}
+
+func (m model) historyPaneWidth() int {
+	width := m.width
+	if !m.useMinimalChrome() {
+		width = m.width - 2
+	}
+	if width < 20 {
+		width = 20
+	}
+	return width
 }
 
 func (m model) renderTransientStatus() string {
@@ -1486,14 +1543,21 @@ func (m model) renderStatusBar() string {
 	if !m.snapshot.BackendAvailable && !m.isBusy() {
 		stateLabel = "只读模式"
 	}
+	renderWidth := m.width
+	if renderWidth <= 0 {
+		renderWidth = m.contentWidth
+	}
+	if renderWidth <= 0 {
+		renderWidth = 80
+	}
 	stateChip := statusAccentStyle.Render(stateLabel)
-	bodyWidth := m.contentWidth - lipgloss.Width(stateChip) - 3
+	bodyWidth := renderWidth - lipgloss.Width(stateChip) - 3
 	if bodyWidth < 12 {
 		bodyWidth = 12
 	}
 	body := trimForWidth(joinStatusSegments(segments, "  ·  "), bodyWidth)
 	line := lipgloss.JoinHorizontal(lipgloss.Left, stateChip, " ", statusBarDimStyle.Render(body))
-	return statusBarStyle.Width(m.contentWidth).Render(trimForWidth(line, m.contentWidth-2))
+	return statusBarStyle.Width(renderWidth).Render(trimForWidth(line, renderWidth-2))
 }
 
 func (m model) renderSlashCommandHints() string {
@@ -1829,11 +1893,24 @@ func backendStatusLabel(snapshot Snapshot) string {
 	return "服务端未连接"
 }
 
-func welcomeCommandsLabel(snapshot Snapshot) string {
-	if snapshot.BackendAvailable {
-		return "/agents /config /session /new /exit"
+func welcomeCommandsLabel(snapshot Snapshot) []string {
+	labelValues := []string{
+		" _____     _       _ _____ _",
+		"|_   _|_ _(_)_   _(_)  ___| | _____      __",
+		"  | |/ _` | | | | | | |_  | |/ _ \\ \\ /\\ / /",
+		"  | | (_| | | |_| | |  _| | | (_) \\ V  V /",
+		"  |_|\\__,_|_|\\__, |_|_|   |_|\\___/ \\_/\\_/",
+		"             |___/",
+		"  :: Snz1DP ::         CLI v" + fallback(snapshot.Version, "0.1.0"),
+		"",
 	}
-	return "/config /help /clear /exit"
+	labelValue := "常用命令："
+	if snapshot.BackendAvailable {
+		labelValues = append(labelValues, labelValue+"/agents /config /session /new /exit")
+	} else {
+		labelValues = append(labelValues, labelValue+"/config /help /clear /exit")
+	}
+	return labelValues
 }
 
 func (m model) useMinimalChrome() bool {
@@ -1852,18 +1929,57 @@ func renderEntries(entries []entry, width int, height int, renderer *glamour.Ter
 }
 
 func renderEntry(item entry, width int, height int, renderer *glamour.TermRenderer, snapshot Snapshot) string {
+	content := sanitizeTerminalText(item.content)
+	textWidth := maxInt(10, width-4)
+	wrapped := hardWrapText(content, textWidth)
 	switch item.role {
 	case "welcome":
-		return renderWelcomePane(snapshot, item.content, width, height)
+		_ = height
+		lines := append([]string{}, welcomeCommandsLabel(snapshot)...)
+		if strings.TrimSpace(content) != "" {
+			lines = append(lines, strings.TrimSpace(content))
+		}
+		return systemMessageStyle.Render(strings.Join(lines, "\n"))
 	case "user":
-		return userMessageStyle.Render(item.content)
+		return userMessageStyle.Render(wrapped)
 	case "assistant":
-		return assistantMessageStyle.Render(renderMarkdown(item.content, width, renderer))
+		return assistantMessageStyle.Render(renderMarkdown(content, textWidth, renderer))
 	case "error":
-		return errorMessageStyle.Render(item.content)
+		return errorMessageStyle.Render(wrapped)
 	default:
-		return systemMessageStyle.Render(item.content)
+		return systemMessageStyle.Render(wrapped)
 	}
+}
+
+func sanitizeTerminalText(content string) string {
+	if content == "" {
+		return ""
+	}
+	cleaned := ansiOSCRegexp.ReplaceAllString(content, "")
+	cleaned = ansiCSIRegexp.ReplaceAllString(cleaned, "")
+	cleaned = strings.ReplaceAll(cleaned, "\x1b", "")
+	return cleaned
+}
+
+func hardWrapText(content string, width int) string {
+	if width <= 0 {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	wrapped := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if line == "" {
+			wrapped = append(wrapped, "")
+			continue
+		}
+		runes := []rune(line)
+		for len(runes) > width {
+			wrapped = append(wrapped, string(runes[:width]))
+			runes = runes[width:]
+		}
+		wrapped = append(wrapped, string(runes))
+	}
+	return strings.Join(wrapped, "\n")
 }
 
 func startStream(ctx context.Context, request Request, runner Runner, eventCh chan tea.Msg) tea.Cmd {
@@ -2573,86 +2689,12 @@ func snapshotServerVersion(snapshot Snapshot) string {
 	}
 	version := strings.TrimSpace(snapshot.ServerVersion)
 	if version == "" {
-		version = "未知"
+		version = "0.1.0"
 	}
 	if pkg := strings.TrimSpace(snapshot.ServerPackage); pkg != "" {
-		return "SERVER v" + version
+		return "v" + version
 	}
 	return version
-}
-
-func renderWelcomePane(snapshot Snapshot, welcomeMessage string, width int, height int) string {
-	if width < 36 {
-		width = 36
-	}
-	if height < 12 {
-		height = 12
-	}
-	targetHeight := maxInt(10, height*4/5)
-	if targetHeight > height {
-		targetHeight = height
-	}
-	innerWidth := width - 6
-	if innerWidth < 28 {
-		innerWidth = 28
-	}
-	contentHeight := targetHeight - 4
-	if contentHeight < 8 {
-		contentHeight = 8
-	}
-	bannerBlock := buildWelcomeBanner(innerWidth)
-	bannerAreaHeight := contentHeight * 4 / 5
-	bannerMinHeight := lipgloss.Height(bannerBlock) + 2
-	if bannerAreaHeight < bannerMinHeight {
-		bannerAreaHeight = bannerMinHeight
-	}
-	footerHeight := contentHeight - bannerAreaHeight
-	if footerHeight < 4 {
-		footerHeight = 4
-		bannerAreaHeight = contentHeight - footerHeight
-	}
-	if bannerAreaHeight < bannerMinHeight {
-		bannerAreaHeight = bannerMinHeight
-		footerHeight = maxInt(3, contentHeight-bannerAreaHeight)
-	}
-
-	footerLines := []string{
-		hintStyle.Render(centerText(trimForWidth(
-			"太乙智启 CLI v"+fallback(snapshot.Version, "0.1.0")+
-				" · "+snapshotServerVersion(snapshot), innerWidth), innerWidth)),
-		"",
-		hintStyle.Render(centerText(trimForWidth(joinStatusSegments([]string{
-			backendStatusLabel(snapshot),
-			"" + fallback(snapshot.DefaultFlowLabel, "未配置"),
-			"" + compactSessionID(snapshot.SessionID),
-		}, "  ·  "), innerWidth), innerWidth)),
-		hintStyle.Render(centerText(trimForWidth(welcomeCommandsLabel(snapshot), innerWidth), innerWidth)),
-	}
-	if strings.TrimSpace(welcomeMessage) != "" {
-		footerLines = append(footerLines, "", hintStyle.Render(centerText(trimForWidth(strings.TrimSpace(welcomeMessage), innerWidth), innerWidth)))
-	}
-
-	bannerSection := lipgloss.Place(innerWidth, bannerAreaHeight, lipgloss.Center, lipgloss.Bottom, bannerBlock)
-	footerBlock := lipgloss.JoinVertical(lipgloss.Left, footerLines...)
-	footerSection := lipgloss.Place(innerWidth, footerHeight, lipgloss.Center, lipgloss.Top, footerBlock)
-	panel := panelStyle.Width(width).Render(lipgloss.JoinVertical(lipgloss.Left, bannerSection, footerSection))
-
-	panelHeight := lipgloss.Height(panel)
-	topGap := 0
-	bottomGap := 0
-	if height > panelHeight {
-		topGap = (height - panelHeight) / 2
-		bottomGap = height - panelHeight - topGap
-	}
-	parts := []string{}
-	if topGap > 0 {
-		parts = append(parts, strings.Repeat("\n", topGap))
-	}
-	parts = append(parts, panel)
-	if bottomGap > 0 {
-		parts = append(parts, strings.Repeat("\n", bottomGap))
-	}
-	return strings.Join(parts, "")
 }
 
 func inputHeightForValue(value string, prompt string, inputWidth int) int {
@@ -2792,7 +2834,7 @@ func currentFlowIndex(flows []FlowItem, current string) int {
 func compactSessionID(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return "未建立"
+		return "新会话"
 	}
 	if len(trimmed) <= 10 {
 		return trimmed
