@@ -490,7 +490,6 @@ var (
 var slashCommands = []slashCommand{
 	{Trigger: "/agents", Completion: "/agents ", Description: "打开智能体选择，或用 /agents <名称> 直接切换"},
 	{Trigger: "/config", Completion: "/config ", Description: "查看或更新服务端地址、API Key 等配置"},
-	{Trigger: "/mode", Completion: "/mode", Description: "打开命令执行模式选择"},
 	{Trigger: "/new", Completion: "/new", Description: "重置当前智能体的本地会话"},
 	{Trigger: "/session", Completion: "/session", Description: "显示当前会话状态"},
 	{Trigger: "/sessions", Completion: "/sessions ", Description: "列出当前智能体的服务端会话，可附页码"},
@@ -1247,9 +1246,6 @@ func (m *model) syncLayout() {
 	if !m.snapshot.BackendAvailable {
 		fixedHeight += 1
 	}
-	if m.pendingConfirm != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil {
-		fixedHeight += 3
-	}
 	historyHeight := m.height - fixedHeight
 	if historyHeight < 8 {
 		historyHeight = 8
@@ -1297,6 +1293,16 @@ func (m *model) syncViewport() {
 		return
 	}
 	m.viewport.GotoBottom()
+}
+
+func (m *model) refreshLayoutAfterStateChange() {
+	if m.ready && m.width > 0 && m.height > 0 {
+		m.syncLayout()
+		return
+	}
+	if m.viewport.Width > 0 && m.viewport.Height > 0 {
+		m.syncViewport()
+	}
 }
 
 func (m model) View() string {
@@ -1849,7 +1855,7 @@ func backendStatusLabel(snapshot Snapshot) string {
 
 func welcomeCommandsLabel(snapshot Snapshot) string {
 	if snapshot.BackendAvailable {
-		return "/agents /config /mode /session /new /exit"
+		return "/agents /config /session /new /exit"
 	}
 	return "/config /help /clear /exit"
 }
@@ -1963,10 +1969,11 @@ func (m *model) handleLocalSlashCommand(command string) (bool, tea.Cmd) {
 	m.input.SetValue("")
 	if err != nil {
 		m.entries = append(m.entries, entry{role: "error", content: err.Error()})
-		m.syncViewport()
+		m.refreshLayoutAfterStateChange()
 		return true, nil
 	}
 	if !result.Handled {
+		m.refreshLayoutAfterStateChange()
 		return false, nil
 	}
 	m.applyLocalCommandResult(result)
@@ -2022,7 +2029,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) {
 	for _, event := range result.Events {
 		m.applyEvent(event)
 	}
-	m.syncViewport()
+	m.refreshLayoutAfterStateChange()
 }
 
 func (m model) showSlashCommandHints() bool {
@@ -2981,8 +2988,6 @@ func isExecutableSlashCommandInput(input string) bool {
 	case strings.EqualFold(trimmed, "/config"):
 		return true
 	case strings.EqualFold(trimmed, "/config show"):
-		return true
-	case strings.EqualFold(trimmed, "/mode"):
 		return true
 	case strings.EqualFold(trimmed, "/new"):
 		return true

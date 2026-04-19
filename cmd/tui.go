@@ -274,7 +274,6 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				"/agents 或 /agents <名称> 选择智能体",
 				"/config 打开服务端配置弹窗",
 				"!<shell 命令> 在当前目录执行本地命令",
-				"/mode 打开命令执行模式选择",
 				"/session 查看当前会话",
 				"/sessions [页码] 查看当前智能体的服务端会话列表",
 				"/new 重置当前智能体的本地会话",
@@ -308,8 +307,6 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			return tui.LocalCommandResult{Handled: true, ConfigForm: formState}, nil
 		case strings.HasPrefix(strings.ToLower(trimmed), "/config "):
 			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "TUI 中请直接输入 /config 打开弹窗表单。"}}}, nil
-		case trimmed == "/mode":
-			return tui.LocalCommandResult{Handled: true, ApprovalPicker: buildApprovalPicker(snapshot)}, nil
 		case trimmed == "!":
 			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "! 用法: !<shell 命令>"}}}, nil
 		case strings.HasPrefix(trimmed, "!"):
