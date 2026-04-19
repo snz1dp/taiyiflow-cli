@@ -161,6 +161,48 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		return nil
 	}
 
+	refreshSnapshot := func(refreshCtx context.Context, current tui.Snapshot) (tui.Snapshot, []tui.FlowItem, error) {
+		updatedConfig, err := a.configManager.Load()
+		if err != nil {
+			return tui.Snapshot{}, nil, err
+		}
+		if strings.TrimSpace(updatedConfig.DefaultFlow) == "" {
+			updatedConfig.DefaultFlow = strings.TrimSpace(current.DefaultFlow)
+		}
+
+		refreshedClient := providerclient.NewClient(updatedConfig.BackendBaseURL, updatedConfig.APIKey)
+		backend := a.inspectBackendStatus(refreshCtx, refreshedClient, updatedConfig.BackendBaseURL)
+		if backend.Available {
+			updatedConfig, err = a.ensureDefaultFlow(refreshCtx, refreshedClient, updatedConfig)
+			if err != nil {
+				return tui.Snapshot{}, nil, err
+			}
+		}
+
+		flowID := strings.TrimSpace(firstNonEmpty(updatedConfig.DefaultFlow, current.DefaultFlow))
+		snapshot, err := a.buildTUISnapshot(refreshCtx, refreshedClient, updatedConfig, flowID, backend)
+		if err != nil {
+			return tui.Snapshot{}, nil, err
+		}
+
+		flowItems := []tui.FlowItem{}
+		if backend.Available {
+			flows, flowErr := refreshedClient.ListFlows(refreshCtx, "", "chat", 0, 100)
+			if flowErr == nil {
+				for _, item := range flows.Items {
+					flowItems = append(flowItems, tui.FlowItem{
+						ID:          item.ID,
+						Name:        item.Name,
+						Description: item.Description,
+						Type:        item.Type,
+					})
+				}
+			}
+		}
+
+		return snapshot, flowItems, nil
+	}
+
 	flowChange := func(changeCtx context.Context, flowID string) (tui.Snapshot, error) {
 		updatedConfig, err := a.configManager.Load()
 		if err != nil {
@@ -231,7 +273,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			}
 			return tui.LocalCommandResult{
 				Handled: true,
-				Events: []tui.Event{{Kind: tui.EventSystemNote, Text: strings.Join(helpLines, "\n")}},
+				Events:  []tui.Event{{Kind: tui.EventSystemNote, Text: strings.Join(helpLines, "\n")}},
 			}, nil
 		case trimmed == "/mode":
 			return tui.LocalCommandResult{Handled: true, ApprovalPicker: buildApprovalPicker(snapshot)}, nil
@@ -344,7 +386,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}
 	}
 
-	return tui.Run(ctx, snapshot, flowItems, runner, flowChange, sessionChange, approvalChange, localCommand)
+	return tui.Run(ctx, snapshot, flowItems, runner, refreshSnapshot, flowChange, sessionChange, approvalChange, localCommand)
 }
 
 func (a *App) buildTUISnapshot(

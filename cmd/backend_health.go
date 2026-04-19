@@ -57,18 +57,18 @@ func explainBackendFailure(err error) string {
 	message := strings.ToLower(strings.TrimSpace(err.Error()))
 	switch {
 	case strings.Contains(message, "connection refused"):
-		return "后端服务未启动或当前地址不可访问"
+		return "无法连接至太乙智启服务"
 	case strings.Contains(message, "no such host"), strings.Contains(message, "server misbehaving"), strings.Contains(message, "lookup "):
-		return "后端服务地址无法解析"
+		return "太乙智启服务地址无法解析"
 	case strings.Contains(message, "401"), strings.Contains(message, "unauthorized"):
-		return "服务端鉴权失败，请检查访问凭证"
+		return "请重新登录太乙智启服务"
 	case strings.Contains(message, "403"), strings.Contains(message, "forbidden"):
-		return "当前账号无权访问服务端"
+		return "当前账号无权访问太乙智启服务"
 	case strings.Contains(message, "404"):
-		return "后端服务地址不正确"
+		return "太乙智启服务地址不正确"
 	case strings.Contains(message, "502"), strings.Contains(message, "503"), strings.Contains(message, "504"), strings.Contains(message, "500"):
-		return "后端服务暂时不可用"
+		return "太乙智启服务暂时不可用"
 	default:
-		return "当前无法连接服务端"
+		return "当前无法连接太乙智启服务"
 	}
 }

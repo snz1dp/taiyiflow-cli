@@ -174,6 +174,8 @@ type ApprovalChangeHandler func(ctx context.Context, mode string) (Snapshot, err
 
 type LocalCommandHandler func(ctx context.Context, command string, snapshot Snapshot) (LocalCommandResult, error)
 
+type SnapshotRefreshHandler func(ctx context.Context, snapshot Snapshot) (Snapshot, []FlowItem, error)
+
 type entry struct {
 	role    string
 	content string
@@ -223,6 +225,14 @@ type approvalChangedMsg struct {
 	err      error
 }
 
+type backendRetryTickMsg struct{}
+
+type snapshotRefreshedMsg struct {
+	snapshot Snapshot
+	flows    []FlowItem
+	err      error
+}
+
 type progressPhase string
 
 const (
@@ -249,6 +259,7 @@ type model struct {
 	snapshot       Snapshot
 	flows          []FlowItem
 	runner         Runner
+	refreshSnapshot SnapshotRefreshHandler
 	flowChange     FlowChangeHandler
 	sessionChange  SessionChangeHandler
 	approvalChange ApprovalChangeHandler
@@ -388,6 +399,12 @@ var (
 				Foreground(lipgloss.Color("#F1F8E9")).
 				Background(lipgloss.Color("#2E7D32")).
 				Bold(true)
+
+	backendAlertStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFF8E1")).
+				Background(lipgloss.Color("#B71C1C")).
+				Bold(true).
+				Padding(0, 1)
 )
 
 var slashCommands = []slashCommand{
@@ -401,7 +418,7 @@ var slashCommands = []slashCommand{
 	{Trigger: "/exit", Completion: "/exit", Description: "退出当前智能对话"},
 }
 
-func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, localCommand LocalCommandHandler) error {
+func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, refreshSnapshot SnapshotRefreshHandler, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, localCommand LocalCommandHandler) error {
 	inputModel := textarea.New()
 	if snapshot.BackendAvailable {
 		inputModel.Placeholder = "输入内容后回车发送"
@@ -433,6 +450,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 		snapshot:       snapshot,
 		flows:          flows,
 		runner:         runner,
+		refreshSnapshot: refreshSnapshot,
 		flowChange:     flowChange,
 		sessionChange:  sessionChange,
 		approvalChange: approvalChange,
@@ -456,7 +474,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, m.input.Focus(), m.progress.SetPercent(m.state.percent))
+	return tea.Batch(textinput.Blink, m.input.Focus(), m.progress.SetPercent(m.state.percent), m.scheduleBackendRetry())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -474,6 +492,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = typed.Width
 		m.height = typed.Height
 		m.ready = true
+		m.syncLayout()
+		return m, nil
+	case backendRetryTickMsg:
+		if m.snapshot.BackendAvailable || m.refreshSnapshot == nil {
+			return m, nil
+		}
+		return m, refreshSnapshotCmd(m.ctx, m.snapshot, m.refreshSnapshot)
+	case snapshotRefreshedMsg:
+		if typed.err != nil {
+			if !m.snapshot.BackendAvailable {
+				return m, m.scheduleBackendRetry()
+			}
+			return m, nil
+		}
+		previouslyAvailable := m.snapshot.BackendAvailable
+		previousReason := strings.TrimSpace(m.snapshot.BackendStatusReason)
+		m.snapshot = typed.snapshot
+		m.flows = typed.flows
+		m.syncInputPlaceholder()
+		if !m.snapshot.BackendAvailable {
+			m.showFlowPicker = false
+			m.sessionPicker = nil
+			m.approvalPicker = nil
+			m.flowFilter.Blur()
+			if previouslyAvailable {
+				m.entries = append(m.entries, entry{role: "error", content: m.backendUnavailableMessage()})
+			} else if strings.TrimSpace(m.snapshot.BackendStatusReason) != previousReason && strings.TrimSpace(m.snapshot.BackendStatusReason) != "" {
+				m.entries = append(m.entries, entry{role: "system", content: "服务端状态更新: " + strings.TrimSpace(m.snapshot.BackendStatusReason)})
+			}
+			m.syncLayout()
+			return m, m.scheduleBackendRetry()
+		}
+		if !previouslyAvailable {
+			m.entries = append(m.entries, entry{role: "system", content: "服务端连接已恢复，已退出只读模式。"})
+		}
 		m.syncLayout()
 		return m, nil
 	case streamEventMsg:
@@ -495,7 +548,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncViewport()
 		progressCmd := m.transitionProgress(progressFailed)
 		m.input.Focus()
-		return m, progressCmd
+		return m, tea.Batch(progressCmd, m.maybeRefreshSnapshot())
 	case streamDoneMsg:
 		if m.interrupting {
 			progressCmd := m.completeInterruptedRequest()
@@ -507,7 +560,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.requestCancel = nil
 		progressCmd := m.transitionProgress(progressIdle)
 		m.input.Focus()
-		return m, progressCmd
+		return m, tea.Batch(progressCmd, m.maybeRefreshSessionSnapshot())
 	case confirmRequestMsg:
 		m.pendingConfirm = &confirmState{request: typed.request, responseCh: typed.responseCh, cursor: 0}
 		m.input.Blur()
@@ -517,7 +570,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
 			m.syncViewport()
 			m.input.Focus()
-			return m, m.transitionProgress(progressFailed)
+			return m, tea.Batch(m.transitionProgress(progressFailed), m.maybeRefreshSnapshot())
 		}
 		previousFlow := fallback(m.snapshot.DefaultFlowLabel, sanitizeFlowLabel(m.snapshot.DefaultFlow))
 		m.snapshot = typed.snapshot
@@ -537,7 +590,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
 			m.syncViewport()
 			m.input.Focus()
-			return m, m.transitionProgress(progressFailed)
+			return m, tea.Batch(m.transitionProgress(progressFailed), m.maybeRefreshSnapshot())
 		}
 		m.snapshot = typed.snapshot
 		m.sessionPicker = nil
@@ -551,7 +604,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if typed.err != nil {
 			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
 			m.syncViewport()
-			return m, nil
+			return m, m.maybeRefreshSnapshot()
 		}
 		m.applyLocalCommandResult(typed.result)
 		return m, nil
@@ -560,7 +613,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
 			m.syncViewport()
 			m.input.Focus()
-			return m, m.transitionProgress(progressFailed)
+			return m, tea.Batch(m.transitionProgress(progressFailed), m.maybeRefreshSnapshot())
 		}
 		m.snapshot = typed.snapshot
 		m.approvalPicker = nil
@@ -982,6 +1035,9 @@ func (m *model) syncLayout() {
 	if !m.useMinimalChrome() {
 		fixedHeight = 8 + maxInt(0, inputHeight-1)
 	}
+	if !m.snapshot.BackendAvailable {
+		fixedHeight += 1
+	}
 	if m.pendingConfirm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil {
 		fixedHeight += 3
 	}
@@ -1030,6 +1086,10 @@ func (m model) View() string {
 		return "\n"
 	}
 
+	parts := []string{}
+	if alert := m.renderBackendAlertBar(); alert != "" {
+		parts = append(parts, alert)
+	}
 	header := m.renderHeader()
 	history := m.renderHistoryPane()
 	inputView := m.input.View()
@@ -1039,7 +1099,7 @@ func (m model) View() string {
 		inputView = lipgloss.JoinVertical(lipgloss.Left, inputView, "", commandHints)
 	}
 	inputBox := inputStyle.Width(m.contentWidth - 6).Render(inputView)
-	parts := []string{header, history}
+	parts = append(parts, header, history)
 	parts = append(parts, inputBox, m.renderStatusBar())
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	if overlay := m.renderOverlay(); overlay != "" {
@@ -1050,6 +1110,22 @@ func (m model) View() string {
 	}
 
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, content)
+}
+
+func (m model) renderBackendAlertBar() string {
+	if m.snapshot.BackendAvailable {
+		return ""
+	}
+	reason := strings.TrimSpace(m.snapshot.BackendStatusReason)
+	if reason == "" {
+		reason = "当前无法连接服务端"
+	}
+	message := joinStatusSegments([]string{"服务端未连接", reason, "每 5 秒自动重试"}, "  ·  ")
+	width := m.contentWidth
+	if width <= 0 {
+		width = 60
+	}
+	return backendAlertStyle.Width(width).Render(trimForWidth(message, width-2))
 }
 
 func (m model) renderHeader() string {
@@ -1579,6 +1655,9 @@ func (m model) visibleSlashCommands() []slashCommand {
 	query := slashCommandQuery(m.input.Value())
 	visible := make([]slashCommand, 0, len(slashCommands))
 	for _, command := range slashCommands {
+		if !m.snapshot.BackendAvailable && !isAvailableInReadOnlyMode(command.Trigger) {
+			continue
+		}
 		trigger := strings.ToLower(command.Trigger)
 		description := strings.ToLower(command.Description)
 		if query == "" || strings.HasPrefix(trigger, query) || strings.Contains(description, query) {
@@ -1632,6 +1711,16 @@ func (m *model) applySelectedSlashCommand() bool {
 func waitForStream(eventCh chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		return <-eventCh
+	}
+}
+
+func refreshSnapshotCmd(ctx context.Context, snapshot Snapshot, handler SnapshotRefreshHandler) tea.Cmd {
+	if handler == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		updated, flows, err := handler(ctx, snapshot)
+		return snapshotRefreshedMsg{snapshot: updated, flows: flows, err: err}
 	}
 }
 
@@ -1741,6 +1830,37 @@ func newProgressState(phase progressPhase) progressState {
 func (m *model) transitionProgress(phase progressPhase) tea.Cmd {
 	m.state = newProgressState(phase)
 	return m.progress.SetPercent(m.state.percent)
+}
+
+func (m *model) syncInputPlaceholder() {
+	if m.snapshot.BackendAvailable {
+		m.input.Placeholder = "输入内容后回车发送"
+		return
+	}
+	m.input.Placeholder = "服务端不可用，当前为只读模式，仅支持 /help、/clear、/exit"
+}
+
+func (m model) scheduleBackendRetry() tea.Cmd {
+	if m.snapshot.BackendAvailable || m.refreshSnapshot == nil {
+		return nil
+	}
+	return tea.Tick(5*time.Second, func(time.Time) tea.Msg {
+		return backendRetryTickMsg{}
+	})
+}
+
+func (m model) maybeRefreshSnapshot() tea.Cmd {
+	if m.refreshSnapshot == nil || !m.snapshot.BackendAvailable {
+		return nil
+	}
+	return refreshSnapshotCmd(m.ctx, m.snapshot, m.refreshSnapshot)
+}
+
+func (m model) maybeRefreshSessionSnapshot() tea.Cmd {
+	if m.refreshSnapshot == nil || !m.snapshot.BackendAvailable || strings.TrimSpace(m.snapshot.SessionID) == "" {
+		return nil
+	}
+	return refreshSnapshotCmd(m.ctx, m.snapshot, m.refreshSnapshot)
 }
 
 func (m model) isBusy() bool {
