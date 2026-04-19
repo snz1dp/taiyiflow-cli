@@ -42,7 +42,7 @@ func (r *ClientRuntime) ClientMCPServers() map[string]any {
 		localToolServerName: []map[string]any{
 			{
 				"name":                 "search_files",
-				"description":          "在当前工作目录使用 ripgrep 搜索文本，返回匹配文件、行号和片段。",
+				"description":          "在当前工作目录搜索文本，优先使用 ripgrep，不可用时回退 grep，返回匹配文件、行号和片段。",
 				"waiting_for_response": true,
 				"inputSchema": map[string]any{
 					"type": "object",
@@ -270,7 +270,7 @@ func (r *ClientRuntime) runCommand(
 	if payload.ExpectJSON {
 		var decoded any
 		if err := json.Unmarshal([]byte(stdout), &decoded); err != nil {
-			return nil, fmt.Errorf("命令输出不是合法 JSON")
+			return nil, fmt.Errorf("命令输出了不合法的JSON数据")
 		}
 		result["json"] = decoded
 	}
@@ -292,7 +292,7 @@ func (r *ClientRuntime) searchFiles(
 ) (map[string]any, error) {
 	query := strings.TrimSpace(stringValue(arguments["query"]))
 	if query == "" {
-		return nil, fmt.Errorf("search_files 缺少 query")
+		return nil, fmt.Errorf("文件搜索缺少关键词")
 	}
 
 	baseDir, err := resolveBaseDirectory(config.Workdir, stringValue(arguments["path"]))
@@ -308,8 +308,56 @@ func (r *ClientRuntime) searchFiles(
 		maxResults = 200
 	}
 
+	glob := strings.TrimSpace(stringValue(arguments["glob"]))
+
+	searchEngine, err := detectSearchEngine()
+	if err != nil {
+		return nil, err
+	}
+
+	var output []byte
+	switch searchEngine {
+	case "rg":
+		output, err = runRipgrep(ctx, query, baseDir, glob, maxResults)
+	case "grep":
+		output, err = runGrep(ctx, query, baseDir)
+	default:
+		return nil, fmt.Errorf("不支持的搜索引擎: %s", searchEngine)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	matches := parseSearchMatches(output, baseDir, glob, maxResults)
+
+	fmt.Fprintf(r.stdout, "\n[本地搜索] engine=%s query=%s 命中 %d 条\n", searchEngine, query, len(matches))
+	return map[string]any{
+		"matches": matches,
+		"count":   len(matches),
+		"root":    baseDir,
+		"engine":  searchEngine,
+	}, nil
+}
+
+func detectSearchEngine() (string, error) {
+	if _, err := exec.LookPath("rg"); err == nil {
+		return "rg", nil
+	}
+	if _, err := exec.LookPath("grep"); err == nil {
+		return "grep", nil
+	}
+	return "", fmt.Errorf("search_files 需要可用的搜索工具：未找到 rg 或 grep")
+}
+
+func runRipgrep(
+	ctx context.Context,
+	query string,
+	baseDir string,
+	glob string,
+	maxResults int,
+) ([]byte, error) {
 	commandArgs := []string{"-n", "--no-heading", "--color", "never", "--max-count", strconv.Itoa(maxResults), query}
-	if glob := strings.TrimSpace(stringValue(arguments["glob"])); glob != "" {
+	if glob != "" {
 		commandArgs = append(commandArgs, "-g", glob)
 	}
 	commandArgs = append(commandArgs, baseDir)
@@ -319,12 +367,34 @@ func (r *ClientRuntime) searchFiles(
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return map[string]any{"matches": []map[string]any{}, "count": 0, "root": baseDir}, nil
+			return nil, nil
 		}
-		return nil, fmt.Errorf("执行文件搜索失败: %w", err)
+		return nil, fmt.Errorf("执行 rg 搜索失败: %w", err)
+	}
+	return output, nil
+}
+
+func runGrep(ctx context.Context, query string, baseDir string) ([]byte, error) {
+	commandArgs := []string{"-R", "-n", "-E", query, baseDir}
+	command := exec.CommandContext(ctx, "grep", commandArgs...)
+	output, err := command.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("执行 grep 搜索失败: %w", err)
+	}
+	return output, nil
+}
+
+func parseSearchMatches(output []byte, baseDir string, glob string, maxResults int) []map[string]any {
+	trimmed := strings.TrimSpace(string(output))
+	if trimmed == "" {
+		return []map[string]any{}
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	lines := strings.Split(trimmed, "\n")
 	matches := make([]map[string]any, 0, len(lines))
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
@@ -332,7 +402,9 @@ func (r *ClientRuntime) searchFiles(
 		}
 		parts := strings.SplitN(line, ":", 3)
 		if len(parts) < 3 {
-			matches = append(matches, map[string]any{"raw": line})
+			continue
+		}
+		if !matchesSearchGlob(parts[0], baseDir, glob) {
 			continue
 		}
 		lineNumber, _ := strconv.Atoi(parts[1])
@@ -341,14 +413,38 @@ func (r *ClientRuntime) searchFiles(
 			"line": lineNumber,
 			"text": parts[2],
 		})
+		if len(matches) >= maxResults {
+			break
+		}
+	}
+	return matches
+}
+
+func matchesSearchGlob(path string, baseDir string, glob string) bool {
+	if strings.TrimSpace(glob) == "" {
+		return true
 	}
 
-	fmt.Fprintf(r.stdout, "\n[本地搜索] query=%s 命中 %d 条\n", query, len(matches))
-	return map[string]any{
-		"matches": matches,
-		"count":   len(matches),
-		"root":    baseDir,
-	}, nil
+	cleanPath := filepath.Clean(path)
+	relativePath, err := filepath.Rel(baseDir, cleanPath)
+	if err != nil {
+		relativePath = cleanPath
+	}
+
+	normalizedPath := filepath.ToSlash(relativePath)
+	normalizedGlob := filepath.ToSlash(strings.TrimSpace(glob))
+
+	matched, err := filepath.Match(normalizedGlob, normalizedPath)
+	if err == nil && matched {
+		return true
+	}
+
+	if !strings.Contains(normalizedGlob, "/") {
+		matched, err = filepath.Match(normalizedGlob, filepath.Base(normalizedPath))
+		return err == nil && matched
+	}
+
+	return false
 }
 
 type commandArguments struct {
