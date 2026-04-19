@@ -267,6 +267,11 @@ type configFormSavedMsg struct {
 	err    error
 }
 
+type localCommandExecutedMsg struct {
+	result LocalCommandResult
+	err    error
+}
+
 type backendRetryTickMsg struct{}
 
 type snapshotRefreshedMsg struct {
@@ -330,6 +335,7 @@ type model struct {
 	sessionCursor    int
 	approvalCursor   int
 	commandCursor    int
+	startupCommand   string
 	pendingConfirm   *confirmState
 	requestCancel    context.CancelFunc
 	interrupting     bool
@@ -493,7 +499,7 @@ var slashCommands = []slashCommand{
 	{Trigger: "/exit", Completion: "/exit", Description: "退出当前智能对话"},
 }
 
-func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, refreshSnapshot SnapshotRefreshHandler, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, configFormSubmit ConfigFormSubmitHandler, localCommand LocalCommandHandler) error {
+func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, refreshSnapshot SnapshotRefreshHandler, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, configFormSubmit ConfigFormSubmitHandler, localCommand LocalCommandHandler, startupCommand string) error {
 	inputModel := textarea.New()
 	if snapshot.BackendAvailable {
 		inputModel.Placeholder = "输入内容后回车发送"
@@ -539,6 +545,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 		progress:         progressModel,
 		state:            newProgressState(progressIdle),
 		flowCursor:       currentFlowIndex(flows, snapshot.DefaultFlow),
+		startupCommand:   strings.TrimSpace(startupCommand),
 	}, tea.WithAltScreen())
 	finalModel, err := program.Run()
 	if err == nil {
@@ -550,7 +557,11 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, m.input.Focus(), m.progress.SetPercent(m.state.percent), m.scheduleBackendRetry())
+	cmds := []tea.Cmd{textinput.Blink, m.input.Focus(), m.progress.SetPercent(m.state.percent), m.scheduleBackendRetry()}
+	if strings.TrimSpace(m.startupCommand) != "" {
+		cmds = append(cmds, executeLocalCommandCmd(m.ctx, m.snapshot, m.startupCommand, m.localCommand))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -708,6 +719,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.transitionProgress(progressFailed), textinput.Blink)
 		}
 		m.closeConfigForm()
+		m.applyLocalCommandResult(typed.result)
+		return m, tea.Batch(m.transitionProgress(progressIdle), textinput.Blink)
+	case localCommandExecutedMsg:
+		if typed.err != nil {
+			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
+			m.syncViewport()
+			return m, tea.Batch(m.transitionProgress(progressFailed), textinput.Blink)
+		}
 		m.applyLocalCommandResult(typed.result)
 		return m, tea.Batch(m.transitionProgress(progressIdle), textinput.Blink)
 	case tea.KeyMsg:
@@ -1301,14 +1320,40 @@ func (m model) View() string {
 	parts = append(parts, header, history)
 	parts = append(parts, inputBox, m.renderStatusBar())
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
-	if overlay := m.renderOverlay(); overlay != "" {
-		content = lipgloss.JoinVertical(lipgloss.Left, content, "", overlay)
-	}
 	if !m.ready || m.width == 0 {
 		return "\n" + content + "\n"
 	}
 
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, content)
+	base := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, content)
+	if overlay := m.renderOverlay(); overlay != "" {
+		overlayCanvas := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay)
+		return mergeOverlayCanvas(base, overlayCanvas)
+	}
+
+	return base
+}
+
+func mergeOverlayCanvas(base, overlay string) string {
+	baseLines := strings.Split(base, "\n")
+	overlayLines := strings.Split(overlay, "\n")
+	lineCount := maxInt(len(baseLines), len(overlayLines))
+	merged := make([]string, 0, lineCount)
+	for i := range lineCount {
+		baseLine := ""
+		if i < len(baseLines) {
+			baseLine = baseLines[i]
+		}
+		overlayLine := ""
+		if i < len(overlayLines) {
+			overlayLine = overlayLines[i]
+		}
+		if strings.TrimSpace(overlayLine) != "" {
+			merged = append(merged, overlayLine)
+			continue
+		}
+		merged = append(merged, baseLine)
+	}
+	return strings.Join(merged, "\n")
 }
 
 func (m model) renderBackendAlertBar() string {
@@ -2092,6 +2137,16 @@ func submitConfigFormCmd(ctx context.Context, snapshot Snapshot, submission Conf
 	return func() tea.Msg {
 		result, err := handler(ctx, snapshot, submission)
 		return configFormSavedMsg{result: result, err: err}
+	}
+}
+
+func executeLocalCommandCmd(ctx context.Context, snapshot Snapshot, command string, handler LocalCommandHandler) tea.Cmd {
+	if handler == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		result, err := handler(ctx, command, snapshot)
+		return localCommandExecutedMsg{result: result, err: err}
 	}
 }
 
@@ -2922,6 +2977,10 @@ func isExecutableSlashCommandInput(input string) bool {
 	trimmed := strings.TrimSpace(input)
 	switch {
 	case strings.EqualFold(trimmed, "/agents"):
+		return true
+	case strings.EqualFold(trimmed, "/config"):
+		return true
+	case strings.EqualFold(trimmed, "/config show"):
 		return true
 	case strings.EqualFold(trimmed, "/mode"):
 		return true

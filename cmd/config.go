@@ -55,7 +55,7 @@ func (a *App) showConfig() error {
 
 func (a *App) setConfig(args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("用法: taiyiflow config set <key> <value>")
+		return fmt.Errorf("用法: taiyiflow-cli config set <key> <value>")
 	}
 
 	key := strings.TrimSpace(args[0])
@@ -70,7 +70,7 @@ func (a *App) setConfig(args []string) error {
 
 func (a *App) unsetConfig(args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("用法: taiyiflow config unset <key>")
+		return fmt.Errorf("用法: taiyiflow-cli config unset <key>")
 	}
 
 	key := strings.TrimSpace(args[0])
@@ -129,12 +129,12 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 		config.BackendBaseURL = normalizedURL
 	case "api_key":
 		if trimmedValue == "" {
-			return fmt.Errorf("api_key 不能为空，如需清空请使用 taiyiflow config unset api_key")
+			return fmt.Errorf("api_key 不能为空，如需清空请使用 taiyiflow-cli config unset api_key")
 		}
 		config.APIKey = trimmedValue
 	case "default_flow":
 		if trimmedValue == "" {
-			return fmt.Errorf("default_flow 不能为空，如需清空请使用 taiyiflow config unset default_flow")
+			return fmt.Errorf("default_flow 不能为空，如需清空请使用 taiyiflow-cli config unset default_flow")
 		}
 		config.DefaultFlow = trimmedValue
 	case "approval_mode":
@@ -147,12 +147,12 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 		}
 	case "workdir":
 		if trimmedValue == "" {
-			return fmt.Errorf("workdir 不能为空，如需清空请使用 taiyiflow config unset workdir")
+			return fmt.Errorf("workdir 不能为空，如需清空请使用 taiyiflow-cli config unset workdir")
 		}
 		config.Workdir = trimmedValue
 	case "output_language":
 		if trimmedValue == "" {
-			return fmt.Errorf("output_language 不能为空，如需重置请使用 taiyiflow config unset output_language")
+			return fmt.Errorf("output_language 不能为空，如需重置请使用 taiyiflow-cli config unset output_language")
 		}
 		config.OutputLanguage = trimmedValue
 	default:

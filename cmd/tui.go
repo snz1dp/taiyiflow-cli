@@ -20,7 +20,10 @@ import (
 )
 
 func (a *App) runTUI(ctx context.Context, args []string) error {
-	_ = args
+	startupCommand := ""
+	if len(args) > 0 {
+		startupCommand = strings.TrimSpace(args[0])
+	}
 
 	config, err := a.configManager.Load()
 	if err != nil {
@@ -59,7 +62,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	runner := func(runCtx context.Context, request tui.Request, emit func(tui.Event), confirm func(tui.ConfirmRequest) bool) error {
 		currentFlow := strings.TrimSpace(request.FlowID)
 		if currentFlow == "" {
-			return fmt.Errorf("未配置默认智能体，请先执行 taiyiflow agents use <名称>")
+			return fmt.Errorf("未配置默认智能体，请先执行 taiyiflow-cli agents use <名称>")
 		}
 
 		sessionState, err := a.prepareSession(currentFlow, false, workdir)
@@ -354,7 +357,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			}
 			agentLabel := snapshot.DefaultFlowLabel
 			if strings.TrimSpace(agentLabel) == "" {
-				agentLabel = sanitizeFlowDisplay(flowID)
+				agentLabel = a.resolveFlowDisplayName(commandCtx, providerClient, flowID)
 			}
 			if sessions == nil || len(sessions.Items) == 0 {
 				if sessions != nil && sessions.Total > 0 && page > 1 {
@@ -416,7 +419,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}
 	}
 
-	return tui.Run(ctx, snapshot, flowItems, runner, refreshSnapshot, flowChange, sessionChange, approvalChange, configFormSubmit, localCommand)
+	return tui.Run(ctx, snapshot, flowItems, runner, refreshSnapshot, flowChange, sessionChange, approvalChange, configFormSubmit, localCommand, startupCommand)
 }
 
 func (a *App) buildTUISnapshot(
@@ -432,7 +435,7 @@ func (a *App) buildTUISnapshot(
 		BackendAvailable:    backend.Available,
 		BackendStatusReason: strings.TrimSpace(backend.Reason),
 		DefaultFlow:         flowID,
-		DefaultFlowLabel:    sanitizeFlowDisplay(flowID),
+		DefaultFlowLabel:    a.resolveFlowDisplayName(ctx, providerClient, flowID),
 		Workdir:             resolveLocalWorkdir(config.Workdir),
 		ApprovalMode:        config.ApprovalMode,
 	}

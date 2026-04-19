@@ -63,17 +63,20 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	case "task":
 		return a.runTask(ctx, args[1:])
 	case "cli":
-		return errors.New("`cli` 子命令已移除，请改用 `taiyiflow task`")
+		return errors.New("`cli` 子命令已移除，请改用 `taiyiflow-cli task`")
 	case "config":
+		if len(args) == 1 {
+			return a.runTUI(ctx, []string{"/config"})
+		}
 		return a.runConfig(args[1:])
 	case "doctor":
 		return a.runDoctor(args[1:])
 	case "agents":
 		return a.runAgents(ctx, args[1:])
 	case "flows":
-		return errors.New("`flows` 子命令已移除，请改用 `taiyiflow agents`")
+		return errors.New("`flows` 子命令已移除，请改用 `taiyiflow-cli agents`")
 	case "tui":
-		return errors.New("`tui` 子命令已移除，请直接执行 `taiyiflow`")
+		return errors.New("`tui` 子命令已移除，请直接执行 `taiyiflow-cli`")
 	case "version":
 		return a.runVersion(args[1:])
 	case "help", "--help", "-h":
@@ -85,7 +88,7 @@ func (a *App) Run(ctx context.Context, args []string) error {
 }
 
 func (a *App) runTask(ctx context.Context, args []string) error {
-	flagSet := flag.NewFlagSet("taiyiflow", flag.ContinueOnError)
+	flagSet := flag.NewFlagSet("taiyiflow-cli", flag.ContinueOnError)
 	flagSet.SetOutput(a.stderr)
 
 	var options rootOptions
@@ -130,7 +133,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	if err != nil {
 		return err
 	}
-	flowDisplayName := sanitizeFlowDisplay(flowID)
+	flowDisplayName := a.resolveFlowDisplayName(ctx, providerClient, flowID)
 
 	metadata, err := providerClient.GetMetadata(ctx, flowID)
 	if err == nil && metadata.WelcomeMessage != "" {
@@ -164,7 +167,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 		case line == "/exit":
 			return nil
 		case line == "/agents":
-			fmt.Fprintln(a.stdout, "请使用 `taiyiflow agents` 查看或切换默认智能体。")
+			fmt.Fprintln(a.stdout, "请使用 `taiyiflow-cli agents` 查看或切换默认智能体。")
 			continue
 		case line == "/help":
 			a.printInteractiveUsage(ctx, providerClient, flowDisplayName, flowID, sessionState)
@@ -206,7 +209,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 
 			if err := a.ensureBackendAvailable(ctx, providerClient, config.BackendBaseURL); err != nil {
 				flowID = strings.TrimSpace(firstNonEmpty(options.Flow, config.DefaultFlow))
-				flowDisplayName = sanitizeFlowDisplay(flowID)
+				flowDisplayName = a.resolveFlowDisplayName(ctx, providerClient, flowID)
 				sessionState = agent.SessionState{FlowID: flowID, Workdir: workdir}
 				fmt.Fprintf(a.stderr, "提示: 新配置尚未连通服务端: %v\n", err)
 				continue
@@ -222,10 +225,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 				fmt.Fprintf(a.stderr, "提示: %v\n", err)
 				continue
 			}
-			flowDisplayName = sanitizeFlowDisplay(flowID)
-			if metadata, err := providerClient.GetMetadata(ctx, flowID); err == nil && strings.TrimSpace(metadata.Name) != "" {
-				flowDisplayName = metadata.Name
-			}
+			flowDisplayName = a.resolveFlowDisplayName(ctx, providerClient, flowID)
 			sessionState, err = a.prepareSession(flowID, false, workdir)
 			if err != nil {
 				return err
@@ -348,12 +348,12 @@ func (a *App) streamTask(
 
 func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "用法:")
-	fmt.Fprintln(a.stdout, "  taiyiflow")
-	fmt.Fprintln(a.stdout, "  taiyiflow task [--agent AGENT] [--new] [--continue] [任务描述]")
-	fmt.Fprintln(a.stdout, "  taiyiflow config [show|init|path|set|unset]")
-	fmt.Fprintln(a.stdout, "  taiyiflow doctor")
-	fmt.Fprintln(a.stdout, "  taiyiflow agents [list|current|use] [参数]")
-	fmt.Fprintln(a.stdout, "  taiyiflow version")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--new] [--continue] [任务描述]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli config [show|init|path|set|unset]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli agents [list|current|use] [参数]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli version")
 	fmt.Fprintf(a.stdout, "当前版本: %s\n", buildinfo.Version)
 }
 
@@ -367,7 +367,7 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 	fmt.Fprintln(a.stdout, "  /new      重置当前智能体的本地会话")
 	fmt.Fprintln(a.stdout, "  /clear    清屏")
 	fmt.Fprintln(a.stdout, "  /exit     退出")
-	fmt.Fprintln(a.stdout, "  提示: 交互模式下请使用 `taiyiflow agents` 管理默认智能体。")
+	fmt.Fprintln(a.stdout, "  提示: 交互模式下请使用 `taiyiflow-cli agents` 管理默认智能体。")
 	a.printSessionStatus(ctx, providerClient, flowDisplayName, flowID, sessionState)
 }
 
@@ -427,7 +427,7 @@ func (a *App) printSavedSessions(currentFlowID string, currentSessionID string, 
 func resolveFlowID(inputFlow string, defaultFlow string) (string, error) {
 	flowID := strings.TrimSpace(firstNonEmpty(inputFlow, defaultFlow))
 	if flowID == "" {
-		return "", errors.New("未配置默认智能体，请先执行 `taiyiflow agents` 查看可用智能体，再执行 `taiyiflow agents use <名称>` 或使用 `--agent` 指定")
+		return "", errors.New("未配置默认智能体，请先执行 `taiyiflow-cli agents` 查看可用智能体，再执行 `taiyiflow-cli agents use <名称>` 或使用 `--agent` 指定")
 	}
 	return flowID, nil
 }

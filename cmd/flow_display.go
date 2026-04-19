@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
 
 var likelyUUIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
@@ -18,7 +18,7 @@ func sanitizeFlowDisplay(value string) string {
 	return trimmed
 }
 
-func (a *App) resolveFlowDisplayName(ctx context.Context, client *providerclient.Client, flowIDOrName string) string {
+func (a *App) resolveFlowDisplayName(ctx context.Context, client provider.Provider, flowIDOrName string) string {
 	trimmed := strings.TrimSpace(flowIDOrName)
 	if trimmed == "" {
 		return "<未配置>"

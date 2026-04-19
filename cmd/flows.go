@@ -61,7 +61,7 @@ func (a *App) runAgents(ctx context.Context, args []string) error {
 	if config.DefaultFlow != "" {
 		fmt.Fprintf(a.stdout, "\n当前默认智能体: %s\n", a.resolveFlowDisplayName(ctx, client, config.DefaultFlow))
 	}
-	fmt.Fprintln(a.stdout, "可使用 `taiyiflow agents use <名称>` 更新默认智能体。")
+	fmt.Fprintln(a.stdout, "可使用 `taiyiflow-cli agents use <名称>` 更新默认智能体。")
 
 	return nil
 }
@@ -78,7 +78,7 @@ func (a *App) showCurrentAgent(ctx context.Context) error {
 	}
 	if strings.TrimSpace(config.DefaultFlow) == "" {
 		fmt.Fprintln(a.stdout, "当前未配置默认智能体。")
-		fmt.Fprintln(a.stdout, "请先执行 `taiyiflow agents` 查看可用智能体。")
+		fmt.Fprintln(a.stdout, "请先执行 `taiyiflow-cli agents` 查看可用智能体。")
 		return nil
 	}
 	fmt.Fprintf(a.stdout, "当前默认智能体: %s\n", a.resolveFlowDisplayName(ctx, client, config.DefaultFlow))
@@ -87,7 +87,7 @@ func (a *App) showCurrentAgent(ctx context.Context) error {
 
 func (a *App) useAgent(ctx context.Context, args []string) error {
 	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
-		return fmt.Errorf("用法: taiyiflow agents use <名称>")
+		return fmt.Errorf("用法: taiyiflow-cli agents use <名称>")
 	}
 
 	config, err := a.configManager.Load()
