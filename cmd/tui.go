@@ -110,6 +110,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					return configErr
 				}
 				emit(tui.Event{Kind: tui.EventBuiltInCall})
+				emit(tui.Event{Kind: tui.EventSystemNote, Text: "执行回调: run_command_via_client"})
 				if requiresTUICommandConfirmation(localConfig, event.Data) {
 					approved := confirm(buildTUIConfirmRequest(event.Data))
 					if !approved {
@@ -312,10 +313,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				return tui.LocalCommandResult{}, err
 			}
 			return tui.LocalCommandResult{
-				Handled: true,
+				Handled:      true,
+				ClearHistory: true,
 				Events: []tui.Event{
 					{Kind: tui.EventSessionUpdate, SessionID: ""},
-					{Kind: tui.EventSystemNote, Text: "已重置当前智能体的本地会话。"},
 				},
 			}, nil
 		default:

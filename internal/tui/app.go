@@ -1477,7 +1477,9 @@ func (m *model) handleLocalSlashCommand(command string) (bool, tea.Cmd) {
 
 func (m *model) applyLocalCommandResult(result LocalCommandResult) {
 	if result.ClearHistory {
-		m.entries = buildInitialEntries(m.snapshot)
+		m.entries = buildWelcomeEntries(m.snapshot)
+		m.activityHint = ""
+		m.requestStats = RequestMetrics{}
 	}
 	if result.SessionPicker != nil {
 		m.sessionPicker = result.SessionPicker
@@ -1623,6 +1625,13 @@ func buildInitialEntries(snapshot Snapshot) []entry {
 		entries = append(entries, entry{role: "welcome", content: strings.TrimSpace(snapshot.WelcomeMessage)})
 	}
 	return entries
+}
+
+func buildWelcomeEntries(snapshot Snapshot) []entry {
+	if strings.TrimSpace(snapshot.WelcomeMessage) == "" {
+		return nil
+	}
+	return []entry{{role: "welcome", content: strings.TrimSpace(snapshot.WelcomeMessage)}}
 }
 
 func (m model) shouldPinHistoryTop() bool {
