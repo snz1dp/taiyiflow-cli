@@ -135,6 +135,24 @@ type SessionList struct {
 	Items  []SessionSummary
 }
 
+type SessionMessage struct {
+	ID          string
+	SessionID   string
+	RunID       string
+	Sender      string
+	SenderName  string
+	Text        string
+	SessionName string
+	Timestamp   time.Time
+	Error       bool
+}
+
+type SessionMessageList struct {
+	Total  int
+	Offset int
+	Items  []SessionMessage
+}
+
 type ClientCallResult struct {
 	FlowID       string
 	SessionID    string
@@ -150,6 +168,7 @@ type Provider interface {
 	Name() string
 	ListFlows(ctx context.Context, filter string, agentType string, offset, limit int) (*FlowList, error)
 	ListSessions(ctx context.Context, flowID string, offset, limit int) (*SessionList, error)
+	ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*SessionMessageList, error)
 	GetVersionInfo(ctx context.Context) (*ServiceVersion, error)
 	GetMetadata(ctx context.Context, flowID string) (*Metadata, error)
 	Stream(ctx context.Context, request StreamRequest) (<-chan StreamEvent, *StreamSession, error)

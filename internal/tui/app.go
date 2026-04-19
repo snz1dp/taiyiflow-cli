@@ -5,7 +5,6 @@ import (
 	cryptorand "crypto/rand"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -30,7 +29,14 @@ type Snapshot struct {
 	Workdir          string
 	ApprovalMode     string
 	SessionID        string
+	SessionTitle     string
+	History          []HistoryEntry
 	WelcomeMessage   string
+}
+
+type HistoryEntry struct {
+	Role    string
+	Content string
 }
 
 type FlowItem struct {
@@ -38,6 +44,34 @@ type FlowItem struct {
 	Name        string
 	Description string
 	Type        string
+}
+
+type SessionItem struct {
+	ID           string
+	Title        string
+	RelativeTime string
+	IsCurrent    bool
+}
+
+type SessionPickerState struct {
+	Title      string
+	Hint       string
+	Page       int
+	TotalPages int
+	Items      []SessionItem
+}
+
+type ApprovalOption struct {
+	Value       string
+	Label       string
+	Description string
+	IsCurrent   bool
+}
+
+type ApprovalPickerState struct {
+	Title   string
+	Hint    string
+	Options []ApprovalOption
 }
 
 type slashCommand struct {
@@ -121,14 +155,20 @@ type ConfirmRequest struct {
 }
 
 type LocalCommandResult struct {
-	Handled      bool
-	ClearHistory bool
-	Events       []Event
+	Handled        bool
+	ClearHistory   bool
+	Events         []Event
+	SessionPicker  *SessionPickerState
+	ApprovalPicker *ApprovalPickerState
 }
 
 type Runner func(ctx context.Context, request Request, emit func(Event), confirm func(ConfirmRequest) bool) error
 
 type FlowChangeHandler func(ctx context.Context, flowID string) (Snapshot, error)
+
+type SessionChangeHandler func(ctx context.Context, snapshot Snapshot, sessionID string) (Snapshot, error)
+
+type ApprovalChangeHandler func(ctx context.Context, mode string) (Snapshot, error)
 
 type LocalCommandHandler func(ctx context.Context, command string, snapshot Snapshot) (LocalCommandResult, error)
 
@@ -140,6 +180,7 @@ type entry struct {
 type confirmState struct {
 	request    ConfirmRequest
 	responseCh chan bool
+	cursor     int
 }
 
 type streamEventMsg struct {
@@ -162,6 +203,24 @@ type flowChangedMsg struct {
 	err      error
 }
 
+type sessionChangedMsg struct {
+	snapshot     Snapshot
+	sessionID    string
+	sessionTitle string
+	err          error
+}
+
+type sessionPickerLoadedMsg struct {
+	result LocalCommandResult
+	err    error
+}
+
+type approvalChangedMsg struct {
+	snapshot Snapshot
+	mode     string
+	err      error
+}
+
 type progressPhase string
 
 const (
@@ -171,6 +230,8 @@ const (
 	progressConfirming progressPhase = "confirming"
 	progressExecuting  progressPhase = "executing"
 	progressSwitching  progressPhase = "switching"
+	progressSession    progressPhase = "session"
+	progressApproval   progressPhase = "approval"
 	progressFailed     progressPhase = "failed"
 )
 
@@ -187,6 +248,8 @@ type model struct {
 	flows          []FlowItem
 	runner         Runner
 	flowChange     FlowChangeHandler
+	sessionChange  SessionChangeHandler
+	approvalChange ApprovalChangeHandler
 	localCommand   LocalCommandHandler
 	eventCh        chan tea.Msg
 	entries        []entry
@@ -204,7 +267,11 @@ type model struct {
 	ready          bool
 	quitting       bool
 	showFlowPicker bool
+	sessionPicker  *SessionPickerState
+	approvalPicker *ApprovalPickerState
 	flowCursor     int
+	sessionCursor  int
+	approvalCursor int
 	commandCursor  int
 	pendingConfirm *confirmState
 	requestCancel  context.CancelFunc
@@ -234,14 +301,7 @@ var (
 	valueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#E8F5E9"))
 	hintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#A5D6A7"))
 
-	userStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#C8E6C9")).
-			Bold(true)
-
-	assistantStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#F1F8E9"))
-	progressNoteStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#A5D6A7"))
-	systemStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#81C784"))
-	errorStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true)
+	assistantStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F1F8E9"))
 
 	userMessageStyle = lipgloss.NewStyle().
 				BorderStyle(lipgloss.NormalBorder()).
@@ -253,8 +313,7 @@ var (
 	assistantMessageStyle = lipgloss.NewStyle().
 				BorderStyle(lipgloss.NormalBorder()).
 				BorderLeft(true).
-				BorderForeground(lipgloss.Color("#AED581")).
-				PaddingLeft(1)
+				BorderForeground(lipgloss.Color("#AED581"))
 
 	systemMessageStyle = lipgloss.NewStyle().
 				BorderStyle(lipgloss.NormalBorder()).
@@ -307,9 +366,12 @@ var (
 
 	minimalHistoryStyle = lipgloss.NewStyle()
 
-	inlineProgressStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#A5D6A7")).
-				Padding(0, 1)
+	transientStatusStyle = lipgloss.NewStyle().
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderLeft(true).
+				BorderForeground(lipgloss.Color("#4CAF50")).
+				PaddingLeft(1).
+				Foreground(lipgloss.Color("#A5D6A7"))
 
 	statusAccentStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#F1F8E9")).
@@ -328,7 +390,7 @@ var (
 
 var slashCommands = []slashCommand{
 	{Trigger: "/agents", Completion: "/agents ", Description: "打开智能体选择，或用 /agents <名称> 直接切换"},
-	{Trigger: "/command", Completion: "/command ", Description: "在当前目录执行本地 shell 命令"},
+	{Trigger: "/mode", Completion: "/mode", Description: "打开命令执行模式选择"},
 	{Trigger: "/new", Completion: "/new", Description: "重置当前智能体的本地会话"},
 	{Trigger: "/session", Completion: "/session", Description: "显示当前会话状态"},
 	{Trigger: "/sessions", Completion: "/sessions ", Description: "列出当前智能体的服务端会话，可附页码"},
@@ -337,7 +399,7 @@ var slashCommands = []slashCommand{
 	{Trigger: "/exit", Completion: "/exit", Description: "退出当前 TUI 会话"},
 }
 
-func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, flowChange FlowChangeHandler, localCommand LocalCommandHandler) error {
+func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, localCommand LocalCommandHandler) error {
 	inputModel := textarea.New()
 	inputModel.Placeholder = "输入内容后回车发送"
 	inputModel.Prompt = "> "
@@ -361,20 +423,22 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 
 	initialEntries := buildInitialEntries(snapshot)
 	program := tea.NewProgram(model{
-		ctx:          ctx,
-		snapshot:     snapshot,
-		flows:        flows,
-		runner:       runner,
-		flowChange:   flowChange,
-		localCommand: localCommand,
-		eventCh:      make(chan tea.Msg),
-		entries:      initialEntries,
-		input:        inputModel,
-		flowFilter:   flowFilterModel,
-		viewport:     viewportModel,
-		progress:     progressModel,
-		state:        newProgressState(progressIdle),
-		flowCursor:   currentFlowIndex(flows, snapshot.DefaultFlow),
+		ctx:            ctx,
+		snapshot:       snapshot,
+		flows:          flows,
+		runner:         runner,
+		flowChange:     flowChange,
+		sessionChange:  sessionChange,
+		approvalChange: approvalChange,
+		localCommand:   localCommand,
+		eventCh:        make(chan tea.Msg),
+		entries:        initialEntries,
+		input:          inputModel,
+		flowFilter:     flowFilterModel,
+		viewport:       viewportModel,
+		progress:       progressModel,
+		state:          newProgressState(progressIdle),
+		flowCursor:     currentFlowIndex(flows, snapshot.DefaultFlow),
 	}, tea.WithAltScreen())
 	finalModel, err := program.Run()
 	if err == nil {
@@ -439,7 +503,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.Focus()
 		return m, progressCmd
 	case confirmRequestMsg:
-		m.pendingConfirm = &confirmState{request: typed.request, responseCh: typed.responseCh}
+		m.pendingConfirm = &confirmState{request: typed.request, responseCh: typed.responseCh, cursor: 0}
 		m.input.Blur()
 		return m, tea.Batch(m.transitionProgress(progressConfirming), waitForStream(m.eventCh))
 	case flowChangedMsg:
@@ -462,9 +526,55 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncViewport()
 		m.input.Focus()
 		return m, m.transitionProgress(progressIdle)
+	case sessionChangedMsg:
+		if typed.err != nil {
+			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
+			m.syncViewport()
+			m.input.Focus()
+			return m, m.transitionProgress(progressFailed)
+		}
+		m.snapshot = typed.snapshot
+		m.sessionPicker = nil
+		m.activityHint = ""
+		m.entries = buildInitialEntries(m.snapshot)
+		m.entries = append(m.entries, entry{role: "system", content: RenderSessionStatusText(m.snapshot, "已切换会话")})
+		m.syncViewport()
+		m.input.Focus()
+		return m, m.transitionProgress(progressIdle)
+	case sessionPickerLoadedMsg:
+		if typed.err != nil {
+			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
+			m.syncViewport()
+			return m, nil
+		}
+		m.applyLocalCommandResult(typed.result)
+		return m, nil
+	case approvalChangedMsg:
+		if typed.err != nil {
+			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
+			m.syncViewport()
+			m.input.Focus()
+			return m, m.transitionProgress(progressFailed)
+		}
+		m.snapshot = typed.snapshot
+		m.approvalPicker = nil
+		m.approvalCursor = 0
+		m.input.Focus()
+		m.entries = append(m.entries, entry{role: "system", content: fmt.Sprintf("已切换命令执行模式: %s", approvalModeLabel(typed.mode))})
+		m.syncViewport()
+		if m.state.phase == progressApproval {
+			return m, m.transitionProgress(progressIdle)
+		}
+		return m, nil
 	case tea.KeyMsg:
 		if m.pendingConfirm != nil {
 			return m.handleConfirmKey(typed)
+		}
+		if m.approvalPicker != nil {
+			return m.handleApprovalPickerKey(typed)
+		}
+		if m.sessionPicker != nil {
+			return m.handleSessionPickerKey(typed)
 		}
 		if m.showFlowPicker {
 			return m.handleFlowPickerKey(typed)
@@ -553,6 +663,11 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		}
+		if strings.HasPrefix(input, "!") {
+			if commandHandled, cmd := m.handleLocalSlashCommand(input); commandHandled {
+				return m, cmd
+			}
+		}
 		if commandHandled, cmd := m.handleSlashCommand(input); commandHandled {
 			return m, cmd
 		}
@@ -581,16 +696,127 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "y", "Y", "enter":
+	case "left", "h", "up", "k":
+		if m.pendingConfirm.cursor > 0 {
+			m.pendingConfirm.cursor--
+		}
+		return m, nil
+	case "right", "l", "down", "j", "tab":
+		if m.pendingConfirm.cursor < 2 {
+			m.pendingConfirm.cursor++
+		} else {
+			m.pendingConfirm.cursor = 0
+		}
+		return m, nil
+	case "y", "Y":
+		m.pendingConfirm.cursor = 0
 		m.pendingConfirm.responseCh <- true
 		close(m.pendingConfirm.responseCh)
 		m.pendingConfirm = nil
 		return m, tea.Batch(m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
+	case "a", "A":
+		m.pendingConfirm.cursor = 2
+		m.pendingConfirm.responseCh <- true
+		close(m.pendingConfirm.responseCh)
+		m.pendingConfirm = nil
+		if m.approvalChange != nil {
+			return m, tea.Batch(changeApprovalModeCmd(m.ctx, "auto", m.approvalChange), m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
+		}
+		return m, tea.Batch(m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
+	case "enter":
+		approved := m.pendingConfirm.cursor != 1
+		alwaysApprove := m.pendingConfirm.cursor == 2
+		m.pendingConfirm.responseCh <- approved
+		close(m.pendingConfirm.responseCh)
+		m.pendingConfirm = nil
+		if approved {
+			if alwaysApprove && m.approvalChange != nil {
+				return m, tea.Batch(changeApprovalModeCmd(m.ctx, "auto", m.approvalChange), m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
+			}
+			return m, tea.Batch(m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
+		}
+		return m, tea.Batch(m.transitionProgress(progressStreaming), waitForStream(m.eventCh))
 	case "n", "N", "q", "esc", "ctrl+c":
+		m.pendingConfirm.cursor = 1
 		m.pendingConfirm.responseCh <- false
 		close(m.pendingConfirm.responseCh)
 		m.pendingConfirm = nil
 		return m, tea.Batch(m.transitionProgress(progressStreaming), waitForStream(m.eventCh))
+	default:
+		return m, nil
+	}
+}
+
+func (m model) handleApprovalPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.approvalPicker == nil {
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc", "q", "ctrl+c":
+		m.closeApprovalPicker()
+		return m, nil
+	case "up", "k":
+		if m.approvalCursor > 0 {
+			m.approvalCursor--
+		}
+		return m, nil
+	case "down", "j", "tab":
+		if len(m.approvalPicker.Options) > 0 {
+			m.approvalCursor = (m.approvalCursor + 1) % len(m.approvalPicker.Options)
+		}
+		return m, nil
+	case "enter":
+		if m.approvalPicker == nil || len(m.approvalPicker.Options) == 0 || m.approvalChange == nil {
+			m.closeApprovalPicker()
+			return m, nil
+		}
+		selected := m.approvalPicker.Options[m.approvalCursor]
+		return m, tea.Batch(changeApprovalModeCmd(m.ctx, selected.Value, m.approvalChange), m.transitionProgress(progressApproval))
+	default:
+		return m, nil
+	}
+}
+
+func (m model) handleSessionPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.sessionPicker == nil {
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc", "q", "ctrl+c":
+		m.closeSessionPicker()
+		return m, nil
+	case "up", "k":
+		if m.sessionCursor > 0 {
+			m.sessionCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.sessionCursor < len(m.sessionPicker.Items)-1 {
+			m.sessionCursor++
+		}
+		return m, nil
+	case "left", "h", "pgup":
+		if m.sessionPicker.Page > 1 {
+			return m, m.loadSessionPickerPage(m.sessionPicker.Page - 1)
+		}
+		return m, nil
+	case "right", "l", "pgdown":
+		if m.sessionPicker.Page < m.sessionPicker.TotalPages {
+			return m, m.loadSessionPickerPage(m.sessionPicker.Page + 1)
+		}
+		return m, nil
+	case "tab":
+		if len(m.sessionPicker.Items) > 0 {
+			m.sessionCursor = (m.sessionCursor + 1) % len(m.sessionPicker.Items)
+		}
+		return m, nil
+	case "enter":
+		if len(m.sessionPicker.Items) == 0 || m.sessionChange == nil {
+			m.closeSessionPicker()
+			return m, nil
+		}
+		selected := m.sessionPicker.Items[m.sessionCursor]
+		return m, tea.Batch(m.transitionProgress(progressSession), changeSessionCmd(m.ctx, m.snapshot, selected.ID, selected.Title, m.sessionChange))
 	default:
 		return m, nil
 	}
@@ -684,9 +910,33 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		}
 	case EventSessionUpdate:
 		m.snapshot.SessionID = strings.TrimSpace(event.SessionID)
+		if strings.TrimSpace(event.SessionID) == "" {
+			m.snapshot.SessionTitle = ""
+		}
 	}
 	m.syncViewport()
 	return cmd
+}
+
+func RenderSessionStatusText(snapshot Snapshot, prefix string) string {
+	agentLabel := snapshot.DefaultFlowLabel
+	if strings.TrimSpace(agentLabel) == "" {
+		agentLabel = sanitizeFlowLabel(snapshot.DefaultFlow)
+	}
+	lines := []string{}
+	if strings.TrimSpace(prefix) != "" {
+		lines = append(lines, prefix)
+	}
+	sessionID := strings.TrimSpace(snapshot.SessionID)
+	if sessionID == "" {
+		lines = append(lines, "当前会话: <未建立>")
+		return strings.Join(lines, "\n")
+	}
+	lines = append(lines, fmt.Sprintf("当前会话: %s", sessionID))
+	if title := strings.TrimSpace(snapshot.SessionTitle); title != "" {
+		lines = append(lines, fmt.Sprintf("会话标题: %s", title))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *model) completeInterruptedRequest() tea.Cmd {
@@ -724,10 +974,7 @@ func (m *model) syncLayout() {
 	if !m.useMinimalChrome() {
 		fixedHeight = 8 + maxInt(0, inputHeight-1)
 	}
-	if m.showProgressLine() {
-		fixedHeight += 2
-	}
-	if m.pendingConfirm != nil || m.showFlowPicker {
+	if m.pendingConfirm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil {
 		fixedHeight += 3
 	}
 	historyHeight := m.height - fixedHeight
@@ -756,6 +1003,12 @@ func (m *model) syncLayout() {
 
 func (m *model) syncViewport() {
 	content := renderEntries(m.entries, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot)
+	if transient := m.renderTransientStatus(); transient != "" {
+		if strings.TrimSpace(content) != "" {
+			content += "\n\n"
+		}
+		content += transient
+	}
 	m.viewport.SetContent(content)
 	if m.shouldPinHistoryTop() {
 		m.viewport.GotoTop()
@@ -772,16 +1025,13 @@ func (m model) View() string {
 	header := m.renderHeader()
 	history := m.renderHistoryPane()
 	inputView := m.input.View()
-	if m.pendingConfirm != nil || m.showFlowPicker {
+	if m.pendingConfirm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil {
 		inputView = hintStyle.Render("当前有未处理的弹层，请先完成操作。")
 	} else if commandHints := m.renderSlashCommandHints(); commandHints != "" {
 		inputView = lipgloss.JoinVertical(lipgloss.Left, inputView, "", commandHints)
 	}
 	inputBox := inputStyle.Width(m.contentWidth - 6).Render(inputView)
 	parts := []string{header, history}
-	if m.showProgressLine() {
-		parts = append(parts, m.renderProgressLine())
-	}
 	parts = append(parts, inputBox, m.renderStatusBar())
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	if overlay := m.renderOverlay(); overlay != "" {
@@ -798,15 +1048,15 @@ func (m model) renderHeader() string {
 	flowLabel := fallback(m.snapshot.DefaultFlowLabel, "未配置")
 	clientVersion := fallback(m.snapshot.Version, "0.1.0")
 	serverVersion := m.serverVersionLabel()
-	workdir := fallback(filepath.Base(m.snapshot.Workdir), ".")
+	workdir := fallback(strings.TrimSpace(m.snapshot.Workdir), ".")
+	workdirWidth := maxInt(18, m.contentWidth/2)
 	headline := joinStatusSegments([]string{
-		"太乙智启 Terminal",
-		"C " + clientVersion,
-		"S " + serverVersion,
+		"太乙智启 CLI v" + clientVersion,
+		serverVersion,
 	}, "  ·  ")
 	contextLine := joinStatusSegments([]string{
-		"智能体 " + flowLabel,
-		"目录 " + workdir,
+		" " + flowLabel,
+		" " + trimLeftForWidth(workdir, workdirWidth),
 	}, "  ·  ")
 	if m.useMinimalChrome() {
 		lines := []string{
@@ -830,8 +1080,19 @@ func (m model) renderHistoryPane() string {
 	return historyFrameStyle.Width(width).Render(m.viewport.View())
 }
 
-func (m model) renderProgressLine() string {
-	return inlineProgressStyle.Width(m.contentWidth).Render(trimForWidth(strings.TrimSpace(m.activityHint), m.contentWidth-2))
+func (m model) renderTransientStatus() string {
+	status := strings.TrimSpace(m.activityHint)
+	if status == "" {
+		return ""
+	}
+	width := m.viewport.Width - 2
+	if width < 18 {
+		width = 18
+	}
+	lines := []string{
+		trimForWidth(status, width),
+	}
+	return transientStatusStyle.Width(width).Render(strings.Join(lines, "\n"))
 }
 
 func (m model) renderStatusBar() string {
@@ -869,21 +1130,102 @@ func (m model) renderSlashCommandHints() string {
 
 func (m model) renderOverlay() string {
 	if m.pendingConfirm != nil {
-		request := m.pendingConfirm.request
-		lines := []string{request.Title}
-		if strings.TrimSpace(request.Command) != "" {
-			lines = append(lines, "命令: "+request.Command)
-		}
-		if strings.TrimSpace(request.Detail) != "" {
-			lines = append(lines, request.Detail)
-		}
-		lines = append(lines, "按 y 或 Enter 确认，按 n 或 Esc 拒绝。")
-		return overlayStyle.Width(minInt(m.contentWidth-6, 90)).Render(strings.Join(lines, "\n\n"))
+		return overlayStyle.Width(minInt(m.contentWidth-6, 90)).Render(m.renderConfirmOverlay())
+	}
+	if m.approvalPicker != nil {
+		return overlayStyle.Width(minInt(m.contentWidth-6, 90)).Render(m.renderApprovalPicker())
+	}
+	if m.sessionPicker != nil {
+		return overlayStyle.Width(minInt(m.contentWidth-6, 90)).Render(m.renderSessionPicker())
 	}
 	if m.showFlowPicker {
 		return overlayStyle.Width(minInt(m.contentWidth-6, 90)).Render(m.renderFlowPicker())
 	}
 	return ""
+}
+
+func (m model) renderConfirmOverlay() string {
+	request := m.pendingConfirm.request
+	lines := []string{request.Title}
+	if strings.TrimSpace(request.Command) != "" {
+		lines = append(lines, "命令: "+request.Command)
+	}
+	if strings.TrimSpace(request.Detail) != "" {
+		lines = append(lines, request.Detail)
+	}
+	options := []string{
+		m.renderOverlayOption("确认执行", m.pendingConfirm.cursor == 0),
+		m.renderOverlayOption("拒绝", m.pendingConfirm.cursor == 1),
+		m.renderOverlayOption("以后都同意", m.pendingConfirm.cursor == 2),
+	}
+	lines = append(lines, "", lipgloss.JoinHorizontal(lipgloss.Left, options[0], "  ", options[1], "  ", options[2]), "使用方向键或 Tab 选择，Enter 确认。")
+	return strings.Join(lines, "\n\n")
+}
+
+func (m model) renderApprovalPicker() string {
+	if m.approvalPicker == nil {
+		return ""
+	}
+	lines := []string{
+		m.approvalPicker.Title,
+		fallback(strings.TrimSpace(m.approvalPicker.Hint), "使用方向键选择，Enter 确认，Esc 关闭。"),
+		"",
+	}
+	for index, option := range m.approvalPicker.Options {
+		line := fmt.Sprintf("%s  %s", flowCursor(index == m.approvalCursor), option.Label)
+		if option.IsCurrent {
+			line += "  [当前]"
+		}
+		if index == m.approvalCursor {
+			line = selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-16))
+		} else {
+			line = commandHintStyle.Render(trimForWidth(line, m.contentWidth-16))
+		}
+		lines = append(lines, line)
+		if strings.TrimSpace(option.Description) != "" {
+			lines = append(lines, hintStyle.Render(trimForWidth(option.Description, m.contentWidth-16)))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m model) renderSessionPicker() string {
+	if m.sessionPicker == nil {
+		return ""
+	}
+	lines := []string{
+		m.sessionPicker.Title,
+		fallback(strings.TrimSpace(m.sessionPicker.Hint), "使用方向键选择，左右键翻页，Enter 切换当前会话，Esc 关闭。"),
+		fmt.Sprintf("第 %d / %d 页", m.sessionPicker.Page, m.sessionPicker.TotalPages),
+		"",
+	}
+	if len(m.sessionPicker.Items) == 0 {
+		lines = append(lines, hintStyle.Render("当前页没有会话。"))
+		return strings.Join(lines, "\n")
+	}
+	for index, item := range m.sessionPicker.Items {
+		line := fmt.Sprintf("%s  %s", flowCursor(index == m.sessionCursor), item.Title)
+		if strings.TrimSpace(item.RelativeTime) != "" {
+			line += "  " + item.RelativeTime
+		}
+		if item.IsCurrent {
+			line += "  [当前]"
+		}
+		if index == m.sessionCursor {
+			line = selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-16))
+		} else {
+			line = commandHintStyle.Render(trimForWidth(line, m.contentWidth-16))
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m model) renderOverlayOption(label string, selected bool) string {
+	if selected {
+		return selectedFlowStyle.Render(label)
+	}
+	return commandHintStyle.Render(label)
 }
 
 func (m model) renderFlowPicker() string {
@@ -942,10 +1284,6 @@ func (m model) statusBarSegments() []string {
 	}
 	segments = append([]string{"" + fallback(m.snapshot.DefaultFlowLabel, "未配置")}, segments...)
 	return segments
-}
-
-func (m model) showProgressLine() bool {
-	return strings.TrimSpace(m.activityHint) != ""
 }
 
 func (m model) useMinimalChrome() bool {
@@ -1058,18 +1396,34 @@ func (m *model) handleLocalSlashCommand(command string) (bool, tea.Cmd) {
 	if !result.Handled {
 		return false, nil
 	}
+	m.applyLocalCommandResult(result)
+	return true, nil
+}
+
+func (m *model) applyLocalCommandResult(result LocalCommandResult) {
 	if result.ClearHistory {
 		m.entries = buildInitialEntries(m.snapshot)
+	}
+	if result.SessionPicker != nil {
+		m.sessionPicker = result.SessionPicker
+		m.sessionCursor = 0
+		m.approvalPicker = nil
+		m.input.Blur()
+	}
+	if result.ApprovalPicker != nil {
+		m.approvalPicker = result.ApprovalPicker
+		m.approvalCursor = 0
+		m.sessionPicker = nil
+		m.input.Blur()
 	}
 	for _, event := range result.Events {
 		m.applyEvent(event)
 	}
 	m.syncViewport()
-	return true, nil
 }
 
 func (m model) showSlashCommandHints() bool {
-	if m.pendingConfirm != nil || m.showFlowPicker || m.isBusy() {
+	if m.pendingConfirm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil || m.isBusy() {
 		return false
 	}
 	trimmed := strings.TrimSpace(m.input.Value())
@@ -1139,11 +1493,67 @@ func waitForStream(eventCh chan tea.Msg) tea.Cmd {
 	}
 }
 
+func changeSessionCmd(ctx context.Context, snapshot Snapshot, sessionID string, sessionTitle string, handler SessionChangeHandler) tea.Cmd {
+	return func() tea.Msg {
+		updated, err := handler(ctx, snapshot, sessionID)
+		return sessionChangedMsg{snapshot: updated, sessionID: sessionID, sessionTitle: sessionTitle, err: err}
+	}
+}
+
+func loadSessionPickerCmd(ctx context.Context, snapshot Snapshot, command string, handler LocalCommandHandler) tea.Cmd {
+	return func() tea.Msg {
+		result, err := handler(ctx, command, snapshot)
+		return sessionPickerLoadedMsg{result: result, err: err}
+	}
+}
+
+func changeApprovalModeCmd(ctx context.Context, mode string, handler ApprovalChangeHandler) tea.Cmd {
+	return func() tea.Msg {
+		snapshot, err := handler(ctx, mode)
+		return approvalChangedMsg{snapshot: snapshot, mode: mode, err: err}
+	}
+}
+
+func (m *model) loadSessionPickerPage(page int) tea.Cmd {
+	if m.localCommand == nil {
+		return nil
+	}
+	return loadSessionPickerCmd(m.ctx, m.snapshot, fmt.Sprintf("/sessions %d", page), m.localCommand)
+}
+
+func (m *model) closeSessionPicker() {
+	m.sessionPicker = nil
+	m.sessionCursor = 0
+	m.input.Focus()
+}
+
+func (m *model) closeApprovalPicker() {
+	m.approvalPicker = nil
+	m.approvalCursor = 0
+	m.input.Focus()
+}
+
 func buildInitialEntries(snapshot Snapshot) []entry {
-	return []entry{{role: "welcome", content: strings.TrimSpace(snapshot.WelcomeMessage)}}
+	entries := []entry{}
+	if strings.TrimSpace(snapshot.WelcomeMessage) != "" {
+		entries = append(entries, entry{role: "welcome", content: strings.TrimSpace(snapshot.WelcomeMessage)})
+	}
+	for _, item := range snapshot.History {
+		if strings.TrimSpace(item.Content) == "" {
+			continue
+		}
+		entries = append(entries, entry{role: item.Role, content: item.Content})
+	}
+	if len(entries) == 0 {
+		entries = append(entries, entry{role: "welcome", content: strings.TrimSpace(snapshot.WelcomeMessage)})
+	}
+	return entries
 }
 
 func (m model) shouldPinHistoryTop() bool {
+	if len(m.entries) != 1 {
+		return false
+	}
 	for _, item := range m.entries {
 		switch item.role {
 		case "user", "assistant", "error":
@@ -1165,6 +1575,10 @@ func newProgressState(phase progressPhase) progressState {
 		return progressState{phase: phase, label: "处理中", hint: "", percent: 0.86}
 	case progressSwitching:
 		return progressState{phase: phase, label: "切换智能体中", hint: "正在更新默认智能体和会话上下文", percent: 0.46}
+	case progressSession:
+		return progressState{phase: phase, label: "切换会话中", hint: "正在更新当前会话", percent: 0.46}
+	case progressApproval:
+		return progressState{phase: phase, label: "更新模式中", hint: "正在更新命令执行模式", percent: 0.46}
 	case progressFailed:
 		return progressState{phase: phase, label: "执行失败", hint: "当前可继续输入新的请求", percent: 1}
 	default:
@@ -1179,7 +1593,7 @@ func (m *model) transitionProgress(phase progressPhase) tea.Cmd {
 
 func (m model) isBusy() bool {
 	switch m.state.phase {
-	case progressSending, progressStreaming, progressConfirming, progressExecuting, progressSwitching:
+	case progressSending, progressStreaming, progressConfirming, progressExecuting, progressSwitching, progressSession, progressApproval:
 		return true
 	default:
 		return false
@@ -1254,7 +1668,7 @@ func snapshotServerVersion(snapshot Snapshot) string {
 		version = "未知"
 	}
 	if pkg := strings.TrimSpace(snapshot.ServerPackage); pkg != "" {
-		return " 服务版本：v" + version
+		return "服务版本 v" + version
 	}
 	return version
 }
@@ -1303,7 +1717,7 @@ func renderWelcomePane(snapshot Snapshot, welcomeMessage string, width int, heig
 			"" + fallback(snapshot.DefaultFlowLabel, "未配置"),
 			"" + compactSessionID(snapshot.SessionID),
 		}, "  ·  "), innerWidth), innerWidth)),
-		hintStyle.Render(centerText(trimForWidth("/agents /command /session /new /exit", innerWidth), innerWidth)),
+		hintStyle.Render(centerText(trimForWidth("/agents /mode /session /new /exit", innerWidth), innerWidth)),
 	}
 	if strings.TrimSpace(welcomeMessage) != "" {
 		footerLines = append(footerLines, "", hintStyle.Render(centerText(trimForWidth(strings.TrimSpace(welcomeMessage), innerWidth), innerWidth)))
@@ -1500,7 +1914,7 @@ func renderMarkdown(content string, width int, renderer *glamour.TermRenderer) s
 	if err != nil {
 		return assistantStyle.Render(trimmed)
 	}
-	return strings.TrimRight(rendered, "\n")
+	return strings.Trim(rendered, "\n")
 }
 
 func isTransientSystemStatus(text string) bool {
@@ -1592,6 +2006,24 @@ func trimForWidth(text string, width int) string {
 	return trimmed + ellipsis
 }
 
+func trimLeftForWidth(text string, width int) string {
+	if width <= 0 {
+		return text
+	}
+	if lipgloss.Width(text) <= width {
+		return text
+	}
+	ellipsis := "..."
+	if width <= lipgloss.Width(ellipsis) {
+		return ellipsis[:width]
+	}
+	trimmed := text
+	for lipgloss.Width(trimmed)+lipgloss.Width(ellipsis) > width && len(trimmed) > 0 {
+		trimmed = trimmed[1:]
+	}
+	return ellipsis + trimmed
+}
+
 func flowCursor(selected bool) string {
 	if selected {
 		return ">"
@@ -1616,8 +2048,8 @@ func isExecutableSlashCommandInput(input string) bool {
 	switch {
 	case strings.EqualFold(trimmed, "/agents"):
 		return true
-	case strings.HasPrefix(strings.ToLower(trimmed), "/command "):
-		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/command ")) != ""
+	case strings.EqualFold(trimmed, "/mode"):
+		return true
 	case strings.EqualFold(trimmed, "/new"):
 		return true
 	case strings.EqualFold(trimmed, "/session"):
@@ -1711,9 +2143,9 @@ func approvalModeLabel(value string) string {
 	case "auto":
 		return "自动执行任何命令"
 	case "readonly":
-		return "自动执行只读命令"
+		return "禁止执行任何命令"
 	case "confirm", "":
-		return "命令执行需要确认"
+		return "每次执行需要确认"
 	default:
 		return strings.TrimSpace(value)
 	}

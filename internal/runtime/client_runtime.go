@@ -141,7 +141,7 @@ func (r *ClientRuntime) ExecuteShellCommand(
 	rawCommand string,
 ) (map[string]any, error) {
 	if strings.TrimSpace(rawCommand) == "" {
-		return nil, fmt.Errorf("/command 用法: /command <shell 命令>")
+		return nil, fmt.Errorf("! 用法: !<shell 命令>")
 	}
 	if strings.TrimSpace(config.ApprovalMode) == "readonly" {
 		return nil, fmt.Errorf("当前审批模式为只读，不能执行本地命令")

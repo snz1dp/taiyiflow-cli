@@ -67,9 +67,16 @@ type sessionListResponse struct {
 }
 
 type sessionMessageResponse struct {
-	ID         string         `json:"id"`
-	RunID      string         `json:"run_id"`
-	TokenUsage map[string]any `json:"token_usage"`
+	ID          string         `json:"id"`
+	SessionID   string         `json:"session_id"`
+	RunID       string         `json:"run_id"`
+	Sender      string         `json:"sender"`
+	SenderName  string         `json:"sender_name"`
+	Text        string         `json:"text"`
+	SessionName string         `json:"session_name"`
+	Timestamp   string         `json:"timestamp"`
+	Error       bool           `json:"error"`
+	TokenUsage  map[string]any `json:"token_usage"`
 }
 
 type sessionMessagePageResponse struct {
@@ -262,6 +269,78 @@ func (c *Client) ListSessions(ctx context.Context, flowID string, offset, limit 
 	}
 
 	return &provider.SessionList{
+		Total:  payload.Total,
+		Offset: payload.Offset,
+		Items:  items,
+	}, nil
+}
+
+func (c *Client) ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*provider.SessionMessageList, error) {
+	flowID = strings.TrimSpace(flowID)
+	sessionID = strings.TrimSpace(sessionID)
+	if flowID == "" {
+		return nil, fmt.Errorf("获取会话消息失败: 智能体不能为空")
+	}
+	if sessionID == "" {
+		return &provider.SessionMessageList{}, nil
+	}
+
+	endpoint, err := url.Parse(fmt.Sprintf("%s/api/v1/agents/flows/%s/sessions/%s/messages", c.baseURL, url.PathEscape(flowID), url.PathEscape(sessionID)))
+	if err != nil {
+		return nil, fmt.Errorf("构造 messages 请求地址失败: %w", err)
+	}
+
+	query := endpoint.Query()
+	query.Set("orderby", "timestamp desc")
+	if offset > 0 {
+		query.Set("offset", strconv.Itoa(offset))
+	}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	endpoint.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("获取会话消息失败", resp)
+	}
+
+	var payload sessionMessagePageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析会话消息响应失败: %w", err)
+	}
+
+	items := make([]provider.SessionMessage, 0, len(payload.Data))
+	for _, item := range payload.Data {
+		timestamp, err := parseTaiyiTime(item.Timestamp)
+		if err != nil {
+			return nil, fmt.Errorf("解析会话消息时间失败: %w", err)
+		}
+		items = append(items, provider.SessionMessage{
+			ID:          item.ID,
+			SessionID:   item.SessionID,
+			RunID:       item.RunID,
+			Sender:      item.Sender,
+			SenderName:  item.SenderName,
+			Text:        item.Text,
+			SessionName: item.SessionName,
+			Timestamp:   timestamp,
+			Error:       item.Error,
+		})
+	}
+
+	return &provider.SessionMessageList{
 		Total:  payload.Total,
 		Offset: payload.Offset,
 		Items:  items,

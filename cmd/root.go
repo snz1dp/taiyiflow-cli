@@ -163,13 +163,13 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			fmt.Fprintln(a.stdout, "请使用 `taiyiflow agents` 查看或切换默认智能体。")
 			continue
 		case "/help":
-			a.printInteractiveUsage(flowDisplayName, sessionState)
+			a.printInteractiveUsage(ctx, providerClient, flowDisplayName, flowID, sessionState)
 			continue
 		case "/clear":
 			fmt.Fprint(a.stdout, "\033[H\033[2J")
 			continue
 		case "/session":
-			a.printSessionStatus(flowDisplayName, sessionState)
+			a.printSessionStatus(ctx, providerClient, flowDisplayName, flowID, sessionState)
 			continue
 		case "/sessions":
 			if err := a.printSavedSessions(flowID, sessionState.SessionID); err != nil {
@@ -303,7 +303,7 @@ func (a *App) printRootUsage() {
 	fmt.Fprintf(a.stdout, "当前版本: %s\n", buildinfo.Version)
 }
 
-func (a *App) printInteractiveUsage(flowDisplayName string, sessionState agent.SessionState) {
+func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider.Provider, flowDisplayName string, flowID string, sessionState agent.SessionState) {
 	fmt.Fprintln(a.stdout, "会话内命令:")
 	fmt.Fprintln(a.stdout, "  /agents   显示智能体切换说明")
 	fmt.Fprintln(a.stdout, "  /help     显示帮助")
@@ -313,13 +313,18 @@ func (a *App) printInteractiveUsage(flowDisplayName string, sessionState agent.S
 	fmt.Fprintln(a.stdout, "  /clear    清屏")
 	fmt.Fprintln(a.stdout, "  /exit     退出")
 	fmt.Fprintln(a.stdout, "  提示: 交互模式下请使用 `taiyiflow agents` 管理默认智能体。")
-	a.printSessionStatus(flowDisplayName, sessionState)
+	a.printSessionStatus(ctx, providerClient, flowDisplayName, flowID, sessionState)
 }
 
-func (a *App) printSessionStatus(flowDisplayName string, sessionState agent.SessionState) {
-	fmt.Fprintf(a.stdout, "当前智能体: %s\n", sanitizeFlowDisplay(flowDisplayName))
+func (a *App) printSessionStatus(ctx context.Context, providerClient provider.Provider, flowDisplayName string, flowID string, sessionState agent.SessionState) {
+	_ = flowDisplayName
 	if strings.TrimSpace(sessionState.SessionID) == "" {
 		fmt.Fprintln(a.stdout, "当前会话: <未建立>")
+		return
+	}
+	if title, err := lookupSessionTitle(ctx, providerClient, flowID, sessionState.SessionID); err == nil && strings.TrimSpace(title) != "" {
+		fmt.Fprintf(a.stdout, "当前会话: %s\n", sessionState.SessionID)
+		fmt.Fprintf(a.stdout, "会话标题: %s\n", title)
 		return
 	}
 	fmt.Fprintf(a.stdout, "当前会话: %s\n", sessionState.SessionID)
@@ -370,4 +375,39 @@ func firstNonEmpty(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func lookupSessionTitle(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string) (string, error) {
+	if providerClient == nil {
+		return "", nil
+	}
+	trimmedFlowID := strings.TrimSpace(flowID)
+	trimmedSessionID := strings.TrimSpace(sessionID)
+	if trimmedFlowID == "" || trimmedSessionID == "" {
+		return "", nil
+	}
+
+	const pageSize = 100
+	offset := 0
+	for {
+		sessions, err := providerClient.ListSessions(ctx, trimmedFlowID, offset, pageSize)
+		if err != nil {
+			return "", err
+		}
+		if sessions == nil || len(sessions.Items) == 0 {
+			return "", nil
+		}
+		for _, item := range sessions.Items {
+			if strings.TrimSpace(item.ID) == trimmedSessionID {
+				return strings.TrimSpace(item.Name), nil
+			}
+		}
+		offset += len(sessions.Items)
+		if sessions.Total > 0 && offset >= sessions.Total {
+			return "", nil
+		}
+		if len(sessions.Items) < pageSize {
+			return "", nil
+		}
+	}
 }
