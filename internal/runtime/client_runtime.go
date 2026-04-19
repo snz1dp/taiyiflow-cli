@@ -330,7 +330,7 @@ func (r *ClientRuntime) searchFiles(
 
 	matches := parseSearchMatches(output, baseDir, glob, maxResults)
 
-	fmt.Fprintf(r.stdout, "\n[%s]:%s, 命中 %d 条\n", searchEngine, query, len(matches))
+	fmt.Fprintf(r.stdout, "执行 %s \"%s\" 命令, 命中 %d 条\n", searchEngine, query, len(matches))
 	return map[string]any{
 		"matches": matches,
 		"count":   len(matches),

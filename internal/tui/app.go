@@ -1140,16 +1140,24 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 	var cmd tea.Cmd
 	switch event.Kind {
 	case EventAssistantChunk:
+		chunk := event.Text
+		if chunk == "" {
+			break
+		}
+		hasAssistantEntry := len(m.entries) > 0 && m.entries[len(m.entries)-1].role == "assistant"
+		if !hasAssistantEntry && strings.TrimSpace(chunk) == "" {
+			break
+		}
 		m.activityHint = ""
 		if m.state.phase != progressStreaming {
 			cmd = m.transitionProgress(progressStreaming)
 		}
-		m.requestStats.OutputChars += utf8.RuneCountInString(event.Text)
+		m.requestStats.OutputChars += utf8.RuneCountInString(chunk)
 		m.requestStats.ChunkCount++
-		if len(m.entries) == 0 || m.entries[len(m.entries)-1].role != "assistant" {
-			m.entries = append(m.entries, entry{role: "assistant", content: event.Text})
+		if !hasAssistantEntry {
+			m.entries = append(m.entries, entry{role: "assistant", content: chunk})
 		} else {
-			m.entries[len(m.entries)-1].content += event.Text
+			m.entries[len(m.entries)-1].content += chunk
 		}
 	case EventProgressNote:
 		if strings.TrimSpace(event.Text) != "" {
@@ -1302,7 +1310,7 @@ func (m *model) syncViewport() {
 	content := renderEntries(m.entries, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot)
 	if transient := m.renderTransientStatus(); transient != "" {
 		if strings.TrimSpace(content) != "" {
-			content += "\n\n"
+			content += "\n"
 		}
 		content += transient
 	}
