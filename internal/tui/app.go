@@ -20,18 +20,20 @@ import (
 )
 
 type Snapshot struct {
-	Version          string
-	BackendURL       string
-	ServerPackage    string
-	ServerVersion    string
-	DefaultFlow      string
-	DefaultFlowLabel string
-	Workdir          string
-	ApprovalMode     string
-	SessionID        string
-	SessionTitle     string
-	History          []HistoryEntry
-	WelcomeMessage   string
+	Version             string
+	BackendURL          string
+	BackendAvailable    bool
+	BackendStatusReason string
+	ServerPackage       string
+	ServerVersion       string
+	DefaultFlow         string
+	DefaultFlowLabel    string
+	Workdir             string
+	ApprovalMode        string
+	SessionID           string
+	SessionTitle        string
+	History             []HistoryEntry
+	WelcomeMessage      string
 }
 
 type HistoryEntry struct {
@@ -401,7 +403,11 @@ var slashCommands = []slashCommand{
 
 func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, localCommand LocalCommandHandler) error {
 	inputModel := textarea.New()
-	inputModel.Placeholder = "输入内容后回车发送"
+	if snapshot.BackendAvailable {
+		inputModel.Placeholder = "输入内容后回车发送"
+	} else {
+		inputModel.Placeholder = "服务端不可用，当前为只读模式，仅支持 /help、/clear、/exit"
+	}
 	inputModel.Prompt = "> "
 	inputModel.ShowLineNumbers = false
 	focusedStyle, blurredStyle := fixedTextareaStyles()
@@ -663,6 +669,12 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		}
+		if !m.snapshot.BackendAvailable && !isAvailableInReadOnlyMode(input) {
+			m.entries = append(m.entries, entry{role: "error", content: m.backendUnavailableMessage()})
+			m.input.SetValue("")
+			m.syncViewport()
+			return m, nil
+		}
 		if strings.HasPrefix(input, "!") {
 			if commandHandled, cmd := m.handleLocalSlashCommand(input); commandHandled {
 				return m, cmd
@@ -919,10 +931,6 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 }
 
 func RenderSessionStatusText(snapshot Snapshot, prefix string) string {
-	agentLabel := snapshot.DefaultFlowLabel
-	if strings.TrimSpace(agentLabel) == "" {
-		agentLabel = sanitizeFlowLabel(snapshot.DefaultFlow)
-	}
 	lines := []string{}
 	if strings.TrimSpace(prefix) != "" {
 		lines = append(lines, prefix)
@@ -1172,7 +1180,11 @@ func (m model) renderTransientStatus() string {
 
 func (m model) renderStatusBar() string {
 	segments := m.statusBarSegments()
-	stateChip := statusAccentStyle.Render(m.state.label)
+	stateLabel := m.state.label
+	if !m.snapshot.BackendAvailable && !m.isBusy() {
+		stateLabel = "只读模式"
+	}
+	stateChip := statusAccentStyle.Render(stateLabel)
 	bodyWidth := m.contentWidth - lipgloss.Width(stateChip) - 3
 	if bodyWidth < 12 {
 		bodyWidth = 12
@@ -1338,6 +1350,9 @@ func (m model) renderFlowPicker() string {
 
 func (m model) statusBarSegments() []string {
 	segments := []string{}
+	if !m.snapshot.BackendAvailable {
+		segments = append(segments, backendStatusLabel(m.snapshot))
+	}
 	if strings.TrimSpace(m.snapshot.SessionID) != "" {
 		segments = append(segments, ""+compactSessionID(m.snapshot.SessionID))
 	}
@@ -1359,6 +1374,51 @@ func (m model) statusBarSegments() []string {
 	}
 	segments = append([]string{"" + fallback(m.snapshot.DefaultFlowLabel, "未配置")}, segments...)
 	return segments
+}
+
+func buildBackendStatusEntries(snapshot Snapshot) []entry {
+	if snapshot.BackendAvailable {
+		return nil
+	}
+	message := "当前无法连接服务端，已进入只读模式。"
+	if reason := strings.TrimSpace(snapshot.BackendStatusReason); reason != "" {
+		message += "\n原因: " + reason
+	}
+	message += "\n可用命令: /help /clear /exit"
+	return []entry{{role: "error", content: message}}
+}
+
+func (m model) backendUnavailableMessage() string {
+	message := "当前无法连接服务端，已进入只读模式。"
+	if reason := strings.TrimSpace(m.snapshot.BackendStatusReason); reason != "" {
+		message += " 原因: " + reason
+	}
+	message += " 可用命令: /help /clear /exit"
+	return message
+}
+
+func isAvailableInReadOnlyMode(input string) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(input))
+	switch trimmed {
+	case "/help", "/clear", "/exit":
+		return true
+	default:
+		return false
+	}
+}
+
+func backendStatusLabel(snapshot Snapshot) string {
+	if snapshot.BackendAvailable {
+		return "服务端已连接"
+	}
+	return "服务端未连接"
+}
+
+func welcomeCommandsLabel(snapshot Snapshot) string {
+	if snapshot.BackendAvailable {
+		return "/agents /mode /session /new /exit"
+	}
+	return "/help /clear /exit"
 }
 
 func (m model) useMinimalChrome() bool {
@@ -1420,6 +1480,11 @@ func changeFlowCmd(ctx context.Context, flowID string, handler FlowChangeHandler
 func (m *model) openFlowPicker() tea.Cmd {
 	if m.isBusy() {
 		m.entries = append(m.entries, entry{role: "system", content: "当前正在处理请求，暂时不能切换智能体。"})
+		m.syncViewport()
+		return nil
+	}
+	if !m.snapshot.BackendAvailable {
+		m.entries = append(m.entries, entry{role: "error", content: m.backendUnavailableMessage()})
 		m.syncViewport()
 		return nil
 	}
@@ -1615,6 +1680,7 @@ func buildInitialEntries(snapshot Snapshot) []entry {
 	if strings.TrimSpace(snapshot.WelcomeMessage) != "" {
 		entries = append(entries, entry{role: "welcome", content: strings.TrimSpace(snapshot.WelcomeMessage)})
 	}
+	entries = append(entries, buildBackendStatusEntries(snapshot)...)
 	for _, item := range snapshot.History {
 		if strings.TrimSpace(item.Content) == "" {
 			continue
@@ -1628,10 +1694,12 @@ func buildInitialEntries(snapshot Snapshot) []entry {
 }
 
 func buildWelcomeEntries(snapshot Snapshot) []entry {
-	if strings.TrimSpace(snapshot.WelcomeMessage) == "" {
-		return nil
+	entries := []entry{}
+	if strings.TrimSpace(snapshot.WelcomeMessage) != "" {
+		entries = append(entries, entry{role: "welcome", content: strings.TrimSpace(snapshot.WelcomeMessage)})
 	}
-	return []entry{{role: "welcome", content: strings.TrimSpace(snapshot.WelcomeMessage)}}
+	entries = append(entries, buildBackendStatusEntries(snapshot)...)
+	return entries
 }
 
 func (m model) shouldPinHistoryTop() bool {
@@ -1747,6 +1815,9 @@ func (m model) currentInputHeight() int {
 }
 
 func snapshotServerVersion(snapshot Snapshot) string {
+	if !snapshot.BackendAvailable {
+		return "未连接"
+	}
 	version := strings.TrimSpace(snapshot.ServerVersion)
 	if version == "" {
 		version = "未知"
@@ -1798,10 +1869,11 @@ func renderWelcomePane(snapshot Snapshot, welcomeMessage string, width int, heig
 				" · "+snapshotServerVersion(snapshot), innerWidth), innerWidth)),
 		"",
 		hintStyle.Render(centerText(trimForWidth(joinStatusSegments([]string{
+			backendStatusLabel(snapshot),
 			"" + fallback(snapshot.DefaultFlowLabel, "未配置"),
 			"" + compactSessionID(snapshot.SessionID),
 		}, "  ·  "), innerWidth), innerWidth)),
-		hintStyle.Render(centerText(trimForWidth("/agents /mode /session /new /exit", innerWidth), innerWidth)),
+		hintStyle.Render(centerText(trimForWidth(welcomeCommandsLabel(snapshot), innerWidth), innerWidth)),
 	}
 	if strings.TrimSpace(welcomeMessage) != "" {
 		footerLines = append(footerLines, "", hintStyle.Render(centerText(trimForWidth(strings.TrimSpace(welcomeMessage), innerWidth), innerWidth)))
@@ -2251,5 +2323,5 @@ func sanitizeFlowLabel(value string) string {
 	if trimmed == "" {
 		return "<未配置>"
 	}
-	return "<已配置>"
+	return trimmed
 }

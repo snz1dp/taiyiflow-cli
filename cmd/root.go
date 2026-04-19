@@ -112,6 +112,9 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 		return err
 	}
 	providerClient := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+	if err := a.ensureBackendAvailable(ctx, providerClient, config.BackendBaseURL); err != nil {
+		return err
+	}
 	config, err = a.ensureDefaultFlow(ctx, providerClient, config)
 	if err != nil {
 		return err
@@ -201,6 +204,9 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 		return err
 	}
 	providerClient := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+	if err := a.ensureBackendAvailable(ctx, providerClient, config.BackendBaseURL); err != nil {
+		return err
+	}
 	config, err = a.ensureDefaultFlow(ctx, providerClient, config)
 	if err != nil {
 		return err

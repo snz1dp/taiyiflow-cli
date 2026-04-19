@@ -28,26 +28,31 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	}
 
 	providerClient := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
-	config, err = a.ensureDefaultFlow(ctx, providerClient, config)
-	if err != nil {
-		return err
+	backend := a.inspectBackendStatus(ctx, providerClient, config.BackendBaseURL)
+	if backend.Available {
+		config, err = a.ensureDefaultFlow(ctx, providerClient, config)
+		if err != nil {
+			return err
+		}
 	}
 	workdir := resolveLocalWorkdir(config.Workdir)
-	snapshot, err := a.buildTUISnapshot(ctx, providerClient, config, strings.TrimSpace(config.DefaultFlow))
+	snapshot, err := a.buildTUISnapshot(ctx, providerClient, config, strings.TrimSpace(config.DefaultFlow), backend)
 	if err != nil {
 		return err
 	}
 
 	flowItems := []tui.FlowItem{}
-	flows, flowErr := providerClient.ListFlows(ctx, "", "chat", 0, 100)
-	if flowErr == nil {
-		for _, item := range flows.Items {
-			flowItems = append(flowItems, tui.FlowItem{
-				ID:          item.ID,
-				Name:        item.Name,
-				Description: item.Description,
-				Type:        item.Type,
-			})
+	if backend.Available {
+		flows, flowErr := providerClient.ListFlows(ctx, "", "chat", 0, 100)
+		if flowErr == nil {
+			for _, item := range flows.Items {
+				flowItems = append(flowItems, tui.FlowItem{
+					ID:          item.ID,
+					Name:        item.Name,
+					Description: item.Description,
+					Type:        item.Type,
+				})
+			}
 		}
 	}
 
@@ -79,7 +84,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			ClientMCPServers:       quietRuntimeClient.ClientMCPServers(),
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("%s", explainBackendFailure(err))
 		}
 
 		if streamSession != nil && strings.TrimSpace(streamSession.SessionID) != "" {
@@ -140,7 +145,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					return err
 				}
 			case provider.EventError:
-				return fmt.Errorf("后端返回错误: %v", event.Data["error"])
+				return fmt.Errorf("服务端请求失败，请稍后重试")
 			case provider.EventClose:
 				return nil
 			}
@@ -165,7 +170,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if err := a.configManager.Save(updatedConfig); err != nil {
 			return tui.Snapshot{}, err
 		}
-		return a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, updatedConfig.DefaultFlow)
+		return a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, updatedConfig.DefaultFlow, backendStatus{Available: true})
 	}
 
 	sessionChange := func(changeCtx context.Context, current tui.Snapshot, sessionID string) (tui.Snapshot, error) {
@@ -180,7 +185,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if err != nil {
 			return tui.Snapshot{}, err
 		}
-		return a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, flowID)
+		return a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, flowID, backendStatus{Available: true})
 	}
 
 	approvalChange := func(changeCtx context.Context, mode string) (tui.Snapshot, error) {
@@ -192,26 +197,41 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if err := a.configManager.Save(updatedConfig); err != nil {
 			return tui.Snapshot{}, err
 		}
-		return a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, updatedConfig.DefaultFlow)
+		return a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, updatedConfig.DefaultFlow, backendStatus{Available: true})
 	}
 
 	localCommand := func(commandCtx context.Context, command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
 		trimmed := strings.TrimSpace(command)
 		switch {
 		case trimmed == "/help":
-			return tui.LocalCommandResult{
-				Handled: true,
-				Events: []tui.Event{{Kind: tui.EventSystemNote, Text: strings.Join([]string{
+			helpLines := []string{
+				"可用命令:",
+				"/agents 或 /agents <名称> 选择智能体",
+				"!<shell 命令> 在当前目录执行本地命令",
+				"/mode 打开命令执行模式选择",
+				"/session 查看当前会话",
+				"/sessions [页码] 查看当前智能体的服务端会话列表",
+				"/new 重置当前智能体的本地会话",
+				"/clear 清空当前界面消息",
+				"/exit 退出",
+			}
+			if !snapshot.BackendAvailable {
+				reason := strings.TrimSpace(snapshot.BackendStatusReason)
+				if reason == "" {
+					reason = "服务端不可用"
+				}
+				helpLines = []string{
+					"当前处于只读模式。",
+					"原因: " + reason,
 					"可用命令:",
-					"/agents 或 /agents <名称> 选择智能体",
-					"!<shell 命令> 在当前目录执行本地命令",
-					"/mode 打开命令执行模式选择",
-					"/session 查看当前会话",
-					"/sessions [页码] 查看当前智能体的服务端会话列表",
-					"/new 重置当前智能体的本地会话",
+					"/help 查看当前提示",
 					"/clear 清空当前界面消息",
 					"/exit 退出",
-				}, "\n")}},
+				}
+			}
+			return tui.LocalCommandResult{
+				Handled: true,
+				Events: []tui.Event{{Kind: tui.EventSystemNote, Text: strings.Join(helpLines, "\n")}},
 			}, nil
 		case trimmed == "/mode":
 			return tui.LocalCommandResult{Handled: true, ApprovalPicker: buildApprovalPicker(snapshot)}, nil
@@ -258,7 +278,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			offset := (page - 1) * pageSize
 			sessions, err := providerClient.ListSessions(commandCtx, flowID, offset, pageSize)
 			if err != nil {
-				return tui.LocalCommandResult{}, err
+				return tui.LocalCommandResult{}, fmt.Errorf("%s", explainBackendFailure(err))
 			}
 			agentLabel := snapshot.DefaultFlowLabel
 			if strings.TrimSpace(agentLabel) == "" {
@@ -332,14 +352,29 @@ func (a *App) buildTUISnapshot(
 	providerClient provider.Provider,
 	config internalconfig.Config,
 	flowID string,
+	backend backendStatus,
 ) (tui.Snapshot, error) {
 	snapshot := tui.Snapshot{
-		Version:          buildinfo.Version,
-		BackendURL:       config.BackendBaseURL,
-		DefaultFlow:      flowID,
-		DefaultFlowLabel: sanitizeFlowDisplay(flowID),
-		Workdir:          resolveLocalWorkdir(config.Workdir),
-		ApprovalMode:     config.ApprovalMode,
+		Version:             buildinfo.Version,
+		BackendURL:          config.BackendBaseURL,
+		BackendAvailable:    backend.Available,
+		BackendStatusReason: strings.TrimSpace(backend.Reason),
+		DefaultFlow:         flowID,
+		DefaultFlowLabel:    sanitizeFlowDisplay(flowID),
+		Workdir:             resolveLocalWorkdir(config.Workdir),
+		ApprovalMode:        config.ApprovalMode,
+	}
+	if !backend.Available {
+		if strings.TrimSpace(flowID) == "" {
+			return snapshot, nil
+		}
+
+		sessionState, err := a.prepareSession(flowID, false, snapshot.Workdir)
+		if err != nil {
+			return tui.Snapshot{}, err
+		}
+		snapshot.SessionID = sessionState.SessionID
+		return snapshot, nil
 	}
 	if versionInfo, err := providerClient.GetVersionInfo(ctx); err == nil && versionInfo != nil {
 		snapshot.ServerPackage = strings.TrimSpace(versionInfo.Package)

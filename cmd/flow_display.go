@@ -15,9 +15,6 @@ func sanitizeFlowDisplay(value string) string {
 	if trimmed == "" {
 		return "<未配置>"
 	}
-	if likelyUUIDPattern.MatchString(trimmed) {
-		return "<已配置>"
-	}
 	return trimmed
 }
 
