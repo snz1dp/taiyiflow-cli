@@ -2039,9 +2039,6 @@ func buildBackendStatusEntries(snapshot Snapshot) []entry {
 		return nil
 	}
 	message := "当前无法连接服务端，已进入只读模式。"
-	if reason := strings.TrimSpace(snapshot.BackendStatusReason); reason != "" {
-		message += "\n原因: " + reason
-	}
 	message += "\n可用命令: /config /skills /help /clear /exit"
 	return []entry{{role: "error", content: message}}
 }
