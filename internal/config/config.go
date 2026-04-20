@@ -15,12 +15,20 @@ const (
 )
 
 type Config struct {
-	BackendBaseURL string `yaml:"backend_base_url"`
-	APIKey         string `yaml:"api_key,omitempty"`
-	DefaultFlow    string `yaml:"default_flow,omitempty"`
-	ApprovalMode   string `yaml:"approval_mode"`
-	Workdir        string `yaml:"workdir,omitempty"`
-	OutputLanguage string `yaml:"output_language"`
+	BackendBaseURL string      `yaml:"backend_base_url"`
+	APIKey         string      `yaml:"api_key,omitempty"`
+	DefaultFlow    string      `yaml:"default_flow,omitempty"`
+	ApprovalMode   string      `yaml:"approval_mode"`
+	Workdir        string      `yaml:"workdir,omitempty"`
+	OutputLanguage string      `yaml:"output_language"`
+	AuditEnabled   bool        `yaml:"audit_enabled,omitempty"`
+	SandboxRoots   []string    `yaml:"sandbox_roots,omitempty"`
+	Skills         SkillConfig `yaml:"skills,omitempty"`
+}
+
+type SkillConfig struct {
+	Directory string   `yaml:"directory,omitempty"`
+	Enabled   []string `yaml:"enabled,omitempty"`
 }
 
 type Manager struct {
@@ -32,6 +40,7 @@ func Default() Config {
 		BackendBaseURL: "http://localhost:7860",
 		ApprovalMode:   "confirm",
 		OutputLanguage: "zh-CN",
+		AuditEnabled:   false,
 	}
 }
 
@@ -57,6 +66,22 @@ func DefaultConfigPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(rootDir, defaultConfigRel), nil
+}
+
+func DefaultSkillsDir() (string, error) {
+	rootDir, err := DefaultRootDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(rootDir, "skills"), nil
+}
+
+func DefaultAuditLogPath() (string, error) {
+	rootDir, err := DefaultRootDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(rootDir, "logs", "audit.log"), nil
 }
 
 func (m *Manager) Path() string {
@@ -92,7 +117,6 @@ func (m *Manager) Load() (Config, error) {
 	if config.OutputLanguage == "" {
 		config.OutputLanguage = Default().OutputLanguage
 	}
-
 	return config, nil
 }
 

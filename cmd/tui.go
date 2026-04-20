@@ -75,6 +75,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 
 		runtimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), logWriter, logWriter)
 		quietRuntimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), io.Discard, io.Discard)
+		requestedSkillNames, clientSkillPackages, err := a.loadSkillPayload(config)
+		if err != nil {
+			return err
+		}
 		stream, streamSession, err := providerClient.Stream(runCtx, provider.StreamRequest{
 			FlowID:                 currentFlow,
 			Input:                  request.Input,
@@ -84,7 +88,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			RunID:                  request.RunID,
 			RequestType:            "agent",
 			CommandExecutionTarget: "client",
+			RequestedSkillNames:    requestedSkillNames,
 			ClientMCPServers:       quietRuntimeClient.ClientMCPServers(),
+			ClientSkillPackages:    clientSkillPackages,
 		})
 		if err != nil {
 			return fmt.Errorf("%s", explainBackendFailure(err))
@@ -111,13 +117,13 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					emit(tui.Event{Kind: tui.EventProgressNote, Text: message})
 				}
 			case provider.EventToolCall:
-				emit(tui.Event{Kind: tui.EventToolCall})
+				emit(tui.Event{Kind: tui.EventToolCall, Text: strings.TrimSpace(stringMapValue(event.Data, "text"))})
 			case provider.EventBuiltIn:
 				localConfig, configErr := a.configManager.Load()
 				if configErr != nil {
 					return configErr
 				}
-				emit(tui.Event{Kind: tui.EventBuiltInCall})
+				emit(tui.Event{Kind: tui.EventBuiltInCall, Text: previewBuiltInCommand(event.Data)})
 				emit(tui.Event{Kind: tui.EventProgressNote, Text: "正在执行本地命令..."})
 				if requiresTUICommandConfirmation(localConfig, event.Data) {
 					approved := confirm(buildTUIConfirmRequest(event.Data))
@@ -143,8 +149,28 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				if configErr != nil {
 					return configErr
 				}
-				emit(tui.Event{Kind: tui.EventClientToolCall})
-				if err := runtimeClient.HandleClientToolEvent(runCtx, providerClient, localConfig, event.Data); err != nil {
+				emit(tui.Event{Kind: tui.EventClientToolCall, Text: clientruntime.PreviewClientToolCall(event.Data)})
+				if clientruntime.RequiresClientToolConfirmation(localConfig, event.Data) {
+					approved := confirm(buildTUIClientToolConfirmRequest(event.Data))
+					if !approved {
+						emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端工具执行。"})
+						if err := submitTUIClientCallFailure(runCtx, providerClient, event.Data, "用户拒绝执行客户端工具"); err != nil {
+							return err
+						}
+						continue
+					}
+					execConfig := localConfig
+					execConfig.ApprovalMode = "auto"
+					toolName, result, toolErr := runtimeClient.ExecuteClientToolPayload(runCtx, execConfig, event.Data)
+					emitTUIClientToolResultEvents(emit, toolName, result, toolErr)
+					if err := runtimeClient.SubmitClientToolCallback(runCtx, providerClient, event.Data, result, toolErr); err != nil {
+						return err
+					}
+					continue
+				}
+				toolName, result, toolErr := runtimeClient.ExecuteClientToolPayload(runCtx, localConfig, event.Data)
+				emitTUIClientToolResultEvents(emit, toolName, result, toolErr)
+				if err := runtimeClient.SubmitClientToolCallback(runCtx, providerClient, event.Data, result, toolErr); err != nil {
 					return err
 				}
 			case provider.EventError:
@@ -273,6 +299,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				"可用命令:",
 				"/agents 或 /agents <名称> 选择智能体",
 				"/config 打开服务端配置弹窗",
+				"/skills [list|view|enable|disable] 管理本地技能",
 				"!<shell 命令> 在当前目录执行本地命令",
 				"/session 查看当前会话",
 				"/sessions [页码] 查看当前智能体的服务端会话列表",
@@ -290,6 +317,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					"原因: " + reason,
 					"可用命令:",
 					"/config 打开当前配置弹窗",
+					"/skills 查看本地技能",
 					"/help 查看当前提示",
 					"/clear 清空当前界面消息",
 					"/exit 退出",
@@ -305,6 +333,12 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				return tui.LocalCommandResult{}, err
 			}
 			return tui.LocalCommandResult{Handled: true, ConfigForm: formState}, nil
+		case strings.EqualFold(trimmed, "/skills") || strings.HasPrefix(strings.ToLower(trimmed), "/skills "):
+			output, err := a.executeSkillsCommand(parseSlashSkillsArgs(trimmed))
+			if err != nil {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
+			}
+			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: output}}}, nil
 		case strings.HasPrefix(strings.ToLower(trimmed), "/config "):
 			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "TUI 中请直接输入 /config 打开弹窗表单。"}}}, nil
 		case trimmed == "!":
@@ -579,6 +613,10 @@ func (w *tuiLogWriter) Write(content []byte) (int, error) {
 
 	for _, line := range lines[:len(lines)-1] {
 		trimmed := strings.TrimSpace(line)
+		if summary, ok := parseTUIToolSummary(trimmed); ok {
+			w.emit(tui.Event{Kind: tui.EventToolSummary, Text: summary})
+			continue
+		}
 		if trimmed != "" && !shouldSuppressTUILogLine(trimmed) {
 			w.emit(tui.Event{Kind: tui.EventSystemNote, Text: trimmed})
 		}
@@ -589,14 +627,29 @@ func (w *tuiLogWriter) Write(content []byte) (int, error) {
 
 func (w *tuiLogWriter) Flush() {
 	trimmed := strings.TrimSpace(w.pending)
-	if trimmed != "" && !shouldSuppressTUILogLine(trimmed) {
+	if summary, ok := parseTUIToolSummary(trimmed); ok {
+		w.emit(tui.Event{Kind: tui.EventToolSummary, Text: summary})
+	} else if trimmed != "" && !shouldSuppressTUILogLine(trimmed) {
 		w.emit(tui.Event{Kind: tui.EventSystemNote, Text: trimmed})
 	}
 	w.pending = ""
 }
 
 func shouldSuppressTUILogLine(line string) bool {
-	return strings.HasPrefix(strings.TrimSpace(line), "[执行客户端命令]")
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "[执行客户端命令]") || strings.HasPrefix(trimmed, "[本地工具]") || strings.HasPrefix(trimmed, "[本地命令]")
+}
+
+func parseTUIToolSummary(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	switch {
+	case strings.HasPrefix(trimmed, "[本地工具]"):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "[本地工具]")), true
+	case strings.HasPrefix(trimmed, "[本地命令]"):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "[本地命令]")), true
+	default:
+		return "", false
+	}
 }
 
 func requiresTUICommandConfirmation(config internalconfig.Config, payload map[string]any) bool {
@@ -629,8 +682,167 @@ func buildTUIConfirmRequest(payload map[string]any) tui.ConfirmRequest {
 		Title:   "客户端命令待确认",
 		Command: previewBuiltInCommand(payload),
 		Detail:  "该命令由服务端下发，是否允许在本地执行？",
+		Hint:    "使用方向键或 Tab 选择，Enter 确认。",
 	}
 	return request
+}
+
+func buildTUIClientToolConfirmRequest(payload map[string]any) tui.ConfirmRequest {
+	toolName := nestedStringValue(payload, "function", "name")
+	arguments, _ := nestedMapValue(payload, "function", "arguments")
+	request := tui.ConfirmRequest{
+		Title:   "客户端工具待确认",
+		Command: clientruntime.PreviewClientToolCall(payload),
+		Detail:  "该工具会修改本地工作区或 Git 状态，是否允许执行？",
+		Hint:    "使用方向键或 Tab 选择，Enter 确认。",
+	}
+	switch strings.TrimSpace(toolName) {
+	case "apply_patch":
+		request.PreviewTitle = "补丁预览"
+		request.PreviewBody = summarizePatchPreview(stringMapValue(arguments, "patch"))
+	case "git_add":
+		request.PreviewTitle = "暂存目标"
+		request.PreviewBody = summarizeGitAddPreview(arguments)
+	case "git_commit":
+		request.PreviewTitle = "提交草稿"
+		request.PreviewBody = summarizeGitCommitPreview(arguments)
+	case "write_file":
+		request.PreviewTitle = "写入目标"
+		request.PreviewBody = fmt.Sprintf("路径: %s\n模式: %s", fallbackString(stringMapValue(arguments, "path"), "."), fallbackString(stringMapValue(arguments, "mode"), "overwrite"))
+	}
+	return request
+}
+
+func emitTUIClientToolResultEvents(emit func(tui.Event), toolName string, result any, toolErr error) {
+	if toolErr != nil {
+		emit(tui.Event{Kind: tui.EventErrorNote, Text: toolErr.Error()})
+	}
+	panel := buildTUIClientToolPanel(toolName, result, toolErr)
+	if panel != nil {
+		emit(tui.Event{Kind: tui.EventToolPanel, Panel: panel})
+	}
+}
+
+func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.ToolPanel {
+	resultMap, ok := result.(map[string]any)
+	if !ok {
+		return nil
+	}
+	switch strings.TrimSpace(toolName) {
+	case "git_diff":
+		content := strings.TrimSpace(stringMapValue(resultMap, "content"))
+		if content == "" {
+			return nil
+		}
+		body := content
+		previewLines := strings.Split(body, "\n")
+		if len(previewLines) > 32 {
+			body = strings.Join(previewLines[:32], "\n") + "\n..."
+		}
+		lineCount := intMapValue(resultMap, "line_count")
+		if lineCount == 0 {
+			lineCount = len(strings.Split(strings.TrimSpace(content), "\n"))
+		}
+		if boolMapValue(resultMap, "truncated") {
+			body += "\n\n[diff 已按 max_bytes 截断]"
+		}
+		return &tui.ToolPanel{
+			Title:   "Git Diff 预览",
+			Summary: fmt.Sprintf("git_diff %s（%d 行）", fallbackString(stringMapValue(resultMap, "path"), "."), lineCount),
+			Body:    body,
+			Hint:    "按 Enter 或 Esc 关闭，继续查看后续对话输出。",
+		}
+	case "apply_patch":
+		conflicts := mapSliceValue(resultMap, "conflicts")
+		if len(conflicts) == 0 && toolErr == nil {
+			return nil
+		}
+		lines := []string{}
+		for index, conflict := range conflicts {
+			line := fmt.Sprintf("%d. %s", index+1, fallbackString(stringMapValue(conflict, "path"), "<unknown>"))
+			reason := strings.TrimSpace(stringMapValue(conflict, "reason"))
+			if reason != "" {
+				line += "\n   原因: " + reason
+			}
+			if hunk := intMapValue(conflict, "hunk_index"); hunk > 0 {
+				line += fmt.Sprintf("\n   hunk: %d", hunk)
+			}
+			if lineNumber := intMapValue(conflict, "line_number"); lineNumber > 0 {
+				line += fmt.Sprintf("，行: %d", lineNumber)
+			}
+			if operation := strings.TrimSpace(stringMapValue(conflict, "operation")); operation != "" {
+				line += "，操作: " + operation
+			}
+			expected := strings.TrimSpace(stringMapValue(conflict, "expected"))
+			actual := strings.TrimSpace(stringMapValue(conflict, "actual"))
+			if expected != "" || actual != "" {
+				line += fmt.Sprintf("\n   期望: %s\n   实际: %s", fallbackString(expected, "<empty>"), fallbackString(actual, "<empty>"))
+			}
+			lines = append(lines, line)
+		}
+		if len(lines) == 0 {
+			lines = append(lines, strings.TrimSpace(errorText(toolErr)))
+		}
+		return &tui.ToolPanel{
+			Title:   "补丁冲突详情",
+			Summary: fmt.Sprintf("apply_patch 冲突 %d 处", len(conflicts)),
+			Body:    strings.Join(lines, "\n\n"),
+			Hint:    "按 Enter 或 Esc 关闭，然后可继续让模型修正补丁。",
+		}
+	default:
+		return nil
+	}
+}
+
+func summarizePatchPreview(patch string) string {
+	trimmed := strings.TrimSpace(patch)
+	if trimmed == "" {
+		return "补丁内容为空。"
+	}
+	files := []string{}
+	for _, line := range strings.Split(trimmed, "\n") {
+		if strings.HasPrefix(line, "+++ ") {
+			path := strings.TrimSpace(strings.TrimPrefix(line, "+++ "))
+			path = strings.TrimPrefix(path, "b/")
+			if path != "" {
+				files = append(files, path)
+			}
+		}
+	}
+	if len(files) == 0 {
+		return trimText(trimmed, 240)
+	}
+	preview := []string{fmt.Sprintf("涉及 %d 个文件:", len(files))}
+	for _, file := range files {
+		preview = append(preview, "- "+file)
+	}
+	return strings.Join(preview, "\n")
+}
+
+func summarizeGitAddPreview(arguments map[string]any) string {
+	if boolMapValue(arguments, "all") {
+		return fmt.Sprintf("范围: %s\n动作: git add -A", fallbackString(stringMapValue(arguments, "path"), "."))
+	}
+	paths := stringSliceMapValue(arguments, "paths")
+	if len(paths) == 0 {
+		paths = []string{fallbackString(stringMapValue(arguments, "path"), ".")}
+	}
+	return "将暂存以下路径:\n- " + strings.Join(paths, "\n- ")
+}
+
+func summarizeGitCommitPreview(arguments map[string]any) string {
+	message := strings.TrimSpace(stringMapValue(arguments, "message"))
+	if message == "" {
+		message = "<空消息>"
+	}
+	parts := []string{"提交信息:", message}
+	if boolMapValue(arguments, "amend") {
+		parts = append(parts, "", "模式: amend")
+	}
+	if boolMapValue(arguments, "allow_empty") {
+		parts = append(parts, "允许空提交: true")
+	}
+	return strings.Join(parts, "\n")
 }
 
 func previewBuiltInCommand(payload map[string]any) string {
@@ -687,6 +899,133 @@ func stringMapValue(payload map[string]any, key string) string {
 		return ""
 	}
 	return fmt.Sprintf("%v", value)
+}
+
+func boolMapValue(payload map[string]any, key string) bool {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return false
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true")
+	default:
+		return false
+	}
+}
+
+func intMapValue(payload map[string]any, key string) int {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int32:
+		return int(typed)
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func nestedMapValue(payload map[string]any, keys ...string) (map[string]any, bool) {
+	current := payload
+	for index, key := range keys {
+		value, ok := current[key]
+		if !ok || value == nil {
+			return nil, false
+		}
+		if index == len(keys)-1 {
+			next, ok := value.(map[string]any)
+			return next, ok
+		}
+		next, ok := value.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current = next
+	}
+	return nil, false
+}
+
+func mapSliceValue(payload map[string]any, key string) []map[string]any {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return nil
+	}
+	switch typed := value.(type) {
+	case []map[string]any:
+		return typed
+	case []any:
+		result := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			if mapped, ok := item.(map[string]any); ok {
+				result = append(result, mapped)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+func stringSliceMapValue(payload map[string]any, key string) []string {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return nil
+	}
+	switch typed := value.(type) {
+	case []string:
+		return typed
+	case []any:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			trimmed := strings.TrimSpace(fmt.Sprintf("%v", item))
+			if trimmed != "" {
+				result = append(result, trimmed)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return strings.TrimSpace(err.Error())
+}
+
+func fallbackString(value string, fallback string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback
+	}
+	return trimmed
+}
+
+func trimText(content string, maxLen int) string {
+	content = strings.TrimSpace(strings.ReplaceAll(content, "\n", " "))
+	if len(content) <= maxLen {
+		return content
+	}
+	if maxLen < 4 {
+		return content[:maxLen]
+	}
+	return content[:maxLen-3] + "..."
 }
 
 func nestedStringValue(payload map[string]any, keys ...string) string {

@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
+
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 )
 
@@ -42,17 +44,30 @@ func (a *App) runDoctor(args []string) error {
 	fmt.Fprintf(a.stdout, "- 配置文件路径: %s（%s）\n", a.configManager.Path(), fileExistedLabel)
 	fmt.Fprintf(a.stdout, "- 后台服务地址: %s\n", config.BackendBaseURL)
 	fmt.Fprintf(a.stdout, "- 默认智能体: %s\n", flowDisplay)
-	fmt.Fprintf(a.stdout, "- 本地搜索工具: %s\n", detectLocalSearchTool())
+	fmt.Fprintf(a.stdout, "- 文件工具链: %s\n", detectLocalFileToolStatus())
+	fmt.Fprintf(a.stdout, "- Git 工具链: %s\n", detectLocalGitToolStatus())
+	if skillItems, directory, skillErr := skills.Discover(config); skillErr == nil {
+		enabledCount := 0
+		for _, item := range skillItems {
+			if item.Enabled {
+				enabledCount++
+			}
+		}
+		fmt.Fprintf(a.stdout, "- 技能目录: %s（发现 %d，启用 %d）\n", directory, len(skillItems), enabledCount)
+	} else {
+		fmt.Fprintf(a.stdout, "- 技能目录: 检查失败（%v）\n", skillErr)
+	}
 
 	return nil
 }
 
-func detectLocalSearchTool() string {
-	if _, err := exec.LookPath("rg"); err == nil {
-		return "rg（可用）"
+func detectLocalFileToolStatus() string {
+	return "read_file/list_dir/write_file/apply_patch/search_files（内置可用）"
+}
+
+func detectLocalGitToolStatus() string {
+	if _, err := exec.LookPath("git"); err == nil {
+		return "git_status/git_diff/git_log/git_add/git_commit（可用）"
 	}
-	if _, err := exec.LookPath("grep"); err == nil {
-		return "grep（可用，已启用降级）"
-	}
-	return "未检测到 rg/grep（search_files 不可用）"
+	return "未检测到 git（Git 工作流工具不可用）"
 }

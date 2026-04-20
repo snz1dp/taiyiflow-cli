@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,38 +40,7 @@ func NewClientRuntime(stdin io.Reader, stdout io.Writer, stderr io.Writer) *Clie
 
 func (r *ClientRuntime) ClientMCPServers() map[string]any {
 	return map[string]any{
-		localToolServerName: []map[string]any{
-			{
-				"name":                 "search_files",
-				"description":          "在当前工作目录搜索文本，优先使用 ripgrep，不可用时回退 grep，返回匹配文件、行号和片段。",
-				"waiting_for_response": true,
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"query": map[string]any{
-							"type":        "string",
-							"description": "要搜索的文本或正则表达式。",
-						},
-						"path": map[string]any{
-							"type":        "string",
-							"description": "搜索根目录，可为相对或绝对路径。默认当前工作目录。",
-						},
-						"glob": map[string]any{
-							"type":        "string",
-							"description": "可选 glob 过滤，例如 *.go 或 cmd/*.go。",
-						},
-						"max_results": map[string]any{
-							"type":        "integer",
-							"minimum":     1,
-							"maximum":     200,
-							"description": "最大返回条数，默认 50。",
-						},
-					},
-					"required":             []string{"query"},
-					"additionalProperties": false,
-				},
-			},
-		},
+		localToolServerName: r.clientToolDefinitions(),
 	}
 }
 
@@ -111,26 +81,72 @@ func (r *ClientRuntime) HandleClientToolEvent(
 	config internalconfig.Config,
 	payload map[string]any,
 ) error {
+	_, result, err := r.ExecuteClientToolPayload(ctx, config, payload)
+	return r.SubmitClientToolCallback(ctx, providerClient, payload, result, err)
+}
+
+func (r *ClientRuntime) ExecuteClientToolPayload(
+	ctx context.Context,
+	config internalconfig.Config,
+	payload map[string]any,
+) (string, any, error) {
 	serverName := nestedString(payload, "server", "name")
 	toolName := nestedString(payload, "function", "name")
 	arguments := nestedMap(payload, "function", "arguments")
 
 	if serverName != localToolServerName {
-		return r.submitCallback(ctx, providerClient, payload, false, nil, fmt.Sprintf("不支持的客户端工具服务: %s", serverName))
+		return toolName, nil, fmt.Errorf("不支持的客户端工具服务: %s", serverName)
+	}
+	if err := r.authorizeClientTool(toolName, arguments, config); err != nil {
+		return toolName, nil, err
 	}
 
 	var (
 		result any
 		err    error
 	)
-	if toolName == "search_files" {
+	switch toolName {
+	case "search_files":
 		result, err = r.searchFiles(ctx, config, arguments)
-	} else {
+	case "git_status":
+		result, err = r.gitStatus(ctx, config, arguments)
+	case "git_diff":
+		result, err = r.gitDiff(ctx, config, arguments)
+	case "git_log":
+		result, err = r.gitLog(ctx, config, arguments)
+	case "git_add":
+		result, err = r.gitAdd(ctx, config, arguments)
+	case "git_commit":
+		result, err = r.gitCommit(ctx, config, arguments)
+	case "read_file":
+		result, err = r.readFile(config, arguments)
+	case "list_dir":
+		result, err = r.listDir(config, arguments)
+	case "write_file":
+		result, err = r.writeFile(config, arguments)
+	case "apply_patch":
+		result, err = r.applyPatch(config, arguments)
+	case "skills_list":
+		result, err = r.skillsList(config)
+	case "skill_view":
+		result, err = r.skillView(config, arguments)
+	case "skill_manage":
+		result, err = r.skillManage(config, arguments)
+	default:
 		err = fmt.Errorf("不支持的客户端工具: %s", toolName)
 	}
+	return toolName, result, err
+}
 
+func (r *ClientRuntime) SubmitClientToolCallback(
+	ctx context.Context,
+	providerClient provider.Provider,
+	payload map[string]any,
+	result any,
+	err error,
+) error {
 	if err != nil {
-		return r.submitCallback(ctx, providerClient, payload, false, nil, err.Error())
+		return r.submitCallback(ctx, providerClient, payload, false, result, err.Error())
 	}
 	return r.submitCallback(ctx, providerClient, payload, true, result, "")
 }
@@ -197,8 +213,11 @@ func (r *ClientRuntime) runCommand(
 	config internalconfig.Config,
 	arguments map[string]any,
 ) (map[string]any, error) {
-	payload, err := normalizeCommandArguments(arguments, config.Workdir)
+	payload, err := normalizeCommandArguments(arguments, config)
 	if err != nil {
+		return nil, err
+	}
+	if err := guardDangerousCommand(payload, config); err != nil {
 		return nil, err
 	}
 
@@ -212,6 +231,10 @@ func (r *ClientRuntime) runCommand(
 
 	command.Dir = payload.WorkingDirectory
 	command.Env = mergeEnv(payload.EnvOverrides)
+	_ = appendAuditLog(config, "run_command", map[string]any{
+		"command": commandPreview(arguments),
+		"cwd":     payload.WorkingDirectory,
+	})
 
 	stdoutPipe, err := command.StdoutPipe()
 	if err != nil {
@@ -227,6 +250,7 @@ func (r *ClientRuntime) runCommand(
 	}
 
 	fmt.Fprintf(r.stdout, "\n[执行客户端命令] %s\n", commandPreview(arguments))
+	startedAt := time.Now()
 
 	var stdoutBuffer bytes.Buffer
 	var stderrBuffer bytes.Buffer
@@ -254,6 +278,7 @@ func (r *ClientRuntime) runCommand(
 	}
 
 	if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
+		fmt.Fprintf(r.stdout, "[本地命令] %s（超时，>%ds）\n", commandPreview(arguments), payload.Timeout)
 		return nil, fmt.Errorf("命令执行超时，超过 %d 秒", payload.Timeout)
 	}
 	if waitErr != nil {
@@ -264,6 +289,13 @@ func (r *ClientRuntime) runCommand(
 		if message == "" {
 			message = waitErr.Error()
 		}
+		_ = appendAuditLog(config, "run_command_failed", map[string]any{
+			"command":   commandPreview(arguments),
+			"cwd":       payload.WorkingDirectory,
+			"exit_code": command.ProcessState.ExitCode(),
+			"error":     message,
+		})
+		fmt.Fprintf(r.stdout, "[本地命令] %s（失败，%s，退出码 %d）\n", commandPreview(arguments), formatCommandDuration(time.Since(startedAt)), command.ProcessState.ExitCode())
 		return nil, fmt.Errorf("命令执行失败: %s", message)
 	}
 
@@ -281,8 +313,26 @@ func (r *ClientRuntime) runCommand(
 	if stderr != "" && !strings.HasSuffix(stderr, "\n") {
 		fmt.Fprintln(r.stderr)
 	}
+	_ = appendAuditLog(config, "run_command_succeeded", map[string]any{
+		"command":   commandPreview(arguments),
+		"cwd":       payload.WorkingDirectory,
+		"exit_code": command.ProcessState.ExitCode(),
+	})
+	fmt.Fprintf(r.stdout, "[本地命令] %s（成功，%s，退出码 %d）\n", commandPreview(arguments), formatCommandDuration(time.Since(startedAt)), command.ProcessState.ExitCode())
 
 	return result, nil
+}
+
+func formatCommandDuration(duration time.Duration) string {
+	if duration < time.Second {
+		return fmt.Sprintf("%dms", duration.Milliseconds())
+	}
+	if duration < time.Minute {
+		return fmt.Sprintf("%.1fs", duration.Seconds())
+	}
+	minutes := int(duration / time.Minute)
+	seconds := int((duration % time.Minute) / time.Second)
+	return fmt.Sprintf("%dm%02ds", minutes, seconds)
 }
 
 func (r *ClientRuntime) searchFiles(
@@ -290,53 +340,7 @@ func (r *ClientRuntime) searchFiles(
 	config internalconfig.Config,
 	arguments map[string]any,
 ) (map[string]any, error) {
-	query := strings.TrimSpace(stringValue(arguments["query"]))
-	if query == "" {
-		return nil, fmt.Errorf("文件搜索缺少关键词")
-	}
-
-	baseDir, err := resolveBaseDirectory(config.Workdir, stringValue(arguments["path"]))
-	if err != nil {
-		return nil, err
-	}
-
-	maxResults := intValue(arguments["max_results"], 50)
-	if maxResults < 1 {
-		maxResults = 1
-	}
-	if maxResults > 200 {
-		maxResults = 200
-	}
-
-	glob := strings.TrimSpace(stringValue(arguments["glob"]))
-
-	searchEngine, err := detectSearchEngine()
-	if err != nil {
-		return nil, err
-	}
-
-	var output []byte
-	switch searchEngine {
-	case "rg":
-		output, err = runRipgrep(ctx, query, baseDir, glob, maxResults)
-	case "grep":
-		output, err = runGrep(ctx, query, baseDir)
-	default:
-		return nil, fmt.Errorf("不支持的搜索引擎: %s", searchEngine)
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	matches := parseSearchMatches(output, baseDir, glob, maxResults)
-
-	fmt.Fprintf(r.stdout, "执行 %s \"%s\" 命令, 命中 %d 条\n", searchEngine, query, len(matches))
-	return map[string]any{
-		"matches": matches,
-		"count":   len(matches),
-		"root":    baseDir,
-		"engine":  searchEngine,
-	}, nil
+	return r.searchFilesLocal(ctx, config, arguments)
 }
 
 func detectSearchEngine() (string, error) {
@@ -458,7 +462,7 @@ type commandArguments struct {
 	ExpectJSON       bool
 }
 
-func normalizeCommandArguments(arguments map[string]any, defaultWorkdir string) (commandArguments, error) {
+func normalizeCommandArguments(arguments map[string]any, config internalconfig.Config) (commandArguments, error) {
 	timeout := intValue(arguments["timeout"], defaultCommandTimeout)
 	if timeout < 1 {
 		timeout = 1
@@ -467,7 +471,7 @@ func normalizeCommandArguments(arguments map[string]any, defaultWorkdir string) 
 		timeout = maxCommandTimeout
 	}
 
-	workingDirectory, err := resolveBaseDirectory(defaultWorkdir, stringValue(arguments["working_directory"]))
+	workingDirectory, err := resolveAllowedDirectory(config, stringValue(arguments["working_directory"]))
 	if err != nil {
 		return commandArguments{}, err
 	}
@@ -482,6 +486,7 @@ func normalizeCommandArguments(arguments map[string]any, defaultWorkdir string) 
 			envOverrides[strings.TrimSpace(key)] = value
 		}
 	}
+	envOverrides = sanitizeEnvOverrides(envOverrides)
 
 	rawCommand := strings.TrimSpace(stringValue(arguments["raw_command"]))
 	if rawCommand != "" {
@@ -562,13 +567,13 @@ func resolveBaseDirectory(defaultWorkdir string, requested string) (string, erro
 
 func mergeEnv(overrides map[string]string) []string {
 	base := os.Environ()
-	if len(overrides) == 0 {
-		return base
-	}
 	merged := make(map[string]string, len(base)+len(overrides))
 	for _, entry := range base {
 		parts := strings.SplitN(entry, "=", 2)
 		if len(parts) == 2 {
+			if isSensitiveEnvKey(parts[0]) {
+				continue
+			}
 			merged[parts[0]] = parts[1]
 		}
 	}
@@ -582,6 +587,7 @@ func mergeEnv(overrides map[string]string) []string {
 	for key, value := range merged {
 		result = append(result, key+"="+value)
 	}
+	sort.Strings(result)
 	return result
 }
 

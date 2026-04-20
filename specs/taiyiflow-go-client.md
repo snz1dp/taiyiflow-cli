@@ -127,15 +127,32 @@
 ### 7.1 最小化可行产品（MVP）能力
 
 1. 单一主入口的任务执行
-2. 本地文件读取与目录检索
+2. 本地文件读取、目录检索、写文件与补丁应用
 3. 受控命令外壳（Shell）命令执行
 4. 会话（Session）上下文保存与恢复
 5. 面向代码仓库的基本感知能力
 6. 面向文档材料的总结与起草能力
 7. 配置管理和模型提供方（Provider）切换能力
 8. 与 ../taiyiflow/src/backend/base 后台 stream 接口的协议兼容能力
+9. 本地技能（Skill）发现、查看、启停与透传能力
+10. 工作目录沙箱、敏感路径拒绝、审计日志与审批模式联动
 
-### 7.2 第二阶段增强
+### 7.2 当前已落地能力
+
+截至当前仓库实现，客户端已经具备以下能力基线：
+
+1. 本地客户端工具注册已覆盖 search_files、read_file、list_dir、write_file、apply_patch。
+2. 文件工具默认受工作目录沙箱限制，可附加 sandbox_roots 扩展白名单根目录。
+3. 敏感目录（如 ~/.ssh、~/.gnupg、~/.aws、macOS Keychains）默认拒绝访问。
+4. 写文件、补丁和技能启停操作统一遵循 approval_mode；只读模式会直接拒绝执行。
+5. 命令执行会剔除常见敏感环境变量，并对高风险命令在 auto 模式下阻断。
+6. 客户端支持 ~/.snz1dp/skills 目录下的 SKILL.md 发现、list/view/enable/disable 与 RequestedSkillNames、ClientSkillPackages 透传。
+7. TUI 与交互模式均提供 /skills 命令；doctor 会输出文件工具链和技能目录状态。
+8. TUI 状态栏已支持窄终端分级压缩，并将本地工具与命令执行摘要收敛到状态栏和关键里程碑消息；git_diff 与 apply_patch 冲突还会进入专门的工具结果面板。
+9. 客户端已补充 git_status、git_diff、git_log、git_add、git_commit 五个本地 Git 工具，用于在任务闭环中读取仓库状态、差异和提交历史，并执行受审批控制的暂存与提交。
+10. apply_patch 冲突报告已细化到文件、hunk、行号、操作类型和期望/实际文本；TUI 确认流会展示补丁/Git 目标摘要与提交草稿预览。
+
+### 7.3 第二阶段增强
 
 1. 补丁级代码修改与文件变更预览
 2. Git 版本控制工作流支持
@@ -143,7 +160,7 @@
 4. 插件机制或模型上下文协议（MCP）接入
 5. 多工具链协作和更强的计划执行能力
 
-### 7.3 后续扩展
+### 7.4 后续扩展
 
 1. 企业知识库接入
 2. 邮件、日历、IM、文档平台连接器
@@ -169,6 +186,7 @@ taiyiflow [task]
 taiyiflow --continue
 taiyiflow --new "修复当前测试失败"
 taiyiflow config
+taiyiflow skills list
 taiyiflow doctor
 taiyiflow version
 ```
@@ -177,6 +195,7 @@ taiyiflow version
 
 - /help
 - /clear
+- /skills
 - /diff
 - /approve
 - /exit
@@ -215,8 +234,16 @@ taiyiflow version
 
 - 文件工具：读文件、列目录、搜索内容、写文件、生成补丁
 - 命令外壳（Shell）工具：执行构建、测试、脚本、查询命令
-- Git 工具：查看状态、差异（diff）、日志
+- Skill 工具：列出技能、读取技能全文、启停技能
+- Git 工具：查看状态、差异（diff）、日志、暂存（git add）、提交（git commit）
 - 文档工具：提取 Markdown、纯文本（TXT）、逗号分隔值（CSV）、JSON 等内容
+
+首期工具治理要求：
+
+1. 默认工作目录为基础沙箱根目录，支持通过 sandbox_roots 配置额外白名单路径。
+2. 写文件、补丁、技能启停等本地变更操作统一接入 approval_mode。
+3. 审计日志默认写入 ~/.snz1dp/logs/audit.log，可通过 audit_enabled 开关控制。
+4. 本地技能目录默认使用 ~/.snz1dp/skills，技能文件采用 SKILL.md（YAML frontmatter + Markdown body）。
 
 第二阶段可补充：
 

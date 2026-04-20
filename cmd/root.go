@@ -62,6 +62,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	switch args[0] {
 	case "task":
 		return a.runTask(ctx, args[1:])
+	case "skills":
+		return a.runSkills(args[1:])
 	case "cli":
 		return errors.New("`cli` 子命令已移除，请改用 `taiyiflow-cli task`")
 	case "config":
@@ -147,7 +149,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	}
 
 	reader := bufio.NewScanner(a.stdin)
-	fmt.Fprintln(a.stdout, "进入交互模式，输入 /config 管理服务端配置，输入 /exit 退出，输入 /new 新建会话，输入 /sessions 查看本地会话。")
+	fmt.Fprintln(a.stdout, "进入交互模式，输入 /config 管理服务端配置，输入 /skills 查看本地技能，输入 /exit 退出，输入 /new 新建会话。")
 
 	for {
 		fmt.Fprint(a.stdout, "> ")
@@ -166,6 +168,14 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 		switch {
 		case line == "/exit":
 			return nil
+		case line == "/skills" || strings.HasPrefix(strings.ToLower(line), "/skills "):
+			output, err := a.executeSkillsCommand(parseSlashSkillsArgs(line))
+			if err != nil {
+				fmt.Fprintf(a.stderr, "技能命令执行失败: %v\n", err)
+				continue
+			}
+			fmt.Fprintln(a.stdout, output)
+			continue
 		case line == "/agents":
 			fmt.Fprintln(a.stdout, "请使用 `taiyiflow-cli agents` 查看或切换默认智能体。")
 			continue
@@ -290,6 +300,10 @@ func (a *App) streamTask(
 	task string,
 	sessionState agent.SessionState,
 ) (agent.SessionState, error) {
+	requestedSkillNames, clientSkillPackages, err := a.loadSkillPayload(config)
+	if err != nil {
+		return sessionState, err
+	}
 	stream, streamSession, err := providerClient.Stream(ctx, provider.StreamRequest{
 		FlowID:                 flowID,
 		Input:                  task,
@@ -298,7 +312,9 @@ func (a *App) streamTask(
 		SessionID:              sessionState.SessionID,
 		RequestType:            "agent",
 		CommandExecutionTarget: "client",
+		RequestedSkillNames:    requestedSkillNames,
 		ClientMCPServers:       a.runtime.ClientMCPServers(),
+		ClientSkillPackages:    clientSkillPackages,
 	})
 	if err != nil {
 		return sessionState, err
@@ -353,6 +369,7 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli config [show|init|path|set|unset]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli agents [list|current|use] [参数]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli skills [list|view|enable|disable] [参数]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli version")
 	fmt.Fprintf(a.stdout, "当前版本: %s\n", buildinfo.Version)
 }
@@ -361,6 +378,7 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 	fmt.Fprintln(a.stdout, "会话内命令:")
 	fmt.Fprintln(a.stdout, "  /agents   显示智能体切换说明")
 	fmt.Fprintln(a.stdout, "  /config   查看或更新服务端配置")
+	fmt.Fprintln(a.stdout, "  /skills   列出、查看或切换本地技能")
 	fmt.Fprintln(a.stdout, "  /help     显示帮助")
 	fmt.Fprintln(a.stdout, "  /session  显示当前会话状态")
 	fmt.Fprintln(a.stdout, "  /sessions 显示本地已保存会话")

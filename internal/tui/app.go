@@ -121,6 +121,8 @@ const (
 	EventProgressNote   EventKind = "progress_note"
 	EventSystemNote     EventKind = "system_note"
 	EventErrorNote      EventKind = "error_note"
+	EventToolSummary    EventKind = "tool_summary"
+	EventToolPanel      EventKind = "tool_panel"
 	EventSessionUpdate  EventKind = "session_update"
 	EventToolCall       EventKind = "tool_call"
 	EventBuiltInCall    EventKind = "built_in_call"
@@ -133,6 +135,7 @@ type Event struct {
 	Text      string
 	SessionID string
 	Stats     *RequestMetrics
+	Panel     *ToolPanel
 }
 
 type Request struct {
@@ -183,9 +186,19 @@ type RequestMetrics struct {
 }
 
 type ConfirmRequest struct {
+	Title        string
+	Command      string
+	Detail       string
+	PreviewTitle string
+	PreviewBody  string
+	Hint         string
+}
+
+type ToolPanel struct {
 	Title   string
-	Command string
-	Detail  string
+	Summary string
+	Body    string
+	Hint    string
 }
 
 type LocalCommandResult struct {
@@ -303,43 +316,48 @@ type progressState struct {
 }
 
 type model struct {
-	ctx              context.Context
-	snapshot         Snapshot
-	flows            []FlowItem
-	runner           Runner
-	refreshSnapshot  SnapshotRefreshHandler
-	flowChange       FlowChangeHandler
-	sessionChange    SessionChangeHandler
-	approvalChange   ApprovalChangeHandler
-	configFormSubmit ConfigFormSubmitHandler
-	localCommand     LocalCommandHandler
-	eventCh          chan tea.Msg
-	entries          []entry
-	input            textarea.Model
-	flowFilter       textinput.Model
-	viewport         viewport.Model
-	progress         progress.Model
-	markdown         *glamour.TermRenderer
-	state            progressState
-	activityHint     string
-	requestStats     RequestMetrics
-	width            int
-	height           int
-	contentWidth     int
-	ready            bool
-	quitting         bool
-	showFlowPicker   bool
-	sessionPicker    *SessionPickerState
-	approvalPicker   *ApprovalPickerState
-	configForm       *configFormState
-	flowCursor       int
-	sessionCursor    int
-	approvalCursor   int
-	commandCursor    int
-	startupCommand   string
-	pendingConfirm   *confirmState
-	requestCancel    context.CancelFunc
-	interrupting     bool
+	ctx               context.Context
+	snapshot          Snapshot
+	flows             []FlowItem
+	runner            Runner
+	refreshSnapshot   SnapshotRefreshHandler
+	flowChange        FlowChangeHandler
+	sessionChange     SessionChangeHandler
+	approvalChange    ApprovalChangeHandler
+	configFormSubmit  ConfigFormSubmitHandler
+	localCommand      LocalCommandHandler
+	eventCh           chan tea.Msg
+	entries           []entry
+	input             textarea.Model
+	flowFilter        textinput.Model
+	viewport          viewport.Model
+	progress          progress.Model
+	markdown          *glamour.TermRenderer
+	state             progressState
+	activityHint      string
+	currentToolLabel  string
+	latestToolSummary string
+	latestToolAt      time.Time
+	requestStats      RequestMetrics
+	width             int
+	height            int
+	contentWidth      int
+	ready             bool
+	quitting          bool
+	showFlowPicker    bool
+	sessionPicker     *SessionPickerState
+	approvalPicker    *ApprovalPickerState
+	configForm        *configFormState
+	flowCursor        int
+	sessionCursor     int
+	approvalCursor    int
+	commandCursor     int
+	startupCommand    string
+	queuedInput       string
+	pendingConfirm    *confirmState
+	toolPanel         *ToolPanel
+	requestCancel     context.CancelFunc
+	interrupting      bool
 }
 
 type configFormState struct {
@@ -494,6 +512,7 @@ var (
 var slashCommands = []slashCommand{
 	{Trigger: "/agents", Completion: "/agents ", Description: "打开智能体选择，或用 /agents <名称> 直接切换"},
 	{Trigger: "/config", Completion: "/config ", Description: "查看或更新服务端地址、API Key 等配置"},
+	{Trigger: "/skills", Completion: "/skills ", Description: "列出、查看或启停本地技能"},
 	{Trigger: "/new", Completion: "/new", Description: "重置当前智能体的本地会话"},
 	{Trigger: "/session", Completion: "/session", Description: "显示当前会话状态"},
 	{Trigger: "/sessions", Completion: "/sessions ", Description: "列出当前智能体的服务端会话，可附页码"},
@@ -507,7 +526,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 	if snapshot.BackendAvailable {
 		inputModel.Placeholder = "输入内容后回车发送"
 	} else {
-		inputModel.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/help、/clear、/exit"
+		inputModel.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/skills、/help、/clear、/exit"
 	}
 	inputModel.Prompt = "> "
 	inputModel.ShowLineNumbers = false
@@ -629,27 +648,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.interrupting || errors.Is(typed.err, context.Canceled) {
 			progressCmd := m.completeInterruptedRequest()
 			m.input.Focus()
+			if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
+				return m, queuedCmd
+			}
 			return m, progressCmd
 		}
 		m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
 		m.finishRequestStats()
 		m.activityHint = ""
+		m.currentToolLabel = ""
 		m.requestCancel = nil
 		m.syncViewport()
-		progressCmd := m.transitionProgress(progressFailed)
 		m.input.Focus()
+		if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
+			return m, tea.Batch(queuedCmd, m.maybeRefreshSnapshot())
+		}
+		progressCmd := m.transitionProgress(progressFailed)
 		return m, tea.Batch(progressCmd, m.maybeRefreshSnapshot())
 	case streamDoneMsg:
 		if m.interrupting {
 			progressCmd := m.completeInterruptedRequest()
 			m.input.Focus()
+			if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
+				return m, queuedCmd
+			}
 			return m, progressCmd
 		}
 		m.finishRequestStats()
 		m.activityHint = ""
+		m.currentToolLabel = ""
 		m.requestCancel = nil
-		progressCmd := m.transitionProgress(progressIdle)
 		m.input.Focus()
+		if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
+			return m, tea.Batch(queuedCmd, m.maybeRefreshSessionSnapshot())
+		}
+		progressCmd := m.transitionProgress(progressIdle)
 		return m, tea.Batch(progressCmd, m.maybeRefreshSessionSnapshot())
 	case confirmRequestMsg:
 		m.pendingConfirm = &confirmState{request: typed.request, responseCh: typed.responseCh, cursor: 0}
@@ -736,6 +769,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pendingConfirm != nil {
 			return m.handleConfirmKey(typed)
 		}
+		if m.toolPanel != nil {
+			return m.handleToolPanelKey(typed)
+		}
 		if m.configForm != nil {
 			return m.handleConfigFormKey(typed)
 		}
@@ -816,6 +852,18 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		if m.isBusy() {
+			pending := strings.TrimSpace(m.input.Value())
+			if pending != "" {
+				queuedUpdated := strings.TrimSpace(m.queuedInput) != ""
+				m.queuedInput = pending
+				m.input.SetValue("")
+				message := "当前任务执行中，下一条输入已加入队列。"
+				if queuedUpdated {
+					message = "当前任务执行中，已更新排队输入。"
+				}
+				m.entries = append(m.entries, entry{role: "system", content: message})
+				m.syncViewport()
+			}
 			return m, nil
 		}
 		input := strings.TrimSpace(m.input.Value())
@@ -917,6 +965,16 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		close(m.pendingConfirm.responseCh)
 		m.pendingConfirm = nil
 		return m, tea.Batch(m.transitionProgress(progressStreaming), waitForStream(m.eventCh))
+	default:
+		return m, nil
+	}
+}
+
+func (m model) handleToolPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter", "esc", "q", "ctrl+c":
+		m.closeToolPanel()
+		return m, nil
 	default:
 		return m, nil
 	}
@@ -1163,6 +1221,22 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		if strings.TrimSpace(event.Text) != "" {
 			m.activityHint = strings.TrimSpace(event.Text)
 		}
+	case EventToolSummary:
+		summary := strings.TrimSpace(event.Text)
+		if summary != "" {
+			m.latestToolSummary = summary
+			m.latestToolAt = time.Now()
+			m.currentToolLabel = ""
+			m.entries = append(m.entries, entry{role: "system", content: summary})
+		}
+	case EventToolPanel:
+		if event.Panel != nil {
+			m.toolPanel = event.Panel
+			if summary := strings.TrimSpace(event.Panel.Summary); summary != "" {
+				m.latestToolSummary = summary
+				m.latestToolAt = time.Now()
+			}
+		}
 	case EventSystemNote:
 		if strings.TrimSpace(event.Text) != "" {
 			if isTransientSystemStatus(event.Text) {
@@ -1177,10 +1251,12 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		}
 	case EventToolCall:
 		m.requestStats.ToolCallCount++
-		m.activityHint = "执行中"
+		m.currentToolLabel = currentToolLabel(event.Text, "服务端工具调用")
+		m.activityHint = "执行 " + m.currentToolLabel
 	case EventBuiltInCall, EventClientToolCall:
 		m.requestStats.CommandCount++
-		m.activityHint = "执行中"
+		m.currentToolLabel = currentToolLabel(event.Text, "本地工具调用")
+		m.activityHint = "执行 " + m.currentToolLabel
 	case EventStatsUpdate:
 		if event.Stats != nil {
 			if strings.TrimSpace(event.Stats.RunID) != "" {
@@ -1223,11 +1299,31 @@ func RenderSessionStatusText(snapshot Snapshot, prefix string) string {
 func (m *model) completeInterruptedRequest() tea.Cmd {
 	m.finishRequestStats()
 	m.activityHint = ""
+	m.currentToolLabel = ""
 	m.requestCancel = nil
 	m.interrupting = false
 	m.entries = append(m.entries, entry{role: "system", content: "请求已中断"})
 	m.syncViewport()
 	return m.transitionProgress(progressIdle)
+}
+
+func (m *model) startQueuedRequest() tea.Cmd {
+	queued := strings.TrimSpace(m.queuedInput)
+	if queued == "" || !m.snapshot.BackendAvailable {
+		return nil
+	}
+	m.queuedInput = ""
+	m.entries = append(m.entries, entry{role: "user", content: queued})
+	m.activityHint = ""
+	m.currentToolLabel = ""
+	m.interrupting = false
+	runID := newRequestRunID()
+	m.startRequestStats(queued, runID)
+	m.syncViewport()
+	request := Request{Input: queued, FlowID: m.snapshot.DefaultFlow, RunID: runID}
+	requestCtx, cancel := context.WithCancel(m.ctx)
+	m.requestCancel = cancel
+	return tea.Batch(m.transitionProgress(progressSending), startStream(requestCtx, request, m.runner, m.eventCh))
 }
 
 func (m *model) syncLayout() {
@@ -1351,7 +1447,7 @@ func (m model) View() string {
 	bodyParts := []string{}
 	history := m.renderHistoryPane()
 	inputView := m.input.View()
-	if m.pendingConfirm != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil {
+	if m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil {
 		inputView = hintStyle.Render("当前有未处理的弹层，请先完成操作。")
 	} else if commandHints := m.renderSlashCommandHints(); commandHints != "" {
 		inputView = lipgloss.JoinVertical(lipgloss.Left, inputView, "", commandHints)
@@ -1546,7 +1642,6 @@ func (m model) renderTransientStatus() string {
 }
 
 func (m model) renderStatusBar() string {
-	segments := m.statusBarSegments()
 	stateLabel := m.state.label
 	if !m.snapshot.BackendAvailable && !m.isBusy() {
 		stateLabel = "只读模式"
@@ -1563,6 +1658,7 @@ func (m model) renderStatusBar() string {
 	if bodyWidth < 12 {
 		bodyWidth = 12
 	}
+	segments := m.statusBarSegments(bodyWidth)
 	body := trimForWidth(joinStatusSegments(segments, "  ·  "), bodyWidth)
 	line := lipgloss.JoinHorizontal(lipgloss.Left, stateChip, " ", statusBarDimStyle.Render(body))
 	return statusBarStyle.Width(renderWidth).Render(trimForWidth(line, renderWidth-2))
@@ -1593,6 +1689,9 @@ func (m model) renderOverlay() string {
 	if m.pendingConfirm != nil {
 		return overlayStyle.Width(minInt(m.contentWidth-6, 90)).Render(m.renderConfirmOverlay())
 	}
+	if m.toolPanel != nil {
+		return overlayStyle.Width(minInt(m.contentWidth-6, 96)).Render(m.renderToolPanel())
+	}
 	if m.configForm != nil {
 		return overlayStyle.Width(minInt(m.contentWidth-6, 92)).Render(m.renderConfigForm())
 	}
@@ -1617,13 +1716,43 @@ func (m model) renderConfirmOverlay() string {
 	if strings.TrimSpace(request.Detail) != "" {
 		lines = append(lines, request.Detail)
 	}
+	if strings.TrimSpace(request.PreviewTitle) != "" {
+		lines = append(lines, request.PreviewTitle)
+	}
+	if strings.TrimSpace(request.PreviewBody) != "" {
+		lines = append(lines, hardWrapText(request.PreviewBody, maxInt(24, minInt(m.contentWidth-18, 76))))
+	}
 	options := []string{
 		m.renderOverlayOption("确认执行", m.pendingConfirm.cursor == 0),
 		m.renderOverlayOption("拒绝", m.pendingConfirm.cursor == 1),
 		m.renderOverlayOption("以后都同意", m.pendingConfirm.cursor == 2),
 	}
-	lines = append(lines, "", lipgloss.JoinHorizontal(lipgloss.Left, options[0], "  ", options[1], "  ", options[2]), "使用方向键或 Tab 选择，Enter 确认。")
+	hint := strings.TrimSpace(request.Hint)
+	if hint == "" {
+		hint = "使用方向键或 Tab 选择，Enter 确认。"
+	}
+	lines = append(lines, "", lipgloss.JoinHorizontal(lipgloss.Left, options[0], "  ", options[1], "  ", options[2]), hint)
 	return strings.Join(lines, "\n\n")
+}
+
+func (m model) renderToolPanel() string {
+	if m.toolPanel == nil {
+		return ""
+	}
+	panel := m.toolPanel
+	lines := []string{fallback(strings.TrimSpace(panel.Title), "工具结果")}
+	if strings.TrimSpace(panel.Summary) != "" {
+		lines = append(lines, hintStyle.Render(trimForWidth(panel.Summary, maxInt(24, m.contentWidth-16))))
+	}
+	if strings.TrimSpace(panel.Body) != "" {
+		lines = append(lines, "", hardWrapText(panel.Body, maxInt(24, minInt(m.contentWidth-18, 80))))
+	}
+	hint := strings.TrimSpace(panel.Hint)
+	if hint == "" {
+		hint = "按 Enter 或 Esc 关闭。"
+	}
+	lines = append(lines, "", hintStyle.Render(hint))
+	return strings.Join(lines, "\n")
 }
 
 func (m model) renderApprovalPicker() string {
@@ -1833,32 +1962,76 @@ func (m model) renderFlowPicker() string {
 	return strings.Join(lines, "\n")
 }
 
-func (m model) statusBarSegments() []string {
-	segments := []string{}
+func (m model) statusBarSegments(maxWidth int) []string {
+	compact := m.useMinimalChrome() || maxWidth < 56
+	segments := []statusSegment{}
+	if !compact {
+		segments = append(segments, statusSegment{text: fallback(m.snapshot.DefaultFlowLabel, "未配置"), priority: 5})
+	}
 	if !m.snapshot.BackendAvailable {
-		segments = append(segments, backendStatusLabel(m.snapshot))
+		segments = append(segments, statusSegment{text: backendStatusLabel(m.snapshot), priority: 0})
 	}
-	if strings.TrimSpace(m.snapshot.SessionID) != "" {
-		segments = append(segments, ""+compactSessionID(m.snapshot.SessionID))
+	if sessionSegment := sessionStatusSegment(m.snapshot.SessionID, compact); sessionSegment != "" {
+		segments = append(segments, statusSegment{text: sessionSegment, priority: 1})
 	}
-	segments = append(segments, ""+approvalModeLabel(m.snapshot.ApprovalMode))
-	if contextSegment := m.contextUsageSegment(); contextSegment != "" {
-		segments = append(segments, contextSegment)
+	segments = append(segments, statusSegment{text: approvalModeStatus(m.snapshot.ApprovalMode, compact), priority: 1})
+	if toolSegment := m.toolSummarySegment(compact); toolSegment != "" {
+		priority := 2
+		if m.isBusy() {
+			priority = 0
+		}
+		segments = append(segments, statusSegment{text: toolSegment, priority: priority})
 	}
-	if tokenSegment := m.tokenUsageSegment(); tokenSegment != "" {
-		segments = append(segments, tokenSegment)
+	if requestSegment := m.requestStatsSegment(compact); requestSegment != "" {
+		segments = append(segments, statusSegment{text: requestSegment, priority: 2})
 	}
-	if requestSegment := m.requestStatsSegment(); requestSegment != "" {
-		segments = append(segments, requestSegment)
+	if tokenSegment := m.tokenUsageSegment(compact); tokenSegment != "" {
+		segments = append(segments, statusSegment{text: tokenSegment, priority: 3})
 	}
-	if compressionSegment := m.compressionSegment(); compressionSegment != "" {
-		segments = append(segments, compressionSegment)
+	if contextSegment := m.contextUsageSegment(compact); contextSegment != "" {
+		segments = append(segments, statusSegment{text: contextSegment, priority: 4})
 	}
-	if m.useMinimalChrome() {
-		return segments
+	if compressionSegment := m.compressionSegment(compact); compressionSegment != "" {
+		segments = append(segments, statusSegment{text: compressionSegment, priority: 4})
 	}
-	segments = append([]string{"" + fallback(m.snapshot.DefaultFlowLabel, "未配置")}, segments...)
-	return segments
+	return fitStatusSegments(segments, maxWidth)
+}
+
+type statusSegment struct {
+	text     string
+	priority int
+}
+
+func fitStatusSegments(segments []statusSegment, maxWidth int) []string {
+	if len(segments) == 0 {
+		return nil
+	}
+	current := append([]statusSegment{}, segments...)
+	for len(current) > 1 && lipgloss.Width(joinStatusSegments(statusSegmentTexts(current), "  ·  ")) > maxWidth {
+		removeIndex := -1
+		removePriority := -1
+		for index, segment := range current {
+			if segment.priority >= removePriority {
+				removePriority = segment.priority
+				removeIndex = index
+			}
+		}
+		if removeIndex < 0 {
+			break
+		}
+		current = append(current[:removeIndex], current[removeIndex+1:]...)
+	}
+	return statusSegmentTexts(current)
+}
+
+func statusSegmentTexts(segments []statusSegment) []string {
+	result := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		if strings.TrimSpace(segment.text) != "" {
+			result = append(result, segment.text)
+		}
+	}
+	return result
 }
 
 func buildBackendStatusEntries(snapshot Snapshot) []entry {
@@ -1869,16 +2042,13 @@ func buildBackendStatusEntries(snapshot Snapshot) []entry {
 	if reason := strings.TrimSpace(snapshot.BackendStatusReason); reason != "" {
 		message += "\n原因: " + reason
 	}
-	message += "\n可用命令: /config /help /clear /exit"
+	message += "\n可用命令: /config /skills /help /clear /exit"
 	return []entry{{role: "error", content: message}}
 }
 
 func (m model) backendUnavailableMessage() string {
 	message := "当前无法连接服务端，已进入只读模式。"
-	if reason := strings.TrimSpace(m.snapshot.BackendStatusReason); reason != "" {
-		message += " 原因: " + reason
-	}
-	message += " 可用命令: /config /help /clear /exit"
+	message += " 可用命令: /config /skills /help /clear /exit"
 	return message
 }
 
@@ -1886,6 +2056,8 @@ func isAvailableInReadOnlyMode(input string) bool {
 	trimmed := strings.TrimSpace(strings.ToLower(input))
 	switch {
 	case trimmed == "/help", trimmed == "/clear", trimmed == "/exit":
+		return true
+	case trimmed == "/skills", strings.HasPrefix(trimmed, "/skills "):
 		return true
 	case trimmed == "/config", strings.HasPrefix(trimmed, "/config "):
 		return true
@@ -1914,9 +2086,9 @@ func welcomeCommandsLabel(snapshot Snapshot) []string {
 	}
 	labelValue := "常用命令："
 	if snapshot.BackendAvailable {
-		labelValues = append(labelValues, labelValue+"/agents /config /session /new /exit")
+		labelValues = append(labelValues, labelValue+"/agents /config /skills /session /new /exit")
 	} else {
-		labelValues = append(labelValues, labelValue+"/config /help /clear /exit")
+		labelValues = append(labelValues, labelValue+"/config /skills /help /clear /exit")
 	}
 	return labelValues
 }
@@ -2168,7 +2340,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) {
 }
 
 func (m model) showSlashCommandHints() bool {
-	if m.pendingConfirm != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil || m.isBusy() {
+	if m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil || m.isBusy() {
 		return false
 	}
 	trimmed := strings.TrimSpace(m.input.Value())
@@ -2315,6 +2487,12 @@ func (m *model) closeApprovalPicker() {
 	m.approvalPicker = nil
 	m.approvalCursor = 0
 	m.input.Focus()
+}
+
+func (m *model) closeToolPanel() {
+	m.toolPanel = nil
+	m.input.Focus()
+	m.syncLayout()
 }
 
 func (m *model) moveConfigFormCursor(delta int) {
@@ -2629,7 +2807,7 @@ func (m *model) syncInputPlaceholder() {
 		m.input.Placeholder = "输入内容后回车发送"
 		return
 	}
-	m.input.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/help、/clear、/exit"
+	m.input.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/skills、/help、/clear、/exit"
 }
 
 func (m model) scheduleBackendRetry() tea.Cmd {
@@ -2804,7 +2982,7 @@ func (m *model) clampFlowCursor() {
 	}
 }
 
-func (m model) contextUsageSegment() string {
+func (m model) contextUsageSegment(compact bool) string {
 	usage := m.requestStats.TokenUsage
 	if usage == nil || usage.ContextWindow == nil || usage.ContextWindow.MaxInputTokens <= 0 {
 		return ""
@@ -2818,30 +2996,49 @@ func (m model) contextUsageSegment() string {
 		return ""
 	}
 	percent := float64(current) / float64(maxTokens) * 100
+	if compact {
+		return fmt.Sprintf("Ctx %.0f%%", percent)
+	}
 	return fmt.Sprintf("上下文 %s/%s %.0f%%", formatCompactInt(current), formatCompactInt(maxTokens), percent)
 }
 
-func (m model) tokenUsageSegment() string {
+func (m model) tokenUsageSegment(compact bool) string {
 	usage := m.requestStats.TokenUsage
 	if usage == nil {
 		return ""
 	}
 	if usage.TotalTokens > 0 {
+		if compact {
+			return fmt.Sprintf("Tk %s/%s/%s", formatCompactInt(usage.InputTokens), formatCompactInt(usage.OutputTokens), formatCompactInt(usage.TotalTokens))
+		}
 		return fmt.Sprintf("Token %s/%s/%s", formatCompactInt(usage.InputTokens), formatCompactInt(usage.OutputTokens), formatCompactInt(usage.TotalTokens))
 	}
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+		if compact {
+			return fmt.Sprintf("Tk %s/%s", formatCompactInt(usage.InputTokens), formatCompactInt(usage.OutputTokens))
+		}
 		return fmt.Sprintf("Token %s/%s", formatCompactInt(usage.InputTokens), formatCompactInt(usage.OutputTokens))
 	}
 	return ""
 }
 
-func (m model) requestStatsSegment() string {
+func (m model) requestStatsSegment(compact bool) string {
 	if m.requestStats.StartedAt.IsZero() {
 		return ""
 	}
 	duration := time.Since(m.requestStats.StartedAt)
 	if !m.requestStats.CompletedAt.IsZero() {
 		duration = m.requestStats.CompletedAt.Sub(m.requestStats.StartedAt)
+	}
+	if compact {
+		parts := []string{formatDuration(duration)}
+		if m.requestStats.ToolCallCount > 0 {
+			parts = append(parts, fmt.Sprintf("%dT", m.requestStats.ToolCallCount))
+		}
+		if m.requestStats.CommandCount > 0 {
+			parts = append(parts, fmt.Sprintf("%dC", m.requestStats.CommandCount))
+		}
+		return strings.Join(parts, " ")
 	}
 	parts := []string{"耗时" + formatDuration(duration)}
 	if m.requestStats.ToolCallCount > 0 {
@@ -2853,10 +3050,13 @@ func (m model) requestStatsSegment() string {
 	return strings.Join(parts, " · ")
 }
 
-func (m model) compressionSegment() string {
+func (m model) compressionSegment(compact bool) string {
 	compression := m.requestStats.Compression
 	if compression == nil || compression.Count == 0 {
 		return ""
+	}
+	if compact {
+		return fmt.Sprintf("压缩 %d", compression.Count)
 	}
 	line := fmt.Sprintf("压缩 %d 次 %s→%s", compression.Count, formatCompactInt(compression.BeforeTokens), formatCompactInt(compression.AfterTokens))
 	if compression.CompressionRatio > 0 {
@@ -2883,6 +3083,17 @@ func compactSessionID(value string) string {
 		return trimmed
 	}
 	return trimmed[:4] + "…" + trimmed[len(trimmed)-4:]
+}
+
+func sessionStatusSegment(value string, compact bool) string {
+	trimmed := compactSessionID(value)
+	if strings.TrimSpace(trimmed) == "" {
+		return ""
+	}
+	if compact {
+		return trimmed
+	}
+	return "会话 " + trimmed
 }
 
 func joinStatusSegments(parts []string, separator string) string {
@@ -3054,6 +3265,10 @@ func isExecutableSlashCommandInput(input string) bool {
 		return true
 	case strings.EqualFold(trimmed, "/session"):
 		return true
+	case strings.EqualFold(trimmed, "/skills"):
+		return true
+	case strings.HasPrefix(strings.ToLower(trimmed), "/skills "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/skills ")) != ""
 	case strings.EqualFold(trimmed, "/sessions"):
 		return true
 	case strings.HasPrefix(strings.ToLower(trimmed), "/sessions "):
@@ -3085,6 +3300,14 @@ func trimText(content string, maxLen int) string {
 		return content[:maxLen]
 	}
 	return content[:maxLen-3] + "..."
+}
+
+func currentToolLabel(text string, fallbackValue string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return fallbackValue
+	}
+	return trimText(trimmed, 48)
 }
 
 func centerText(text string, width int) string {
@@ -3149,6 +3372,41 @@ func approvalModeLabel(value string) string {
 	default:
 		return strings.TrimSpace(value)
 	}
+}
+
+func approvalModeStatus(value string, compact bool) string {
+	if compact {
+		switch strings.TrimSpace(strings.ToLower(value)) {
+		case "auto":
+			return "自动"
+		case "readonly":
+			return "只读"
+		case "confirm", "":
+			return "确认"
+		default:
+			return trimText(strings.TrimSpace(value), 8)
+		}
+	}
+	return approvalModeLabel(value)
+}
+
+func (m model) toolSummarySegment(compact bool) string {
+	if strings.TrimSpace(m.currentToolLabel) != "" {
+		if compact {
+			return "执行 " + trimText(m.currentToolLabel, 20)
+		}
+		return "执行 " + trimText(m.currentToolLabel, 40)
+	}
+	if strings.TrimSpace(m.latestToolSummary) == "" {
+		return ""
+	}
+	if time.Since(m.latestToolAt) > 20*time.Second {
+		return ""
+	}
+	if compact {
+		return trimText(m.latestToolSummary, 20)
+	}
+	return trimText(m.latestToolSummary, 48)
 }
 
 func fallback(value string, defaultValue string) string {

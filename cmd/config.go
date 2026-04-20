@@ -155,6 +155,22 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("output_language 不能为空，如需重置请使用 taiyiflow-cli config unset output_language")
 		}
 		config.OutputLanguage = trimmedValue
+	case "audit_enabled":
+		normalized := strings.ToLower(trimmedValue)
+		if normalized != "true" && normalized != "false" {
+			return fmt.Errorf("audit_enabled 仅支持 true 或 false")
+		}
+		config.AuditEnabled = normalized == "true"
+	case "skills_directory":
+		if trimmedValue == "" {
+			return fmt.Errorf("skills_directory 不能为空，如需清空请使用 taiyiflow-cli config unset skills_directory")
+		}
+		config.Skills.Directory = trimmedValue
+	case "sandbox_roots":
+		if trimmedValue == "" {
+			return fmt.Errorf("sandbox_roots 不能为空，如需清空请使用 taiyiflow-cli config unset sandbox_roots")
+		}
+		config.SandboxRoots = splitConfigCSV(trimmedValue)
 	default:
 		return fmt.Errorf("不支持的配置项: %s", normalizedKey)
 	}
@@ -178,6 +194,12 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.Workdir = ""
 	case "output_language":
 		config.OutputLanguage = defaults.OutputLanguage
+	case "audit_enabled":
+		config.AuditEnabled = defaults.AuditEnabled
+	case "skills_directory":
+		config.Skills.Directory = ""
+	case "sandbox_roots":
+		config.SandboxRoots = nil
 	default:
 		return fmt.Errorf("不支持的配置项: %s", normalizeConfigKey(key))
 	}
@@ -217,8 +239,23 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("命令执行模式: %s", fallbackConfigValue(config.ApprovalMode, internalconfig.Default().ApprovalMode)),
 		fmt.Sprintf("工作目录: %s", fallbackConfigValue(config.Workdir, "<当前目录>")),
 		fmt.Sprintf("输出语言: %s", fallbackConfigValue(config.OutputLanguage, internalconfig.Default().OutputLanguage)),
+		fmt.Sprintf("审计日志: %t", config.AuditEnabled),
+		fmt.Sprintf("技能目录: %s", fallbackConfigValue(config.Skills.Directory, "<默认 ~/.snz1dp/skills>")),
+		fmt.Sprintf("沙箱根目录: %s", fallbackConfigValue(strings.Join(config.SandboxRoots, ", "), "<仅当前工作目录>")),
 	}
 	return strings.Join(lines, "\n")
+}
+
+func splitConfigCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }
 
 func maskConfigSecret(value string) string {
