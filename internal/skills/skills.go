@@ -86,6 +86,7 @@ func Discover(config internalconfig.Config) ([]Skill, string, error) {
 	enabled := enabledSet(config.Skills.Enabled)
 	items := []Skill{}
 	seenNames := map[string]bool{}
+	seenPaths := map[string]bool{}
 	availableDirectories := []string{}
 	for _, directory := range directories {
 		info, err := os.Stat(directory)
@@ -113,6 +114,11 @@ func Discover(config internalconfig.Config) ([]Skill, string, error) {
 			if err != nil {
 				return err
 			}
+			identity := fileIdentity(path)
+			if seenPaths[identity] {
+				return nil
+			}
+			seenPaths[identity] = true
 			nameKey := strings.ToLower(skill.Name)
 			if seenNames[nameKey] {
 				return nil
@@ -131,6 +137,11 @@ func Discover(config internalconfig.Config) ([]Skill, string, error) {
 	sort.Slice(items, func(left, right int) bool {
 		if items[left].Enabled != items[right].Enabled {
 			return items[left].Enabled
+		}
+		leftSource := sourcePriority(items[left].Source)
+		rightSource := sourcePriority(items[right].Source)
+		if leftSource != rightSource {
+			return leftSource < rightSource
 		}
 		return strings.ToLower(items[left].Name) < strings.ToLower(items[right].Name)
 	})
@@ -285,6 +296,31 @@ func classifySkillSource(directory string, config internalconfig.Config) string 
 		return "workspace"
 	}
 	return "home"
+}
+
+func sourcePriority(source string) int {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "custom":
+		return 0
+	case "workspace":
+		return 1
+	case "home":
+		return 2
+	default:
+		return 9
+	}
+}
+
+func fileIdentity(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil && strings.TrimSpace(resolved) != "" {
+		return filepath.Clean(resolved)
+	}
+	resolved, err = filepath.Abs(path)
+	if err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
 }
 
 func parseSkillDocument(content string) (Manifest, string, error) {

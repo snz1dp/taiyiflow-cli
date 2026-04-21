@@ -136,6 +136,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 		return err
 	}
 	flowDisplayName := a.resolveFlowDisplayName(ctx, providerClient, flowID)
+	sessionState.FlowDisplayName = flowDisplayName
 
 	metadata, err := providerClient.GetMetadata(ctx, flowID)
 	if err == nil && metadata.WelcomeMessage != "" {
@@ -143,6 +144,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	}
 	if err == nil && strings.TrimSpace(metadata.Name) != "" {
 		flowDisplayName = metadata.Name
+		sessionState.FlowDisplayName = flowDisplayName
 	}
 	if err != nil {
 		fmt.Fprintf(a.stderr, "提示: 获取元信息失败，继续进入交互模式: %v\n", err)
@@ -194,7 +196,13 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			}
 			continue
 		case line == "/new":
-			sessionState = agent.SessionState{FlowID: flowID, Workdir: workdir, RequestMode: sessionState.RequestMode, ContextDir: workdir}
+			sessionState = agent.SessionState{
+				FlowID:          flowID,
+				FlowDisplayName: flowDisplayName,
+				Workdir:         workdir,
+				RequestMode:     sessionState.RequestMode,
+				ContextDir:      workdir,
+			}
 			if err := a.sessionStore.Delete(flowID, workdir); err != nil {
 				return err
 			}
@@ -220,7 +228,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			if err := a.ensureBackendAvailable(ctx, providerClient, config.BackendBaseURL); err != nil {
 				flowID = strings.TrimSpace(firstNonEmpty(options.Flow, config.DefaultFlow))
 				flowDisplayName = a.resolveFlowDisplayName(ctx, providerClient, flowID)
-				sessionState = agent.SessionState{FlowID: flowID, Workdir: workdir}
+				sessionState = agent.SessionState{FlowID: flowID, FlowDisplayName: flowDisplayName, Workdir: workdir}
 				fmt.Fprintf(a.stderr, "提示: 新配置尚未连通服务端: %v\n", err)
 				continue
 			}
@@ -240,12 +248,14 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			if err != nil {
 				return err
 			}
+			sessionState.FlowDisplayName = flowDisplayName
 			continue
 		}
 
 		if mode, prompt, ok := parseModeSlashCommand(line); ok {
 			sessionState.RequestMode = mode
 			sessionState.ContextDir = workdir
+			sessionState.FlowDisplayName = flowDisplayName
 			if strings.TrimSpace(prompt) == "" {
 				if err := a.sessionStore.Save(sessionState); err != nil {
 					return err
@@ -356,9 +366,14 @@ func (a *App) streamTask(
 	if streamSession != nil && streamSession.SessionID != "" {
 		sessionState.SessionID = streamSession.SessionID
 		sessionState.FlowID = flowID
+		sessionState.FlowDisplayName = strings.TrimSpace(a.resolveFlowDisplayName(ctx, providerClient, flowID))
+		title, titleErr := lookupSessionTitle(ctx, providerClient, flowID, streamSession.SessionID)
+		if titleErr == nil {
+			sessionState.SessionTitle = strings.TrimSpace(title)
+		}
 		sessionState.Workdir = resolveLocalWorkdir(config.Workdir)
-			sessionState.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir))
-			sessionState.RequestMode = normalizeRequestMode(sessionState.RequestMode)
+		sessionState.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir))
+		sessionState.RequestMode = normalizeRequestMode(sessionState.RequestMode)
 		if err := a.sessionStore.Save(sessionState); err != nil {
 			return sessionState, err
 		}
@@ -443,7 +458,14 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 }
 
 func (a *App) printSessionStatus(ctx context.Context, providerClient provider.Provider, flowDisplayName string, flowID string, sessionState agent.SessionState) {
-	_ = flowDisplayName
+	resolvedFlowName := strings.TrimSpace(flowDisplayName)
+	if resolvedFlowName == "" {
+		resolvedFlowName = strings.TrimSpace(sessionState.FlowDisplayName)
+	}
+	if resolvedFlowName == "" {
+		resolvedFlowName = sanitizeFlowDisplay(flowID)
+	}
+	fmt.Fprintf(a.stdout, "当前智能体: %s\n", resolvedFlowName)
 	if strings.TrimSpace(sessionState.SessionID) == "" {
 		fmt.Fprintf(a.stdout, "当前模式: %s\n", requestModeLabel(sessionState.RequestMode))
 		fmt.Fprintln(a.stdout, "当前会话: 新会话（未同步服务端）")
@@ -451,8 +473,13 @@ func (a *App) printSessionStatus(ctx context.Context, providerClient provider.Pr
 	}
 	fmt.Fprintf(a.stdout, "当前模式: %s\n", requestModeLabel(sessionState.RequestMode))
 	if title, err := lookupSessionTitle(ctx, providerClient, flowID, sessionState.SessionID); err == nil && strings.TrimSpace(title) != "" {
-		fmt.Fprintf(a.stdout, "当前会话: %s\n", sessionState.SessionID)
-		fmt.Fprintf(a.stdout, "会话标题: %s\n", title)
+		fmt.Fprintf(a.stdout, "当前会话: %s\n", strings.TrimSpace(title))
+		fmt.Fprintf(a.stdout, "会话ID: %s\n", sessionState.SessionID)
+		return
+	}
+	if strings.TrimSpace(sessionState.SessionTitle) != "" {
+		fmt.Fprintf(a.stdout, "当前会话: %s\n", strings.TrimSpace(sessionState.SessionTitle))
+		fmt.Fprintf(a.stdout, "会话ID: %s\n", sessionState.SessionID)
 		return
 	}
 	fmt.Fprintf(a.stdout, "当前会话: %s\n", sessionState.SessionID)
@@ -471,9 +498,17 @@ func (a *App) printSavedSessions(currentFlowID string, currentSessionID string, 
 	resolvedWorkdir := resolveLocalWorkdir(currentWorkdir)
 	fmt.Fprintln(a.stdout, "本地已保存会话:")
 	for _, state := range states {
-		line := fmt.Sprintf("- %s", sanitizeFlowDisplay(state.FlowID))
+		flowLabel := strings.TrimSpace(state.FlowDisplayName)
+		if flowLabel == "" {
+			flowLabel = sanitizeFlowDisplay(state.FlowID)
+		}
+		line := fmt.Sprintf("- %s", flowLabel)
 		if strings.TrimSpace(state.SessionID) != "" {
-			line += fmt.Sprintf(" | 会话 %s", state.SessionID)
+			title := strings.TrimSpace(state.SessionTitle)
+			if title == "" {
+				title = state.SessionID
+			}
+			line += fmt.Sprintf(" | 会话 %s", title)
 		} else {
 			line += " | 新会话（未同步服务端）"
 		}

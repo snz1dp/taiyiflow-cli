@@ -102,6 +102,11 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if streamSession != nil && strings.TrimSpace(streamSession.SessionID) != "" {
 			sessionState.SessionID = streamSession.SessionID
 			sessionState.FlowID = currentFlow
+			sessionState.FlowDisplayName = strings.TrimSpace(a.resolveFlowDisplayName(runCtx, providerClient, currentFlow))
+			title, titleErr := lookupSessionTitle(runCtx, providerClient, currentFlow, streamSession.SessionID)
+			if titleErr == nil {
+				sessionState.SessionTitle = strings.TrimSpace(title)
+			}
 			sessionState.Workdir = workdir
 			sessionState.RequestMode = normalizeRequestMode(request.RequestMode)
 			sessionState.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
@@ -269,7 +274,13 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if flowID == "" {
 			return tui.Snapshot{}, fmt.Errorf("当前未选择智能体，无法切换会话")
 		}
-		if err := a.sessionStore.Save(agent.SessionState{FlowID: flowID, SessionID: strings.TrimSpace(sessionID), Workdir: current.Workdir}); err != nil {
+		if err := a.sessionStore.Save(agent.SessionState{
+			FlowID:          flowID,
+			FlowDisplayName: strings.TrimSpace(current.DefaultFlowLabel),
+			SessionID:       strings.TrimSpace(sessionID),
+			SessionTitle:    "",
+			Workdir:         current.Workdir,
+		}); err != nil {
 			return tui.Snapshot{}, err
 		}
 		updatedConfig, err := a.configManager.Load()
@@ -372,7 +383,15 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			updatedSnapshot.ContextDir = resolveLocalWorkdir(snapshot.Workdir)
 			if strings.TrimSpace(prompt) == "" {
 				if strings.TrimSpace(snapshot.DefaultFlow) != "" {
-					if err := a.sessionStore.Save(agent.SessionState{FlowID: snapshot.DefaultFlow, SessionID: snapshot.SessionID, Workdir: snapshot.Workdir, RequestMode: mode, ContextDir: updatedSnapshot.ContextDir}); err != nil {
+					if err := a.sessionStore.Save(agent.SessionState{
+						FlowID:          snapshot.DefaultFlow,
+						FlowDisplayName: strings.TrimSpace(snapshot.DefaultFlowLabel),
+						SessionID:       snapshot.SessionID,
+						SessionTitle:    strings.TrimSpace(snapshot.SessionTitle),
+						Workdir:         snapshot.Workdir,
+						RequestMode:     mode,
+						ContextDir:      updatedSnapshot.ContextDir,
+					}); err != nil {
 						return tui.LocalCommandResult{}, err
 					}
 				}
@@ -397,7 +416,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if err != nil {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
 			}
-			return tui.LocalCommandResult{Handled: true, Events: buildLocalShellCommandEvents(result)}, nil
+			return tui.LocalCommandResult{Handled: true, Events: buildLocalShellCommandEvents(rawCommand, result)}, nil
 		case trimmed == "/clear":
 			return tui.LocalCommandResult{Handled: true, ClearHistory: true}, nil
 		case trimmed == "/session":
@@ -522,8 +541,10 @@ func (a *App) buildTUISnapshot(
 			return tui.Snapshot{}, err
 		}
 		snapshot.SessionID = sessionState.SessionID
+		snapshot.SessionTitle = resolveSessionTitle(sessionState)
 		snapshot.RequestMode = normalizeRequestMode(sessionState.RequestMode)
 		snapshot.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, snapshot.Workdir))
+		snapshot.DefaultFlowLabel = resolveFlowLabel(flowID, snapshot.DefaultFlowLabel, sessionState.FlowDisplayName)
 		return snapshot, nil
 	}
 	if versionInfo, err := providerClient.GetVersionInfo(ctx); err == nil && versionInfo != nil {
@@ -539,12 +560,14 @@ func (a *App) buildTUISnapshot(
 		return tui.Snapshot{}, err
 	}
 	snapshot.SessionID = sessionState.SessionID
+	snapshot.SessionTitle = resolveSessionTitle(sessionState)
 	snapshot.RequestMode = normalizeRequestMode(sessionState.RequestMode)
 	snapshot.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, snapshot.Workdir))
 	if strings.TrimSpace(snapshot.SessionID) != "" {
 		title, titleErr := lookupSessionTitle(ctx, providerClient, flowID, snapshot.SessionID)
 		if titleErr == nil {
 			snapshot.SessionTitle = strings.TrimSpace(title)
+			sessionState.SessionTitle = snapshot.SessionTitle
 		}
 		snapshot.History = loadRecentSessionHistory(ctx, providerClient, flowID, snapshot.SessionID)
 	}
@@ -554,13 +577,39 @@ func (a *App) buildTUISnapshot(
 		snapshot.WelcomeMessage = metadata.WelcomeMessage
 		if strings.TrimSpace(metadata.Name) != "" {
 			snapshot.DefaultFlowLabel = metadata.Name
+			sessionState.FlowDisplayName = strings.TrimSpace(metadata.Name)
 		}
+	}
+	if strings.TrimSpace(sessionState.FlowDisplayName) == "" {
+		sessionState.FlowDisplayName = strings.TrimSpace(snapshot.DefaultFlowLabel)
+	}
+	if strings.TrimSpace(snapshot.SessionTitle) != "" {
+		sessionState.SessionTitle = strings.TrimSpace(snapshot.SessionTitle)
+	}
+	if strings.TrimSpace(sessionState.FlowID) == "" {
+		sessionState.FlowID = flowID
+	}
+	if strings.TrimSpace(sessionState.Workdir) == "" {
+		sessionState.Workdir = snapshot.Workdir
+	}
+	if strings.TrimSpace(sessionState.RequestMode) == "" {
+		sessionState.RequestMode = snapshot.RequestMode
+	}
+	if strings.TrimSpace(sessionState.ContextDir) == "" {
+		sessionState.ContextDir = snapshot.ContextDir
+	}
+	if err := a.sessionStore.Save(sessionState); err != nil {
+		return snapshot, nil
 	}
 	return snapshot, nil
 }
 
-func buildLocalShellCommandEvents(result map[string]any) []tui.Event {
+
+func buildLocalShellCommandEvents(command string, result map[string]any) []tui.Event {
 	events := []tui.Event{}
+	if trimmed := strings.TrimSpace(command); trimmed != "" {
+		events = append(events, tui.Event{Kind: tui.EventSystemNote, Text: "! " + trimmed})
+	}
 	if stdout, ok := result["stdout"].(string); ok {
 		stdout = strings.TrimRight(stdout, "\n")
 		if stdout != "" {
@@ -574,6 +623,26 @@ func buildLocalShellCommandEvents(result map[string]any) []tui.Event {
 		}
 	}
 	return events
+}
+
+func resolveFlowLabel(flowID string, fromSnapshot string, fromCache string) string {
+	if trimmed := strings.TrimSpace(fromCache); trimmed != "" {
+		return trimmed
+	}
+	if trimmed := strings.TrimSpace(fromSnapshot); trimmed != "" {
+		return trimmed
+	}
+	return strings.TrimSpace(flowID)
+}
+
+func resolveSessionTitle(state agent.SessionState) string {
+	if strings.TrimSpace(state.SessionID) == "" {
+		return "新会话"
+	}
+	if strings.TrimSpace(state.SessionTitle) != "" {
+		return strings.TrimSpace(state.SessionTitle)
+	}
+	return strings.TrimSpace(state.SessionID)
 }
 
 func resolveLocalWorkdir(configured string) string {

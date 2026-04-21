@@ -1553,13 +1553,13 @@ func (m model) renderHeader() string {
 	}, "  ·  ")
 	contentWidth := maxInt(18, renderWidth-2)
 	workdirWidth := maxInt(24, contentWidth/2)
-	workdirDisplay := trimLeftForWidth(workdir, workdirWidth)
+	workdirDisplay := trimMiddleLeftForWidth(workdir, workdirWidth)
 	if m.useMinimalChrome() {
 		lines := []string{
 			trimForWidth(sessionTitle, contentWidth),
 			trimForWidth(versionLine, contentWidth),
 			trimForWidth(flowLabelDisplay, contentWidth),
-			trimLeftForWidth(workdir, contentWidth),
+			trimMiddleLeftForWidth(workdir, contentWidth),
 		}
 		return headerBarStyle.Width(renderWidth).Render(strings.Join(lines, "\n"))
 	}
@@ -1997,14 +1997,8 @@ func (m model) renderFlowPicker() string {
 func (m model) statusBarSegments(maxWidth int) []string {
 	compact := m.useMinimalChrome() || maxWidth < 56
 	segments := []statusSegment{}
-	if !compact {
-		segments = append(segments, statusSegment{text: fallback(m.snapshot.DefaultFlowLabel, "未配置"), priority: 5})
-	}
 	if !m.snapshot.BackendAvailable {
 		segments = append(segments, statusSegment{text: backendStatusLabel(m.snapshot), priority: 0})
-	}
-	if sessionSegment := sessionStatusSegment(m.snapshot.SessionID, compact); sessionSegment != "" {
-		segments = append(segments, statusSegment{text: sessionSegment, priority: 1})
 	}
 	segments = append(segments, statusSegment{text: requestModeStatus(m.snapshot.RequestMode, compact), priority: 1})
 	segments = append(segments, statusSegment{text: approvalModeStatus(m.snapshot.ApprovalMode, compact), priority: 1})
@@ -3040,19 +3034,25 @@ func (m model) contextUsageSegment(compact bool) string {
 	if usage == nil || usage.ContextWindow == nil || usage.ContextWindow.MaxInputTokens <= 0 {
 		return ""
 	}
-	current := usage.ContextWindow.CurrentRoundInputTokens
-	if current <= 0 {
-		current = usage.ContextWindow.ShortTermContextTokens
-	}
 	maxTokens := usage.ContextWindow.MaxInputTokens
 	if maxTokens <= 0 {
 		return ""
 	}
-	percent := float64(current) / float64(maxTokens) * 100
-	if compact {
-		return fmt.Sprintf("Ctx %.0f%%", percent)
+	available := usage.ContextWindow.NextRoundAvailableTokens
+	if available <= 0 {
+		available = usage.ContextWindow.CurrentRoundAvailableTokens
 	}
-	return fmt.Sprintf("上下文 %s/%s %.0f%%", formatCompactInt(current), formatCompactInt(maxTokens), percent)
+	if available <= 0 {
+		return ""
+	}
+	if available > maxTokens {
+		available = maxTokens
+	}
+	percent := float64(available) / float64(maxTokens) * 100
+	if compact {
+		return fmt.Sprintf("Avail %.0f%%", percent)
+	}
+	return fmt.Sprintf("上下文可用 %s/%s %.0f%%", formatCompactInt(available), formatCompactInt(maxTokens), percent)
 }
 
 func (m model) tokenUsageSegment(compact bool) string {
@@ -3284,6 +3284,55 @@ func trimLeftForWidth(text string, width int) string {
 		trimmed = string(runes)
 	}
 	return ellipsis + trimmed
+}
+
+func trimMiddleLeftForWidth(text string, width int) string {
+	if width <= 0 {
+		return text
+	}
+	if lipgloss.Width(text) <= width {
+		return text
+	}
+	ellipsis := "..."
+	if width <= lipgloss.Width(ellipsis)+4 {
+		return trimLeftForWidth(text, width)
+	}
+	runes := []rune(text)
+	if len(runes) <= 2 {
+		return trimLeftForWidth(text, width)
+	}
+	leftLen := len(runes) / 3
+	if leftLen < 2 {
+		leftLen = 2
+	}
+	rightLen := len(runes) / 2
+	if rightLen < 3 {
+		rightLen = 3
+	}
+	if leftLen+rightLen >= len(runes) {
+		rightLen = len(runes) - leftLen - 1
+	}
+	if rightLen < 1 {
+		return trimLeftForWidth(text, width)
+	}
+	build := func(left int, right int) string {
+		return string(runes[:left]) + ellipsis + string(runes[len(runes)-right:])
+	}
+	trimmed := build(leftLen, rightLen)
+	for lipgloss.Width(trimmed) > width && (leftLen > 1 || rightLen > 1) {
+		if leftLen >= rightLen && leftLen > 1 {
+			leftLen--
+		} else if rightLen > 1 {
+			rightLen--
+		} else {
+			break
+		}
+		trimmed = build(leftLen, rightLen)
+	}
+	if lipgloss.Width(trimmed) > width {
+		return trimLeftForWidth(text, width)
+	}
+	return trimmed
 }
 
 func flowCursor(selected bool) string {

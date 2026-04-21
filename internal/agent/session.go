@@ -15,12 +15,14 @@ import (
 )
 
 type SessionState struct {
-	FlowID      string    `json:"flow_id"`
-	SessionID   string    `json:"session_id"`
-	Workdir     string    `json:"workdir,omitempty"`
-	RequestMode string    `json:"request_mode,omitempty"`
-	ContextDir  string    `json:"context_dir,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	FlowID          string    `json:"flow_id"`
+	FlowDisplayName string    `json:"flow_display_name,omitempty"`
+	SessionID       string    `json:"session_id"`
+	SessionTitle    string    `json:"session_title,omitempty"`
+	Workdir         string    `json:"workdir,omitempty"`
+	RequestMode     string    `json:"request_mode,omitempty"`
+	ContextDir      string    `json:"context_dir,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type SessionStore struct {
@@ -52,6 +54,8 @@ func (s *SessionStore) Load(flowID string, workdir string) (SessionState, error)
 	if state.FlowID == "" {
 		state.FlowID = flowID
 	}
+	state.FlowDisplayName = strings.TrimSpace(state.FlowDisplayName)
+	state.SessionTitle = strings.TrimSpace(state.SessionTitle)
 	if strings.TrimSpace(state.Workdir) == "" {
 		state.Workdir = normalizedWorkdir
 	}
@@ -68,6 +72,8 @@ func (s *SessionStore) Save(state SessionState) error {
 	if state.FlowID == "" {
 		return errors.New("智能体不能为空")
 	}
+	state.FlowDisplayName = strings.TrimSpace(state.FlowDisplayName)
+	state.SessionTitle = strings.TrimSpace(state.SessionTitle)
 	state.Workdir = normalizeWorkdir(state.Workdir)
 	state.RequestMode = normalizeRequestMode(state.RequestMode)
 	if strings.TrimSpace(state.ContextDir) == "" {
