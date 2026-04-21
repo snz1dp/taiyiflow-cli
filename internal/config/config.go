@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -12,6 +13,7 @@ import (
 const (
 	defaultRootDirName = ".snz1dp"
 	defaultConfigRel   = "config/taiyiflow.yaml"
+	rootDirEnvName     = "SNZ1DP_HOME"
 )
 
 type Config struct {
@@ -53,11 +55,25 @@ func NewManager() (*Manager, error) {
 }
 
 func DefaultRootDir() (string, error) {
+	if configured := filepath.Clean(strings.TrimSpace(os.Getenv(rootDirEnvName))); configured != "." && configured != "" {
+		if filepath.IsAbs(configured) {
+			return configured, nil
+		}
+		absPath, err := filepath.Abs(configured)
+		if err != nil {
+			return "", fmt.Errorf("解析 %s 失败: %w", rootDirEnvName, err)
+		}
+		return absPath, nil
+	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("获取用户目录失败: %w", err)
 	}
 	return filepath.Join(homeDir, defaultRootDirName), nil
+}
+
+func RootDirEnvName() string {
+	return rootDirEnvName
 }
 
 func DefaultConfigPath() (string, error) {

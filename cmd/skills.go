@@ -52,6 +52,9 @@ func (a *App) executeSkillsCommand(args []string) (string, error) {
 			if strings.TrimSpace(item.Category) != "" {
 				line += fmt.Sprintf(" | 分类 %s", item.Category)
 			}
+			if strings.TrimSpace(item.Source) != "" {
+				line += fmt.Sprintf(" | 来源 %s", item.Source)
+			}
 			lines = append(lines, line)
 		}
 		return strings.Join(lines, "\n"), nil
@@ -68,6 +71,7 @@ func (a *App) executeSkillsCommand(args []string) (string, error) {
 			fmt.Sprintf("名称: %s", item.Name),
 			fmt.Sprintf("描述: %s", fallbackConfigValue(item.Description, "<未填写>")),
 			fmt.Sprintf("分类: %s", fallbackConfigValue(item.Category, "<未填写>")),
+			fmt.Sprintf("来源: %s", fallbackConfigValue(item.Source, "<未填写>")),
 			fmt.Sprintf("路径: %s", item.Path),
 			fmt.Sprintf("启用: %t", item.Enabled),
 		}
@@ -114,7 +118,7 @@ func (a *App) loadSkillPayload(config internalconfig.Config) ([]string, any, err
 	if err != nil {
 		return nil, nil, err
 	}
-	requestedSkillNames := skills.EnabledSkillNames(items)
+	requestedSkillNames := normalizeSkillNames(config.Skills.Enabled)
 	clientSkillPackages := skills.ClientPackages(items, directory)
 	return requestedSkillNames, clientSkillPackages, nil
 }

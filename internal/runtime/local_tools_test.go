@@ -241,3 +241,63 @@ func TestGitAddAndCommit(t *testing.T) {
 		t.Fatalf("unexpected git log result after commit: %#v", logResult)
 	}
 }
+
+func TestGitRestoreAndResetSoft(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	tempDir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		command := exec.Command("git", args...)
+		command.Dir = tempDir
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, string(output))
+		}
+	}
+	runGit("init")
+	runGit("config", "user.name", "Taiyi Tester")
+	runGit("config", "user.email", "taiyi@example.com")
+	if err := os.WriteFile(filepath.Join(tempDir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+	runGit("add", "main.go")
+	runGit("commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(tempDir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+
+	runtimeClient := NewClientRuntime(strings.NewReader("y\n"), io.Discard, io.Discard)
+	config := internalconfig.Config{Workdir: tempDir, ApprovalMode: "auto"}
+	if _, err := runtimeClient.gitRestore(context.Background(), config, map[string]any{"path": "main.go"}); err != nil {
+		t.Fatalf("git restore failed: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(tempDir, "main.go"))
+	if err != nil {
+		t.Fatalf("read file failed: %v", err)
+	}
+	if string(content) != "package main\n" {
+		t.Fatalf("unexpected content after restore: %q", string(content))
+	}
+
+	if err := os.WriteFile(filepath.Join(tempDir, "README.md"), []byte("# docs\n"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+	runGit("add", "README.md")
+	runGit("commit", "-m", "docs")
+	resetResult, err := runtimeClient.gitResetSoft(context.Background(), config, map[string]any{"target": "HEAD~1"})
+	if err != nil {
+		t.Fatalf("git reset --soft failed: %v", err)
+	}
+	if resetResult["before_commit"].(string) == resetResult["after_commit"].(string) {
+		t.Fatalf("expected HEAD to move after soft reset: %#v", resetResult)
+	}
+	statusResult, err := runtimeClient.gitStatus(context.Background(), config, map[string]any{"path": tempDir})
+	if err != nil {
+		t.Fatalf("git status failed: %v", err)
+	}
+	if len(statusResult["staged"].([]string)) == 0 {
+		t.Fatalf("expected staged changes to remain after soft reset: %#v", statusResult)
+	}
+}

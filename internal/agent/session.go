@@ -15,10 +15,12 @@ import (
 )
 
 type SessionState struct {
-	FlowID    string    `json:"flow_id"`
-	SessionID string    `json:"session_id"`
-	Workdir   string    `json:"workdir,omitempty"`
-	UpdatedAt time.Time `json:"updated_at"`
+	FlowID      string    `json:"flow_id"`
+	SessionID   string    `json:"session_id"`
+	Workdir     string    `json:"workdir,omitempty"`
+	RequestMode string    `json:"request_mode,omitempty"`
+	ContextDir  string    `json:"context_dir,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type SessionStore struct {
@@ -53,6 +55,12 @@ func (s *SessionStore) Load(flowID string, workdir string) (SessionState, error)
 	if strings.TrimSpace(state.Workdir) == "" {
 		state.Workdir = normalizedWorkdir
 	}
+	state.RequestMode = normalizeRequestMode(state.RequestMode)
+	if strings.TrimSpace(state.ContextDir) == "" {
+		state.ContextDir = normalizedWorkdir
+	} else {
+		state.ContextDir = normalizeWorkdir(state.ContextDir)
+	}
 	return state, nil
 }
 
@@ -61,6 +69,12 @@ func (s *SessionStore) Save(state SessionState) error {
 		return errors.New("智能体不能为空")
 	}
 	state.Workdir = normalizeWorkdir(state.Workdir)
+	state.RequestMode = normalizeRequestMode(state.RequestMode)
+	if strings.TrimSpace(state.ContextDir) == "" {
+		state.ContextDir = state.Workdir
+	} else {
+		state.ContextDir = normalizeWorkdir(state.ContextDir)
+	}
 	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
 		return fmt.Errorf("创建会话目录失败: %w", err)
 	}
@@ -145,4 +159,15 @@ func normalizeWorkdir(workdir string) string {
 		return resolvedPath
 	}
 	return absPath
+}
+
+func normalizeRequestMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "plan":
+		return "plan"
+	case "agent":
+		return "agent"
+	default:
+		return "ask"
+	}
 }

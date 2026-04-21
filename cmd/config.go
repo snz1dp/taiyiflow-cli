@@ -234,7 +234,6 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 	lines := []string{
 		fmt.Sprintf("配置路径: %s", path),
 		fmt.Sprintf("服务端地址: %s", fallbackConfigValue(config.BackendBaseURL, internalconfig.Default().BackendBaseURL)),
-		fmt.Sprintf("API Key: %s", maskConfigSecret(config.APIKey)),
 		fmt.Sprintf("默认智能体: %s", fallbackConfigValue(config.DefaultFlow, "<未配置>")),
 		fmt.Sprintf("命令执行模式: %s", fallbackConfigValue(config.ApprovalMode, internalconfig.Default().ApprovalMode)),
 		fmt.Sprintf("工作目录: %s", fallbackConfigValue(config.Workdir, "<当前目录>")),
@@ -256,17 +255,6 @@ func splitConfigCSV(value string) []string {
 		}
 	}
 	return result
-}
-
-func maskConfigSecret(value string) string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return "<未配置>"
-	}
-	if len(trimmed) <= 6 {
-		return "***"
-	}
-	return trimmed[:3] + strings.Repeat("*", len(trimmed)-6) + trimmed[len(trimmed)-3:]
 }
 
 func fallbackConfigValue(value string, defaultValue string) string {

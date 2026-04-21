@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
 )
 
@@ -40,7 +41,11 @@ func newToolError(code string, format string, args ...any) error {
 }
 
 func (r *ClientRuntime) clientToolDefinitions() []map[string]any {
-	return []map[string]any{
+	return r.clientToolDefinitionsForMode(provider.RequestTypeAgent)
+}
+
+func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]any {
+	definitions := []map[string]any{
 		{
 			"name":                 "search_files",
 			"description":          "在工作目录沙箱内搜索文本，支持正则、大小写、include/exclude 与分页。",
@@ -101,6 +106,36 @@ func (r *ClientRuntime) clientToolDefinitions() []map[string]any {
 					"ref":         map[string]any{"type": "string", "description": "可选起始引用，例如 main 或 HEAD~5。"},
 					"max_commits": map[string]any{"type": "integer", "minimum": 1, "maximum": 50},
 				},
+				"additionalProperties": false,
+			},
+		},
+		{
+			"name":                 "git_restore",
+			"description":          "恢复工作区或暂存区文件，支持 staged/worktree/source 与多路径。",
+			"waiting_for_response": true,
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path":     map[string]any{"type": "string", "description": "单个路径，默认当前工作目录。"},
+					"paths":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"source":   map[string]any{"type": "string", "description": "可选来源引用，如 HEAD。"},
+					"staged":   map[string]any{"type": "boolean"},
+					"worktree": map[string]any{"type": "boolean"},
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
+			"name":                 "git_reset_soft",
+			"description":          "执行 git reset --soft 到目标引用，用于回退提交但保留暂存区。",
+			"waiting_for_response": true,
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path":   map[string]any{"type": "string", "description": "用于定位仓库的路径，默认当前工作目录。"},
+					"target": map[string]any{"type": "string", "description": "目标引用，例如 HEAD~1。"},
+				},
+				"required":             []string{"target"},
 				"additionalProperties": false,
 			},
 		},
@@ -232,6 +267,34 @@ func (r *ClientRuntime) clientToolDefinitions() []map[string]any {
 			},
 		},
 	}
+	if provider.NormalizeRequestType(mode) == provider.RequestTypeAgent {
+		return definitions
+	}
+	allowed := allowedClientToolSetForMode(mode)
+	filtered := make([]map[string]any, 0, len(definitions))
+	for _, definition := range definitions {
+		name := strings.TrimSpace(stringValue(definition["name"]))
+		if allowed[name] {
+			filtered = append(filtered, definition)
+		}
+	}
+	return filtered
+}
+
+func allowedClientToolSetForMode(mode string) map[string]bool {
+	if provider.NormalizeRequestType(mode) == provider.RequestTypeAgent {
+		return map[string]bool{}
+	}
+	return map[string]bool{
+		"search_files": true,
+		"git_status":   true,
+		"git_diff":     true,
+		"git_log":      true,
+		"read_file":    true,
+		"list_dir":     true,
+		"skills_list":  true,
+		"skill_view":   true,
+	}
 }
 
 func RequiresClientToolConfirmation(config internalconfig.Config, payload map[string]any) bool {
@@ -287,7 +350,7 @@ func shouldConfirmMutatingTool(config internalconfig.Config, toolName string) bo
 
 func mutatingClientTool(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
-	case "write_file", "apply_patch", "skill_manage", "git_add", "git_commit":
+	case "write_file", "apply_patch", "skill_manage", "git_restore", "git_reset_soft", "git_add", "git_commit":
 		return true
 	default:
 		return false
@@ -308,6 +371,24 @@ func previewClientTool(toolName string, arguments map[string]any) string {
 		return fmt.Sprintf("%s %s", toolName, fallbackString(path, "."))
 	case "git_status", "git_diff", "git_log":
 		return fmt.Sprintf("%s %s", toolName, fallbackString(path, "."))
+	case "git_restore":
+		paths := stringSlice(arguments["paths"])
+		if len(paths) == 0 {
+			paths = []string{fallbackString(path, ".")}
+		}
+		mode := []string{}
+		if boolValue(arguments["staged"]) {
+			mode = append(mode, "staged")
+		}
+		if boolValue(arguments["worktree"]) || len(mode) == 0 {
+			mode = append(mode, "worktree")
+		}
+		if source := strings.TrimSpace(stringValue(arguments["source"])); source != "" {
+			return fmt.Sprintf("git_restore [%s] %s <- %s", strings.Join(mode, "+"), strings.Join(paths, ", "), source)
+		}
+		return fmt.Sprintf("git_restore [%s] %s", strings.Join(mode, "+"), strings.Join(paths, ", "))
+	case "git_reset_soft":
+		return fmt.Sprintf("git_reset_soft %s -> %s", fallbackString(path, "."), fallbackString(stringValue(arguments["target"]), "<missing>"))
 	case "git_add":
 		paths := stringSlice(arguments["paths"])
 		if boolValue(arguments["all"]) {
@@ -751,6 +832,90 @@ func (r *ClientRuntime) gitLog(ctx context.Context, config internalconfig.Config
 		"max_commits": maxCommits,
 		"commits":     commits,
 		"count":       len(commits),
+	}, nil
+}
+
+func (r *ClientRuntime) gitRestore(ctx context.Context, config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
+	repoRoot, relativePath, err := resolveGitRepository(config, stringValue(arguments["path"]))
+	if err != nil {
+		return nil, err
+	}
+	paths := stringSlice(arguments["paths"])
+	if len(paths) == 0 && relativePath != "" {
+		paths = []string{relativePath}
+	}
+	if len(paths) == 0 {
+		paths = []string{"."}
+	}
+	staged := boolValue(arguments["staged"])
+	worktree := boolValue(arguments["worktree"])
+	if !staged && !worktree {
+		worktree = true
+	}
+	commandArgs := []string{"-C", repoRoot, "restore"}
+	if source := strings.TrimSpace(stringValue(arguments["source"])); source != "" {
+		commandArgs = append(commandArgs, "--source", source)
+	}
+	if staged {
+		commandArgs = append(commandArgs, "--staged")
+	}
+	if worktree {
+		commandArgs = append(commandArgs, "--worktree")
+	}
+	commandArgs = append(commandArgs, "--")
+	commandArgs = append(commandArgs, paths...)
+	output, err := exec.CommandContext(ctx, "git", commandArgs...).CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, newToolError("EXECUTION_FAILED", "执行 git restore 失败: %s", message)
+	}
+	_ = appendAuditLog(config, "git_restore", map[string]any{"repo": repoRoot, "paths": paths, "staged": staged, "worktree": worktree})
+	return map[string]any{
+		"repo_root": repoRoot,
+		"paths":     paths,
+		"staged":    staged,
+		"worktree":  worktree,
+		"source":    strings.TrimSpace(stringValue(arguments["source"])),
+		"count":     len(paths),
+	}, nil
+}
+
+func (r *ClientRuntime) gitResetSoft(ctx context.Context, config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
+	repoRoot, _, err := resolveGitRepository(config, stringValue(arguments["path"]))
+	if err != nil {
+		return nil, err
+	}
+	target := strings.TrimSpace(stringValue(arguments["target"]))
+	if target == "" {
+		return nil, newToolError("PARAM_ERROR", "git_reset_soft 缺少 target")
+	}
+	beforeOutput, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return nil, newToolError("EXECUTION_FAILED", "读取当前提交失败: %v", err)
+	}
+	output, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "reset", "--soft", target).CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, newToolError("EXECUTION_FAILED", "执行 git reset --soft 失败: %s", message)
+	}
+	afterOutput, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return nil, newToolError("EXECUTION_FAILED", "读取回退后提交失败: %v", err)
+	}
+	before := strings.TrimSpace(string(beforeOutput))
+	after := strings.TrimSpace(string(afterOutput))
+	_ = appendAuditLog(config, "git_reset_soft", map[string]any{"repo": repoRoot, "target": target, "before": before, "after": after})
+	return map[string]any{
+		"repo_root":    repoRoot,
+		"target":       target,
+		"before_commit": before,
+		"after_commit":  after,
 	}, nil
 }
 

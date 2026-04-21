@@ -131,7 +131,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	}
 	workdir := resolveLocalWorkdir(config.Workdir)
 
-	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir)
+	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir, "")
 	if err != nil {
 		return err
 	}
@@ -149,7 +149,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	}
 
 	reader := bufio.NewScanner(a.stdin)
-	fmt.Fprintln(a.stdout, "进入交互模式，输入 /config 管理服务端配置，输入 /skills 查看本地技能，输入 /exit 退出，输入 /new 新建会话。")
+	fmt.Fprintln(a.stdout, "进入交互模式，输入 /ask、/plan、/agent 切换请求模式，输入 /config 管理服务端配置，输入 /skills 查看本地技能。")
 
 	for {
 		fmt.Fprint(a.stdout, "> ")
@@ -194,7 +194,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			}
 			continue
 		case line == "/new":
-			sessionState = agent.SessionState{FlowID: flowID, Workdir: workdir}
+			sessionState = agent.SessionState{FlowID: flowID, Workdir: workdir, RequestMode: sessionState.RequestMode, ContextDir: workdir}
 			if err := a.sessionStore.Delete(flowID, workdir); err != nil {
 				return err
 			}
@@ -236,10 +236,29 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 				continue
 			}
 			flowDisplayName = a.resolveFlowDisplayName(ctx, providerClient, flowID)
-			sessionState, err = a.prepareSession(flowID, false, workdir)
+			sessionState, err = a.prepareSession(flowID, false, workdir, sessionState.RequestMode)
 			if err != nil {
 				return err
 			}
+			continue
+		}
+
+		if mode, prompt, ok := parseModeSlashCommand(line); ok {
+			sessionState.RequestMode = mode
+			sessionState.ContextDir = workdir
+			if strings.TrimSpace(prompt) == "" {
+				if err := a.sessionStore.Save(sessionState); err != nil {
+					return err
+				}
+				fmt.Fprintf(a.stdout, "已切换请求模式: %s\n", requestModeLabel(mode))
+				continue
+			}
+			updatedState, err := a.streamTask(ctx, providerClient, config, flowID, prompt, sessionState)
+			if err != nil {
+				fmt.Fprintf(a.stderr, "执行任务失败: %v\n", err)
+				continue
+			}
+			sessionState = updatedState
 			continue
 		}
 
@@ -272,7 +291,7 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	}
 	workdir := resolveLocalWorkdir(config.Workdir)
 
-	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir)
+	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir, provider.RequestTypeAsk)
 	if err != nil {
 		return err
 	}
@@ -281,15 +300,26 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	return err
 }
 
-func (a *App) prepareSession(flowID string, newSession bool, workdir string) (agent.SessionState, error) {
+func (a *App) prepareSession(flowID string, newSession bool, workdir string, requestMode string) (agent.SessionState, error) {
 	resolvedWorkdir := resolveLocalWorkdir(workdir)
+	normalizedMode := normalizeRequestMode(requestMode)
 	if newSession {
 		if err := a.sessionStore.Delete(flowID, resolvedWorkdir); err != nil {
 			return agent.SessionState{}, err
 		}
-		return agent.SessionState{FlowID: flowID, Workdir: resolvedWorkdir}, nil
+		return agent.SessionState{FlowID: flowID, Workdir: resolvedWorkdir, RequestMode: normalizedMode, ContextDir: resolvedWorkdir}, nil
 	}
-	return a.sessionStore.Load(flowID, resolvedWorkdir)
+	state, err := a.sessionStore.Load(flowID, resolvedWorkdir)
+	if err != nil {
+		return agent.SessionState{}, err
+	}
+	if strings.TrimSpace(requestMode) != "" {
+		state.RequestMode = normalizedMode
+	}
+	if strings.TrimSpace(state.ContextDir) == "" {
+		state.ContextDir = resolvedWorkdir
+	}
+	return state, nil
 }
 
 func (a *App) streamTask(
@@ -310,10 +340,13 @@ func (a *App) streamTask(
 		InputType:              "any",
 		OutputType:             "any",
 		SessionID:              sessionState.SessionID,
-		RequestType:            "agent",
+		RequestType:            normalizeRequestMode(sessionState.RequestMode),
+		DeviceType:             provider.DeviceTypeCLI,
+		ClientContextDir:       resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir)),
 		CommandExecutionTarget: "client",
+		UserAgent:              buildCLIUserAgent(),
 		RequestedSkillNames:    requestedSkillNames,
-		ClientMCPServers:       a.runtime.ClientMCPServers(),
+		ClientMCPServers:       a.runtime.ClientMCPServersForMode(sessionState.RequestMode),
 		ClientSkillPackages:    clientSkillPackages,
 	})
 	if err != nil {
@@ -324,6 +357,8 @@ func (a *App) streamTask(
 		sessionState.SessionID = streamSession.SessionID
 		sessionState.FlowID = flowID
 		sessionState.Workdir = resolveLocalWorkdir(config.Workdir)
+			sessionState.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir))
+			sessionState.RequestMode = normalizeRequestMode(sessionState.RequestMode)
 		if err := a.sessionStore.Save(sessionState); err != nil {
 			return sessionState, err
 		}
@@ -343,10 +378,25 @@ func (a *App) streamTask(
 			fmt.Fprintln(a.stderr)
 			return sessionState, fmt.Errorf("后端返回错误: %v", event.Data["error"])
 		case provider.EventBuiltIn:
+			if !modeAllowsBuiltIn(sessionState.RequestMode) {
+				if err := submitClientCallFailure(ctx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(sessionState.RequestMode))); err != nil {
+					return sessionState, err
+				}
+				fmt.Fprintf(a.stderr, "提示: 已拒绝 built_in，本地模式为 %s\n", requestModeLabel(sessionState.RequestMode))
+				continue
+			}
 			if err := a.runtime.HandleBuiltInEvent(ctx, providerClient, config, event.Data); err != nil {
 				return sessionState, err
 			}
 		case provider.EventClientTool:
+			toolName := nestedStringValue(event.Data, "function", "name")
+			if !modeAllowsClientTool(sessionState.RequestMode, toolName) {
+				if err := submitClientCallFailure(ctx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(sessionState.RequestMode), toolName)); err != nil {
+					return sessionState, err
+				}
+				fmt.Fprintf(a.stderr, "提示: 已拒绝客户端工具 %s，本地模式为 %s\n", toolName, requestModeLabel(sessionState.RequestMode))
+				continue
+			}
 			if err := a.runtime.HandleClientToolEvent(ctx, providerClient, config, event.Data); err != nil {
 				return sessionState, err
 			}
@@ -379,6 +429,9 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 	fmt.Fprintln(a.stdout, "  /agents   显示智能体切换说明")
 	fmt.Fprintln(a.stdout, "  /config   查看或更新服务端配置")
 	fmt.Fprintln(a.stdout, "  /skills   列出、查看或切换本地技能")
+	fmt.Fprintln(a.stdout, "  /ask      切换为问答模式，可写成 /ask <问题>")
+	fmt.Fprintln(a.stdout, "  /plan     切换为计划模式，可写成 /plan <目标>")
+	fmt.Fprintln(a.stdout, "  /agent    切换为执行模式，可写成 /agent <任务>")
 	fmt.Fprintln(a.stdout, "  /help     显示帮助")
 	fmt.Fprintln(a.stdout, "  /session  显示当前会话状态")
 	fmt.Fprintln(a.stdout, "  /sessions 显示本地已保存会话")
@@ -392,9 +445,11 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 func (a *App) printSessionStatus(ctx context.Context, providerClient provider.Provider, flowDisplayName string, flowID string, sessionState agent.SessionState) {
 	_ = flowDisplayName
 	if strings.TrimSpace(sessionState.SessionID) == "" {
+		fmt.Fprintf(a.stdout, "当前模式: %s\n", requestModeLabel(sessionState.RequestMode))
 		fmt.Fprintln(a.stdout, "当前会话: 新会话（未同步服务端）")
 		return
 	}
+	fmt.Fprintf(a.stdout, "当前模式: %s\n", requestModeLabel(sessionState.RequestMode))
 	if title, err := lookupSessionTitle(ctx, providerClient, flowID, sessionState.SessionID); err == nil && strings.TrimSpace(title) != "" {
 		fmt.Fprintf(a.stdout, "当前会话: %s\n", sessionState.SessionID)
 		fmt.Fprintf(a.stdout, "会话标题: %s\n", title)
@@ -425,6 +480,7 @@ func (a *App) printSavedSessions(currentFlowID string, currentSessionID string, 
 		if strings.TrimSpace(state.Workdir) != "" {
 			line += fmt.Sprintf(" | 目录 %s", state.Workdir)
 		}
+		line += fmt.Sprintf(" | 模式 %s", requestModeLabel(state.RequestMode))
 		if !state.UpdatedAt.IsZero() {
 			line += fmt.Sprintf(" | 更新时间 %s", state.UpdatedAt.Format("2006-01-02 15:04:05"))
 		}

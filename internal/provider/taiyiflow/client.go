@@ -9,10 +9,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
 
@@ -109,6 +111,8 @@ type streamRequestBody struct {
 	SessionID              string         `json:"session_id,omitempty"`
 	RunID                  string         `json:"run_id,omitempty"`
 	RequestType            string         `json:"request_type,omitempty"`
+	DeviceType             string         `json:"device_type,omitempty"`
+	ClientContextDir       string         `json:"client_context_dir,omitempty"`
 	CommandExecutionTarget string         `json:"command_execution_target,omitempty"`
 	MaxIterations          int            `json:"max_iterations,omitempty"`
 	AgentContinueWindows   int            `json:"agent_continue_windows,omitempty"`
@@ -423,7 +427,9 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 		OutputComponent:        request.OutputComponent,
 		SessionID:              request.SessionID,
 		RunID:                  request.RunID,
-		RequestType:            firstNonEmpty(request.RequestType, "agent"),
+		RequestType:            provider.NormalizeRequestType(request.RequestType),
+		DeviceType:             firstNonEmpty(strings.TrimSpace(request.DeviceType), provider.DeviceTypeCLI),
+		ClientContextDir:       strings.TrimSpace(request.ClientContextDir),
 		CommandExecutionTarget: firstNonEmpty(request.CommandExecutionTarget, "client"),
 		MaxIterations:          request.MaxIterations,
 		AgentContinueWindows:   request.AgentContinueWindows,
@@ -448,7 +454,7 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 	}
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "text/event-stream")
-	c.applyAuth(httpRequest)
+	c.applyAuth(httpRequest, request.UserAgent)
 
 	resp, err := c.httpClient.Do(httpRequest)
 	if err != nil {
@@ -563,10 +569,23 @@ func (c *Client) GetRunStats(ctx context.Context, flowID string, sessionID strin
 	return stats, nil
 }
 
-func (c *Client) applyAuth(req *http.Request) {
+func (c *Client) applyAuth(req *http.Request, requestUserAgent ...string) {
 	if c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
+	userAgent := defaultUserAgent()
+	if len(requestUserAgent) > 0 && strings.TrimSpace(requestUserAgent[0]) != "" {
+		userAgent = strings.TrimSpace(requestUserAgent[0])
+	}
+	req.Header.Set("User-Agent", userAgent)
+}
+
+func defaultUserAgent() string {
+	version := strings.TrimSpace(buildinfo.Version)
+	if version == "" {
+		version = "dev"
+	}
+	return fmt.Sprintf("taiyiflow-cli/%s (%s; %s)", version, runtime.GOOS, runtime.GOARCH)
 }
 
 func (c *Client) SubmitClientCallResult(ctx context.Context, result provider.ClientCallResult) error {

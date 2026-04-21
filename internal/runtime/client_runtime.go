@@ -39,8 +39,12 @@ func NewClientRuntime(stdin io.Reader, stdout io.Writer, stderr io.Writer) *Clie
 }
 
 func (r *ClientRuntime) ClientMCPServers() map[string]any {
+	return r.ClientMCPServersForMode(provider.RequestTypeAgent)
+}
+
+func (r *ClientRuntime) ClientMCPServersForMode(mode string) map[string]any {
 	return map[string]any{
-		localToolServerName: r.clientToolDefinitions(),
+		localToolServerName: r.clientToolDefinitionsForMode(mode),
 	}
 }
 
@@ -114,6 +118,10 @@ func (r *ClientRuntime) ExecuteClientToolPayload(
 		result, err = r.gitDiff(ctx, config, arguments)
 	case "git_log":
 		result, err = r.gitLog(ctx, config, arguments)
+	case "git_restore":
+		result, err = r.gitRestore(ctx, config, arguments)
+	case "git_reset_soft":
+		result, err = r.gitResetSoft(ctx, config, arguments)
 	case "git_add":
 		result, err = r.gitAdd(ctx, config, arguments)
 	case "git_commit":

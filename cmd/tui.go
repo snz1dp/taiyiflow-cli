@@ -65,7 +65,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			return fmt.Errorf("未配置默认智能体，请先执行 taiyiflow-cli agents use <名称>")
 		}
 
-		sessionState, err := a.prepareSession(currentFlow, false, workdir)
+		sessionState, err := a.prepareSession(currentFlow, false, workdir, request.RequestMode)
 		if err != nil {
 			return err
 		}
@@ -86,10 +86,13 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			OutputType:             "any",
 			SessionID:              sessionState.SessionID,
 			RunID:                  request.RunID,
-			RequestType:            "agent",
+			RequestType:            normalizeRequestMode(request.RequestMode),
+			DeviceType:             provider.DeviceTypeCLI,
+			ClientContextDir:       resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir)),
 			CommandExecutionTarget: "client",
+			UserAgent:              buildCLIUserAgent(),
 			RequestedSkillNames:    requestedSkillNames,
-			ClientMCPServers:       quietRuntimeClient.ClientMCPServers(),
+			ClientMCPServers:       quietRuntimeClient.ClientMCPServersForMode(request.RequestMode),
 			ClientSkillPackages:    clientSkillPackages,
 		})
 		if err != nil {
@@ -100,6 +103,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			sessionState.SessionID = streamSession.SessionID
 			sessionState.FlowID = currentFlow
 			sessionState.Workdir = workdir
+			sessionState.RequestMode = normalizeRequestMode(request.RequestMode)
+			sessionState.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
 			if err := a.sessionStore.Save(sessionState); err != nil {
 				return err
 			}
@@ -119,6 +124,13 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			case provider.EventToolCall:
 				emit(tui.Event{Kind: tui.EventToolCall, Text: strings.TrimSpace(stringMapValue(event.Data, "text"))})
 			case provider.EventBuiltIn:
+				if !modeAllowsBuiltIn(request.RequestMode) {
+					emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝本地命令执行：当前为%s。", requestModeLabel(request.RequestMode))})
+					if err := submitClientCallFailure(runCtx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(request.RequestMode))); err != nil {
+						return err
+					}
+					continue
+				}
 				localConfig, configErr := a.configManager.Load()
 				if configErr != nil {
 					return configErr
@@ -129,7 +141,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					approved := confirm(buildTUIConfirmRequest(event.Data))
 					if !approved {
 						emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端命令执行。"})
-						if err := submitTUIClientCallFailure(runCtx, providerClient, event.Data, "用户拒绝执行客户端命令"); err != nil {
+						if err := submitClientCallFailure(runCtx, providerClient, event.Data, "用户拒绝执行客户端命令"); err != nil {
 							return err
 						}
 						continue
@@ -145,6 +157,14 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					return err
 				}
 			case provider.EventClientTool:
+				toolName := nestedStringValue(event.Data, "function", "name")
+				if !modeAllowsClientTool(request.RequestMode, toolName) {
+					emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝客户端工具 %s：当前为%s。", toolName, requestModeLabel(request.RequestMode))})
+					if err := submitClientCallFailure(runCtx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(request.RequestMode), toolName)); err != nil {
+						return err
+					}
+					continue
+				}
 				localConfig, configErr := a.configManager.Load()
 				if configErr != nil {
 					return configErr
@@ -154,7 +174,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					approved := confirm(buildTUIClientToolConfirmRequest(event.Data))
 					if !approved {
 						emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端工具执行。"})
-						if err := submitTUIClientCallFailure(runCtx, providerClient, event.Data, "用户拒绝执行客户端工具"); err != nil {
+						if err := submitClientCallFailure(runCtx, providerClient, event.Data, "用户拒绝执行客户端工具"); err != nil {
 							return err
 						}
 						continue
@@ -298,6 +318,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			helpLines := []string{
 				"可用命令:",
 				"/agents 或 /agents <名称> 选择智能体",
+				"/ask 或 /ask <问题> 切换问答模式",
+				"/plan 或 /plan <目标> 切换计划模式",
+				"/agent 或 /agent <任务> 切换执行模式",
 				"/config 打开服务端配置弹窗",
 				"/skills [list|view|enable|disable] 管理本地技能",
 				"!<shell 命令> 在当前目录执行本地命令",
@@ -339,6 +362,23 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
 			}
 			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: output}}}, nil
+		case strings.EqualFold(trimmed, "/ask") || strings.HasPrefix(strings.ToLower(trimmed), "/ask ") || strings.EqualFold(trimmed, "/plan") || strings.HasPrefix(strings.ToLower(trimmed), "/plan ") || strings.EqualFold(trimmed, "/agent") || strings.HasPrefix(strings.ToLower(trimmed), "/agent "):
+			mode, prompt, ok := parseModeSlashCommand(trimmed)
+			if !ok {
+				return tui.LocalCommandResult{}, nil
+			}
+			updatedSnapshot := snapshot
+			updatedSnapshot.RequestMode = mode
+			updatedSnapshot.ContextDir = resolveLocalWorkdir(snapshot.Workdir)
+			if strings.TrimSpace(prompt) == "" {
+				if strings.TrimSpace(snapshot.DefaultFlow) != "" {
+					if err := a.sessionStore.Save(agent.SessionState{FlowID: snapshot.DefaultFlow, SessionID: snapshot.SessionID, Workdir: snapshot.Workdir, RequestMode: mode, ContextDir: updatedSnapshot.ContextDir}); err != nil {
+						return tui.LocalCommandResult{}, err
+					}
+				}
+				return tui.LocalCommandResult{Handled: true, Snapshot: &updatedSnapshot, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: fmt.Sprintf("已切换为%s。", requestModeLabel(mode))}}}, nil
+			}
+			return tui.LocalCommandResult{Handled: true, Snapshot: &updatedSnapshot, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: fmt.Sprintf("已切换为%s，准备发送请求。", requestModeLabel(mode))}}}, nil
 		case strings.HasPrefix(strings.ToLower(trimmed), "/config "):
 			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "TUI 中请直接输入 /config 打开弹窗表单。"}}}, nil
 		case trimmed == "!":
@@ -468,6 +508,8 @@ func (a *App) buildTUISnapshot(
 		DefaultFlow:         flowID,
 		DefaultFlowLabel:    a.resolveFlowDisplayName(ctx, providerClient, flowID),
 		Workdir:             resolveLocalWorkdir(config.Workdir),
+		ContextDir:          resolveLocalWorkdir(config.Workdir),
+		RequestMode:         provider.RequestTypeAsk,
 		ApprovalMode:        config.ApprovalMode,
 	}
 	if !backend.Available {
@@ -475,11 +517,13 @@ func (a *App) buildTUISnapshot(
 			return snapshot, nil
 		}
 
-		sessionState, err := a.prepareSession(flowID, false, snapshot.Workdir)
+		sessionState, err := a.prepareSession(flowID, false, snapshot.Workdir, snapshot.RequestMode)
 		if err != nil {
 			return tui.Snapshot{}, err
 		}
 		snapshot.SessionID = sessionState.SessionID
+		snapshot.RequestMode = normalizeRequestMode(sessionState.RequestMode)
+		snapshot.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, snapshot.Workdir))
 		return snapshot, nil
 	}
 	if versionInfo, err := providerClient.GetVersionInfo(ctx); err == nil && versionInfo != nil {
@@ -490,11 +534,13 @@ func (a *App) buildTUISnapshot(
 		return snapshot, nil
 	}
 
-	sessionState, err := a.prepareSession(flowID, false, snapshot.Workdir)
+	sessionState, err := a.prepareSession(flowID, false, snapshot.Workdir, snapshot.RequestMode)
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
 	snapshot.SessionID = sessionState.SessionID
+	snapshot.RequestMode = normalizeRequestMode(sessionState.RequestMode)
+	snapshot.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, snapshot.Workdir))
 	if strings.TrimSpace(snapshot.SessionID) != "" {
 		title, titleErr := lookupSessionTitle(ctx, providerClient, flowID, snapshot.SessionID)
 		if titleErr == nil {
@@ -700,6 +746,12 @@ func buildTUIClientToolConfirmRequest(payload map[string]any) tui.ConfirmRequest
 	case "apply_patch":
 		request.PreviewTitle = "补丁预览"
 		request.PreviewBody = summarizePatchPreview(stringMapValue(arguments, "patch"))
+	case "git_restore":
+		request.PreviewTitle = "恢复目标"
+		request.PreviewBody = summarizeGitRestorePreview(arguments)
+	case "git_reset_soft":
+		request.PreviewTitle = "软回退目标"
+		request.PreviewBody = summarizeGitResetSoftPreview(arguments)
 	case "git_add":
 		request.PreviewTitle = "暂存目标"
 		request.PreviewBody = summarizeGitAddPreview(arguments)
@@ -735,10 +787,6 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 			return nil
 		}
 		body := content
-		previewLines := strings.Split(body, "\n")
-		if len(previewLines) > 32 {
-			body = strings.Join(previewLines[:32], "\n") + "\n..."
-		}
 		lineCount := intMapValue(resultMap, "line_count")
 		if lineCount == 0 {
 			lineCount = len(strings.Split(strings.TrimSpace(content), "\n"))
@@ -750,7 +798,7 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 			Title:   "Git Diff 预览",
 			Summary: fmt.Sprintf("git_diff %s（%d 行）", fallbackString(stringMapValue(resultMap, "path"), "."), lineCount),
 			Body:    body,
-			Hint:    "按 Enter 或 Esc 关闭，继续查看后续对话输出。",
+			Hint:    "支持滚动浏览完整 diff，关闭后可继续查看后续对话输出。",
 		}
 	case "apply_patch":
 		conflicts := mapSliceValue(resultMap, "conflicts")
@@ -830,6 +878,29 @@ func summarizeGitAddPreview(arguments map[string]any) string {
 	return "将暂存以下路径:\n- " + strings.Join(paths, "\n- ")
 }
 
+func summarizeGitRestorePreview(arguments map[string]any) string {
+	paths := stringSliceMapValue(arguments, "paths")
+	if len(paths) == 0 {
+		paths = []string{fallbackString(stringMapValue(arguments, "path"), ".")}
+	}
+	mode := []string{}
+	if boolMapValue(arguments, "staged") {
+		mode = append(mode, "staged")
+	}
+	if boolMapValue(arguments, "worktree") || len(mode) == 0 {
+		mode = append(mode, "worktree")
+	}
+	parts := []string{fmt.Sprintf("恢复范围: %s", strings.Join(paths, ", ")), fmt.Sprintf("恢复位置: %s", strings.Join(mode, " + "))}
+	if source := strings.TrimSpace(stringMapValue(arguments, "source")); source != "" {
+		parts = append(parts, "来源引用: "+source)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func summarizeGitResetSoftPreview(arguments map[string]any) string {
+	return fmt.Sprintf("仓库定位: %s\n目标引用: %s\n动作: git reset --soft", fallbackString(stringMapValue(arguments, "path"), "."), fallbackString(stringMapValue(arguments, "target"), "<missing>"))
+}
+
 func summarizeGitCommitPreview(arguments map[string]any) string {
 	message := strings.TrimSpace(stringMapValue(arguments, "message"))
 	if message == "" {
@@ -878,19 +949,7 @@ func submitTUIClientCallFailure(
 	payload map[string]any,
 	errorMessage string,
 ) error {
-	result := provider.ClientCallResult{
-		FlowID:       stringMapValue(payload, "flow_id"),
-		SessionID:    nestedStringValue(payload, "context", "session_id"),
-		MessageID:    nestedStringValue(payload, "context", "message_id"),
-		RunID:        nestedStringValue(payload, "context", "run_id"),
-		CallID:       nestedStringValue(payload, "function", "id"),
-		Success:      false,
-		ErrorMessage: errorMessage,
-	}
-	if result.FlowID == "" || result.RunID == "" || result.CallID == "" {
-		return fmt.Errorf("客户端回调缺少关键字段")
-	}
-	return providerClient.SubmitClientCallResult(ctx, result)
+	return submitClientCallFailure(ctx, providerClient, payload, errorMessage)
 }
 
 func stringMapValue(payload map[string]any, key string) string {

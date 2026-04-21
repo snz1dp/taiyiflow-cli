@@ -24,6 +24,8 @@ type Manifest struct {
 type Skill struct {
 	Manifest
 	Path        string
+	RootDir     string
+	Source      string
 	RelativeDir string
 	Body        string
 	Summary     string
@@ -31,51 +33,99 @@ type Skill struct {
 }
 
 func ResolveDirectory(config internalconfig.Config) (string, error) {
+	directories, err := ResolveDirectories(config)
+	if err != nil {
+		return "", err
+	}
+	if len(directories) == 0 {
+		return "", nil
+	}
+	return directories[0], nil
+}
+
+func ResolveDirectories(config internalconfig.Config) ([]string, error) {
 	directory := strings.TrimSpace(config.Skills.Directory)
 	if directory != "" {
-		return filepath.Abs(directory)
+		resolved, err := filepath.Abs(directory)
+		if err != nil {
+			return nil, err
+		}
+		return []string{resolved}, nil
 	}
-	return internalconfig.DefaultSkillsDir()
+	items := []string{}
+	if workdir := resolveSkillWorkdir(config.Workdir); workdir != "" {
+		items = append(items, filepath.Join(workdir, ".snz1dp", "skills"))
+	}
+	homeSkillsDir, err := internalconfig.DefaultSkillsDir()
+	if err != nil {
+		return nil, err
+	}
+	items = append(items, homeSkillsDir)
+	seen := map[string]bool{}
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		resolved, err := filepath.Abs(item)
+		if err != nil {
+			return nil, err
+		}
+		resolved = filepath.Clean(resolved)
+		if !seen[resolved] {
+			seen[resolved] = true
+			result = append(result, resolved)
+		}
+	}
+	return result, nil
 }
 
 func Discover(config internalconfig.Config) ([]Skill, string, error) {
-	directory, err := ResolveDirectory(config)
+	directories, err := ResolveDirectories(config)
 	if err != nil {
 		return nil, "", err
-	}
-	info, err := os.Stat(directory)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []Skill{}, directory, nil
-		}
-		return nil, "", fmt.Errorf("读取技能目录失败: %w", err)
-	}
-	if !info.IsDir() {
-		return nil, "", fmt.Errorf("技能目录不是有效目录: %s", directory)
 	}
 
 	enabled := enabledSet(config.Skills.Enabled)
 	items := []Skill{}
-	err = filepath.WalkDir(directory, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		if entry.Name() != skillFileName {
-			return nil
-		}
-		skill, err := LoadFile(directory, path)
+	seenNames := map[string]bool{}
+	availableDirectories := []string{}
+	for _, directory := range directories {
+		info, err := os.Stat(directory)
 		if err != nil {
-			return err
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, "", fmt.Errorf("读取技能目录失败: %w", err)
 		}
-		skill.Enabled = enabled[strings.ToLower(skill.Name)]
-		items = append(items, skill)
-		return nil
-	})
-	if err != nil {
-		return nil, "", err
+		if !info.IsDir() {
+			return nil, "", fmt.Errorf("技能目录不是有效目录: %s", directory)
+		}
+		availableDirectories = append(availableDirectories, directory)
+		err = filepath.WalkDir(directory, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			if entry.Name() != skillFileName {
+				return nil
+			}
+			skill, err := LoadFile(directory, path)
+			if err != nil {
+				return err
+			}
+			nameKey := strings.ToLower(skill.Name)
+			if seenNames[nameKey] {
+				return nil
+			}
+			seenNames[nameKey] = true
+			skill.Enabled = enabled[nameKey]
+			skill.Source = classifySkillSource(directory, config)
+			items = append(items, skill)
+			return nil
+		})
+		if err != nil {
+			return nil, "", err
+		}
 	}
 
 	sort.Slice(items, func(left, right int) bool {
@@ -84,7 +134,7 @@ func Discover(config internalconfig.Config) ([]Skill, string, error) {
 		}
 		return strings.ToLower(items[left].Name) < strings.ToLower(items[right].Name)
 	})
-	return items, directory, nil
+	return items, strings.Join(availableDirectories, " -> "), nil
 }
 
 func LoadByName(config internalconfig.Config, name string) (*Skill, string, error) {
@@ -112,6 +162,8 @@ func Summaries(items []Skill) []map[string]any {
 			"prerequisites": item.Prerequisites,
 			"summary":       item.Summary,
 			"path":          item.Path,
+			"root_dir":      item.RootDir,
+			"source":        item.Source,
 			"relative_dir":  item.RelativeDir,
 			"enabled":       item.Enabled,
 		})
@@ -130,6 +182,7 @@ func EnabledSkillNames(items []Skill) []string {
 }
 
 func ClientPackages(items []Skill, rootDir string) any {
+	_ = rootDir
 	enabledItems := []Skill{}
 	for _, item := range items {
 		if item.Enabled {
@@ -139,13 +192,39 @@ func ClientPackages(items []Skill, rootDir string) any {
 	if len(enabledItems) == 0 {
 		return nil
 	}
-	return []map[string]any{
-		{
-			"package_name": "local_skills",
-			"root_dir":     rootDir,
-			"skills":       Summaries(enabledItems),
-		},
+	packages := []map[string]any{}
+	packageIndexes := map[string]int{}
+	for _, item := range enabledItems {
+		root := item.RootDir
+		if root == "" {
+			root = filepath.Dir(item.Path)
+		}
+		index, ok := packageIndexes[root]
+		if !ok {
+			index = len(packages)
+			packageIndexes[root] = index
+			packages = append(packages, map[string]any{
+				"package_name": fmt.Sprintf("local_skills_%d", index+1),
+				"root_dir":     root,
+				"skills":       []map[string]any{},
+			})
+		}
+		skillsValue, _ := packages[index]["skills"].([]map[string]any)
+		skillsValue = append(skillsValue, map[string]any{
+			"name":          item.Name,
+			"description":   item.Description,
+			"category":      item.Category,
+			"prerequisites": item.Prerequisites,
+			"summary":       item.Summary,
+			"path":          item.Path,
+			"root_dir":      item.RootDir,
+			"source":        item.Source,
+			"relative_dir":  item.RelativeDir,
+			"enabled":       item.Enabled,
+		})
+		packages[index]["skills"] = skillsValue
 	}
+	return packages
 }
 
 func LoadFile(rootDir string, path string) (Skill, error) {
@@ -173,10 +252,39 @@ func LoadFile(rootDir string, path string) (Skill, error) {
 	return Skill{
 		Manifest:    manifest,
 		Path:        path,
+		RootDir:     rootDir,
 		RelativeDir: filepath.ToSlash(relativeDir),
 		Body:        strings.TrimSpace(body),
 		Summary:     summarize(body),
 	}, nil
+}
+
+func resolveSkillWorkdir(configured string) string {
+	trimmed := strings.TrimSpace(configured)
+	if trimmed == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return ""
+		}
+		trimmed = cwd
+	}
+	resolved, err := filepath.Abs(trimmed)
+	if err != nil {
+		return trimmed
+	}
+	return filepath.Clean(resolved)
+}
+
+func classifySkillSource(directory string, config internalconfig.Config) string {
+	configured := strings.TrimSpace(config.Skills.Directory)
+	if configured != "" {
+		return "custom"
+	}
+	workdir := resolveSkillWorkdir(config.Workdir)
+	if workdir != "" && filepath.Clean(directory) == filepath.Clean(filepath.Join(workdir, ".snz1dp", "skills")) {
+		return "workspace"
+	}
+	return "home"
 }
 
 func parseSkillDocument(content string) (Manifest, string, error) {

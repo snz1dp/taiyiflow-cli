@@ -30,6 +30,8 @@ type Snapshot struct {
 	DefaultFlow         string
 	DefaultFlowLabel    string
 	Workdir             string
+	ContextDir          string
+	RequestMode         string
 	ApprovalMode        string
 	SessionID           string
 	SessionTitle        string
@@ -139,9 +141,10 @@ type Event struct {
 }
 
 type Request struct {
-	Input  string
-	FlowID string
-	RunID  string
+	Input       string
+	FlowID      string
+	RunID       string
+	RequestMode string
 }
 
 type ContextWindow struct {
@@ -331,6 +334,7 @@ type model struct {
 	input             textarea.Model
 	flowFilter        textinput.Model
 	viewport          viewport.Model
+	toolPanelViewport viewport.Model
 	progress          progress.Model
 	markdown          *glamour.TermRenderer
 	state             progressState
@@ -511,6 +515,9 @@ var (
 
 var slashCommands = []slashCommand{
 	{Trigger: "/agents", Completion: "/agents ", Description: "打开智能体选择，或用 /agents <名称> 直接切换"},
+	{Trigger: "/ask", Completion: "/ask ", Description: "切换为问答模式，或直接发送一个问答请求"},
+	{Trigger: "/plan", Completion: "/plan ", Description: "切换为计划模式，或直接发送一个计划请求"},
+	{Trigger: "/agent", Completion: "/agent ", Description: "切换为执行模式，或直接发送一个执行请求"},
 	{Trigger: "/config", Completion: "/config ", Description: "查看或更新服务端地址、API Key 等配置"},
 	{Trigger: "/skills", Completion: "/skills ", Description: "列出、查看或启停本地技能"},
 	{Trigger: "/new", Completion: "/new", Description: "重置当前智能体的本地会话"},
@@ -544,30 +551,33 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 
 	viewportModel := viewport.New(0, 0)
 	viewportModel.Style = lipgloss.NewStyle()
+	toolPanelViewportModel := viewport.New(0, 0)
+	toolPanelViewportModel.Style = lipgloss.NewStyle()
 
 	progressModel := progress.New(progress.WithDefaultGradient())
 
 	initialEntries := buildInitialEntries(snapshot)
 	program := tea.NewProgram(model{
-		ctx:              ctx,
-		snapshot:         snapshot,
-		flows:            flows,
-		runner:           runner,
-		refreshSnapshot:  refreshSnapshot,
-		flowChange:       flowChange,
-		sessionChange:    sessionChange,
-		approvalChange:   approvalChange,
-		configFormSubmit: configFormSubmit,
-		localCommand:     localCommand,
-		eventCh:          make(chan tea.Msg),
-		entries:          initialEntries,
-		input:            inputModel,
-		flowFilter:       flowFilterModel,
-		viewport:         viewportModel,
-		progress:         progressModel,
-		state:            newProgressState(progressIdle),
-		flowCursor:       currentFlowIndex(flows, snapshot.DefaultFlow),
-		startupCommand:   strings.TrimSpace(startupCommand),
+		ctx:               ctx,
+		snapshot:          snapshot,
+		flows:             flows,
+		runner:            runner,
+		refreshSnapshot:   refreshSnapshot,
+		flowChange:        flowChange,
+		sessionChange:     sessionChange,
+		approvalChange:    approvalChange,
+		configFormSubmit:  configFormSubmit,
+		localCommand:      localCommand,
+		eventCh:           make(chan tea.Msg),
+		entries:           initialEntries,
+		input:             inputModel,
+		flowFilter:        flowFilterModel,
+		viewport:          viewportModel,
+		toolPanelViewport: toolPanelViewportModel,
+		progress:          progressModel,
+		state:             newProgressState(progressIdle),
+		flowCursor:        currentFlowIndex(flows, snapshot.DefaultFlow),
+		startupCommand:    strings.TrimSpace(startupCommand),
 	}, tea.WithAltScreen())
 	finalModel, err := program.Run()
 	if err == nil {
@@ -901,7 +911,7 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		runID := newRequestRunID()
 		m.startRequestStats(input, runID)
 		m.syncViewport()
-		request := Request{Input: input, FlowID: m.snapshot.DefaultFlow, RunID: runID}
+		request := Request{Input: input, FlowID: m.snapshot.DefaultFlow, RunID: runID, RequestMode: requestModeKey(m.snapshot.RequestMode)}
 		requestCtx, cancel := context.WithCancel(m.ctx)
 		m.requestCancel = cancel
 		return m, tea.Batch(m.transitionProgress(progressSending), startStream(requestCtx, request, m.runner, m.eventCh))
@@ -974,6 +984,24 @@ func (m model) handleToolPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter", "esc", "q", "ctrl+c":
 		m.closeToolPanel()
+		return m, nil
+	case "down", "j":
+		m.toolPanelViewport.LineDown(1)
+		return m, nil
+	case "up", "k":
+		m.toolPanelViewport.LineUp(1)
+		return m, nil
+	case "pgdown", "f", " ":
+		m.toolPanelViewport.HalfViewDown()
+		return m, nil
+	case "pgup", "b":
+		m.toolPanelViewport.HalfViewUp()
+		return m, nil
+	case "home", "g":
+		m.toolPanelViewport.GotoTop()
+		return m, nil
+	case "end", "G":
+		m.toolPanelViewport.GotoBottom()
 		return m, nil
 	default:
 		return m, nil
@@ -1231,7 +1259,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		}
 	case EventToolPanel:
 		if event.Panel != nil {
-			m.toolPanel = event.Panel
+			m.openToolPanel(event.Panel)
 			if summary := strings.TrimSpace(event.Panel.Summary); summary != "" {
 				m.latestToolSummary = summary
 				m.latestToolAt = time.Now()
@@ -1284,6 +1312,7 @@ func RenderSessionStatusText(snapshot Snapshot, prefix string) string {
 	if strings.TrimSpace(prefix) != "" {
 		lines = append(lines, prefix)
 	}
+	lines = append(lines, fmt.Sprintf("当前模式: %s", requestModeLabel(snapshot.RequestMode)))
 	sessionID := strings.TrimSpace(snapshot.SessionID)
 	if sessionID == "" {
 		lines = append(lines, "当前会话: 新会话")
@@ -1320,7 +1349,7 @@ func (m *model) startQueuedRequest() tea.Cmd {
 	runID := newRequestRunID()
 	m.startRequestStats(queued, runID)
 	m.syncViewport()
-	request := Request{Input: queued, FlowID: m.snapshot.DefaultFlow, RunID: runID}
+	request := Request{Input: queued, FlowID: m.snapshot.DefaultFlow, RunID: runID, RequestMode: requestModeKey(m.snapshot.RequestMode)}
 	requestCtx, cancel := context.WithCancel(m.ctx)
 	m.requestCancel = cancel
 	return tea.Batch(m.transitionProgress(progressSending), startStream(requestCtx, request, m.runner, m.eventCh))
@@ -1350,6 +1379,7 @@ func (m *model) syncLayout() {
 	if viewportWidth < 20 {
 		viewportWidth = 20
 	}
+	m.syncToolPanelViewport()
 	inputHeight := m.currentInputHeight()
 	alertHeight := 0
 	if !m.snapshot.BackendAvailable {
@@ -1745,11 +1775,13 @@ func (m model) renderToolPanel() string {
 		lines = append(lines, hintStyle.Render(trimForWidth(panel.Summary, maxInt(24, m.contentWidth-16))))
 	}
 	if strings.TrimSpace(panel.Body) != "" {
-		lines = append(lines, "", hardWrapText(panel.Body, maxInt(24, minInt(m.contentWidth-18, 80))))
+		lines = append(lines, "", m.toolPanelViewport.View())
 	}
 	hint := strings.TrimSpace(panel.Hint)
 	if hint == "" {
-		hint = "按 Enter 或 Esc 关闭。"
+		hint = "按 Enter 或 Esc 关闭，方向键或 j/k 滚动。"
+	} else {
+		hint += " 方向键或 j/k 滚动。"
 	}
 	lines = append(lines, "", hintStyle.Render(hint))
 	return strings.Join(lines, "\n")
@@ -1974,6 +2006,7 @@ func (m model) statusBarSegments(maxWidth int) []string {
 	if sessionSegment := sessionStatusSegment(m.snapshot.SessionID, compact); sessionSegment != "" {
 		segments = append(segments, statusSegment{text: sessionSegment, priority: 1})
 	}
+	segments = append(segments, statusSegment{text: requestModeStatus(m.snapshot.RequestMode, compact), priority: 1})
 	segments = append(segments, statusSegment{text: approvalModeStatus(m.snapshot.ApprovalMode, compact), priority: 1})
 	if toolSegment := m.toolSummarySegment(compact); toolSegment != "" {
 		priority := 2
@@ -2488,8 +2521,31 @@ func (m *model) closeApprovalPicker() {
 
 func (m *model) closeToolPanel() {
 	m.toolPanel = nil
+	m.toolPanelViewport.SetContent("")
+	m.toolPanelViewport.GotoTop()
 	m.input.Focus()
 	m.syncLayout()
+}
+
+func (m *model) openToolPanel(panel *ToolPanel) {
+	m.toolPanel = panel
+	m.input.Blur()
+	m.syncToolPanelViewport()
+}
+
+func (m *model) syncToolPanelViewport() {
+	if m.toolPanel == nil {
+		return
+	}
+	panelWidth := maxInt(24, minInt(m.contentWidth-18, 80))
+	panelHeight := maxInt(8, minInt(m.height-14, 24))
+	if panelHeight < 8 {
+		panelHeight = 8
+	}
+	m.toolPanelViewport.Width = panelWidth
+	m.toolPanelViewport.Height = panelHeight
+	body := hardWrapText(m.toolPanel.Body, panelWidth)
+	m.toolPanelViewport.SetContent(body)
 }
 
 func (m *model) moveConfigFormCursor(delta int) {
@@ -3254,6 +3310,12 @@ func isExecutableSlashCommandInput(input string) bool {
 	switch {
 	case strings.EqualFold(trimmed, "/agents"):
 		return true
+	case strings.EqualFold(trimmed, "/ask"):
+		return true
+	case strings.EqualFold(trimmed, "/plan"):
+		return true
+	case strings.EqualFold(trimmed, "/agent"):
+		return true
 	case strings.EqualFold(trimmed, "/config"):
 		return true
 	case strings.EqualFold(trimmed, "/config show"):
@@ -3281,6 +3343,12 @@ func isExecutableSlashCommandInput(input string) bool {
 		return true
 	case strings.EqualFold(trimmed, "/exit"):
 		return true
+	case strings.HasPrefix(strings.ToLower(trimmed), "/ask "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/ask ")) != ""
+	case strings.HasPrefix(strings.ToLower(trimmed), "/plan "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/plan ")) != ""
+	case strings.HasPrefix(strings.ToLower(trimmed), "/agent "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/agent ")) != ""
 	case strings.HasPrefix(strings.ToLower(trimmed), "/agents "):
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/agents ")) != ""
 	default:
@@ -3385,6 +3453,42 @@ func approvalModeStatus(value string, compact bool) string {
 		}
 	}
 	return approvalModeLabel(value)
+}
+
+func requestModeStatus(value string, compact bool) string {
+	if compact {
+		switch requestModeKey(value) {
+		case "plan":
+			return "计划"
+		case "agent":
+			return "执行"
+		default:
+			return "问答"
+		}
+	}
+	return requestModeLabel(value)
+}
+
+func requestModeLabel(value string) string {
+	switch requestModeKey(value) {
+	case "plan":
+		return "计划模式"
+	case "agent":
+		return "执行模式"
+	default:
+		return "问答模式"
+	}
+}
+
+func requestModeKey(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "plan":
+		return "plan"
+	case "agent":
+		return "agent"
+	default:
+		return "ask"
+	}
 }
 
 func (m model) toolSummarySegment(compact bool) string {

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -17,7 +18,22 @@ const (
 	EventBuiltIn    StreamEventType = "built_in"
 	EventClientTool StreamEventType = "client_tool"
 	EventMCPTool    StreamEventType = "mcp_tool"
+	RequestTypeAsk                 = "ask"
+	RequestTypePlan                = "plan"
+	RequestTypeAgent               = "agent"
+	DeviceTypeCLI                  = "cli"
 )
+
+func NormalizeRequestType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case RequestTypePlan:
+		return RequestTypePlan
+	case RequestTypeAgent:
+		return RequestTypeAgent
+	default:
+		return RequestTypeAsk
+	}
+}
 
 type StreamEvent struct {
 	Type StreamEventType
@@ -38,6 +54,9 @@ type StreamRequest struct {
 	SessionID              string
 	RunID                  string
 	RequestType            string
+	DeviceType             string
+	ClientContextDir       string
+	UserAgent              string
 	CommandExecutionTarget string
 	MaxIterations          int
 	AgentContinueWindows   int
