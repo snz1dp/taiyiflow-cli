@@ -1,0 +1,44 @@
+package cmd
+
+import (
+	"context"
+	"errors"
+	"testing"
+)
+
+func TestNormalizeStreamEventError(t *testing.T) {
+	t.Run("user canceled", func(t *testing.T) {
+		err := normalizeStreamEventError("读取 SSE 失败: context canceled")
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	})
+
+	t.Run("stream timeout", func(t *testing.T) {
+		err := normalizeStreamEventError("读取 SSE 失败: context deadline exceeded (Client.Timeout or context cancellation while reading body)")
+		if got := err.Error(); got != "读取流式响应超时，连接可能已中断" {
+			t.Fatalf("unexpected timeout message: %q", got)
+		}
+	})
+
+	t.Run("backend idle timeout", func(t *testing.T) {
+		err := normalizeStreamEventError("读取 SSE 失败: backend idle timeout after 2m0s without SSE activity")
+		if got := err.Error(); got != "后端长时间未返回输出，流式请求已超时" {
+			t.Fatalf("unexpected backend idle timeout message: %q", got)
+		}
+	})
+
+	t.Run("stream disconnected", func(t *testing.T) {
+		err := normalizeStreamEventError("读取 SSE 失败: read tcp 127.0.0.1:1->127.0.0.1:2: connection reset by peer")
+		if got := err.Error(); got != "流式连接已中断，请稍后重试" {
+			t.Fatalf("unexpected disconnect message: %q", got)
+		}
+	})
+
+	t.Run("backend business error", func(t *testing.T) {
+		err := normalizeStreamEventError("quota exceeded")
+		if got := err.Error(); got != "后端返回错误: quota exceeded" {
+			t.Fatalf("unexpected backend error message: %q", got)
+		}
+	})
+}

@@ -19,7 +19,7 @@ type sandboxEscapeError struct {
 }
 
 func (e sandboxEscapeError) Error() string {
-	return fmt.Sprintf("路径超出工作目录沙箱: %s", e.ResolvedPath)
+	return fmt.Sprintf("路径超出当前工作目录访问范围: %s", e.ResolvedPath)
 }
 
 func isSandboxEscapeError(err error) (sandboxEscapeError, bool) {
@@ -97,7 +97,7 @@ func (r *ClientRuntime) resolveAllowedPathWithPolicy(config internalconfig.Confi
 				return "", err
 			}
 		case internalconfig.SandboxEscapePolicyDeny:
-			return "", newToolError("PERMISSION_DENIED", "路径超出工作目录沙箱，已按 deny 策略拒绝: %s", escapeErr.ResolvedPath)
+			return "", newToolError("PERMISSION_DENIED", "路径超出当前工作目录访问范围，已按 deny 策略拒绝: %s", escapeErr.ResolvedPath)
 		default:
 			approved, interactive, confirmErr := r.confirmSandboxEscapePath(escapeErr.ResolvedPath)
 			if confirmErr != nil {
@@ -105,9 +105,9 @@ func (r *ClientRuntime) resolveAllowedPathWithPolicy(config internalconfig.Confi
 			}
 			if !approved {
 				if !interactive {
-					return "", newToolError("PERMISSION_DENIED", "路径超出工作目录沙箱，当前为 confirm 且无交互输入，请改用 allow 或会话覆盖")
+					return "", newToolError("PERMISSION_DENIED", "路径超出当前工作目录访问范围，当前为 confirm 且无交互输入，请改用 allow 或会话覆盖")
 				}
-				return "", newToolError("PERMISSION_DENIED", "路径超出工作目录沙箱，用户拒绝访问: %s", escapeErr.ResolvedPath)
+				return "", newToolError("PERMISSION_DENIED", "路径超出当前工作目录访问范围，用户拒绝访问: %s", escapeErr.ResolvedPath)
 			}
 			bypassConfig := config
 			bypassConfig.SandboxEscapePolicy = internalconfig.SandboxEscapePolicyAllow
@@ -128,7 +128,7 @@ func (r *ClientRuntime) confirmSandboxEscapePath(path string) (bool, bool, error
 		}
 		return approved, true, nil
 	}
-	fmt.Fprintf(r.stdout, "\n[路径越界确认]\n目标路径位于工作目录沙箱外: %s\n是否允许本次访问？[y/N]: ", path)
+	fmt.Fprintf(r.stdout, "\n[路径越界确认]\n目标路径位于当前工作目录外: %s\n是否允许本次访问？[y/N]: ", path)
 	reader := bufio.NewReader(r.stdin)
 	answerLine, err := reader.ReadString('\n')
 	if err != nil {
@@ -205,11 +205,11 @@ func resolveSandboxRoots(config internalconfig.Config, baseDir string) ([]string
 		}
 		resolved, err := filepath.Abs(root)
 		if err != nil {
-			return nil, newToolError("PARAM_ERROR", "解析 sandbox_roots 失败: %v", err)
+			return nil, newToolError("PARAM_ERROR", "解析外部资源访问根目录 sandbox_roots 失败: %v", err)
 		}
 		resolved, err = resolveWithExistingParent(resolved)
 		if err != nil {
-			return nil, newToolError("PARAM_ERROR", "解析 sandbox_roots 真实路径失败: %v", err)
+			return nil, newToolError("PARAM_ERROR", "解析外部资源访问根目录 sandbox_roots 的真实路径失败: %v", err)
 		}
 		roots = append(roots, resolved)
 	}

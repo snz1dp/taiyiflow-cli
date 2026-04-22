@@ -27,6 +27,34 @@
 - 命令行构建产物：go build -o taiyiflow-cli .
 - 运行：./taiyiflow-cli
 
+## 配置示例
+
+命令行（CLI）支持通过启动参数临时覆盖当前任务的外部资源访问策略，也支持通过配置文件持久化默认策略。
+
+单次任务临时覆盖：
+
+```bash
+./taiyiflow-cli task --external-resource-access-policy confirm "读取工作目录外的参考文件并整理差异"
+```
+
+持久化默认策略：
+
+```bash
+./taiyiflow-cli config set external_resource_access_policy deny
+./taiyiflow-cli config show
+```
+
+常见取值：
+
+- `confirm`：访问工作目录外资源前确认
+- `deny`：拒绝访问工作目录外资源
+- `allow`：允许访问工作目录外资源
+
+兼容性说明：
+
+- 旧启动参数 `--sandbox-escape-policy` 仍可用，但新文档统一推荐 `--external-resource-access-policy`
+- 配置键 `external_resource_access_policy` 会映射到现有配置结构，兼容旧键 `sandbox_escape_policy`
+
 ## 文档
 
 - [规格计划](specs/taiyiflow-go-client.md)

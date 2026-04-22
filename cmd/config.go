@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
@@ -150,14 +151,20 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("workdir 不能为空，如需清空请使用 taiyiflow-cli config unset workdir")
 		}
 		config.Workdir = trimmedValue
-	case "sandbox_escape_policy":
+	case "external_resource_access_policy":
 		normalizedPolicy := internalconfig.NormalizeSandboxEscapePolicy(trimmedValue)
 		if normalizedPolicy != trimmedValue {
 			if strings.ToLower(trimmedValue) != normalizedPolicy {
-				return fmt.Errorf("sandbox_escape_policy 仅支持 confirm、deny、allow")
+				return fmt.Errorf("external_resource_access_policy 仅支持 confirm、deny、allow")
 			}
 		}
 		config.SandboxEscapePolicy = normalizedPolicy
+	case "stream_idle_timeout_seconds":
+		seconds, err := strconv.Atoi(trimmedValue)
+		if err != nil || seconds < 0 {
+			return fmt.Errorf("stream_idle_timeout_seconds 仅支持大于等于 0 的整数秒，0 表示禁用")
+		}
+		config.StreamIdleTimeoutSeconds = seconds
 	case "output_language":
 		if trimmedValue == "" {
 			return fmt.Errorf("output_language 不能为空，如需重置请使用 taiyiflow-cli config unset output_language")
@@ -176,7 +183,7 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 		config.Skills.Directory = trimmedValue
 	case "sandbox_roots":
 		if trimmedValue == "" {
-			return fmt.Errorf("sandbox_roots 不能为空，如需清空请使用 taiyiflow-cli config unset sandbox_roots")
+			return fmt.Errorf("sandbox_roots（外部资源访问根目录）不能为空，如需清空请使用 taiyiflow-cli config unset sandbox_roots")
 		}
 		config.SandboxRoots = splitConfigCSV(trimmedValue)
 	default:
@@ -200,8 +207,10 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.ApprovalMode = defaults.ApprovalMode
 	case "workdir":
 		config.Workdir = ""
-	case "sandbox_escape_policy":
+	case "external_resource_access_policy":
 		config.SandboxEscapePolicy = defaults.SandboxEscapePolicy
+	case "stream_idle_timeout_seconds":
+		config.StreamIdleTimeoutSeconds = defaults.StreamIdleTimeoutSeconds
 	case "output_language":
 		config.OutputLanguage = defaults.OutputLanguage
 	case "audit_enabled":
@@ -218,7 +227,16 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 }
 
 func normalizeConfigKey(key string) string {
-	return strings.ToLower(strings.TrimSpace(key))
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	normalized = strings.ReplaceAll(normalized, "-", "_")
+	switch normalized {
+	case "sandbox_escape_policy", "external_resource_policy":
+		return "external_resource_access_policy"
+	case "stream_idle_timeout":
+		return "stream_idle_timeout_seconds"
+	default:
+		return normalized
+	}
 }
 
 func normalizeBackendBaseURL(value string) (string, error) {
@@ -247,11 +265,12 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("默认智能体: %s", fallbackConfigValue(config.DefaultFlow, "<未配置>")),
 		fmt.Sprintf("命令执行模式: %s", fallbackConfigValue(config.ApprovalMode, internalconfig.Default().ApprovalMode)),
 		fmt.Sprintf("工作目录: %s", fallbackConfigValue(config.Workdir, "<当前目录>")),
-		fmt.Sprintf("沙箱越界策略: %s", fallbackConfigValue(config.SandboxEscapePolicy, internalconfig.Default().SandboxEscapePolicy)),
+		fmt.Sprintf("外部资源访问策略: %s", fallbackConfigValue(config.SandboxEscapePolicy, internalconfig.Default().SandboxEscapePolicy)),
+		fmt.Sprintf("流式空闲超时: %d 秒", config.StreamIdleTimeoutSeconds),
 		fmt.Sprintf("输出语言: %s", fallbackConfigValue(config.OutputLanguage, internalconfig.Default().OutputLanguage)),
 		fmt.Sprintf("审计日志: %t", config.AuditEnabled),
 		fmt.Sprintf("技能目录: %s", fallbackConfigValue(config.Skills.Directory, "<默认 ~/.snz1dp/skills>")),
-		fmt.Sprintf("沙箱根目录: %s", fallbackConfigValue(strings.Join(config.SandboxRoots, ", "), "<仅当前工作目录>")),
+		fmt.Sprintf("外部资源访问根目录: %s", fallbackConfigValue(strings.Join(config.SandboxRoots, ", "), "<仅当前工作目录>")),
 	}
 	return strings.Join(lines, "\n")
 }

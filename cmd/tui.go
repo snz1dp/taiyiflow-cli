@@ -15,7 +15,6 @@ import (
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
-	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/tui"
 )
@@ -33,7 +32,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		return err
 	}
 
-	providerClient := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+	providerClient := buildProviderClient(config)
 	backend := a.inspectBackendStatus(ctx, providerClient, config.BackendBaseURL)
 	if backend.Available {
 		config, err = a.ensureDefaultFlow(ctx, providerClient, config)
@@ -215,7 +214,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					return err
 				}
 			case provider.EventError:
-				return fmt.Errorf("服务端请求失败，请稍后重试")
+				return normalizeStreamEventError(event.Data["error"])
 			case provider.EventClose:
 				return nil
 			}
@@ -240,7 +239,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			updatedConfig.DefaultFlow = strings.TrimSpace(current.DefaultFlow)
 		}
 
-		refreshedClient := providerclient.NewClient(updatedConfig.BackendBaseURL, updatedConfig.APIKey)
+		refreshedClient := buildProviderClient(updatedConfig)
 		backend := a.inspectBackendStatus(refreshCtx, refreshedClient, updatedConfig.BackendBaseURL)
 		if backend.Available {
 			updatedConfig, err = a.ensureDefaultFlow(refreshCtx, refreshedClient, updatedConfig)
@@ -254,6 +253,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if err != nil {
 			return tui.Snapshot{}, nil, err
 		}
+		providerClient = refreshedClient
+		config = updatedConfig
+		workdir = resolveLocalWorkdir(updatedConfig.Workdir)
 
 		flowItems := []tui.FlowItem{}
 		if backend.Available {
@@ -351,17 +353,17 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		case trimmed == "/help":
 			helpLines := []string{
 				"可用命令:",
-				"/agents 或 /agents <名称> 选择智能体",
-				"/ask 或 /ask <问题> 切换问答模式",
-				"/plan 或 /plan <目标> 切换计划模式",
-				"/agent 或 /agent <任务> 切换执行模式",
-				"/config 打开服务端配置弹窗",
-				"/skills [list|view|enable|disable] 管理本地技能",
-				"!<shell 命令> 在当前目录执行本地命令",
-				"/session 查看当前会话",
-				"/sessions [页码] 查看当前智能体的服务端会话列表",
 				"/new 重置当前智能体的本地会话",
 				"/clear 清空当前界面消息",
+				"/agent 或 /agent <任务> 切换执行模式",
+				"/ask 或 /ask <问题> 切换问答模式",
+				"/plan 或 /plan <目标> 切换计划模式",
+				"/session 查看当前会话",
+				"/sessions [页码] 查看当前智能体的服务端会话列表",
+				"/config 打开服务端配置弹窗",
+				"!<shell 命令> 在当前目录执行本地命令",
+				"/agents 或 /agents <名称> 选择智能体",
+				"/skills [list|view|enable|disable] 管理本地技能",
 				"/exit 退出",
 			}
 			if !snapshot.BackendAvailable {
@@ -373,10 +375,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					"当前处于只读模式。",
 					"原因: " + reason,
 					"可用命令:",
+					"/clear 清空当前界面消息",
 					"/config 打开当前配置弹窗",
 					"/skills 查看本地技能",
 					"/help 查看当前提示",
-					"/clear 清空当前界面消息",
 					"/exit 退出",
 				}
 			}
@@ -558,9 +560,17 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if err := a.sessionStore.Delete(snapshot.DefaultFlow, snapshot.Workdir); err != nil {
 				return tui.LocalCommandResult{}, err
 			}
+			updatedSnapshot := snapshot
+			updatedSnapshot.SessionID = ""
+			updatedSnapshot.SessionTitle = ""
+			updatedSnapshot.RequestMode = provider.RequestTypeAgent
+			updatedSnapshot.ContextDir = resolveLocalWorkdir(snapshot.Workdir)
+			updatedSnapshot.SessionSandboxEscapePolicy = ""
 			return tui.LocalCommandResult{
-				Handled:      true,
-				ClearHistory: true,
+				Handled:        true,
+				ClearHistory:   true,
+				Snapshot:       &updatedSnapshot,
+				RebuildEntries: true,
 				Events: []tui.Event{
 					{Kind: tui.EventSessionUpdate, SessionID: ""},
 				},
@@ -589,7 +599,7 @@ func (a *App) buildTUISnapshot(
 		DefaultFlowLabel:    a.resolveFlowDisplayName(ctx, providerClient, flowID),
 		Workdir:             resolveLocalWorkdir(config.Workdir),
 		ContextDir:          resolveLocalWorkdir(config.Workdir),
-		RequestMode:         provider.RequestTypeAsk,
+		RequestMode:         provider.RequestTypeAgent,
 		ApprovalMode:        config.ApprovalMode,
 	}
 	if !backend.Available {
@@ -597,7 +607,7 @@ func (a *App) buildTUISnapshot(
 			return snapshot, nil
 		}
 
-		sessionState, err := a.prepareSession(flowID, false, snapshot.Workdir, snapshot.RequestMode)
+		sessionState, err := a.prepareSession(flowID, false, snapshot.Workdir, "")
 		if err != nil {
 			return tui.Snapshot{}, err
 		}
@@ -617,7 +627,7 @@ func (a *App) buildTUISnapshot(
 		return snapshot, nil
 	}
 
-	sessionState, err := a.prepareSession(flowID, false, snapshot.Workdir, snapshot.RequestMode)
+	sessionState, err := a.prepareSession(flowID, false, snapshot.Workdir, "")
 	if err != nil {
 		return tui.Snapshot{}, err
 	}
@@ -898,9 +908,9 @@ func buildTUIClientToolConfirmRequest(payload map[string]any) tui.ConfirmRequest
 
 func buildTUISandboxEscapeConfirmRequest(path string, alwaysApprove func(context.Context) error) tui.ConfirmRequest {
 	return tui.ConfirmRequest{
-		Title:                       "访问沙箱外路径",
+		Title:                       "访问工作目录外路径",
 		Command:                     path,
-		Detail:                      "目标路径位于当前工作目录沙箱外，是否允许本次访问？",
+		Detail:                      "目标路径位于当前工作目录外，是否允许本次访问？",
 		PreviewTitle:                "访问目标",
 		PreviewBody:                 fmt.Sprintf("路径: %s", path),
 		Hint:                        "使用方向键或 Tab 选择，Enter 确认。",
@@ -1348,11 +1358,12 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 		SubmitText:  "Ctrl+S 保存配置",
 		FlowOptions: flowOptions,
 		Values: tui.ConfigFormValues{
-			BackendBaseURL: strings.TrimSpace(config.BackendBaseURL),
-			DefaultFlow:    strings.TrimSpace(config.DefaultFlow),
-			ApprovalMode:   strings.TrimSpace(config.ApprovalMode),
-			Workdir:        strings.TrimSpace(config.Workdir),
-			OutputLanguage: strings.TrimSpace(config.OutputLanguage),
+			BackendBaseURL:           strings.TrimSpace(config.BackendBaseURL),
+			DefaultFlow:              strings.TrimSpace(config.DefaultFlow),
+			ApprovalMode:             strings.TrimSpace(config.ApprovalMode),
+			Workdir:                  strings.TrimSpace(config.Workdir),
+			StreamIdleTimeoutSeconds: strconv.Itoa(config.StreamIdleTimeoutSeconds),
+			OutputLanguage:           strings.TrimSpace(config.OutputLanguage),
 		},
 	}, nil
 }
@@ -1393,6 +1404,12 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 	if strings.TrimSpace(submission.Values.Workdir) == "" {
 		config.Workdir = ""
 	} else if err := assignConfigValue(&config, "workdir", submission.Values.Workdir); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if strings.TrimSpace(submission.Values.StreamIdleTimeoutSeconds) == "" {
+		config.StreamIdleTimeoutSeconds = internalconfig.Default().StreamIdleTimeoutSeconds
+	} else if err := assignConfigValue(&config, "stream_idle_timeout_seconds", submission.Values.StreamIdleTimeoutSeconds); err != nil {
 		return internalconfig.Config{}, err
 	}
 

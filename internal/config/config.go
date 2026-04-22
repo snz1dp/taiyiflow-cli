@@ -11,25 +11,27 @@ import (
 )
 
 const (
-	defaultRootDirName = ".snz1dp"
-	defaultConfigRel   = "config/taiyiflow.yaml"
-	rootDirEnvName     = "SNZ1DP_HOME"
-	SandboxEscapePolicyConfirm = "confirm"
-	SandboxEscapePolicyDeny    = "deny"
-	SandboxEscapePolicyAllow   = "allow"
+	defaultRootDirName              = ".snz1dp"
+	defaultConfigRel                = "config/taiyiflow.yaml"
+	rootDirEnvName                  = "SNZ1DP_HOME"
+	DefaultStreamIdleTimeoutSeconds = 300
+	SandboxEscapePolicyConfirm      = "confirm"
+	SandboxEscapePolicyDeny         = "deny"
+	SandboxEscapePolicyAllow        = "allow"
 )
 
 type Config struct {
-	BackendBaseURL string      `yaml:"backend_base_url"`
-	APIKey         string      `yaml:"api_key,omitempty"`
-	DefaultFlow    string      `yaml:"default_flow,omitempty"`
-	ApprovalMode   string      `yaml:"approval_mode"`
-	Workdir        string      `yaml:"workdir,omitempty"`
-	SandboxEscapePolicy string  `yaml:"sandbox_escape_policy,omitempty"`
-	OutputLanguage string      `yaml:"output_language"`
-	AuditEnabled   bool        `yaml:"audit_enabled,omitempty"`
-	SandboxRoots   []string    `yaml:"sandbox_roots,omitempty"`
-	Skills         SkillConfig `yaml:"skills,omitempty"`
+	BackendBaseURL           string      `yaml:"backend_base_url"`
+	APIKey                   string      `yaml:"api_key,omitempty"`
+	DefaultFlow              string      `yaml:"default_flow,omitempty"`
+	ApprovalMode             string      `yaml:"approval_mode"`
+	Workdir                  string      `yaml:"workdir,omitempty"`
+	SandboxEscapePolicy      string      `yaml:"sandbox_escape_policy,omitempty"`
+	StreamIdleTimeoutSeconds int         `yaml:"stream_idle_timeout_seconds,omitempty"`
+	OutputLanguage           string      `yaml:"output_language"`
+	AuditEnabled             bool        `yaml:"audit_enabled,omitempty"`
+	SandboxRoots             []string    `yaml:"sandbox_roots,omitempty"`
+	Skills                   SkillConfig `yaml:"skills,omitempty"`
 }
 
 type SkillConfig struct {
@@ -43,11 +45,12 @@ type Manager struct {
 
 func Default() Config {
 	return Config{
-		BackendBaseURL: "http://localhost:7860",
-		ApprovalMode:   "confirm",
-		SandboxEscapePolicy: SandboxEscapePolicyConfirm,
-		OutputLanguage: "zh-CN",
-		AuditEnabled:   false,
+		BackendBaseURL:           "http://localhost:7860",
+		ApprovalMode:             "confirm",
+		SandboxEscapePolicy:      SandboxEscapePolicyConfirm,
+		StreamIdleTimeoutSeconds: DefaultStreamIdleTimeoutSeconds,
+		OutputLanguage:           "zh-CN",
+		AuditEnabled:             false,
 	}
 }
 
@@ -60,6 +63,13 @@ func NormalizeSandboxEscapePolicy(value string) string {
 	default:
 		return SandboxEscapePolicyConfirm
 	}
+}
+
+func NormalizeStreamIdleTimeoutSeconds(value int) int {
+	if value < 0 {
+		return DefaultStreamIdleTimeoutSeconds
+	}
+	return value
 }
 
 func NewManager() (*Manager, error) {
@@ -147,6 +157,7 @@ func (m *Manager) Load() (Config, error) {
 		config.ApprovalMode = Default().ApprovalMode
 	}
 	config.SandboxEscapePolicy = NormalizeSandboxEscapePolicy(config.SandboxEscapePolicy)
+	config.StreamIdleTimeoutSeconds = NormalizeStreamIdleTimeoutSeconds(config.StreamIdleTimeoutSeconds)
 	if config.OutputLanguage == "" {
 		config.OutputLanguage = Default().OutputLanguage
 	}

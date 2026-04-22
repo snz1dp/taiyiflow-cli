@@ -81,12 +81,13 @@ type ApprovalPickerState struct {
 }
 
 type ConfigFormValues struct {
-	BackendBaseURL string
-	APIKey         string
-	DefaultFlow    string
-	ApprovalMode   string
-	Workdir        string
-	OutputLanguage string
+	BackendBaseURL           string
+	APIKey                   string
+	DefaultFlow              string
+	ApprovalMode             string
+	Workdir                  string
+	StreamIdleTimeoutSeconds string
+	OutputLanguage           string
 }
 
 type ConfigChoice struct {
@@ -394,6 +395,7 @@ const (
 	configFieldDefaultFlow
 	configFieldApprovalMode
 	configFieldWorkdir
+	configFieldStreamIdleTimeout
 	configFieldOutputLanguage
 	configFieldCount
 )
@@ -518,17 +520,17 @@ var (
 )
 
 var slashCommands = []slashCommand{
-	{Trigger: "/agents", Completion: "/agents ", Description: "打开智能体选择，或用 /agents <名称> 直接切换"},
+	{Trigger: "/new", Completion: "/new", Description: "重置当前智能体的本地会话"},
+	{Trigger: "/clear", Completion: "/clear", Description: "清空当前界面消息"},
+	{Trigger: "/session", Completion: "/session", Description: "显示当前会话状态"},
+	{Trigger: "/agent", Completion: "/agent ", Description: "切换为执行模式，或直接发送一个执行请求"},
 	{Trigger: "/ask", Completion: "/ask ", Description: "切换为问答模式，或直接发送一个问答请求"},
 	{Trigger: "/plan", Completion: "/plan ", Description: "切换为计划模式，或直接发送一个计划请求"},
-	{Trigger: "/agent", Completion: "/agent ", Description: "切换为执行模式，或直接发送一个执行请求"},
-	{Trigger: "/config", Completion: "/config ", Description: "查看或更新服务端地址、API Key 等配置"},
+	{Trigger: "/agents", Completion: "/agents ", Description: "打开智能体选择，或用 /agents <名称> 直接切换"},
 	{Trigger: "/skills", Completion: "/skills ", Description: "列出、查看或启停本地技能"},
-	{Trigger: "/new", Completion: "/new", Description: "重置当前智能体的本地会话"},
-	{Trigger: "/session", Completion: "/session", Description: "显示当前会话状态"},
 	{Trigger: "/sessions", Completion: "/sessions ", Description: "列出当前智能体的服务端会话，可附页码"},
 	{Trigger: "/help", Completion: "/help", Description: "显示可用命令帮助"},
-	{Trigger: "/clear", Completion: "/clear", Description: "清空当前界面消息"},
+	{Trigger: "/config", Completion: "/config ", Description: "查看或更新服务端地址、API Key 等配置"},
 	{Trigger: "/exit", Completion: "/exit", Description: "退出当前智能对话"},
 }
 
@@ -1338,14 +1340,12 @@ func RenderSessionStatusText(snapshot Snapshot, prefix string) string {
 	if sandboxPolicy == "" {
 		sandboxPolicy = "<继承全局配置>"
 	}
-	lines = append(lines, fmt.Sprintf("会话沙箱越界策略: %s", sandboxPolicy))
+	lines = append(lines, fmt.Sprintf("会话外部资源访问策略: %s", sandboxPolicy))
 	sessionID := strings.TrimSpace(snapshot.SessionID)
 	if sessionID == "" {
-		lines = append(lines, "当前会话: 新会话")
+		lines = append(lines, "新会话")
 		return strings.Join(lines, "\n")
-	}
-	lines = append(lines, fmt.Sprintf("当前会话: %s", sessionID))
-	if title := strings.TrimSpace(snapshot.SessionTitle); title != "" {
+	} else if title := strings.TrimSpace(snapshot.SessionTitle); title != "" {
 		lines = append(lines, fmt.Sprintf("会话标题: %s", title))
 	}
 	return strings.Join(lines, "\n")
@@ -1688,6 +1688,9 @@ func (m model) historyPaneWidth() int {
 }
 
 func (m model) renderTransientStatus() string {
+	if requestModeKey(m.snapshot.RequestMode) == "agent" {
+		return ""
+	}
 	status := strings.TrimSpace(m.activityHint)
 	if status == "" {
 		return ""
@@ -2667,11 +2670,12 @@ func configFormFieldSpecs(hasAPIKey bool) []configFieldSpec {
 		apiDescription = "已配置 API Key。留空表示保持不变，输入 - 表示清空并保存。"
 	}
 	return []configFieldSpec{
-		{label: "服务端地址", placeholder: "http://localhost:7860", description: "必须是完整的 HTTP 或 HTTPS 地址。"},
-		{label: "API Key", placeholder: "可选", description: apiDescription},
+		{label: "服务地址", placeholder: "http://localhost:7860", description: "必须是完整的 HTTP 或 HTTPS 地址。"},
+		{label: "访问令牌", placeholder: "可选", description: apiDescription},
 		{label: "默认智能体", placeholder: "", description: "按 Enter 打开下拉列表，留空项表示自动选择。"},
 		{label: "命令执行模式", placeholder: "", description: "左右键或空格切换单选项。"},
-		{label: "工作目录", placeholder: "留空表示当前目录", description: "默认使用当前工作目录。"},
+		{label: "工作区目录", placeholder: "留空表示当前目录", description: "默认使用当前工作目录。"},
+		{label: "请求超时（秒）", placeholder: "300", description: "大于等于 0 的整数秒，0 表示禁用流式空闲超时。"},
 		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
 	}
 }
@@ -2692,6 +2696,8 @@ func configFormFieldValue(index int, values ConfigFormValues, hasAPIKey bool) st
 	case 4:
 		return strings.TrimSpace(values.Workdir)
 	case 5:
+		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
+	case 6:
 		return strings.TrimSpace(values.OutputLanguage)
 	default:
 		return ""
@@ -2710,14 +2716,17 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 		values.Workdir = strings.TrimSpace(inputs[4].Value())
 	}
 	if len(inputs) > 5 {
-		values.OutputLanguage = strings.TrimSpace(inputs[5].Value())
+		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[5].Value())
+	}
+	if len(inputs) > 6 {
+		values.OutputLanguage = strings.TrimSpace(inputs[6].Value())
 	}
 	return values
 }
 
 func isConfigTextField(index int) bool {
 	switch index {
-	case configFieldBackendBaseURL, configFieldAPIKey, configFieldWorkdir, configFieldOutputLanguage:
+	case configFieldBackendBaseURL, configFieldAPIKey, configFieldWorkdir, configFieldStreamIdleTimeout, configFieldOutputLanguage:
 		return true
 	default:
 		return false
@@ -3575,17 +3584,17 @@ func sessionSandboxEscapePolicyStatus(value string, compact bool) string {
 		if compact {
 			return "允许访问外部资源"
 		}
-		return "允许访问会话外资源"
+		return "允许访问外部资源"
 	case "deny":
 		if compact {
 			return "禁止访问外部资源"
 		}
-		return "禁止访问会话外资源"
+		return "禁止访问外部资源"
 	case "confirm":
 		if compact {
 			return "访问外部需确认"
 		}
-		return "访问会话外资源需确认"
+		return "访问外部资源需确认"
 	default:
 		return ""
 	}

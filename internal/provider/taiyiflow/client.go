@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
@@ -20,10 +22,76 @@ import (
 
 const SessionHeader = "X-TaiyiFlow-Session-id"
 
+const defaultStreamIdleTimeout = 2 * time.Minute
+
+type streamIdleTimeoutError struct {
+	idleTimeout time.Duration
+}
+
+func (e streamIdleTimeoutError) Error() string {
+	return fmt.Sprintf("backend idle timeout after %s without SSE activity", e.idleTimeout)
+}
+
+type idleTimeoutReadCloser struct {
+	reader      io.ReadCloser
+	idleTimeout time.Duration
+	timer       *time.Timer
+	mu          sync.Mutex
+	timedOut    bool
+	closeOnce   sync.Once
+	closeErr    error
+}
+
+func newIdleTimeoutReadCloser(reader io.ReadCloser, idleTimeout time.Duration) *idleTimeoutReadCloser {
+	wrapped := &idleTimeoutReadCloser{reader: reader, idleTimeout: idleTimeout}
+	if idleTimeout > 0 {
+		wrapped.timer = time.AfterFunc(idleTimeout, func() {
+			wrapped.mu.Lock()
+			wrapped.timedOut = true
+			wrapped.mu.Unlock()
+			_ = wrapped.closeUnderlying()
+		})
+	}
+	return wrapped
+}
+
+func (r *idleTimeoutReadCloser) Read(buffer []byte) (int, error) {
+	count, err := r.reader.Read(buffer)
+	if count > 0 && r.timer != nil {
+		r.timer.Reset(r.idleTimeout)
+	}
+	if err != nil && r.didTimeOut() {
+		return count, streamIdleTimeoutError{idleTimeout: r.idleTimeout}
+	}
+	return count, err
+}
+
+func (r *idleTimeoutReadCloser) Close() error {
+	if r.timer != nil {
+		r.timer.Stop()
+	}
+	return r.closeUnderlying()
+}
+
+func (r *idleTimeoutReadCloser) didTimeOut() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.timedOut
+}
+
+func (r *idleTimeoutReadCloser) closeUnderlying() error {
+	r.closeOnce.Do(func() {
+		r.closeErr = r.reader.Close()
+	})
+	return r.closeErr
+}
+
 type Client struct {
-	baseURL    string
-	apiKey     string
-	httpClient *http.Client
+	baseURL           string
+	apiKey            string
+	httpClient        *http.Client
+	streamHTTPClient  *http.Client
+	streamIdleTimeout time.Duration
 }
 
 type metadataResponse struct {
@@ -139,11 +207,22 @@ type clientCallResultBody struct {
 
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
-		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
-		},
+		baseURL:           strings.TrimRight(baseURL, "/"),
+		apiKey:            apiKey,
+		httpClient:        &http.Client{Timeout: 60 * time.Second},
+		streamHTTPClient:  &http.Client{},
+		streamIdleTimeout: defaultStreamIdleTimeout,
+	}
+}
+
+func (c *Client) SetStreamIdleTimeoutSeconds(seconds int) {
+	switch {
+	case seconds < 0:
+		c.streamIdleTimeout = defaultStreamIdleTimeout
+	case seconds == 0:
+		c.streamIdleTimeout = 0
+	default:
+		c.streamIdleTimeout = time.Duration(seconds) * time.Second
 	}
 }
 
@@ -456,7 +535,7 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 	httpRequest.Header.Set("Accept", "text/event-stream")
 	c.applyAuth(httpRequest, request.UserAgent)
 
-	resp, err := c.httpClient.Do(httpRequest)
+	resp, err := c.streamHTTPClient.Do(httpRequest)
 	if err != nil {
 		return nil, nil, fmt.Errorf("请求失败: %w", err)
 	}
@@ -471,8 +550,12 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 
 	go func() {
 		defer close(stream)
-		defer resp.Body.Close()
-		readSSE(resp.Body, stream)
+		reader := io.ReadCloser(resp.Body)
+		if c.streamIdleTimeout > 0 {
+			reader = newIdleTimeoutReadCloser(resp.Body, c.streamIdleTimeout)
+		}
+		defer reader.Close()
+		readSSE(reader, stream)
 	}()
 
 	return stream, streamSession, nil
@@ -667,6 +750,14 @@ func readSSE(reader io.Reader, output chan<- provider.StreamEvent) {
 	flush()
 
 	if err := scanner.Err(); err != nil {
+		var idleTimeoutErr streamIdleTimeoutError
+		if errors.As(err, &idleTimeoutErr) {
+			output <- provider.StreamEvent{
+				Type: provider.EventError,
+				Data: map[string]any{"error": fmt.Sprintf("读取 SSE 失败: %s", idleTimeoutErr.Error())},
+			}
+			return
+		}
 		output <- provider.StreamEvent{
 			Type: provider.EventError,
 			Data: map[string]any{"error": fmt.Sprintf("读取 SSE 失败: %v", err)},

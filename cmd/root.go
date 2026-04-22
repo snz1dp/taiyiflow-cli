@@ -28,10 +28,17 @@ type App struct {
 }
 
 type rootOptions struct {
-	Flow       string
-	NewSession bool
-	Continue   bool
+	Flow                string
+	NewSession          bool
+	Continue            bool
+	ShowStreamEvents    bool
 	SandboxEscapePolicy string
+}
+
+func buildProviderClient(config internalconfig.Config) *providerclient.Client {
+	client := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+	client.SetStreamIdleTimeoutSeconds(config.StreamIdleTimeoutSeconds)
+	return client
 }
 
 func NewApp() (*App, error) {
@@ -99,7 +106,9 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	flagSet.StringVar(&options.Flow, "flow", "", "兼容旧参数：指定要运行的智能体 ID 或名称")
 	flagSet.BoolVar(&options.NewSession, "new", false, "忽略已有会话并新建会话")
 	flagSet.BoolVar(&options.Continue, "continue", false, "继续当前会话")
-	flagSet.StringVar(&options.SandboxEscapePolicy, "sandbox-escape-policy", "", "沙箱越界策略（confirm|deny|allow），仅影响当前命令")
+	flagSet.BoolVar(&options.ShowStreamEvents, "show-stream-events", false, "显示系统提示与工具调用等流式调试信息")
+	flagSet.StringVar(&options.SandboxEscapePolicy, "external-resource-access-policy", "", "外部资源访问策略（confirm|deny|allow），仅影响当前命令")
+	flagSet.StringVar(&options.SandboxEscapePolicy, "sandbox-escape-policy", "", "兼容旧参数：外部资源访问策略（confirm|deny|allow），仅影响当前命令")
 
 	if err := flagSet.Parse(args); err != nil {
 		return err
@@ -118,7 +127,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	if err != nil {
 		return err
 	}
-	providerClient := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+	providerClient := buildProviderClient(config)
 	if err := a.ensureBackendAvailable(ctx, providerClient, config.BackendBaseURL); err != nil {
 		return err
 	}
@@ -199,11 +208,11 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			continue
 		case line == "/new":
 			sessionState = agent.SessionState{
-				FlowID:          flowID,
-				FlowDisplayName: flowDisplayName,
-				Workdir:         workdir,
-				RequestMode:     sessionState.RequestMode,
-				ContextDir:      workdir,
+				FlowID:                      flowID,
+				FlowDisplayName:             flowDisplayName,
+				Workdir:                     workdir,
+					RequestMode:                 provider.RequestTypeAgent,
+				ContextDir:                  workdir,
 				SandboxEscapePolicyOverride: sessionState.SandboxEscapePolicyOverride,
 			}
 			if err := a.sessionStore.Delete(flowID, workdir); err != nil {
@@ -233,16 +242,17 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 				return err
 			}
 			config = updatedConfig
-			providerClient = providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+			providerClient = buildProviderClient(config)
 			workdir = resolveLocalWorkdir(config.Workdir)
 
 			if err := a.ensureBackendAvailable(ctx, providerClient, config.BackendBaseURL); err != nil {
 				flowID = strings.TrimSpace(firstNonEmpty(options.Flow, config.DefaultFlow))
 				flowDisplayName = a.resolveFlowDisplayName(ctx, providerClient, flowID)
 				sessionState = agent.SessionState{
-					FlowID:                       flowID,
-					FlowDisplayName:              flowDisplayName,
-					Workdir:                      workdir,
+					FlowID:                      flowID,
+					FlowDisplayName:             flowDisplayName,
+					Workdir:                     workdir,
+					RequestMode:                 firstNonEmpty(sessionState.RequestMode, provider.RequestTypeAgent),
 					SandboxEscapePolicyOverride: sessionState.SandboxEscapePolicyOverride,
 				}
 				fmt.Fprintf(a.stderr, "提示: 新配置尚未连通服务端: %v\n", err)
@@ -279,7 +289,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 				fmt.Fprintf(a.stdout, "已切换请求模式: %s\n", requestModeLabel(mode))
 				continue
 			}
-			updatedState, err := a.streamTask(ctx, providerClient, config, flowID, prompt, sessionState, options.SandboxEscapePolicy)
+			updatedState, err := a.streamTask(ctx, providerClient, config, flowID, prompt, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents)
 			if err != nil {
 				fmt.Fprintf(a.stderr, "执行任务失败: %v\n", err)
 				continue
@@ -288,7 +298,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			continue
 		}
 
-		updatedState, err := a.streamTask(ctx, providerClient, config, flowID, line, sessionState, options.SandboxEscapePolicy)
+		updatedState, err := a.streamTask(ctx, providerClient, config, flowID, line, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents)
 		if err != nil {
 			fmt.Fprintf(a.stderr, "执行任务失败: %v\n", err)
 			continue
@@ -302,7 +312,7 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	if err != nil {
 		return err
 	}
-	providerClient := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+	providerClient := buildProviderClient(config)
 	if err := a.ensureBackendAvailable(ctx, providerClient, config.BackendBaseURL); err != nil {
 		return err
 	}
@@ -317,18 +327,22 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	}
 	workdir := resolveLocalWorkdir(config.Workdir)
 
-	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir, provider.RequestTypeAsk)
+	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir, "")
 	if err != nil {
 		return err
 	}
 
-	_, err = a.streamTask(ctx, providerClient, config, flowID, task, sessionState, options.SandboxEscapePolicy)
+	_, err = a.streamTask(ctx, providerClient, config, flowID, task, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents)
 	return err
 }
 
 func (a *App) prepareSession(flowID string, newSession bool, workdir string, requestMode string) (agent.SessionState, error) {
 	resolvedWorkdir := resolveLocalWorkdir(workdir)
-	normalizedMode := normalizeRequestMode(requestMode)
+	requestedMode := strings.TrimSpace(requestMode)
+	normalizedMode := provider.RequestTypeAgent
+	if requestedMode != "" {
+		normalizedMode = normalizeRequestMode(requestMode)
+	}
 	if newSession {
 		if err := a.sessionStore.Delete(flowID, resolvedWorkdir); err != nil {
 			return agent.SessionState{}, err
@@ -339,8 +353,10 @@ func (a *App) prepareSession(flowID string, newSession bool, workdir string, req
 	if err != nil {
 		return agent.SessionState{}, err
 	}
-	if strings.TrimSpace(requestMode) != "" {
+	if requestedMode != "" {
 		state.RequestMode = normalizedMode
+	} else if strings.TrimSpace(state.RequestMode) == "" {
+		state.RequestMode = provider.RequestTypeAgent
 	}
 	if strings.TrimSpace(state.ContextDir) == "" {
 		state.ContextDir = resolvedWorkdir
@@ -356,7 +372,11 @@ func (a *App) streamTask(
 	task string,
 	sessionState agent.SessionState,
 	commandSandboxEscapePolicy string,
+	showStreamEvents bool,
 ) (agent.SessionState, error) {
+	a.runtime.SetStreamEventLogsEnabled(showStreamEvents)
+	defer a.runtime.SetStreamEventLogsEnabled(true)
+
 	runtimeConfig := applyEffectiveSandboxEscapePolicy(config, sessionState.SandboxEscapePolicyOverride, commandSandboxEscapePolicy)
 	requestedSkillNames, clientSkillPackages, err := a.loadSkillPayload(config)
 	if err != nil {
@@ -404,18 +424,22 @@ func (a *App) streamTask(
 				fmt.Fprint(a.stdout, chunk)
 				continue
 			}
-			if message, ok := event.Data["message"].(string); ok && strings.TrimSpace(message) != "" {
-				fmt.Fprintf(a.stdout, "\n[进度] %s\n", strings.TrimSpace(message))
+			if showStreamEvents {
+				if message, ok := event.Data["message"].(string); ok && strings.TrimSpace(message) != "" {
+					fmt.Fprintf(a.stdout, "\n[系统提示]: %s\n", strings.TrimSpace(message))
+				}
 			}
 		case provider.EventError:
 			fmt.Fprintln(a.stderr)
-			return sessionState, fmt.Errorf("后端返回错误: %v", event.Data["error"])
+			return sessionState, normalizeStreamEventError(event.Data["error"])
 		case provider.EventBuiltIn:
 			if !modeAllowsBuiltIn(sessionState.RequestMode) {
 				if err := submitClientCallFailure(ctx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(sessionState.RequestMode))); err != nil {
 					return sessionState, err
 				}
-				fmt.Fprintf(a.stderr, "提示: 已拒绝 built_in，本地模式为 %s\n", requestModeLabel(sessionState.RequestMode))
+				if showStreamEvents {
+					fmt.Fprintf(a.stderr, "[系统提示]: 已拒绝 built_in，本地模式为 %s\n", requestModeLabel(sessionState.RequestMode))
+				}
 				continue
 			}
 			if err := a.runtime.HandleBuiltInEvent(ctx, providerClient, runtimeConfig, event.Data); err != nil {
@@ -427,15 +451,19 @@ func (a *App) streamTask(
 				if err := submitClientCallFailure(ctx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(sessionState.RequestMode), toolName)); err != nil {
 					return sessionState, err
 				}
-				fmt.Fprintf(a.stderr, "提示: 已拒绝客户端工具 %s，本地模式为 %s\n", toolName, requestModeLabel(sessionState.RequestMode))
+				if showStreamEvents {
+					fmt.Fprintf(a.stderr, "[系统提示]: 已拒绝客户端工具 %s，本地模式为 %s\n", toolName, requestModeLabel(sessionState.RequestMode))
+				}
 				continue
 			}
 			if err := a.runtime.HandleClientToolEvent(ctx, providerClient, runtimeConfig, event.Data); err != nil {
 				return sessionState, err
 			}
 		case provider.EventToolCall:
-			if text, ok := event.Data["text"].(string); ok && text != "" {
-				fmt.Fprintf(a.stdout, "\n[工具调用] %s\n", text)
+			if showStreamEvents {
+				if text, ok := event.Data["text"].(string); ok && text != "" {
+					fmt.Fprintf(a.stdout, "[工具调用]: %s\n", text)
+				}
 			}
 		case provider.EventClose:
 			fmt.Fprintln(a.stdout)
@@ -448,7 +476,7 @@ func (a *App) streamTask(
 func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "用法:")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli")
-	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--new] [--continue] [--sandbox-escape-policy POLICY] [任务描述]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--new] [--continue] [--show-stream-events] [--external-resource-access-policy POLICY] [任务描述]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli config [show|init|path|set|unset]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli agents [list|current|use] [参数]")
@@ -459,19 +487,20 @@ func (a *App) printRootUsage() {
 
 func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider.Provider, flowDisplayName string, flowID string, sessionState agent.SessionState) {
 	fmt.Fprintln(a.stdout, "会话内命令:")
+	fmt.Fprintln(a.stdout, "  /agent    切换为执行模式，可写成 /agent <任务>")
 	fmt.Fprintln(a.stdout, "  /agents   显示智能体切换说明")
 	fmt.Fprintln(a.stdout, "  /config   查看或更新服务端配置")
-	fmt.Fprintln(a.stdout, "  /config session [show|set|unset] sandbox_escape_policy [值]   查看或设置会话沙箱越界策略")
+	fmt.Fprintln(a.stdout, "  /config session [show|set|unset] external_resource_access_policy [值]   查看或设置会话外部资源访问策略")
 	fmt.Fprintln(a.stdout, "  /skills   列出、查看或切换本地技能")
 	fmt.Fprintln(a.stdout, "  /ask      切换为问答模式，可写成 /ask <问题>")
 	fmt.Fprintln(a.stdout, "  /plan     切换为计划模式，可写成 /plan <目标>")
-	fmt.Fprintln(a.stdout, "  /agent    切换为执行模式，可写成 /agent <任务>")
 	fmt.Fprintln(a.stdout, "  /help     显示帮助")
 	fmt.Fprintln(a.stdout, "  /session  显示当前会话状态")
 	fmt.Fprintln(a.stdout, "  /sessions 显示本地已保存会话")
 	fmt.Fprintln(a.stdout, "  /new      重置当前智能体的本地会话")
 	fmt.Fprintln(a.stdout, "  /clear    清屏")
 	fmt.Fprintln(a.stdout, "  /exit     退出")
+	fmt.Fprintln(a.stdout, "  启动参数: --show-stream-events 可显示系统提示与工具调用日志")
 	fmt.Fprintln(a.stdout, "  提示: 交互模式下请使用 `taiyiflow-cli agents` 管理默认智能体。")
 	a.printSessionStatus(ctx, providerClient, flowDisplayName, flowID, sessionState)
 }
@@ -574,15 +603,15 @@ func (a *App) runInteractiveConfigCommand(command string) error {
 func (a *App) runInteractiveSessionConfigCommand(command string, state *agent.SessionState) (string, error) {
 	args := parseSlashConfigArgs(command)
 	if len(args) < 2 || strings.ToLower(strings.TrimSpace(args[0])) != "session" {
-		return "", fmt.Errorf("用法: /config session [show|set|unset] sandbox_escape_policy [confirm|deny|allow]")
+		return "", fmt.Errorf("用法: /config session [show|set|unset] external_resource_access_policy [confirm|deny|allow]")
 	}
 	action := strings.ToLower(strings.TrimSpace(args[1]))
 	key := ""
 	if len(args) >= 3 {
 		key = normalizeConfigKey(args[2])
 	}
-	if key != "" && key != "sandbox_escape_policy" {
-		return "", fmt.Errorf("会话配置仅支持 sandbox_escape_policy")
+	if key != "" && key != "external_resource_access_policy" {
+		return "", fmt.Errorf("会话配置仅支持 external_resource_access_policy")
 	}
 	switch action {
 	case "show":
@@ -590,29 +619,29 @@ func (a *App) runInteractiveSessionConfigCommand(command string, state *agent.Se
 		if value == "" {
 			value = "<继承全局配置>"
 		}
-		return fmt.Sprintf("会话沙箱越界策略: %s", value), nil
+		return fmt.Sprintf("会话外部资源访问策略: %s", value), nil
 	case "set":
-		if key != "sandbox_escape_policy" || len(args) < 4 {
-			return "", fmt.Errorf("用法: /config session set sandbox_escape_policy <confirm|deny|allow>")
+		if key != "external_resource_access_policy" || len(args) < 4 {
+			return "", fmt.Errorf("用法: /config session set external_resource_access_policy <confirm|deny|allow>")
 		}
 		policy := internalconfig.NormalizeSandboxEscapePolicy(args[3])
 		if strings.ToLower(strings.TrimSpace(args[3])) != policy {
-			return "", fmt.Errorf("sandbox_escape_policy 仅支持 confirm、deny、allow")
+			return "", fmt.Errorf("external_resource_access_policy 仅支持 confirm、deny、allow")
 		}
 		state.SandboxEscapePolicyOverride = policy
 		if err := a.sessionStore.Save(*state); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("已设置会话沙箱越界策略: %s", policy), nil
+		return fmt.Sprintf("已设置会话外部资源访问策略: %s", policy), nil
 	case "unset", "clear":
-		if key != "sandbox_escape_policy" {
-			return "", fmt.Errorf("用法: /config session unset sandbox_escape_policy")
+		if key != "external_resource_access_policy" {
+			return "", fmt.Errorf("用法: /config session unset external_resource_access_policy")
 		}
 		state.SandboxEscapePolicyOverride = ""
 		if err := a.sessionStore.Save(*state); err != nil {
 			return "", err
 		}
-		return "已清空会话沙箱越界策略，恢复继承全局配置", nil
+		return "已清空会话外部资源访问策略，恢复继承全局配置", nil
 	default:
 		return "", fmt.Errorf("会话配置操作仅支持 show、set、unset")
 	}

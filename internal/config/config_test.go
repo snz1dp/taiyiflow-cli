@@ -25,6 +25,23 @@ func TestNormalizeSandboxEscapePolicy(t *testing.T) {
 	}
 }
 
+func TestNormalizeStreamIdleTimeoutSeconds(t *testing.T) {
+	cases := []struct {
+		input    int
+		expected int
+	}{
+		{input: DefaultStreamIdleTimeoutSeconds, expected: DefaultStreamIdleTimeoutSeconds},
+		{input: 0, expected: 0},
+		{input: 300, expected: 300},
+		{input: -1, expected: DefaultStreamIdleTimeoutSeconds},
+	}
+	for _, item := range cases {
+		if got := NormalizeStreamIdleTimeoutSeconds(item.input); got != item.expected {
+			t.Fatalf("NormalizeStreamIdleTimeoutSeconds(%d) = %d, want %d", item.input, got, item.expected)
+		}
+	}
+}
+
 func TestManagerLoadAppliesDefaultSandboxEscapePolicy(t *testing.T) {
 	tempDir := t.TempDir()
 	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
@@ -58,5 +75,23 @@ func TestManagerLoadNormalizesInvalidSandboxEscapePolicy(t *testing.T) {
 	}
 	if loaded.SandboxEscapePolicy != SandboxEscapePolicyConfirm {
 		t.Fatalf("expected normalized sandbox policy %q, got %q", SandboxEscapePolicyConfirm, loaded.SandboxEscapePolicy)
+	}
+}
+
+func TestManagerLoadAppliesDefaultStreamIdleTimeoutSeconds(t *testing.T) {
+	tempDir := t.TempDir()
+	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
+
+	content := []byte("backend_base_url: http://localhost:7860\napproval_mode: confirm\nstream_idle_timeout_seconds: -5\n")
+	if err := os.WriteFile(manager.path, content, 0o644); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	if loaded.StreamIdleTimeoutSeconds != DefaultStreamIdleTimeoutSeconds {
+		t.Fatalf("expected default stream idle timeout %d, got %d", DefaultStreamIdleTimeoutSeconds, loaded.StreamIdleTimeoutSeconds)
 	}
 }

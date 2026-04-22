@@ -29,15 +29,16 @@ const (
 )
 
 type ClientRuntime struct {
-	stdin  io.Reader
-	stdout io.Writer
-	stderr io.Writer
-	sandboxEscapeConfirmer func(path string) (bool, error)
+	stdin                       io.Reader
+	stdout                      io.Writer
+	stderr                      io.Writer
+	sandboxEscapeConfirmer      func(path string) (bool, error)
 	sandboxEscapePolicyOverride string
+	streamEventLogsEnabled      bool
 }
 
 func NewClientRuntime(stdin io.Reader, stdout io.Writer, stderr io.Writer) *ClientRuntime {
-	return &ClientRuntime{stdin: stdin, stdout: stdout, stderr: stderr}
+	return &ClientRuntime{stdin: stdin, stdout: stdout, stderr: stderr, streamEventLogsEnabled: true}
 }
 
 func (r *ClientRuntime) SetSandboxEscapeConfirmer(confirmer func(path string) (bool, error)) {
@@ -46,6 +47,17 @@ func (r *ClientRuntime) SetSandboxEscapeConfirmer(confirmer func(path string) (b
 
 func (r *ClientRuntime) SetSandboxEscapePolicyOverride(policy string) {
 	r.sandboxEscapePolicyOverride = strings.TrimSpace(policy)
+}
+
+func (r *ClientRuntime) SetStreamEventLogsEnabled(enabled bool) {
+	r.streamEventLogsEnabled = enabled
+}
+
+func (r *ClientRuntime) writeStreamEventf(writer io.Writer, format string, args ...any) {
+	if !r.streamEventLogsEnabled {
+		return
+	}
+	fmt.Fprintf(writer, format, args...)
 }
 
 func (r *ClientRuntime) ClientMCPServers() map[string]any {
@@ -267,7 +279,7 @@ func (r *ClientRuntime) runCommand(
 		return nil, fmt.Errorf("启动命令失败: %w", err)
 	}
 
-	fmt.Fprintf(r.stdout, "\n[执行客户端命令] %s\n", commandPreview(arguments))
+	r.writeStreamEventf(r.stdout, "\n[执行客户端命令] %s\n", commandPreview(arguments))
 	startedAt := time.Now()
 
 	var stdoutBuffer bytes.Buffer
@@ -296,7 +308,7 @@ func (r *ClientRuntime) runCommand(
 	}
 
 	if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
-		fmt.Fprintf(r.stdout, "[本地命令] %s（超时，>%ds）\n", commandPreview(arguments), payload.Timeout)
+		r.writeStreamEventf(r.stdout, "[本地命令] %s（超时，>%ds）\n", commandPreview(arguments), payload.Timeout)
 		return nil, fmt.Errorf("命令执行超时，超过 %d 秒", payload.Timeout)
 	}
 	if waitErr != nil {
@@ -313,7 +325,7 @@ func (r *ClientRuntime) runCommand(
 			"exit_code": command.ProcessState.ExitCode(),
 			"error":     message,
 		})
-		fmt.Fprintf(r.stdout, "[本地命令] %s（失败，%s，退出码 %d）\n", commandPreview(arguments), formatCommandDuration(time.Since(startedAt)), command.ProcessState.ExitCode())
+		r.writeStreamEventf(r.stdout, "[本地命令] %s（失败，%s，退出码 %d）\n", commandPreview(arguments), formatCommandDuration(time.Since(startedAt)), command.ProcessState.ExitCode())
 		return nil, fmt.Errorf("命令执行失败: %s", message)
 	}
 
@@ -336,7 +348,7 @@ func (r *ClientRuntime) runCommand(
 		"cwd":       payload.WorkingDirectory,
 		"exit_code": command.ProcessState.ExitCode(),
 	})
-	fmt.Fprintf(r.stdout, "[本地命令] %s（成功，%s，退出码 %d）\n", commandPreview(arguments), formatCommandDuration(time.Since(startedAt)), command.ProcessState.ExitCode())
+	r.writeStreamEventf(r.stdout, "[本地命令] %s（成功，%s，退出码 %d）\n", commandPreview(arguments), formatCommandDuration(time.Since(startedAt)), command.ProcessState.ExitCode())
 
 	return result, nil
 }

@@ -48,7 +48,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 	definitions := []map[string]any{
 		{
 			"name":                 "search_files",
-			"description":          "在工作目录沙箱内搜索文本，支持正则、大小写、include/exclude 与分页。",
+			"description":          "在当前工作目录访问范围内搜索文本，支持正则、大小写、include/exclude 与分页。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -171,7 +171,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "read_file",
-			"description":          "读取工作目录沙箱内的文本文件，支持按行读取、二进制识别和 UTF-8 安全截断。",
+			"description":          "读取当前工作目录访问范围内的文本文件，支持按行读取、二进制识别和 UTF-8 安全截断。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -187,7 +187,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "list_dir",
-			"description":          "列出工作目录沙箱内的目录内容，支持递归、深度限制、隐藏文件过滤和 glob。",
+			"description":          "列出当前工作目录访问范围内的目录内容，支持递归、深度限制、隐藏文件过滤和 glob。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -203,7 +203,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "write_file",
-			"description":          "在工作目录沙箱内写入文本文件，支持 create、overwrite、append 和原子写入。",
+			"description":          "在当前工作目录访问范围内写入文本文件，支持 create、overwrite、append 和原子写入。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -218,7 +218,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "apply_patch",
-			"description":          "对工作目录沙箱内文件应用 unified diff 子集，支持 dry_run 和冲突报告。",
+			"description":          "对当前工作目录访问范围内文件应用 unified diff 子集，支持 dry_run 和冲突报告。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -461,7 +461,7 @@ func (r *ClientRuntime) readFile(config internalconfig.Config, arguments map[str
 		maxBytes = maxReadBytesHard
 	}
 	truncated, wasTruncated := truncateUTF8(selected, maxBytes)
-	fmt.Fprintf(r.stdout, "[本地工具] read_file %s 行 %d-%d\n", resolvedPath, startLine, endLine)
+	r.writeStreamEventf(r.stdout, "[本地工具] read_file %s 行 %d-%d\n", resolvedPath, startLine, endLine)
 	_ = appendAuditLog(config, "read_file", map[string]any{"path": resolvedPath, "start_line": startLine, "end_line": endLine})
 	return map[string]any{
 		"path":         resolvedPath,
@@ -551,7 +551,7 @@ func (r *ClientRuntime) listDir(config internalconfig.Config, arguments map[stri
 	sort.Slice(entries, func(left, right int) bool {
 		return stringValue(entries[left]["path"]) < stringValue(entries[right]["path"])
 	})
-	fmt.Fprintf(r.stdout, "[本地工具] list_dir %s，共 %d 项\n", resolvedPath, len(entries))
+	r.writeStreamEventf(r.stdout, "[本地工具] list_dir %s，共 %d 项\n", resolvedPath, len(entries))
 	_ = appendAuditLog(config, "list_dir", map[string]any{"path": resolvedPath, "count": len(entries)})
 	return map[string]any{
 		"root":      resolvedPath,
@@ -595,7 +595,7 @@ func (r *ClientRuntime) writeFile(config internalconfig.Config, arguments map[st
 	if err := writeFileAtomically(resolvedPath, finalContent); err != nil {
 		return nil, newToolError("EXECUTION_FAILED", "写入文件失败: %v", err)
 	}
-	fmt.Fprintf(r.stdout, "[本地工具] write_file %s (%s，%d 字节)\n", resolvedPath, mode, len(finalContent))
+	r.writeStreamEventf(r.stdout, "[本地工具] write_file %s (%s，%d 字节)\n", resolvedPath, mode, len(finalContent))
 	_ = appendAuditLog(config, "write_file", map[string]any{"path": resolvedPath, "mode": mode, "size": len(finalContent)})
 	return map[string]any{
 		"path":          resolvedPath,
@@ -657,7 +657,7 @@ func (r *ClientRuntime) applyPatch(config internalconfig.Config, arguments map[s
 			}
 		}
 	}
-	fmt.Fprintf(r.stdout, "[本地工具] apply_patch %d 个文件%s\n", len(fileResults), map[bool]string{true: "（dry-run）", false: ""}[dryRun])
+	r.writeStreamEventf(r.stdout, "[本地工具] apply_patch %d 个文件%s\n", len(fileResults), map[bool]string{true: "（dry-run）", false: ""}[dryRun])
 	_ = appendAuditLog(config, "apply_patch", map[string]any{"dry_run": dryRun, "files": len(fileResults)})
 	return map[string]any{
 		"dry_run":   dryRun,
@@ -723,7 +723,7 @@ func (r *ClientRuntime) gitStatus(ctx context.Context, config internalconfig.Con
 		}
 	}
 	changeCount := len(staged) + len(modified) + len(deleted) + len(renamed) + len(conflicted)
-	fmt.Fprintf(r.stdout, "[本地工具] git_status %s（%d 个变更，%d 个未跟踪）\n", repoRoot, changeCount, len(untracked))
+	r.writeStreamEventf(r.stdout, "[本地工具] git_status %s（%d 个变更，%d 个未跟踪）\n", repoRoot, changeCount, len(untracked))
 	_ = appendAuditLog(config, "git_status", map[string]any{"repo": repoRoot, "path": relativePath, "changes": changeCount, "untracked": len(untracked)})
 	return map[string]any{
 		"repo_root":  repoRoot,
@@ -774,7 +774,7 @@ func (r *ClientRuntime) gitDiff(ctx context.Context, config internalconfig.Confi
 	if boolValue(arguments["staged"]) {
 		detail += "，staged"
 	}
-	fmt.Fprintf(r.stdout, "[本地工具] git_diff %s（%s）\n", repoRoot, detail)
+	r.writeStreamEventf(r.stdout, "[本地工具] git_diff %s（%s）\n", repoRoot, detail)
 	_ = appendAuditLog(config, "git_diff", map[string]any{"repo": repoRoot, "path": relativePath, "staged": boolValue(arguments["staged"]), "truncated": truncated})
 	return map[string]any{
 		"repo_root":  repoRoot,
@@ -823,7 +823,7 @@ func (r *ClientRuntime) gitLog(ctx context.Context, config internalconfig.Config
 			"subject": parts[3],
 		})
 	}
-	fmt.Fprintf(r.stdout, "[本地工具] git_log %s（最近 %d 条）\n", repoRoot, len(commits))
+	r.writeStreamEventf(r.stdout, "[本地工具] git_log %s（最近 %d 条）\n", repoRoot, len(commits))
 	_ = appendAuditLog(config, "git_log", map[string]any{"repo": repoRoot, "path": relativePath, "count": len(commits)})
 	return map[string]any{
 		"repo_root":   repoRoot,
@@ -944,7 +944,7 @@ func (r *ClientRuntime) gitAdd(ctx context.Context, config internalconfig.Config
 	if len(displayTargets) == 0 {
 		displayTargets = []string{"."}
 	}
-	fmt.Fprintf(r.stdout, "[本地工具] git_add %s（暂存 %d 项）\n", repoRoot, len(displayTargets))
+	r.writeStreamEventf(r.stdout, "[本地工具] git_add %s（暂存 %d 项）\n", repoRoot, len(displayTargets))
 	_ = appendAuditLog(config, "git_add", map[string]any{"repo": repoRoot, "paths": displayTargets, "all": addAll})
 	return map[string]any{
 		"repo_root": repoRoot,
@@ -993,7 +993,7 @@ func (r *ClientRuntime) gitCommit(ctx context.Context, config internalconfig.Con
 	}
 	commitHash := strings.TrimSpace(string(hashOutput))
 	subject := strings.TrimSpace(strings.SplitN(message, "\n", 2)[0])
-	fmt.Fprintf(r.stdout, "[本地工具] git_commit %s（%d 个文件）\n", repoRoot, len(stagedFiles))
+	r.writeStreamEventf(r.stdout, "[本地工具] git_commit %s（%d 个文件）\n", repoRoot, len(stagedFiles))
 	_ = appendAuditLog(config, "git_commit", map[string]any{"repo": repoRoot, "hash": commitHash, "amend": amend, "allow_empty": allowEmpty, "count": len(stagedFiles)})
 	return map[string]any{
 		"repo_root":    repoRoot,
@@ -1165,7 +1165,7 @@ func (r *ClientRuntime) searchFilesLocal(_ context.Context, config internalconfi
 	if err != nil && !errors.Is(err, stopSearch) {
 		return nil, newToolError("EXECUTION_FAILED", "文件搜索失败: %v", err)
 	}
-	fmt.Fprintf(r.stdout, "[本地工具] search_files %s 命中 %d 条\n", baseDir, len(results))
+	r.writeStreamEventf(r.stdout, "[本地工具] search_files %s 命中 %d 条\n", baseDir, len(results))
 	_ = appendAuditLog(config, "search_files", map[string]any{"path": baseDir, "query": query, "count": len(results)})
 	return map[string]any{
 		"matches":       results,

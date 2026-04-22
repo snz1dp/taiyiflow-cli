@@ -219,6 +219,47 @@ func TestSearchFilesAndListDir(t *testing.T) {
 	}
 }
 
+func TestSetStreamEventLogsEnabledSuppressesBracketLogs(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "notes.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+
+	stdout := &bytes.Buffer{}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), stdout, io.Discard)
+	config := internalconfig.Config{Workdir: tempDir, ApprovalMode: "auto"}
+
+	runtimeClient.SetStreamEventLogsEnabled(false)
+	if _, err := runtimeClient.readFile(config, map[string]any{"path": "notes.txt", "start_line": 1, "end_line": 1}); err != nil {
+		t.Fatalf("read file failed: %v", err)
+	}
+	if _, err := runtimeClient.runCommand(context.Background(), config, map[string]any{"raw_command": "echo ok"}); err != nil {
+		t.Fatalf("run command failed: %v", err)
+	}
+	if output := stdout.String(); strings.Contains(output, "[本地工具]") || strings.Contains(output, "[本地命令]") || strings.Contains(output, "[执行客户端命令]") {
+		t.Fatalf("expected bracket logs to be suppressed, got %q", output)
+	}
+	if !strings.Contains(stdout.String(), "ok") {
+		t.Fatalf("expected command stdout to remain visible, got %q", stdout.String())
+	}
+
+	stdout.Reset()
+	runtimeClient.SetStreamEventLogsEnabled(true)
+	if _, err := runtimeClient.readFile(config, map[string]any{"path": "notes.txt", "start_line": 1, "end_line": 1}); err != nil {
+		t.Fatalf("read file failed: %v", err)
+	}
+	if _, err := runtimeClient.runCommand(context.Background(), config, map[string]any{"raw_command": "echo ok"}); err != nil {
+		t.Fatalf("run command failed: %v", err)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "[本地工具] read_file") {
+		t.Fatalf("expected local tool log when enabled, got %q", output)
+	}
+	if !strings.Contains(output, "[执行客户端命令]") || !strings.Contains(output, "[本地命令]") {
+		t.Fatalf("expected command logs when enabled, got %q", output)
+	}
+}
+
 func TestApplyPatchConflictDetails(t *testing.T) {
 	tempDir := t.TempDir()
 	runtimeClient := NewClientRuntime(strings.NewReader("y\n"), io.Discard, io.Discard)

@@ -72,3 +72,36 @@ func explainBackendFailure(err error) string {
 		return "当前无法连接太乙智启服务"
 	}
 }
+
+func normalizeStreamEventError(raw any) error {
+	message := strings.TrimSpace(fmt.Sprintf("%v", raw))
+	if message == "" || message == "<nil>" {
+		return fmt.Errorf("服务端请求失败，请稍后重试")
+	}
+
+	lowerMessage := strings.ToLower(message)
+	if strings.Contains(lowerMessage, "context canceled") || strings.Contains(lowerMessage, "context cancelled") {
+		return context.Canceled
+	}
+
+	if strings.Contains(lowerMessage, "backend idle timeout") {
+		return fmt.Errorf("后端长时间未返回输出，流式请求已超时")
+	}
+
+	if strings.Contains(lowerMessage, "context deadline exceeded") || strings.Contains(lowerMessage, "client.timeout") {
+		return fmt.Errorf("读取流式响应超时，连接可能已中断")
+	}
+
+	if strings.Contains(lowerMessage, "读取 sse 失败") {
+		switch {
+		case strings.Contains(lowerMessage, "eof"):
+			return fmt.Errorf("流式响应已提前结束，连接可能已中断")
+		case strings.Contains(lowerMessage, "broken pipe"), strings.Contains(lowerMessage, "connection reset by peer"), strings.Contains(lowerMessage, "use of closed network connection"):
+			return fmt.Errorf("流式连接已中断，请稍后重试")
+		default:
+			return fmt.Errorf("流式响应异常: %s", message)
+		}
+	}
+
+	return fmt.Errorf("后端返回错误: %s", message)
+}

@@ -135,14 +135,14 @@
 7. 配置管理和模型提供方（Provider）切换能力
 8. 与 ../taiyiflow/src/backend/base 后台 stream 接口的协议兼容能力
 9. 本地技能（Skill）发现、查看、启停与透传能力
-10. 工作目录沙箱、敏感路径拒绝、审计日志与审批模式联动
+10. 工作目录访问边界、敏感路径拒绝、审计日志与审批模式联动
 
 ### 7.2 当前已落地能力
 
 截至当前仓库实现，客户端已经具备以下能力基线：
 
 1. 本地客户端工具注册已覆盖 search_files、read_file、list_dir、write_file、apply_patch。
-2. 文件工具默认受工作目录沙箱限制，可附加 sandbox_roots 扩展白名单根目录。
+2. 文件工具默认受工作目录访问边界限制，可附加 sandbox_roots 扩展额外外部资源访问根目录。
 3. 敏感目录（如 ~/.ssh、~/.gnupg、~/.aws、macOS Keychains）默认拒绝访问。
 4. 写文件、补丁和技能启停操作统一遵循 approval_mode；只读模式会直接拒绝执行。
 5. 命令执行会剔除常见敏感环境变量，并对高风险命令在 auto 模式下阻断。
@@ -240,7 +240,7 @@ taiyiflow version
 
 首期工具治理要求：
 
-1. 默认工作目录为基础沙箱根目录，支持通过 sandbox_roots 配置额外白名单路径。
+1. 默认工作目录为基础访问根目录，支持通过 sandbox_roots 配置额外白名单路径。
 2. 写文件、补丁、技能启停等本地变更操作统一接入 approval_mode。
 3. 审计日志默认写入 ~/.snz1dp/logs/audit.log，可通过 audit_enabled 开关控制。
 4. 本地技能目录默认使用 ~/.snz1dp/skills，技能文件采用 SKILL.md（YAML frontmatter + Markdown body）。
