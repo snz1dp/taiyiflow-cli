@@ -3,6 +3,7 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
@@ -53,5 +54,51 @@ func TestDiscoverSkillsAndEnableState(t *testing.T) {
 	}
 	if item.Enabled {
 		t.Fatalf("expected Draft Writer disabled")
+	}
+}
+
+func TestClientPackagesIncludeMarkdownAndContent(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tempDir, "reviewer"), 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	content := "---\nname: Code Review\ndescription: 审查变更\ncategory: engineering\nprerequisites:\n  - repo access\n---\n\n检查回归风险。\n"
+	if err := os.WriteFile(filepath.Join(tempDir, "reviewer", "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill failed: %v", err)
+	}
+
+	config := internalconfig.Config{}
+	config.Skills.Directory = tempDir
+	config.Skills.Enabled = []string{"Code Review"}
+
+	items, directory, err := Discover(config)
+	if err != nil {
+		t.Fatalf("discover failed: %v", err)
+	}
+
+	payload, ok := ClientPackages(items, directory).([]map[string]any)
+	if !ok {
+		t.Fatalf("unexpected payload type: %T", ClientPackages(items, directory))
+	}
+	if len(payload) != 1 {
+		t.Fatalf("expected 1 package, got %d", len(payload))
+	}
+	skillsPayload, ok := payload[0]["skills"].([]map[string]any)
+	if !ok || len(skillsPayload) != 1 {
+		t.Fatalf("unexpected skills payload: %#v", payload[0]["skills"])
+	}
+	skillPayload := skillsPayload[0]
+	if got := skillPayload["content"]; got != "检查回归风险。" {
+		t.Fatalf("unexpected content: %#v", got)
+	}
+	markdown, ok := skillPayload["markdown"].(string)
+	if !ok {
+		t.Fatalf("unexpected markdown payload: %#v", skillPayload["markdown"])
+	}
+	if !strings.Contains(markdown, "name: Code Review") {
+		t.Fatalf("markdown missing manifest: %s", markdown)
+	}
+	if !strings.Contains(markdown, "检查回归风险。") {
+		t.Fatalf("markdown missing body: %s", markdown)
 	}
 }

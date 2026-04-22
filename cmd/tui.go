@@ -397,7 +397,15 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				}
 				return tui.LocalCommandResult{Handled: true, Snapshot: &updatedSnapshot, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: fmt.Sprintf("已切换为%s。", requestModeLabel(mode))}}}, nil
 			}
-			return tui.LocalCommandResult{Handled: true, Snapshot: &updatedSnapshot, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: fmt.Sprintf("已切换为%s，准备发送请求。", requestModeLabel(mode))}}}, nil
+			return tui.LocalCommandResult{
+				Handled:     true,
+				Snapshot:    &updatedSnapshot,
+				QueuedInput: strings.TrimSpace(prompt),
+				Events: []tui.Event{{
+					Kind: tui.EventSystemNote,
+					Text: fmt.Sprintf("已切换为%s，正在发送请求。", requestModeLabel(mode)),
+				}},
+			}, nil
 		case strings.HasPrefix(strings.ToLower(trimmed), "/config "):
 			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "TUI 中请直接输入 /config 打开弹窗表单。"}}}, nil
 		case trimmed == "!":
@@ -603,7 +611,6 @@ func (a *App) buildTUISnapshot(
 	}
 	return snapshot, nil
 }
-
 
 func buildLocalShellCommandEvents(command string, result map[string]any) []tui.Event {
 	events := []tui.Event{}

@@ -227,6 +227,8 @@ func ClientPackages(items []Skill, rootDir string) any {
 			"category":      item.Category,
 			"prerequisites": item.Prerequisites,
 			"summary":       item.Summary,
+			"content":       item.Body,
+			"markdown":      renderClientSkillMarkdown(item),
 			"path":          item.Path,
 			"root_dir":      item.RootDir,
 			"source":        item.Source,
@@ -236,6 +238,20 @@ func ClientPackages(items []Skill, rootDir string) any {
 		packages[index]["skills"] = skillsValue
 	}
 	return packages
+}
+
+func renderClientSkillMarkdown(item Skill) string {
+	manifestBytes, err := yaml.Marshal(item.Manifest)
+	if err != nil {
+		return strings.TrimSpace(item.Body)
+	}
+
+	manifest := strings.TrimRight(string(manifestBytes), "\n")
+	body := strings.TrimSpace(item.Body)
+	if body == "" {
+		return "---\n" + manifest + "\n---"
+	}
+	return "---\n" + manifest + "\n---\n\n" + body
 }
 
 func LoadFile(rootDir string, path string) (Skill, error) {

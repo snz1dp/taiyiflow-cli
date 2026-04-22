@@ -16,6 +16,11 @@
 - 首版联调基线：../taiyiflow/src/backend/base
 - 默认界面：Bubble Tea TUI
 
+## 本地技能（Skill）
+
+- 默认从工作区 `.snz1dp/skills` 与用户级技能目录发现本地技能（Skill），并支持 `skills list`、`skills view`、`skills enable`、`skills disable` 管理。
+- 已启用的本地技能会在发起 stream 请求时通过 `client_skill_packages` 一并上送，包含技能元数据、正文内容与完整 markdown 文档，便于服务端按名称匹配或直接消费技能内容。
+
 ## 构建
 
 - VS Code 默认构建任务：build taiyiflow

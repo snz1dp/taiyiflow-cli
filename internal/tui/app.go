@@ -214,6 +214,7 @@ type LocalCommandResult struct {
 	Snapshot       *Snapshot
 	Flows          []FlowItem
 	RebuildEntries bool
+	QueuedInput    string
 }
 
 type Runner func(ctx context.Context, request Request, emit func(Event), confirm func(ConfirmRequest) bool) error
@@ -739,8 +740,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncViewport()
 			return m, m.maybeRefreshSnapshot()
 		}
-		m.applyLocalCommandResult(typed.result)
-		return m, nil
+		return m, m.applyLocalCommandResult(typed.result)
 	case approvalChangedMsg:
 		if typed.err != nil {
 			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
@@ -765,7 +765,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.transitionProgress(progressFailed), textinput.Blink)
 		}
 		m.closeConfigForm()
-		m.applyLocalCommandResult(typed.result)
+		if cmd := m.applyLocalCommandResult(typed.result); cmd != nil {
+			return m, tea.Batch(cmd, textinput.Blink)
+		}
 		return m, tea.Batch(m.transitionProgress(progressIdle), textinput.Blink)
 	case localCommandExecutedMsg:
 		if typed.err != nil {
@@ -773,7 +775,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncViewport()
 			return m, tea.Batch(m.transitionProgress(progressFailed), textinput.Blink)
 		}
-		m.applyLocalCommandResult(typed.result)
+		if cmd := m.applyLocalCommandResult(typed.result); cmd != nil {
+			return m, tea.Batch(cmd, textinput.Blink)
+		}
 		return m, tea.Batch(m.transitionProgress(progressIdle), textinput.Blink)
 	case tea.KeyMsg:
 		if m.pendingConfirm != nil {
@@ -2307,11 +2311,10 @@ func (m *model) handleLocalSlashCommand(command string) (bool, tea.Cmd) {
 		m.refreshLayoutAfterStateChange()
 		return false, nil
 	}
-	m.applyLocalCommandResult(result)
-	return true, nil
+	return true, m.applyLocalCommandResult(result)
 }
 
-func (m *model) applyLocalCommandResult(result LocalCommandResult) {
+func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 	if result.ClearHistory {
 		m.entries = buildWelcomeEntries(m.snapshot)
 		m.activityHint = ""
@@ -2360,7 +2363,15 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) {
 	for _, event := range result.Events {
 		m.applyEvent(event)
 	}
+	if queued := strings.TrimSpace(result.QueuedInput); queued != "" {
+		m.queuedInput = queued
+		if !m.isBusy() {
+			m.refreshLayoutAfterStateChange()
+			return m.startQueuedRequest()
+		}
+	}
 	m.refreshLayoutAfterStateChange()
+	return nil
 }
 
 func (m model) showSlashCommandHints() bool {
