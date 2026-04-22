@@ -22,6 +22,7 @@ type SessionState struct {
 	Workdir         string    `json:"workdir,omitempty"`
 	RequestMode     string    `json:"request_mode,omitempty"`
 	ContextDir      string    `json:"context_dir,omitempty"`
+	SandboxEscapePolicyOverride string `json:"sandbox_escape_policy_override,omitempty"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
@@ -65,6 +66,7 @@ func (s *SessionStore) Load(flowID string, workdir string) (SessionState, error)
 	} else {
 		state.ContextDir = normalizeWorkdir(state.ContextDir)
 	}
+	state.SandboxEscapePolicyOverride = normalizeSandboxEscapePolicyOverride(state.SandboxEscapePolicyOverride)
 	return state, nil
 }
 
@@ -81,6 +83,7 @@ func (s *SessionStore) Save(state SessionState) error {
 	} else {
 		state.ContextDir = normalizeWorkdir(state.ContextDir)
 	}
+	state.SandboxEscapePolicyOverride = normalizeSandboxEscapePolicyOverride(state.SandboxEscapePolicyOverride)
 	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
 		return fmt.Errorf("创建会话目录失败: %w", err)
 	}
@@ -176,4 +179,12 @@ func normalizeRequestMode(value string) string {
 	default:
 		return "ask"
 	}
+}
+
+func normalizeSandboxEscapePolicyOverride(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	return internalconfig.NormalizeSandboxEscapePolicy(trimmed)
 }

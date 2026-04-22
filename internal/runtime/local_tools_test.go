@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -64,6 +65,123 @@ func TestResolveAllowedPathRejectsEscape(t *testing.T) {
 	outsidePath := filepath.Join(tempDir, "..", "outside.txt")
 	if _, err := resolveAllowedPath(config, outsidePath, true); err == nil {
 		t.Fatal("expected resolveAllowedPath to reject sandbox escape")
+	}
+}
+
+func TestSandboxEscapePolicyDenyAllowConfirm(t *testing.T) {
+	tempDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "outside.txt")
+
+	denyRuntime := NewClientRuntime(strings.NewReader("y\n"), io.Discard, io.Discard)
+	denyConfig := internalconfig.Config{
+		Workdir:             tempDir,
+		ApprovalMode:        "auto",
+		SandboxEscapePolicy: internalconfig.SandboxEscapePolicyDeny,
+	}
+	if _, err := denyRuntime.resolveAllowedPathWithPolicy(denyConfig, outsidePath, true); err == nil {
+		t.Fatal("expected deny policy to reject sandbox escape")
+	}
+
+	allowRuntime := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	allowConfig := internalconfig.Config{
+		Workdir:             tempDir,
+		ApprovalMode:        "auto",
+		SandboxEscapePolicy: internalconfig.SandboxEscapePolicyAllow,
+	}
+	if resolved, err := allowRuntime.resolveAllowedPathWithPolicy(allowConfig, outsidePath, true); err != nil {
+		t.Fatalf("expected allow policy to pass: %v", err)
+	} else if !strings.HasSuffix(resolved, "outside.txt") {
+		t.Fatalf("unexpected resolved path: %s", resolved)
+	}
+
+	confirmApprovedRuntime := NewClientRuntime(strings.NewReader("y\n"), io.Discard, io.Discard)
+	confirmConfig := internalconfig.Config{
+		Workdir:             tempDir,
+		ApprovalMode:        "auto",
+		SandboxEscapePolicy: internalconfig.SandboxEscapePolicyConfirm,
+	}
+	if _, err := confirmApprovedRuntime.resolveAllowedPathWithPolicy(confirmConfig, outsidePath, true); err != nil {
+		t.Fatalf("expected confirm policy with approval to pass: %v", err)
+	}
+
+	confirmRejectedRuntime := NewClientRuntime(strings.NewReader("n\n"), io.Discard, io.Discard)
+	if _, err := confirmRejectedRuntime.resolveAllowedPathWithPolicy(confirmConfig, outsidePath, true); err == nil {
+		t.Fatal("expected confirm policy rejection to fail")
+	}
+
+	confirmNoInputRuntime := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	if _, err := confirmNoInputRuntime.resolveAllowedPathWithPolicy(confirmConfig, outsidePath, true); err == nil || !strings.Contains(err.Error(), "无交互输入") {
+		t.Fatalf("expected confirm policy without input to fail with guidance, got: %v", err)
+	}
+}
+
+func TestToolErrorDoesNotExposeBracketCode(t *testing.T) {
+	err := newToolError("PERMISSION_DENIED", "路径被拒绝")
+	if strings.Contains(err.Error(), "[") || strings.Contains(err.Error(), "]") {
+		t.Fatalf("expected user-facing error without bracket code, got: %s", err.Error())
+	}
+}
+
+func TestSandboxEscapeAlwaysApproveSkipsSubsequentConfirmations(t *testing.T) {
+	tempDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "outside.txt")
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	confirmCalls := 0
+	runtimeClient.SetSandboxEscapeConfirmer(func(path string) (bool, error) {
+		confirmCalls++
+		runtimeClient.SetSandboxEscapePolicyOverride(internalconfig.SandboxEscapePolicyAllow)
+		return true, nil
+	})
+	config := internalconfig.Config{
+		Workdir:             tempDir,
+		ApprovalMode:        "auto",
+		SandboxEscapePolicy: internalconfig.SandboxEscapePolicyConfirm,
+	}
+	if _, err := runtimeClient.resolveAllowedPathWithPolicy(config, outsidePath, true); err != nil {
+		t.Fatalf("expected first confirm to pass: %v", err)
+	}
+	if _, err := runtimeClient.resolveAllowedPathWithPolicy(config, outsidePath, true); err != nil {
+		t.Fatalf("expected second path resolution to reuse always-approve override: %v", err)
+	}
+	if confirmCalls != 1 {
+		t.Fatalf("expected confirmer to be called once, got %d", confirmCalls)
+	}
+}
+
+func TestSandboxEscapePolicyUsesInjectedConfirmer(t *testing.T) {
+	tempDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "outside.txt")
+	canonicalOutsideDir, err := filepath.EvalSymlinks(outsideDir)
+	if err != nil {
+		t.Fatalf("eval symlink failed: %v", err)
+	}
+	expectedPath := filepath.Join(canonicalOutsideDir, "outside.txt")
+	stdout := &bytes.Buffer{}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), stdout, io.Discard)
+	called := false
+	runtimeClient.SetSandboxEscapeConfirmer(func(path string) (bool, error) {
+		called = true
+		if path != expectedPath {
+			t.Fatalf("unexpected path: %s", path)
+		}
+		return true, nil
+	})
+	config := internalconfig.Config{
+		Workdir:             tempDir,
+		ApprovalMode:        "auto",
+		SandboxEscapePolicy: internalconfig.SandboxEscapePolicyConfirm,
+	}
+	if _, err := runtimeClient.resolveAllowedPathWithPolicy(config, outsidePath, true); err != nil {
+		t.Fatalf("expected injected confirmer to approve path: %v", err)
+	}
+	if !called {
+		t.Fatal("expected injected confirmer to be called")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no terminal prompt output when confirmer injected, got: %q", stdout.String())
 	}
 }
 

@@ -1,0 +1,62 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestNormalizeSandboxEscapePolicy(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{input: "", expected: SandboxEscapePolicyConfirm},
+		{input: "confirm", expected: SandboxEscapePolicyConfirm},
+		{input: "deny", expected: SandboxEscapePolicyDeny},
+		{input: "allow", expected: SandboxEscapePolicyAllow},
+		{input: "ALLOW", expected: SandboxEscapePolicyAllow},
+		{input: "unexpected", expected: SandboxEscapePolicyConfirm},
+	}
+	for _, item := range cases {
+		if got := NormalizeSandboxEscapePolicy(item.input); got != item.expected {
+			t.Fatalf("NormalizeSandboxEscapePolicy(%q) = %q, want %q", item.input, got, item.expected)
+		}
+	}
+}
+
+func TestManagerLoadAppliesDefaultSandboxEscapePolicy(t *testing.T) {
+	tempDir := t.TempDir()
+	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
+
+	content := []byte("backend_base_url: http://localhost:7860\napproval_mode: confirm\n")
+	if err := os.WriteFile(manager.path, content, 0o644); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	if loaded.SandboxEscapePolicy != SandboxEscapePolicyConfirm {
+		t.Fatalf("expected default sandbox policy %q, got %q", SandboxEscapePolicyConfirm, loaded.SandboxEscapePolicy)
+	}
+}
+
+func TestManagerLoadNormalizesInvalidSandboxEscapePolicy(t *testing.T) {
+	tempDir := t.TempDir()
+	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
+
+	content := []byte("backend_base_url: http://localhost:7860\napproval_mode: confirm\nsandbox_escape_policy: unknown\n")
+	if err := os.WriteFile(manager.path, content, 0o644); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	if loaded.SandboxEscapePolicy != SandboxEscapePolicyConfirm {
+		t.Fatalf("expected normalized sandbox policy %q, got %q", SandboxEscapePolicyConfirm, loaded.SandboxEscapePolicy)
+	}
+}

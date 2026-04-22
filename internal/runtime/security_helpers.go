@@ -1,7 +1,11 @@
 package runtime
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +13,22 @@ import (
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 )
+
+type sandboxEscapeError struct {
+	ResolvedPath string
+}
+
+func (e sandboxEscapeError) Error() string {
+	return fmt.Sprintf("路径超出工作目录沙箱: %s", e.ResolvedPath)
+}
+
+func isSandboxEscapeError(err error) (sandboxEscapeError, bool) {
+	var target sandboxEscapeError
+	if errors.As(err, &target) {
+		return target, true
+	}
+	return sandboxEscapeError{}, false
+}
 
 func resolveAllowedDirectory(config internalconfig.Config, requested string) (string, error) {
 	resolved, err := resolveAllowedPath(config, requested, false)
@@ -25,21 +45,104 @@ func resolveAllowedDirectory(config internalconfig.Config, requested string) (st
 	return resolved, nil
 }
 
-func resolveAllowedFilePath(config internalconfig.Config, requested string, allowCreate bool) (string, error) {
-	resolved, err := resolveAllowedPath(config, requested, allowCreate)
+func (r *ClientRuntime) resolveAllowedDirectoryWithPolicy(config internalconfig.Config, requested string) (string, error) {
+	resolved, err := r.resolveAllowedPathWithPolicy(config, requested, false)
+	if err != nil {
+		return "", err
+	}
+	info, statErr := os.Stat(resolved)
+	if statErr != nil {
+		return "", newToolError("EXECUTION_FAILED", "目录不存在: %v", statErr)
+	}
+	if !info.IsDir() {
+		return "", newToolError("PARAM_ERROR", "目标必须是目录: %s", resolved)
+	}
+	return resolved, nil
+}
+
+func (r *ClientRuntime) resolveAllowedFilePathWithPolicy(config internalconfig.Config, requested string, allowCreate bool) (string, error) {
+	resolved, err := r.resolveAllowedPathWithPolicy(config, requested, allowCreate)
 	if err != nil {
 		return "", err
 	}
 	if !allowCreate {
-		info, err := os.Stat(resolved)
-		if err != nil {
-			return "", newToolError("EXECUTION_FAILED", "文件不存在: %v", err)
+		info, statErr := os.Stat(resolved)
+		if statErr != nil {
+			return "", newToolError("EXECUTION_FAILED", "文件不存在: %v", statErr)
 		}
 		if info.IsDir() {
 			return "", newToolError("PARAM_ERROR", "目标必须是文件: %s", resolved)
 		}
 	}
 	return resolved, nil
+}
+
+func (r *ClientRuntime) resolveAllowedPathWithPolicy(config internalconfig.Config, requested string, allowCreate bool) (string, error) {
+	resolved, err := resolveAllowedPath(config, requested, allowCreate)
+	if err != nil {
+		escapeErr, ok := isSandboxEscapeError(err)
+		if !ok {
+			return "", err
+		}
+		effectivePolicy := strings.TrimSpace(config.SandboxEscapePolicy)
+		if override := strings.TrimSpace(r.sandboxEscapePolicyOverride); override != "" {
+			effectivePolicy = internalconfig.NormalizeSandboxEscapePolicy(override)
+		}
+		switch internalconfig.NormalizeSandboxEscapePolicy(effectivePolicy) {
+		case internalconfig.SandboxEscapePolicyAllow:
+			bypassConfig := config
+			bypassConfig.SandboxEscapePolicy = internalconfig.SandboxEscapePolicyAllow
+			resolved, err = resolveAllowedPath(bypassConfig, requested, allowCreate)
+			if err != nil {
+				return "", err
+			}
+		case internalconfig.SandboxEscapePolicyDeny:
+			return "", newToolError("PERMISSION_DENIED", "路径超出工作目录沙箱，已按 deny 策略拒绝: %s", escapeErr.ResolvedPath)
+		default:
+			approved, interactive, confirmErr := r.confirmSandboxEscapePath(escapeErr.ResolvedPath)
+			if confirmErr != nil {
+				return "", confirmErr
+			}
+			if !approved {
+				if !interactive {
+					return "", newToolError("PERMISSION_DENIED", "路径超出工作目录沙箱，当前为 confirm 且无交互输入，请改用 allow 或会话覆盖")
+				}
+				return "", newToolError("PERMISSION_DENIED", "路径超出工作目录沙箱，用户拒绝访问: %s", escapeErr.ResolvedPath)
+			}
+			bypassConfig := config
+			bypassConfig.SandboxEscapePolicy = internalconfig.SandboxEscapePolicyAllow
+			resolved, err = resolveAllowedPath(bypassConfig, requested, allowCreate)
+			if err != nil {
+				return "", err
+			}
+		}
+	}
+	return resolved, nil
+}
+
+func (r *ClientRuntime) confirmSandboxEscapePath(path string) (bool, bool, error) {
+	if r.sandboxEscapeConfirmer != nil {
+		approved, err := r.sandboxEscapeConfirmer(path)
+		if err != nil {
+			return false, true, err
+		}
+		return approved, true, nil
+	}
+	fmt.Fprintf(r.stdout, "\n[路径越界确认]\n目标路径位于工作目录沙箱外: %s\n是否允许本次访问？[y/N]: ", path)
+	reader := bufio.NewReader(r.stdin)
+	answerLine, err := reader.ReadString('\n')
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			answer := strings.TrimSpace(strings.ToLower(answerLine))
+			if answer == "y" || answer == "yes" {
+				return true, false, nil
+			}
+			return false, false, nil
+		}
+		return false, true, fmt.Errorf("读取路径确认输入失败: %w", err)
+	}
+	answer := strings.TrimSpace(strings.ToLower(answerLine))
+	return answer == "y" || answer == "yes", true, nil
 }
 
 func resolveAllowedPath(config internalconfig.Config, requested string, allowCreate bool) (string, error) {
@@ -83,7 +186,10 @@ func resolveAllowedPath(config internalconfig.Config, requested string, allowCre
 			return resolved, nil
 		}
 	}
-	return "", newToolError("PERMISSION_DENIED", "路径超出工作目录沙箱: %s", resolved)
+	if internalconfig.NormalizeSandboxEscapePolicy(config.SandboxEscapePolicy) == internalconfig.SandboxEscapePolicyAllow {
+		return resolved, nil
+	}
+	return "", sandboxEscapeError{ResolvedPath: resolved}
 }
 
 func resolveSandboxRoots(config internalconfig.Config, baseDir string) ([]string, error) {

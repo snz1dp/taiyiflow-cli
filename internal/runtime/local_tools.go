@@ -33,7 +33,7 @@ type toolError struct {
 }
 
 func (e toolError) Error() string {
-	return fmt.Sprintf("[%s] %s", e.Code, e.Message)
+	return e.Message
 }
 
 func newToolError(code string, format string, args ...any) error {
@@ -418,7 +418,7 @@ func (r *ClientRuntime) readFile(config internalconfig.Config, arguments map[str
 	if targetPath == "" {
 		return nil, newToolError("PARAM_ERROR", "read_file 缺少 path")
 	}
-	resolvedPath, err := resolveAllowedFilePath(config, targetPath, false)
+	resolvedPath, err := r.resolveAllowedFilePathWithPolicy(config, targetPath, false)
 	if err != nil {
 		return nil, err
 	}
@@ -477,7 +477,7 @@ func (r *ClientRuntime) readFile(config internalconfig.Config, arguments map[str
 }
 
 func (r *ClientRuntime) listDir(config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
-	resolvedPath, err := resolveAllowedDirectory(config, stringValue(arguments["path"]))
+	resolvedPath, err := r.resolveAllowedDirectoryWithPolicy(config, stringValue(arguments["path"]))
 	if err != nil {
 		return nil, err
 	}
@@ -571,7 +571,7 @@ func (r *ClientRuntime) writeFile(config internalconfig.Config, arguments map[st
 	if mode != "create" && mode != "overwrite" && mode != "append" {
 		return nil, newToolError("PARAM_ERROR", "write_file mode 仅支持 create、overwrite、append")
 	}
-	resolvedPath, err := resolveAllowedFilePath(config, targetPath, true)
+	resolvedPath, err := r.resolveAllowedFilePathWithPolicy(config, targetPath, true)
 	if err != nil {
 		return nil, err
 	}
@@ -620,7 +620,7 @@ func (r *ClientRuntime) applyPatch(config internalconfig.Config, arguments map[s
 	updatedContent := map[string][]byte{}
 	fileResults := []map[string]any{}
 	for _, filePatch := range files {
-		resolvedPath, resolveErr := resolveAllowedFilePath(config, filePatch.Path, false)
+		resolvedPath, resolveErr := r.resolveAllowedFilePathWithPolicy(config, filePatch.Path, false)
 		if resolveErr != nil {
 			conflicts = append(conflicts, map[string]any{"path": filePatch.Path, "reason": resolveErr.Error()})
 			continue
@@ -668,7 +668,7 @@ func (r *ClientRuntime) applyPatch(config internalconfig.Config, arguments map[s
 }
 
 func (r *ClientRuntime) gitStatus(ctx context.Context, config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
-	repoRoot, relativePath, err := resolveGitRepository(config, stringValue(arguments["path"]))
+	repoRoot, relativePath, err := r.resolveGitRepository(config, stringValue(arguments["path"]))
 	if err != nil {
 		return nil, err
 	}
@@ -740,7 +740,7 @@ func (r *ClientRuntime) gitStatus(ctx context.Context, config internalconfig.Con
 }
 
 func (r *ClientRuntime) gitDiff(ctx context.Context, config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
-	repoRoot, relativePath, err := resolveGitRepository(config, stringValue(arguments["path"]))
+	repoRoot, relativePath, err := r.resolveGitRepository(config, stringValue(arguments["path"]))
 	if err != nil {
 		return nil, err
 	}
@@ -788,7 +788,7 @@ func (r *ClientRuntime) gitDiff(ctx context.Context, config internalconfig.Confi
 }
 
 func (r *ClientRuntime) gitLog(ctx context.Context, config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
-	repoRoot, relativePath, err := resolveGitRepository(config, stringValue(arguments["path"]))
+	repoRoot, relativePath, err := r.resolveGitRepository(config, stringValue(arguments["path"]))
 	if err != nil {
 		return nil, err
 	}
@@ -836,7 +836,7 @@ func (r *ClientRuntime) gitLog(ctx context.Context, config internalconfig.Config
 }
 
 func (r *ClientRuntime) gitRestore(ctx context.Context, config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
-	repoRoot, relativePath, err := resolveGitRepository(config, stringValue(arguments["path"]))
+	repoRoot, relativePath, err := r.resolveGitRepository(config, stringValue(arguments["path"]))
 	if err != nil {
 		return nil, err
 	}
@@ -884,7 +884,7 @@ func (r *ClientRuntime) gitRestore(ctx context.Context, config internalconfig.Co
 }
 
 func (r *ClientRuntime) gitResetSoft(ctx context.Context, config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
-	repoRoot, _, err := resolveGitRepository(config, stringValue(arguments["path"]))
+	repoRoot, _, err := r.resolveGitRepository(config, stringValue(arguments["path"]))
 	if err != nil {
 		return nil, err
 	}
@@ -912,15 +912,15 @@ func (r *ClientRuntime) gitResetSoft(ctx context.Context, config internalconfig.
 	after := strings.TrimSpace(string(afterOutput))
 	_ = appendAuditLog(config, "git_reset_soft", map[string]any{"repo": repoRoot, "target": target, "before": before, "after": after})
 	return map[string]any{
-		"repo_root":    repoRoot,
-		"target":       target,
+		"repo_root":     repoRoot,
+		"target":        target,
 		"before_commit": before,
 		"after_commit":  after,
 	}, nil
 }
 
 func (r *ClientRuntime) gitAdd(ctx context.Context, config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
-	repoRoot, relativePaths, addAll, err := resolveGitAddTargets(config, arguments)
+	repoRoot, relativePaths, addAll, err := r.resolveGitAddTargets(config, arguments)
 	if err != nil {
 		return nil, err
 	}
@@ -955,7 +955,7 @@ func (r *ClientRuntime) gitAdd(ctx context.Context, config internalconfig.Config
 }
 
 func (r *ClientRuntime) gitCommit(ctx context.Context, config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
-	repoRoot, _, err := resolveGitRepository(config, stringValue(arguments["path"]))
+	repoRoot, _, err := r.resolveGitRepository(config, stringValue(arguments["path"]))
 	if err != nil {
 		return nil, err
 	}
@@ -1093,7 +1093,7 @@ func (r *ClientRuntime) searchFilesLocal(_ context.Context, config internalconfi
 	if query == "" {
 		return nil, newToolError("PARAM_ERROR", "文件搜索缺少关键词")
 	}
-	baseDir, err := resolveAllowedDirectory(config, stringValue(arguments["path"]))
+	baseDir, err := r.resolveAllowedDirectoryWithPolicy(config, stringValue(arguments["path"]))
 	if err != nil {
 		return nil, err
 	}
@@ -1513,18 +1513,18 @@ func buildPatchConflict(path string, err error) map[string]any {
 	return conflict
 }
 
-func resolveGitRepository(config internalconfig.Config, requested string) (string, string, error) {
+func (r *ClientRuntime) resolveGitRepository(config internalconfig.Config, requested string) (string, string, error) {
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", "", newToolError("EXECUTION_FAILED", "系统未安装 git，无法执行 Git 工具")
 	}
 	target := strings.TrimSpace(requested)
-	baseDir, err := resolveAllowedDirectory(config, "")
+	baseDir, err := r.resolveAllowedDirectoryWithPolicy(config, "")
 	if err != nil {
 		return "", "", err
 	}
 	workingPath := baseDir
 	if target != "" {
-		workingPath, err = resolveAllowedPath(config, target, false)
+		workingPath, err = r.resolveAllowedPathWithPolicy(config, target, false)
 		if err != nil {
 			return "", "", err
 		}
@@ -1542,7 +1542,7 @@ func resolveGitRepository(config internalconfig.Config, requested string) (strin
 		return "", "", newToolError("EXECUTION_FAILED", "目标路径不在 Git 仓库中: %s", workingPath)
 	}
 	repoRoot := strings.TrimSpace(string(output))
-	repoRoot, err = resolveAllowedDirectory(config, repoRoot)
+	repoRoot, err = r.resolveAllowedDirectoryWithPolicy(config, repoRoot)
 	if err != nil {
 		return "", "", err
 	}
@@ -1557,7 +1557,7 @@ func resolveGitRepository(config internalconfig.Config, requested string) (strin
 	return repoRoot, relativePath, nil
 }
 
-func resolveGitAddTargets(config internalconfig.Config, arguments map[string]any) (string, []string, bool, error) {
+func (r *ClientRuntime) resolveGitAddTargets(config internalconfig.Config, arguments map[string]any) (string, []string, bool, error) {
 	requestedPaths := normalizeGitPathList(stringSlice(arguments["paths"]))
 	requestedPath := strings.TrimSpace(stringValue(arguments["path"]))
 	addAll := boolValue(arguments["all"])
@@ -1565,7 +1565,7 @@ func resolveGitAddTargets(config internalconfig.Config, arguments map[string]any
 		requestedPaths = []string{requestedPath}
 	}
 	if addAll {
-		repoRoot, relativePath, err := resolveGitRepository(config, requestedPath)
+		repoRoot, relativePath, err := r.resolveGitRepository(config, requestedPath)
 		if err != nil {
 			return "", nil, false, err
 		}
@@ -1575,7 +1575,7 @@ func resolveGitAddTargets(config internalconfig.Config, arguments map[string]any
 		return repoRoot, []string{relativePath}, true, nil
 	}
 	if len(requestedPaths) == 0 {
-		repoRoot, relativePath, err := resolveGitRepository(config, requestedPath)
+		repoRoot, relativePath, err := r.resolveGitRepository(config, requestedPath)
 		if err != nil {
 			return "", nil, false, err
 		}
@@ -1588,7 +1588,7 @@ func resolveGitAddTargets(config internalconfig.Config, arguments map[string]any
 	resolved := []string{}
 	seen := map[string]struct{}{}
 	for _, item := range requestedPaths {
-		currentRepo, relativePath, err := resolveGitRepository(config, item)
+		currentRepo, relativePath, err := r.resolveGitRepository(config, item)
 		if err != nil {
 			return "", nil, false, err
 		}

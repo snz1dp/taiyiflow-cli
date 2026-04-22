@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,8 @@ import (
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/tui"
 )
+
+var bracketErrorCodePattern = regexp.MustCompile(`^\[[A-Z0-9_]+\]\s*`)
 
 func (a *App) runTUI(ctx context.Context, args []string) error {
 	startupCommand := ""
@@ -75,6 +78,17 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 
 		runtimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), logWriter, logWriter)
 		quietRuntimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), io.Discard, io.Discard)
+		persistSandboxEscapeAlwaysAllow := func(context.Context) error {
+			runtimeClient.SetSandboxEscapePolicyOverride(internalconfig.SandboxEscapePolicyAllow)
+			quietRuntimeClient.SetSandboxEscapePolicyOverride(internalconfig.SandboxEscapePolicyAllow)
+			sessionState.SandboxEscapePolicyOverride = internalconfig.SandboxEscapePolicyAllow
+			return a.sessionStore.Save(sessionState)
+		}
+		sandboxEscapeConfirmer := func(path string) (bool, error) {
+			return confirm(buildTUISandboxEscapeConfirmRequest(path, persistSandboxEscapeAlwaysAllow)), nil
+		}
+		runtimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
+		quietRuntimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
 		requestedSkillNames, clientSkillPackages, err := a.loadSkillPayload(config)
 		if err != nil {
 			return err
@@ -140,6 +154,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				if configErr != nil {
 					return configErr
 				}
+				localConfig = applyEffectiveSandboxEscapePolicy(localConfig, sessionState.SandboxEscapePolicyOverride, "")
 				emit(tui.Event{Kind: tui.EventBuiltInCall, Text: previewBuiltInCommand(event.Data)})
 				emit(tui.Event{Kind: tui.EventProgressNote, Text: "正在执行本地命令..."})
 				if requiresTUICommandConfirmation(localConfig, event.Data) {
@@ -174,6 +189,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				if configErr != nil {
 					return configErr
 				}
+				localConfig = applyEffectiveSandboxEscapePolicy(localConfig, sessionState.SandboxEscapePolicyOverride, "")
 				emit(tui.Event{Kind: tui.EventClientToolCall, Text: clientruntime.PreviewClientToolCall(event.Data)})
 				if clientruntime.RequiresClientToolConfirmation(localConfig, event.Data) {
 					approved := confirm(buildTUIClientToolConfirmRequest(event.Data))
@@ -274,12 +290,19 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if flowID == "" {
 			return tui.Snapshot{}, fmt.Errorf("当前未选择智能体，无法切换会话")
 		}
+		loadedState, loadErr := a.prepareSession(flowID, false, current.Workdir, current.RequestMode)
+		if loadErr != nil {
+			return tui.Snapshot{}, loadErr
+		}
 		if err := a.sessionStore.Save(agent.SessionState{
-			FlowID:          flowID,
-			FlowDisplayName: strings.TrimSpace(current.DefaultFlowLabel),
-			SessionID:       strings.TrimSpace(sessionID),
-			SessionTitle:    "",
-			Workdir:         current.Workdir,
+			FlowID:                      flowID,
+			FlowDisplayName:             strings.TrimSpace(current.DefaultFlowLabel),
+			SessionID:                   strings.TrimSpace(sessionID),
+			SessionTitle:                "",
+			Workdir:                     current.Workdir,
+			RequestMode:                 normalizeRequestMode(firstNonEmpty(current.RequestMode, loadedState.RequestMode)),
+			ContextDir:                  resolveLocalWorkdir(firstNonEmpty(loadedState.ContextDir, current.Workdir)),
+			SandboxEscapePolicyOverride: loadedState.SandboxEscapePolicyOverride,
 		}); err != nil {
 			return tui.Snapshot{}, err
 		}
@@ -367,6 +390,24 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				return tui.LocalCommandResult{}, err
 			}
 			return tui.LocalCommandResult{Handled: true, ConfigForm: formState}, nil
+		case strings.HasPrefix(strings.ToLower(trimmed), "/config session "):
+			flowID := strings.TrimSpace(snapshot.DefaultFlow)
+			if flowID == "" {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "当前未选择智能体，无法设置会话配置。"}}}, nil
+			}
+			sessionState, err := a.prepareSession(flowID, false, snapshot.Workdir, snapshot.RequestMode)
+			if err != nil {
+				return tui.LocalCommandResult{}, err
+			}
+			output, err := a.runInteractiveSessionConfigCommand(trimmed, &sessionState)
+			if err != nil {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
+			}
+			updatedSnapshot := snapshot
+			updatedSnapshot.RequestMode = normalizeRequestMode(firstNonEmpty(sessionState.RequestMode, snapshot.RequestMode))
+			updatedSnapshot.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, snapshot.Workdir))
+			updatedSnapshot.SessionSandboxEscapePolicy = strings.TrimSpace(sessionState.SandboxEscapePolicyOverride)
+			return tui.LocalCommandResult{Handled: true, Snapshot: &updatedSnapshot, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: output}}}, nil
 		case strings.EqualFold(trimmed, "/skills") || strings.HasPrefix(strings.ToLower(trimmed), "/skills "):
 			output, err := a.executeSkillsCommand(parseSlashSkillsArgs(trimmed))
 			if err != nil {
@@ -383,14 +424,19 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			updatedSnapshot.ContextDir = resolveLocalWorkdir(snapshot.Workdir)
 			if strings.TrimSpace(prompt) == "" {
 				if strings.TrimSpace(snapshot.DefaultFlow) != "" {
+					currentSessionState, sessionErr := a.prepareSession(snapshot.DefaultFlow, false, snapshot.Workdir, mode)
+					if sessionErr != nil {
+						return tui.LocalCommandResult{}, sessionErr
+					}
 					if err := a.sessionStore.Save(agent.SessionState{
-						FlowID:          snapshot.DefaultFlow,
-						FlowDisplayName: strings.TrimSpace(snapshot.DefaultFlowLabel),
-						SessionID:       snapshot.SessionID,
-						SessionTitle:    strings.TrimSpace(snapshot.SessionTitle),
-						Workdir:         snapshot.Workdir,
-						RequestMode:     mode,
-						ContextDir:      updatedSnapshot.ContextDir,
+						FlowID:                      snapshot.DefaultFlow,
+						FlowDisplayName:             strings.TrimSpace(snapshot.DefaultFlowLabel),
+						SessionID:                   snapshot.SessionID,
+						SessionTitle:                strings.TrimSpace(snapshot.SessionTitle),
+						Workdir:                     snapshot.Workdir,
+						RequestMode:                 mode,
+						ContextDir:                  updatedSnapshot.ContextDir,
+						SandboxEscapePolicyOverride: currentSessionState.SandboxEscapePolicyOverride,
 					}); err != nil {
 						return tui.LocalCommandResult{}, err
 					}
@@ -419,8 +465,15 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if err != nil {
 				return tui.LocalCommandResult{}, err
 			}
+			effectiveConfig := localConfig
+			if flowID := strings.TrimSpace(snapshot.DefaultFlow); flowID != "" {
+				sessionState, sessionErr := a.prepareSession(flowID, false, snapshot.Workdir, snapshot.RequestMode)
+				if sessionErr == nil {
+					effectiveConfig = applyEffectiveSandboxEscapePolicy(localConfig, sessionState.SandboxEscapePolicyOverride, "")
+				}
+			}
 			runtimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), io.Discard, io.Discard)
-			result, err := runtimeClient.ExecuteShellCommand(commandCtx, localConfig, rawCommand)
+			result, err := runtimeClient.ExecuteShellCommand(commandCtx, effectiveConfig, rawCommand)
 			if err != nil {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
 			}
@@ -552,6 +605,7 @@ func (a *App) buildTUISnapshot(
 		snapshot.SessionTitle = resolveSessionTitle(sessionState)
 		snapshot.RequestMode = normalizeRequestMode(sessionState.RequestMode)
 		snapshot.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, snapshot.Workdir))
+		snapshot.SessionSandboxEscapePolicy = strings.TrimSpace(sessionState.SandboxEscapePolicyOverride)
 		snapshot.DefaultFlowLabel = resolveFlowLabel(flowID, snapshot.DefaultFlowLabel, sessionState.FlowDisplayName)
 		return snapshot, nil
 	}
@@ -571,6 +625,7 @@ func (a *App) buildTUISnapshot(
 	snapshot.SessionTitle = resolveSessionTitle(sessionState)
 	snapshot.RequestMode = normalizeRequestMode(sessionState.RequestMode)
 	snapshot.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, snapshot.Workdir))
+	snapshot.SessionSandboxEscapePolicy = strings.TrimSpace(sessionState.SandboxEscapePolicyOverride)
 	if strings.TrimSpace(snapshot.SessionID) != "" {
 		title, titleErr := lookupSessionTitle(ctx, providerClient, flowID, snapshot.SessionID)
 		if titleErr == nil {
@@ -841,9 +896,22 @@ func buildTUIClientToolConfirmRequest(payload map[string]any) tui.ConfirmRequest
 	return request
 }
 
+func buildTUISandboxEscapeConfirmRequest(path string, alwaysApprove func(context.Context) error) tui.ConfirmRequest {
+	return tui.ConfirmRequest{
+		Title:                       "访问沙箱外路径",
+		Command:                     path,
+		Detail:                      "目标路径位于当前工作目录沙箱外，是否允许本次访问？",
+		PreviewTitle:                "访问目标",
+		PreviewBody:                 fmt.Sprintf("路径: %s", path),
+		Hint:                        "使用方向键或 Tab 选择，Enter 确认。",
+		AlwaysApprove:               alwaysApprove,
+		DisableDefaultAlwaysApprove: true,
+	}
+}
+
 func emitTUIClientToolResultEvents(emit func(tui.Event), toolName string, result any, toolErr error) {
 	if toolErr != nil {
-		emit(tui.Event{Kind: tui.EventErrorNote, Text: toolErr.Error()})
+		emit(tui.Event{Kind: tui.EventErrorNote, Text: errorText(toolErr)})
 	}
 	panel := buildTUIClientToolPanel(toolName, result, toolErr)
 	if panel != nil {
@@ -1141,7 +1209,8 @@ func errorText(err error) string {
 	if err == nil {
 		return ""
 	}
-	return strings.TrimSpace(err.Error())
+	trimmed := strings.TrimSpace(err.Error())
+	return strings.TrimSpace(bracketErrorCodePattern.ReplaceAllString(trimmed, ""))
 }
 
 func fallbackString(value string, fallback string) string {

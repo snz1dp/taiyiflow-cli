@@ -32,10 +32,20 @@ type ClientRuntime struct {
 	stdin  io.Reader
 	stdout io.Writer
 	stderr io.Writer
+	sandboxEscapeConfirmer func(path string) (bool, error)
+	sandboxEscapePolicyOverride string
 }
 
 func NewClientRuntime(stdin io.Reader, stdout io.Writer, stderr io.Writer) *ClientRuntime {
 	return &ClientRuntime{stdin: stdin, stdout: stdout, stderr: stderr}
+}
+
+func (r *ClientRuntime) SetSandboxEscapeConfirmer(confirmer func(path string) (bool, error)) {
+	r.sandboxEscapeConfirmer = confirmer
+}
+
+func (r *ClientRuntime) SetSandboxEscapePolicyOverride(policy string) {
+	r.sandboxEscapePolicyOverride = strings.TrimSpace(policy)
 }
 
 func (r *ClientRuntime) ClientMCPServers() map[string]any {
@@ -221,7 +231,7 @@ func (r *ClientRuntime) runCommand(
 	config internalconfig.Config,
 	arguments map[string]any,
 ) (map[string]any, error) {
-	payload, err := normalizeCommandArguments(arguments, config)
+	payload, err := r.normalizeCommandArguments(arguments, config)
 	if err != nil {
 		return nil, err
 	}
@@ -470,7 +480,7 @@ type commandArguments struct {
 	ExpectJSON       bool
 }
 
-func normalizeCommandArguments(arguments map[string]any, config internalconfig.Config) (commandArguments, error) {
+func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, config internalconfig.Config) (commandArguments, error) {
 	timeout := intValue(arguments["timeout"], defaultCommandTimeout)
 	if timeout < 1 {
 		timeout = 1
@@ -479,7 +489,7 @@ func normalizeCommandArguments(arguments map[string]any, config internalconfig.C
 		timeout = maxCommandTimeout
 	}
 
-	workingDirectory, err := resolveAllowedDirectory(config, stringValue(arguments["working_directory"]))
+	workingDirectory, err := r.resolveAllowedDirectoryWithPolicy(config, stringValue(arguments["working_directory"]))
 	if err != nil {
 		return commandArguments{}, err
 	}

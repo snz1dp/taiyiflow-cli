@@ -31,6 +31,7 @@ type rootOptions struct {
 	Flow       string
 	NewSession bool
 	Continue   bool
+	SandboxEscapePolicy string
 }
 
 func NewApp() (*App, error) {
@@ -98,6 +99,7 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	flagSet.StringVar(&options.Flow, "flow", "", "兼容旧参数：指定要运行的智能体 ID 或名称")
 	flagSet.BoolVar(&options.NewSession, "new", false, "忽略已有会话并新建会话")
 	flagSet.BoolVar(&options.Continue, "continue", false, "继续当前会话")
+	flagSet.StringVar(&options.SandboxEscapePolicy, "sandbox-escape-policy", "", "沙箱越界策略（confirm|deny|allow），仅影响当前命令")
 
 	if err := flagSet.Parse(args); err != nil {
 		return err
@@ -202,11 +204,20 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 				Workdir:         workdir,
 				RequestMode:     sessionState.RequestMode,
 				ContextDir:      workdir,
+				SandboxEscapePolicyOverride: sessionState.SandboxEscapePolicyOverride,
 			}
 			if err := a.sessionStore.Delete(flowID, workdir); err != nil {
 				return err
 			}
 			fmt.Fprintln(a.stdout, "已重置本地会话。")
+			continue
+		case strings.HasPrefix(strings.ToLower(line), "/config session "):
+			output, err := a.runInteractiveSessionConfigCommand(line, &sessionState)
+			if err != nil {
+				fmt.Fprintf(a.stderr, "会话配置命令执行失败: %v\n", err)
+				continue
+			}
+			fmt.Fprintln(a.stdout, output)
 			continue
 		case line == "/config" || strings.HasPrefix(strings.ToLower(line), "/config "):
 			if err := a.runInteractiveConfigCommand(line); err != nil {
@@ -228,7 +239,12 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			if err := a.ensureBackendAvailable(ctx, providerClient, config.BackendBaseURL); err != nil {
 				flowID = strings.TrimSpace(firstNonEmpty(options.Flow, config.DefaultFlow))
 				flowDisplayName = a.resolveFlowDisplayName(ctx, providerClient, flowID)
-				sessionState = agent.SessionState{FlowID: flowID, FlowDisplayName: flowDisplayName, Workdir: workdir}
+				sessionState = agent.SessionState{
+					FlowID:                       flowID,
+					FlowDisplayName:              flowDisplayName,
+					Workdir:                      workdir,
+					SandboxEscapePolicyOverride: sessionState.SandboxEscapePolicyOverride,
+				}
 				fmt.Fprintf(a.stderr, "提示: 新配置尚未连通服务端: %v\n", err)
 				continue
 			}
@@ -263,7 +279,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 				fmt.Fprintf(a.stdout, "已切换请求模式: %s\n", requestModeLabel(mode))
 				continue
 			}
-			updatedState, err := a.streamTask(ctx, providerClient, config, flowID, prompt, sessionState)
+			updatedState, err := a.streamTask(ctx, providerClient, config, flowID, prompt, sessionState, options.SandboxEscapePolicy)
 			if err != nil {
 				fmt.Fprintf(a.stderr, "执行任务失败: %v\n", err)
 				continue
@@ -272,7 +288,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			continue
 		}
 
-		updatedState, err := a.streamTask(ctx, providerClient, config, flowID, line, sessionState)
+		updatedState, err := a.streamTask(ctx, providerClient, config, flowID, line, sessionState, options.SandboxEscapePolicy)
 		if err != nil {
 			fmt.Fprintf(a.stderr, "执行任务失败: %v\n", err)
 			continue
@@ -306,7 +322,7 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 		return err
 	}
 
-	_, err = a.streamTask(ctx, providerClient, config, flowID, task, sessionState)
+	_, err = a.streamTask(ctx, providerClient, config, flowID, task, sessionState, options.SandboxEscapePolicy)
 	return err
 }
 
@@ -339,7 +355,9 @@ func (a *App) streamTask(
 	flowID string,
 	task string,
 	sessionState agent.SessionState,
+	commandSandboxEscapePolicy string,
 ) (agent.SessionState, error) {
+	runtimeConfig := applyEffectiveSandboxEscapePolicy(config, sessionState.SandboxEscapePolicyOverride, commandSandboxEscapePolicy)
 	requestedSkillNames, clientSkillPackages, err := a.loadSkillPayload(config)
 	if err != nil {
 		return sessionState, err
@@ -400,7 +418,7 @@ func (a *App) streamTask(
 				fmt.Fprintf(a.stderr, "提示: 已拒绝 built_in，本地模式为 %s\n", requestModeLabel(sessionState.RequestMode))
 				continue
 			}
-			if err := a.runtime.HandleBuiltInEvent(ctx, providerClient, config, event.Data); err != nil {
+			if err := a.runtime.HandleBuiltInEvent(ctx, providerClient, runtimeConfig, event.Data); err != nil {
 				return sessionState, err
 			}
 		case provider.EventClientTool:
@@ -412,7 +430,7 @@ func (a *App) streamTask(
 				fmt.Fprintf(a.stderr, "提示: 已拒绝客户端工具 %s，本地模式为 %s\n", toolName, requestModeLabel(sessionState.RequestMode))
 				continue
 			}
-			if err := a.runtime.HandleClientToolEvent(ctx, providerClient, config, event.Data); err != nil {
+			if err := a.runtime.HandleClientToolEvent(ctx, providerClient, runtimeConfig, event.Data); err != nil {
 				return sessionState, err
 			}
 		case provider.EventToolCall:
@@ -430,7 +448,7 @@ func (a *App) streamTask(
 func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "用法:")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli")
-	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--new] [--continue] [任务描述]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--new] [--continue] [--sandbox-escape-policy POLICY] [任务描述]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli config [show|init|path|set|unset]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli agents [list|current|use] [参数]")
@@ -443,6 +461,7 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 	fmt.Fprintln(a.stdout, "会话内命令:")
 	fmt.Fprintln(a.stdout, "  /agents   显示智能体切换说明")
 	fmt.Fprintln(a.stdout, "  /config   查看或更新服务端配置")
+	fmt.Fprintln(a.stdout, "  /config session [show|set|unset] sandbox_escape_policy [值]   查看或设置会话沙箱越界策略")
 	fmt.Fprintln(a.stdout, "  /skills   列出、查看或切换本地技能")
 	fmt.Fprintln(a.stdout, "  /ask      切换为问答模式，可写成 /ask <问题>")
 	fmt.Fprintln(a.stdout, "  /plan     切换为计划模式，可写成 /plan <目标>")
@@ -552,6 +571,53 @@ func (a *App) runInteractiveConfigCommand(command string) error {
 	return a.runConfig(parseSlashConfigArgs(command))
 }
 
+func (a *App) runInteractiveSessionConfigCommand(command string, state *agent.SessionState) (string, error) {
+	args := parseSlashConfigArgs(command)
+	if len(args) < 2 || strings.ToLower(strings.TrimSpace(args[0])) != "session" {
+		return "", fmt.Errorf("用法: /config session [show|set|unset] sandbox_escape_policy [confirm|deny|allow]")
+	}
+	action := strings.ToLower(strings.TrimSpace(args[1]))
+	key := ""
+	if len(args) >= 3 {
+		key = normalizeConfigKey(args[2])
+	}
+	if key != "" && key != "sandbox_escape_policy" {
+		return "", fmt.Errorf("会话配置仅支持 sandbox_escape_policy")
+	}
+	switch action {
+	case "show":
+		value := strings.TrimSpace(state.SandboxEscapePolicyOverride)
+		if value == "" {
+			value = "<继承全局配置>"
+		}
+		return fmt.Sprintf("会话沙箱越界策略: %s", value), nil
+	case "set":
+		if key != "sandbox_escape_policy" || len(args) < 4 {
+			return "", fmt.Errorf("用法: /config session set sandbox_escape_policy <confirm|deny|allow>")
+		}
+		policy := internalconfig.NormalizeSandboxEscapePolicy(args[3])
+		if strings.ToLower(strings.TrimSpace(args[3])) != policy {
+			return "", fmt.Errorf("sandbox_escape_policy 仅支持 confirm、deny、allow")
+		}
+		state.SandboxEscapePolicyOverride = policy
+		if err := a.sessionStore.Save(*state); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("已设置会话沙箱越界策略: %s", policy), nil
+	case "unset", "clear":
+		if key != "sandbox_escape_policy" {
+			return "", fmt.Errorf("用法: /config session unset sandbox_escape_policy")
+		}
+		state.SandboxEscapePolicyOverride = ""
+		if err := a.sessionStore.Save(*state); err != nil {
+			return "", err
+		}
+		return "已清空会话沙箱越界策略，恢复继承全局配置", nil
+	default:
+		return "", fmt.Errorf("会话配置操作仅支持 show、set、unset")
+	}
+}
+
 func parseSlashConfigArgs(command string) []string {
 	trimmed := strings.TrimSpace(command)
 	if !strings.HasPrefix(strings.ToLower(trimmed), "/config") {
@@ -569,12 +635,34 @@ func isMutatingSlashConfigCommand(command string) bool {
 	if len(args) == 0 {
 		return false
 	}
+	if strings.ToLower(strings.TrimSpace(args[0])) == "session" {
+		return false
+	}
 	switch strings.ToLower(strings.TrimSpace(args[0])) {
 	case "init", "set", "unset", "clear":
 		return true
 	default:
 		return false
 	}
+}
+
+func resolveEffectiveSandboxEscapePolicy(config internalconfig.Config, sessionOverride string, commandOverride string) string {
+	if strings.TrimSpace(sessionOverride) != "" {
+		return internalconfig.NormalizeSandboxEscapePolicy(sessionOverride)
+	}
+	if strings.TrimSpace(commandOverride) != "" {
+		return internalconfig.NormalizeSandboxEscapePolicy(commandOverride)
+	}
+	if strings.TrimSpace(config.SandboxEscapePolicy) != "" {
+		return internalconfig.NormalizeSandboxEscapePolicy(config.SandboxEscapePolicy)
+	}
+	return internalconfig.Default().SandboxEscapePolicy
+}
+
+func applyEffectiveSandboxEscapePolicy(config internalconfig.Config, sessionOverride string, commandOverride string) internalconfig.Config {
+	updated := config
+	updated.SandboxEscapePolicy = resolveEffectiveSandboxEscapePolicy(config, sessionOverride, commandOverride)
+	return updated
 }
 
 func lookupSessionTitle(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string) (string, error) {

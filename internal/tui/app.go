@@ -21,22 +21,23 @@ import (
 )
 
 type Snapshot struct {
-	Version             string
-	BackendURL          string
-	BackendAvailable    bool
-	BackendStatusReason string
-	ServerPackage       string
-	ServerVersion       string
-	DefaultFlow         string
-	DefaultFlowLabel    string
-	Workdir             string
-	ContextDir          string
-	RequestMode         string
-	ApprovalMode        string
-	SessionID           string
-	SessionTitle        string
-	History             []HistoryEntry
-	WelcomeMessage      string
+	Version                    string
+	BackendURL                 string
+	BackendAvailable           bool
+	BackendStatusReason        string
+	ServerPackage              string
+	ServerVersion              string
+	DefaultFlow                string
+	DefaultFlowLabel           string
+	Workdir                    string
+	ContextDir                 string
+	RequestMode                string
+	ApprovalMode               string
+	SessionSandboxEscapePolicy string
+	SessionID                  string
+	SessionTitle               string
+	History                    []HistoryEntry
+	WelcomeMessage             string
 }
 
 type HistoryEntry struct {
@@ -189,12 +190,14 @@ type RequestMetrics struct {
 }
 
 type ConfirmRequest struct {
-	Title        string
-	Command      string
-	Detail       string
-	PreviewTitle string
-	PreviewBody  string
-	Hint         string
+	Title                       string
+	Command                     string
+	Detail                      string
+	PreviewTitle                string
+	PreviewBody                 string
+	Hint                        string
+	AlwaysApprove               func(context.Context) error
+	DisableDefaultAlwaysApprove bool
 }
 
 type ToolPanel struct {
@@ -953,24 +956,23 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
 	case "a", "A":
 		m.pendingConfirm.cursor = 2
+		alwaysApproveCmd := m.applyConfirmAlwaysApprove(m.pendingConfirm.request)
 		m.pendingConfirm.responseCh <- true
 		close(m.pendingConfirm.responseCh)
 		m.pendingConfirm = nil
-		if m.approvalChange != nil {
-			return m, tea.Batch(changeApprovalModeCmd(m.ctx, "auto", m.approvalChange), m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
-		}
-		return m, tea.Batch(m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
+		return m, tea.Batch(alwaysApproveCmd, m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
 	case "enter":
 		approved := m.pendingConfirm.cursor != 1
 		alwaysApprove := m.pendingConfirm.cursor == 2
+		alwaysApproveCmd := tea.Cmd(nil)
+		if approved && alwaysApprove {
+			alwaysApproveCmd = m.applyConfirmAlwaysApprove(m.pendingConfirm.request)
+		}
 		m.pendingConfirm.responseCh <- approved
 		close(m.pendingConfirm.responseCh)
 		m.pendingConfirm = nil
 		if approved {
-			if alwaysApprove && m.approvalChange != nil {
-				return m, tea.Batch(changeApprovalModeCmd(m.ctx, "auto", m.approvalChange), m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
-			}
-			return m, tea.Batch(m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
+			return m, tea.Batch(alwaysApproveCmd, m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
 		}
 		return m, tea.Batch(m.transitionProgress(progressStreaming), waitForStream(m.eventCh))
 	case "n", "N", "q", "esc", "ctrl+c":
@@ -982,6 +984,21 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		return m, nil
 	}
+}
+
+func (m *model) applyConfirmAlwaysApprove(request ConfirmRequest) tea.Cmd {
+	refreshCmd := tea.Cmd(nil)
+	if request.AlwaysApprove != nil {
+		if err := request.AlwaysApprove(m.ctx); err != nil {
+			m.entries = append(m.entries, entry{role: "system", content: fmt.Sprintf("设置“以后都同意”失败: %v", err)})
+		} else {
+			refreshCmd = m.maybeRefreshSessionSnapshot()
+		}
+	}
+	if request.DisableDefaultAlwaysApprove || m.approvalChange == nil {
+		return refreshCmd
+	}
+	return tea.Batch(refreshCmd, changeApprovalModeCmd(m.ctx, "auto", m.approvalChange))
 }
 
 func (m model) handleToolPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1317,6 +1334,11 @@ func RenderSessionStatusText(snapshot Snapshot, prefix string) string {
 		lines = append(lines, prefix)
 	}
 	lines = append(lines, fmt.Sprintf("当前模式: %s", requestModeLabel(snapshot.RequestMode)))
+	sandboxPolicy := strings.TrimSpace(snapshot.SessionSandboxEscapePolicy)
+	if sandboxPolicy == "" {
+		sandboxPolicy = "<继承全局配置>"
+	}
+	lines = append(lines, fmt.Sprintf("会话沙箱越界策略: %s", sandboxPolicy))
 	sessionID := strings.TrimSpace(snapshot.SessionID)
 	if sessionID == "" {
 		lines = append(lines, "当前会话: 新会话")
@@ -1492,6 +1514,11 @@ func (m model) View() string {
 	}
 	if inputBoxWidth < 20 {
 		inputBoxWidth = 20
+	}
+	if contextUsageHint := m.inputContextUsageHint(); contextUsageHint != "" {
+		rightHint := trimForWidth(contextUsageHint, maxInt(8, inputBoxWidth-2))
+		rightLine := renderHeaderLine("", statusBarDimStyle.Render(rightHint), maxInt(12, inputBoxWidth-2), true)
+		inputView = lipgloss.JoinVertical(lipgloss.Left, inputView, rightLine)
 	}
 	inputBox := inputStyle.Width(inputBoxWidth).Render(inputView)
 	bodyParts = append(bodyParts, history, inputBox, m.renderStatusBar())
@@ -2006,6 +2033,9 @@ func (m model) statusBarSegments(maxWidth int) []string {
 	}
 	segments = append(segments, statusSegment{text: requestModeStatus(m.snapshot.RequestMode, compact), priority: 1})
 	segments = append(segments, statusSegment{text: approvalModeStatus(m.snapshot.ApprovalMode, compact), priority: 1})
+	if sandboxSegment := sessionSandboxEscapePolicyStatus(m.snapshot.SessionSandboxEscapePolicy, compact); sandboxSegment != "" {
+		segments = append(segments, statusSegment{text: sandboxSegment, priority: 1})
+	}
 	if toolSegment := m.toolSummarySegment(compact); toolSegment != "" {
 		priority := 2
 		if m.isBusy() {
@@ -3066,6 +3096,29 @@ func (m model) contextUsageSegment(compact bool) string {
 	return fmt.Sprintf("上下文可用 %s/%s %.0f%%", formatCompactInt(available), formatCompactInt(maxTokens), percent)
 }
 
+func (m model) inputContextUsageHint() string {
+	usage := m.requestStats.TokenUsage
+	if usage == nil || usage.ContextWindow == nil || usage.ContextWindow.MaxInputTokens <= 0 {
+		return ""
+	}
+	maxTokens := usage.ContextWindow.MaxInputTokens
+	if maxTokens <= 0 {
+		return ""
+	}
+	available := usage.ContextWindow.NextRoundAvailableTokens
+	if available <= 0 {
+		available = usage.ContextWindow.CurrentRoundAvailableTokens
+	}
+	if available < 0 {
+		available = 0
+	}
+	if available > maxTokens {
+		available = maxTokens
+	}
+	usedPercent := float64(maxTokens-available) / float64(maxTokens) * 100
+	return fmt.Sprintf("上下文窗口已用 %.0f%%", usedPercent)
+}
+
 func (m model) tokenUsageSegment(compact bool) string {
 	usage := m.requestStats.TokenUsage
 	if usage == nil {
@@ -3418,13 +3471,14 @@ func isExecutableSlashCommandInput(input string) bool {
 
 func trimText(content string, maxLen int) string {
 	content = strings.TrimSpace(strings.ReplaceAll(content, "\n", " "))
-	if len(content) <= maxLen {
+	runes := []rune(content)
+	if len(runes) <= maxLen {
 		return content
 	}
 	if maxLen < 4 {
-		return content[:maxLen]
+		return string(runes[:maxLen])
 	}
-	return content[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }
 
 func currentToolLabel(text string, fallbackValue string) string {
@@ -3513,6 +3567,28 @@ func approvalModeStatus(value string, compact bool) string {
 		}
 	}
 	return approvalModeLabel(value)
+}
+
+func sessionSandboxEscapePolicyStatus(value string, compact bool) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "allow":
+		if compact {
+			return "允许访问外部资源"
+		}
+		return "允许访问会话外资源"
+	case "deny":
+		if compact {
+			return "禁止访问外部资源"
+		}
+		return "禁止访问会话外资源"
+	case "confirm":
+		if compact {
+			return "访问外部需确认"
+		}
+		return "访问会话外资源需确认"
+	default:
+		return ""
+	}
 }
 
 func requestModeStatus(value string, compact bool) string {

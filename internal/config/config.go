@@ -14,6 +14,9 @@ const (
 	defaultRootDirName = ".snz1dp"
 	defaultConfigRel   = "config/taiyiflow.yaml"
 	rootDirEnvName     = "SNZ1DP_HOME"
+	SandboxEscapePolicyConfirm = "confirm"
+	SandboxEscapePolicyDeny    = "deny"
+	SandboxEscapePolicyAllow   = "allow"
 )
 
 type Config struct {
@@ -22,6 +25,7 @@ type Config struct {
 	DefaultFlow    string      `yaml:"default_flow,omitempty"`
 	ApprovalMode   string      `yaml:"approval_mode"`
 	Workdir        string      `yaml:"workdir,omitempty"`
+	SandboxEscapePolicy string  `yaml:"sandbox_escape_policy,omitempty"`
 	OutputLanguage string      `yaml:"output_language"`
 	AuditEnabled   bool        `yaml:"audit_enabled,omitempty"`
 	SandboxRoots   []string    `yaml:"sandbox_roots,omitempty"`
@@ -41,8 +45,20 @@ func Default() Config {
 	return Config{
 		BackendBaseURL: "http://localhost:7860",
 		ApprovalMode:   "confirm",
+		SandboxEscapePolicy: SandboxEscapePolicyConfirm,
 		OutputLanguage: "zh-CN",
 		AuditEnabled:   false,
+	}
+}
+
+func NormalizeSandboxEscapePolicy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case SandboxEscapePolicyDeny:
+		return SandboxEscapePolicyDeny
+	case SandboxEscapePolicyAllow:
+		return SandboxEscapePolicyAllow
+	default:
+		return SandboxEscapePolicyConfirm
 	}
 }
 
@@ -130,6 +146,7 @@ func (m *Manager) Load() (Config, error) {
 	if config.ApprovalMode == "" {
 		config.ApprovalMode = Default().ApprovalMode
 	}
+	config.SandboxEscapePolicy = NormalizeSandboxEscapePolicy(config.SandboxEscapePolicy)
 	if config.OutputLanguage == "" {
 		config.OutputLanguage = Default().OutputLanguage
 	}
