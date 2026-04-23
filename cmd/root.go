@@ -405,6 +405,7 @@ func (a *App) streamTask(
 	if err != nil {
 		return sessionState, err
 	}
+	hasVisibleOutput := false
 
 	if streamSession != nil && streamSession.SessionID != "" {
 		sessionState.SessionID = streamSession.SessionID
@@ -426,16 +427,30 @@ func (a *App) streamTask(
 		switch event.Type {
 		case provider.EventMessage:
 			if chunk, ok := event.Data["chunk"].(string); ok && chunk != "" {
+				if !hasVisibleOutput {
+					chunk = strings.TrimLeft(chunk, "\r\n")
+					if chunk == "" {
+						continue
+					}
+				}
 				fmt.Fprint(a.stdout, chunk)
+				hasVisibleOutput = true
 				continue
 			}
 			if showStreamEvents {
 				if message, ok := event.Data["message"].(string); ok && strings.TrimSpace(message) != "" {
-					fmt.Fprintf(a.stdout, "\n[系统提示]: %s\n", strings.TrimSpace(message))
+					if hasVisibleOutput {
+						fmt.Fprintf(a.stdout, "\n[系统提示]: %s\n", strings.TrimSpace(message))
+					} else {
+						fmt.Fprintf(a.stdout, "[系统提示]: %s\n", strings.TrimSpace(message))
+					}
+					hasVisibleOutput = true
 				}
 			}
 		case provider.EventError:
-			fmt.Fprintln(a.stderr)
+			if hasVisibleOutput {
+				fmt.Fprintln(a.stderr)
+			}
 			return sessionState, normalizeStreamEventError(event.Data["error"])
 		case provider.EventBuiltIn:
 			if !modeAllowsBuiltIn(sessionState.RequestMode) {
@@ -468,6 +483,7 @@ func (a *App) streamTask(
 			if showStreamEvents {
 				if text, ok := event.Data["text"].(string); ok && text != "" {
 					fmt.Fprintf(a.stdout, "[工具调用]: %s\n", text)
+					hasVisibleOutput = true
 				}
 			}
 		case provider.EventClose:
