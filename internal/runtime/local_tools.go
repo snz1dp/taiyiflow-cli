@@ -40,10 +40,6 @@ func newToolError(code string, format string, args ...any) error {
 	return toolError{Code: code, Message: fmt.Sprintf(format, args...)}
 }
 
-func (r *ClientRuntime) clientToolDefinitions() []map[string]any {
-	return r.clientToolDefinitionsForMode(provider.RequestTypeAgent)
-}
-
 func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]any {
 	definitions := []map[string]any{
 		{
