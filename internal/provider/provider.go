@@ -12,6 +12,7 @@ const (
 	EventMessage    StreamEventType = "message"
 	EventError      StreamEventType = "error"
 	EventClose      StreamEventType = "close"
+	EventCompression StreamEventType = "compression"
 	EventBytes      StreamEventType = "bytes"
 	EventCustom     StreamEventType = "custom"
 	EventToolCall   StreamEventType = "tool_call"

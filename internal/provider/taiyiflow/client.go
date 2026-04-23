@@ -23,6 +23,8 @@ import (
 const SessionHeader = "X-TaiyiFlow-Session-id"
 
 const defaultStreamIdleTimeout = 2 * time.Minute
+const defaultCompressionPollDelay = 120 * time.Millisecond
+const defaultCompressionPollAttempts = 4
 
 type streamIdleTimeoutError struct {
 	idleTimeout time.Duration
@@ -92,6 +94,8 @@ type Client struct {
 	httpClient        *http.Client
 	streamHTTPClient  *http.Client
 	streamIdleTimeout time.Duration
+	compressionPollDelay    time.Duration
+	compressionPollAttempts int
 }
 
 type metadataResponse struct {
@@ -212,6 +216,8 @@ func NewClient(baseURL, apiKey string) *Client {
 		httpClient:        &http.Client{Timeout: 60 * time.Second},
 		streamHTTPClient:  &http.Client{},
 		streamIdleTimeout: defaultStreamIdleTimeout,
+		compressionPollDelay:    defaultCompressionPollDelay,
+		compressionPollAttempts: defaultCompressionPollAttempts,
 	}
 }
 
@@ -608,6 +614,56 @@ func (c *Client) GetRunStats(ctx context.Context, flowID string, sessionID strin
 		}
 	}
 
+	compressions, err := c.fetchCompressionRecords(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	stats.Compressions = compressions
+
+	return stats, nil
+}
+
+func (c *Client) fetchCompressionRecords(ctx context.Context, runID string) ([]provider.CompressionRecord, error) {
+	attempts := c.compressionPollAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	delay := c.compressionPollDelay
+	for attempt := 0; attempt < attempts; attempt++ {
+		compressionPayload, err := c.fetchCompressionPayload(ctx, runID)
+		if err != nil {
+			return nil, err
+		}
+		compressions := make([]provider.CompressionRecord, 0, len(compressionPayload))
+		for _, item := range compressionPayload {
+			compressions = append(compressions, provider.CompressionRecord{
+				TriggerReason:         item.TriggerReason,
+				CompressionStrategy:   item.CompressionStrategy,
+				TargetType:            item.TargetType,
+				BeforeTokens:          item.BeforeTokens,
+				TargetTokens:          item.TargetTokens,
+				AfterTokens:           item.AfterTokens,
+				RemainingTokens:       item.RemainingTokens,
+				CompressionRatio:      item.CompressionRatio,
+				ReservedHistoryTokens: item.ReservedHistoryTokens,
+			})
+		}
+		if len(compressions) > 0 || attempt == attempts-1 || delay <= 0 {
+			return compressions, nil
+		}
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, nil
+}
+
+func (c *Client) fetchCompressionPayload(ctx context.Context, runID string) ([]compressionRecordResponse, error) {
 	compressionEndpoint := fmt.Sprintf(
 		"%s/api/v1/agents/dialogue/%s/compressions",
 		c.baseURL,
@@ -633,23 +689,7 @@ func (c *Client) GetRunStats(ctx context.Context, flowID string, sessionID strin
 	if err := json.NewDecoder(compressionResponse.Body).Decode(&compressionPayload); err != nil {
 		return nil, fmt.Errorf("解析上下文压缩统计响应失败: %w", err)
 	}
-
-	stats.Compressions = make([]provider.CompressionRecord, 0, len(compressionPayload))
-	for _, item := range compressionPayload {
-		stats.Compressions = append(stats.Compressions, provider.CompressionRecord{
-			TriggerReason:         item.TriggerReason,
-			CompressionStrategy:   item.CompressionStrategy,
-			TargetType:            item.TargetType,
-			BeforeTokens:          item.BeforeTokens,
-			TargetTokens:          item.TargetTokens,
-			AfterTokens:           item.AfterTokens,
-			RemainingTokens:       item.RemainingTokens,
-			CompressionRatio:      item.CompressionRatio,
-			ReservedHistoryTokens: item.ReservedHistoryTokens,
-		})
-	}
-
-	return stats, nil
+	return compressionPayload, nil
 }
 
 func (c *Client) applyAuth(req *http.Request, requestUserAgent ...string) {

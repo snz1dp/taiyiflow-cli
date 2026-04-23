@@ -139,6 +139,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				if message, ok := event.Data["message"].(string); ok && strings.TrimSpace(message) != "" {
 					emit(tui.Event{Kind: tui.EventProgressNote, Text: message})
 				}
+			case provider.EventCompression:
+				if metrics := buildTUICompressionMetrics(event.Data); metrics != nil {
+					emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
+				}
 			case provider.EventToolCall:
 				emit(tui.Event{Kind: tui.EventToolCall, Text: strings.TrimSpace(stringMapValue(event.Data, "text"))})
 			case provider.EventBuiltIn:
@@ -567,6 +571,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			updatedSnapshot.ContextDir = resolveLocalWorkdir(snapshot.Workdir)
 			updatedSnapshot.SessionSandboxEscapePolicy = ""
 			updatedSnapshot.History = nil
+			updatedSnapshot.RequestStats = nil
 			return tui.LocalCommandResult{
 				Handled:        true,
 				ClearHistory:   true,
@@ -644,6 +649,7 @@ func (a *App) buildTUISnapshot(
 			sessionState.SessionTitle = snapshot.SessionTitle
 		}
 		snapshot.History = loadRecentSessionHistory(ctx, providerClient, flowID, snapshot.SessionID)
+		snapshot.RequestStats = loadLatestSessionMetrics(ctx, providerClient, flowID, snapshot.SessionID)
 	}
 
 	metadata, err := providerClient.GetMetadata(ctx, flowID)
@@ -769,6 +775,37 @@ func loadRecentSessionHistory(ctx context.Context, providerClient provider.Provi
 		entries = append(entries, tui.HistoryEntry{Role: role, Content: content})
 	}
 	return entries
+}
+
+func loadLatestSessionMetrics(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string) *tui.RequestMetrics {
+	trimmedFlowID := strings.TrimSpace(flowID)
+	trimmedSessionID := strings.TrimSpace(sessionID)
+	if providerClient == nil || trimmedFlowID == "" || trimmedSessionID == "" {
+		return nil
+	}
+
+	const statsMessageLimit = 30
+	messages, err := providerClient.ListSessionMessages(ctx, trimmedFlowID, trimmedSessionID, 0, statsMessageLimit)
+	if err != nil || messages == nil || len(messages.Items) == 0 {
+		return nil
+	}
+
+	latestRunID := ""
+	for _, item := range messages.Items {
+		if trimmedRunID := strings.TrimSpace(item.RunID); trimmedRunID != "" {
+			latestRunID = trimmedRunID
+			break
+		}
+	}
+	if latestRunID == "" {
+		return nil
+	}
+
+	stats, err := providerClient.GetRunStats(ctx, trimmedFlowID, trimmedSessionID, latestRunID)
+	if err != nil || stats == nil {
+		return nil
+	}
+	return buildTUIRequestMetrics(latestRunID, stats)
 }
 
 func mapMessageRole(item provider.SessionMessage) string {
@@ -1303,6 +1340,84 @@ func buildTUIRequestMetrics(runID string, stats *provider.RunStats) *tui.Request
 		}
 	}
 	return metrics
+}
+
+func buildTUICompressionMetrics(payload map[string]any) *tui.RequestMetrics {
+	if len(payload) == 0 {
+		return nil
+	}
+	beforeTokens := payloadIntValue(payload, "before_tokens")
+	afterTokens := payloadIntValue(payload, "after_tokens")
+	remainingTokens := payloadIntValue(payload, "remaining_tokens")
+	compressionRatio := payloadFloatValue(payload, "compression_ratio")
+	targetType := strings.TrimSpace(stringMapValue(payload, "target_type"))
+	if beforeTokens == 0 && afterTokens == 0 && remainingTokens == 0 && compressionRatio == 0 && targetType == "" {
+		return nil
+	}
+	count := payloadIntValue(payload, "count")
+	if count <= 0 {
+		count = 1
+	}
+	return &tui.RequestMetrics{
+		Compression: &tui.CompressionStats{
+			Count:            count,
+			BeforeTokens:     beforeTokens,
+			AfterTokens:      afterTokens,
+			RemainingTokens:  remainingTokens,
+			CompressionRatio: compressionRatio,
+			TargetType:       targetType,
+		},
+	}
+}
+
+func payloadIntValue(payload map[string]any, key string) int {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int32:
+		return int(typed)
+	case int64:
+		return int(typed)
+	case float32:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func payloadFloatValue(payload map[string]any, key string) float64 {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return 0
+	}
+	switch typed := value.(type) {
+	case float32:
+		return float64(typed)
+	case float64:
+		return typed
+	case int:
+		return float64(typed)
+	case int32:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
 }
 
 func parseSessionsPage(command string) (int, error) {

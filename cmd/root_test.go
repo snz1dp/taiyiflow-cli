@@ -15,6 +15,8 @@ type stubProvider struct {
 	stream        <-chan provider.StreamEvent
 	streamErr     error
 	streamSession *provider.StreamSession
+	messages      *provider.SessionMessageList
+	runStats      *provider.RunStats
 }
 
 func (s stubProvider) Name() string { return "stub" }
@@ -28,7 +30,7 @@ func (s stubProvider) ListSessions(context.Context, string, int, int) (*provider
 }
 
 func (s stubProvider) ListSessionMessages(context.Context, string, string, int, int) (*provider.SessionMessageList, error) {
-	return nil, nil
+	return s.messages, nil
 }
 
 func (s stubProvider) GetVersionInfo(context.Context) (*provider.ServiceVersion, error) {
@@ -44,7 +46,7 @@ func (s stubProvider) Stream(context.Context, provider.StreamRequest) (<-chan pr
 }
 
 func (s stubProvider) GetRunStats(context.Context, string, string, string) (*provider.RunStats, error) {
-	return nil, nil
+	return s.runStats, nil
 }
 
 func (s stubProvider) SubmitClientCallResult(context.Context, provider.ClientCallResult) error {
@@ -166,5 +168,41 @@ func TestStreamTaskDoesNotPrefixFirstSystemNoteWithBlankLine(t *testing.T) {
 
 	if got := stdout.String(); got != "[系统提示]: 准备开始\n\n" {
 		t.Fatalf("unexpected stdout: %q", got)
+	}
+}
+
+func TestLoadLatestSessionMetricsUsesLatestRunStats(t *testing.T) {
+	metrics := loadLatestSessionMetrics(
+		context.Background(),
+		stubProvider{
+			messages: &provider.SessionMessageList{
+				Items: []provider.SessionMessage{
+					{RunID: "run-latest"},
+					{RunID: "run-older"},
+				},
+			},
+			runStats: &provider.RunStats{
+				RunID: "run-latest",
+				TokenUsage: &provider.TokenUsage{
+					ContextWindow: &provider.ContextWindowUsage{
+						MaxInputTokens:           8192,
+						CurrentRoundInputTokens:  2048,
+						NextRoundAvailableTokens: 6144,
+					},
+				},
+			},
+		},
+		"demo-flow",
+		"session-123",
+	)
+
+	if metrics == nil || metrics.TokenUsage == nil || metrics.TokenUsage.ContextWindow == nil {
+		t.Fatalf("expected metrics with context window, got %#v", metrics)
+	}
+	if metrics.RunID != "run-latest" {
+		t.Fatalf("expected latest run id, got %#v", metrics)
+	}
+	if metrics.TokenUsage.ContextWindow.CurrentRoundInputTokens != 2048 {
+		t.Fatalf("expected current round input tokens to be preserved, got %#v", metrics.TokenUsage.ContextWindow)
 	}
 }

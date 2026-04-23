@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/progress"
@@ -38,6 +39,7 @@ type Snapshot struct {
 	SessionTitle               string
 	History                    []HistoryEntry
 	WelcomeMessage             string
+	RequestStats               *RequestMetrics
 }
 
 type HistoryEntry struct {
@@ -563,6 +565,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 	progressModel := progress.New(progress.WithDefaultGradient())
 
 	initialEntries := buildInitialEntries(snapshot)
+	initialRequestStats := cloneRequestMetrics(snapshot.RequestStats)
 	program := tea.NewProgram(model{
 		ctx:               ctx,
 		snapshot:          snapshot,
@@ -582,6 +585,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 		toolPanelViewport: toolPanelViewportModel,
 		progress:          progressModel,
 		state:             newProgressState(progressIdle),
+		requestStats:      initialRequestStats,
 		flowCursor:        currentFlowIndex(flows, snapshot.DefaultFlow),
 		startupCommand:    strings.TrimSpace(startupCommand),
 	}, tea.WithAltScreen())
@@ -634,6 +638,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		previouslyAvailable := m.snapshot.BackendAvailable
 		previousReason := strings.TrimSpace(m.snapshot.BackendStatusReason)
 		m.snapshot = typed.snapshot
+		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
 		m.flows = typed.flows
 		m.syncInputPlaceholder()
 		if !m.snapshot.BackendAvailable {
@@ -716,7 +721,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flowCursor = currentFlowIndex(m.flows, m.snapshot.DefaultFlow)
 		m.flowFilter.SetValue("")
 		m.flowFilter.Blur()
-		m.requestStats = RequestMetrics{}
+		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
 		m.activityHint = ""
 		m.entries = buildInitialEntries(m.snapshot)
 		m.entries = append(m.entries, entry{role: "system", content: fmt.Sprintf("已切换默认智能体: %s -> %s", fallback(previousFlow, "<未配置>"), fallback(m.snapshot.DefaultFlowLabel, sanitizeFlowLabel(m.snapshot.DefaultFlow)))})
@@ -733,6 +738,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.snapshot = typed.snapshot
 		m.sessionPicker = nil
+		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
 		m.activityHint = ""
 		m.entries = buildInitialEntries(m.snapshot)
 		m.entries = append(m.entries, entry{role: "system", content: RenderSessionStatusText(m.snapshot, "已切换会话")})
@@ -756,6 +762,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.snapshot = typed.snapshot
 		m.approvalPicker = nil
 		m.approvalCursor = 0
+		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
 		m.input.Focus()
 		m.entries = append(m.entries, entry{role: "system", content: fmt.Sprintf("已切换命令执行模式: %s", approvalModeLabel(typed.mode))})
 		m.syncViewport()
@@ -1310,6 +1317,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		m.activityHint = "执行 " + m.currentToolLabel
 	case EventStatsUpdate:
 		if event.Stats != nil {
+			previousCompression := m.requestStats.Compression
 			if strings.TrimSpace(event.Stats.RunID) != "" {
 				m.requestStats.RunID = event.Stats.RunID
 			}
@@ -1318,6 +1326,9 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 			}
 			if event.Stats.Compression != nil {
 				m.requestStats.Compression = event.Stats.Compression
+				if summary := compressionUpdateSummary(previousCompression, event.Stats.Compression); summary != "" {
+					m.entries = append(m.entries, entry{role: "system", content: summary})
+				}
 			}
 		}
 	case EventSessionUpdate:
@@ -2044,16 +2055,13 @@ func (m model) statusBarSegments(maxWidth int) []string {
 		segments = append(segments, statusSegment{text: toolSegment, priority: priority})
 	}
 	if requestSegment := m.requestStatsSegment(compact); requestSegment != "" {
-		segments = append(segments, statusSegment{text: requestSegment, priority: 2})
-	}
-	if tokenSegment := m.tokenUsageSegment(compact); tokenSegment != "" {
-		segments = append(segments, statusSegment{text: tokenSegment, priority: 3})
+		segments = append(segments, statusSegment{text: requestSegment, priority: 5})
 	}
 	if contextSegment := m.contextUsageSegment(compact); contextSegment != "" {
-		segments = append(segments, statusSegment{text: contextSegment, priority: 4})
+		segments = append(segments, statusSegment{text: contextSegment, priority: 2})
 	}
-	if compressionSegment := m.compressionSegment(compact); compressionSegment != "" {
-		segments = append(segments, statusSegment{text: compressionSegment, priority: 4})
+	if tokenSegment := m.tokenUsageSegment(compact); tokenSegment != "" {
+		segments = append(segments, statusSegment{text: tokenSegment, priority: 4})
 	}
 	return fitStatusSegments(segments, maxWidth)
 }
@@ -2348,7 +2356,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 	if result.ClearHistory {
 		m.entries = buildWelcomeEntries(m.snapshot)
 		m.activityHint = ""
-		m.requestStats = RequestMetrics{}
+		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
 		if result.Snapshot != nil {
 			result.Snapshot.History = nil
 		}
@@ -2376,7 +2384,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		if result.RebuildEntries {
 			m.entries = buildInitialEntries(m.snapshot)
 			m.activityHint = ""
-			m.requestStats = RequestMetrics{}
+			m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
 		}
 	}
 	if result.SessionPicker != nil {
@@ -3081,51 +3089,199 @@ func (m *model) clampFlowCursor() {
 
 func (m model) contextUsageSegment(compact bool) string {
 	usage := m.requestStats.TokenUsage
-	if usage == nil || usage.ContextWindow == nil || usage.ContextWindow.MaxInputTokens <= 0 {
+	if usage == nil || usage.ContextWindow == nil {
 		return ""
 	}
-	maxTokens := usage.ContextWindow.MaxInputTokens
-	if maxTokens <= 0 {
-		return ""
+	contextWindow := usage.ContextWindow
+	maxTokens := contextWindow.MaxInputTokens
+	currentTokens := contextWindow.CurrentRoundInputTokens
+	available := resolveContextAvailableTokens(contextWindow)
+	if maxTokens > 0 {
+		if currentTokens < 0 {
+			currentTokens = 0
+		}
+		if currentTokens > maxTokens {
+			currentTokens = maxTokens
+		}
+		percent := float64(currentTokens) / float64(maxTokens) * 100
+		if compact {
+			parts := []string{fmt.Sprintf("上下文 %s/%s", formatCompactInt(currentTokens), formatCompactInt(maxTokens))}
+			if available > 0 {
+				parts = append(parts, "可"+formatCompactInt(available))
+			}
+			return strings.Join(parts, " ")
+		}
+		parts := []string{fmt.Sprintf("当前上下文 %s/%s %.0f%%", formatCompactInt(currentTokens), formatCompactInt(maxTokens), percent)}
+		if available > 0 {
+			parts = append(parts, fmt.Sprintf("可用 %s", formatCompactInt(available)))
+		}
+		if contextWindow.ShortTermContextTokens > 0 {
+			parts = append(parts, fmt.Sprintf("历史 %s", formatCompactInt(contextWindow.ShortTermContextTokens)))
+		}
+		return strings.Join(parts, " · ")
 	}
-	available := usage.ContextWindow.NextRoundAvailableTokens
 	if available <= 0 {
-		available = usage.ContextWindow.CurrentRoundAvailableTokens
-	}
-	if available <= 0 {
 		return ""
 	}
-	if available > maxTokens {
-		available = maxTokens
-	}
-	percent := float64(available) / float64(maxTokens) * 100
 	if compact {
-		return fmt.Sprintf("Avail %.0f%%", percent)
+		return fmt.Sprintf("上下文可用 %s", formatCompactInt(available))
 	}
-	return fmt.Sprintf("上下文可用 %s/%s %.0f%%", formatCompactInt(available), formatCompactInt(maxTokens), percent)
+	return fmt.Sprintf("上下文可用 %s", formatCompactInt(available))
 }
 
 func (m model) inputContextUsageHint() string {
 	usage := m.requestStats.TokenUsage
-	if usage == nil || usage.ContextWindow == nil || usage.ContextWindow.MaxInputTokens <= 0 {
-		return ""
+	if usage == nil || usage.ContextWindow == nil {
+		return m.defaultInputContextUsageHint()
 	}
-	maxTokens := usage.ContextWindow.MaxInputTokens
-	if maxTokens <= 0 {
-		return ""
+	contextWindow := usage.ContextWindow
+	parts := []string{}
+	maxTokens := contextWindow.MaxInputTokens
+	currentTokens := contextWindow.CurrentRoundInputTokens
+	available := resolveContextAvailableTokens(contextWindow)
+	draftTokens := estimateTextTokens(m.input.Value())
+	if maxTokens > 0 {
+		if currentTokens < 0 {
+			currentTokens = 0
+		}
+		displayCurrentTokens := currentTokens
+		if displayCurrentTokens > maxTokens {
+			displayCurrentTokens = maxTokens
+		}
+		usedPercent := float64(displayCurrentTokens) / float64(maxTokens) * 100
+		parts = append(parts, fmt.Sprintf("当前上下文 %s/%s 已用 %.0f%%", formatCompactInt(displayCurrentTokens), formatCompactInt(maxTokens), usedPercent))
 	}
-	available := usage.ContextWindow.NextRoundAvailableTokens
+	if draftTokens > 0 {
+		parts = append(parts, fmt.Sprintf("输入约 %s", formatCompactInt(draftTokens)))
+		projectedTokens := currentTokens + draftTokens
+		projectedAvailable := available - draftTokens
+		if projectedAvailable < 0 {
+			projectedAvailable = 0
+		}
+		if maxTokens > 0 {
+			projectedPercent := float64(projectedTokens) / float64(maxTokens) * 100
+			parts = append(parts, fmt.Sprintf("发送后约 %s/%s %.0f%%", formatCompactInt(projectedTokens), formatCompactInt(maxTokens), projectedPercent))
+		}
+		if projectedAvailable > 0 {
+			parts = append(parts, fmt.Sprintf("剩余约 %s", formatCompactInt(projectedAvailable)))
+		} else if maxTokens > 0 && projectedTokens > maxTokens {
+			parts = append(parts, fmt.Sprintf("超出约 %s", formatCompactInt(projectedTokens-maxTokens)))
+		}
+	} else if available > 0 {
+		parts = append(parts, fmt.Sprintf("可用 %s", formatCompactInt(available)))
+	}
+	if nextRoundAvailabilityRate := formatContextAvailabilityRate(available, maxTokens); nextRoundAvailabilityRate != "" {
+		parts = append(parts, nextRoundAvailabilityRate)
+	}
+	if contextWindow.ShortTermContextTokens > 0 {
+		parts = append(parts, fmt.Sprintf("历史 %s", formatCompactInt(contextWindow.ShortTermContextTokens)))
+	}
+	if contextWindow.HistoryMessageCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d 条消息", contextWindow.HistoryMessageCount))
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, " · ")
+	}
 	if available <= 0 {
-		available = usage.ContextWindow.CurrentRoundAvailableTokens
+		return ""
 	}
-	if available < 0 {
-		available = 0
+	return fmt.Sprintf("上下文可用 %s", formatCompactInt(available))
+}
+
+func (m model) defaultInputContextUsageHint() string {
+	if strings.TrimSpace(m.snapshot.SessionID) == "" {
+		return "上下文使用率 100%"
+	}
+	return "上下文使用率 待获取"
+}
+
+func formatContextAvailabilityRate(available int, maxTokens int) string {
+	if maxTokens <= 0 || available < 0 {
+		return ""
 	}
 	if available > maxTokens {
 		available = maxTokens
 	}
-	usedPercent := float64(maxTokens-available) / float64(maxTokens) * 100
-	return fmt.Sprintf("上下文窗口已用 %.0f%%", usedPercent)
+	rate := float64(available) / float64(maxTokens) * 100
+	return fmt.Sprintf("上下文使用率 %.0f%%", rate)
+}
+
+func resolveContextAvailableTokens(contextWindow *ContextWindow) int {
+	if contextWindow == nil {
+		return 0
+	}
+	if contextWindow.NextRoundAvailableTokens > 0 {
+		return contextWindow.NextRoundAvailableTokens
+	}
+	if contextWindow.CurrentRoundAvailableTokens > 0 {
+		return contextWindow.CurrentRoundAvailableTokens
+	}
+	if contextWindow.MaxInputTokens > 0 {
+		available := contextWindow.MaxInputTokens - contextWindow.CurrentRoundInputTokens
+		if available > 0 {
+			return available
+		}
+	}
+	return 0
+}
+
+func cloneRequestMetrics(source *RequestMetrics) RequestMetrics {
+	if source == nil {
+		return RequestMetrics{}
+	}
+	cloned := *source
+	if source.TokenUsage != nil {
+		tokenUsage := *source.TokenUsage
+		if source.TokenUsage.ContextWindow != nil {
+			contextWindow := *source.TokenUsage.ContextWindow
+			tokenUsage.ContextWindow = &contextWindow
+		}
+		cloned.TokenUsage = &tokenUsage
+	}
+	if source.Compression != nil {
+		compression := *source.Compression
+		cloned.Compression = &compression
+	}
+	return cloned
+}
+
+func estimateTextTokens(text string) int {
+	if strings.TrimSpace(text) == "" {
+		return 0
+	}
+	count := 0
+	asciiRunes := 0
+	flushASCII := func() {
+		if asciiRunes == 0 {
+			return
+		}
+		count += maxInt(1, (asciiRunes+3)/4)
+		asciiRunes = 0
+	}
+	for _, runeValue := range text {
+		switch {
+		case runeValue <= unicode.MaxASCII:
+			switch {
+			case unicode.IsSpace(runeValue):
+				flushASCII()
+			case unicode.IsLetter(runeValue) || unicode.IsDigit(runeValue):
+				asciiRunes++
+			default:
+				flushASCII()
+				count++
+			}
+		case unicode.Is(unicode.Han, runeValue), unicode.In(runeValue, unicode.Hiragana, unicode.Katakana, unicode.Hangul):
+			flushASCII()
+			count++
+		case unicode.IsSpace(runeValue):
+			flushASCII()
+		default:
+			flushASCII()
+			count++
+		}
+	}
+	flushASCII()
+	return count
 }
 
 func (m model) tokenUsageSegment(compact bool) string {
@@ -3182,13 +3338,55 @@ func (m model) compressionSegment(compact bool) string {
 		return ""
 	}
 	if compact {
-		return fmt.Sprintf("压缩 %d", compression.Count)
+		line := fmt.Sprintf("压缩 %d次", compression.Count)
+		if compression.CompressionRatio > 0 {
+			line += fmt.Sprintf(" %.0f%%", compression.CompressionRatio*100)
+		}
+		return line
 	}
-	line := fmt.Sprintf("压缩 %d 次 %s→%s", compression.Count, formatCompactInt(compression.BeforeTokens), formatCompactInt(compression.AfterTokens))
+	line := fmt.Sprintf("压缩 %d 次", compression.Count)
+	if compression.BeforeTokens > 0 || compression.AfterTokens > 0 {
+		line += fmt.Sprintf(" %s→%s", formatCompactInt(compression.BeforeTokens), formatCompactInt(compression.AfterTokens))
+	}
+	if compression.RemainingTokens > 0 {
+		line += fmt.Sprintf(" 剩%s", formatCompactInt(compression.RemainingTokens))
+	}
 	if compression.CompressionRatio > 0 {
 		line += fmt.Sprintf(" %.0f%%", compression.CompressionRatio*100)
 	}
 	return line
+}
+
+func compressionUpdateSummary(previous, current *CompressionStats) string {
+	if current == nil || current.Count == 0 || sameCompressionStats(previous, current) {
+		return ""
+	}
+	parts := []string{fmt.Sprintf("上下文压缩 %d 次", current.Count)}
+	if current.BeforeTokens > 0 || current.AfterTokens > 0 {
+		parts[0] = parts[0] + "(" + fmt.Sprintf("%s→%s",
+			formatCompactInt(current.BeforeTokens),
+			formatCompactInt(current.AfterTokens),
+		) + ")"
+	}
+	if current.RemainingTokens > 0 {
+		parts = append(parts, fmt.Sprintf("剩余 %s", formatCompactInt(current.RemainingTokens)))
+	}
+	if current.CompressionRatio > 0 {
+		parts = append(parts, fmt.Sprintf("压缩率 %.0f%%", current.CompressionRatio*100))
+	}
+	return strings.Join(parts, "，")
+}
+
+func sameCompressionStats(left, right *CompressionStats) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return left.Count == right.Count &&
+		left.BeforeTokens == right.BeforeTokens &&
+		left.AfterTokens == right.AfterTokens &&
+		left.RemainingTokens == right.RemainingTokens &&
+		left.CompressionRatio == right.CompressionRatio &&
+		left.TargetType == right.TargetType
 }
 
 func currentFlowIndex(flows []FlowItem, current string) int {
