@@ -530,7 +530,7 @@ var slashCommands = []slashCommand{
 	{Trigger: "/skills", Completion: "/skills ", Description: "列出、查看或启停本地技能"},
 	{Trigger: "/sessions", Completion: "/sessions ", Description: "列出当前智能体的服务端会话，可附页码"},
 	{Trigger: "/help", Completion: "/help", Description: "显示可用命令帮助"},
-	{Trigger: "/config", Completion: "/config ", Description: "查看或更新服务端地址、API Key 等配置"},
+	{Trigger: "/config", Completion: "/config ", Description: "查看或更新系统全局配置"},
 	{Trigger: "/exit", Completion: "/exit", Description: "退出当前智能对话"},
 }
 
@@ -2142,7 +2142,7 @@ func welcomeCommandsLabel(snapshot Snapshot) []string {
 		"  | | (_| | | |_| | |  _| | | (_) \\ V  V /",
 		"  |_|\\__,_|_|\\__, |_|_|   |_|\\___/ \\_/\\_/",
 		"             |___/",
-		"  :: Snz1DP ::         CLI v" + fallback(snapshot.Version, "0.1.0"),
+		"  :: Snz1DP ::                 CLI v" + fallback(snapshot.Version, "0.1.0"),
 		"",
 	}
 	labelValue := "常用命令："

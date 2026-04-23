@@ -196,7 +196,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			a.printInteractiveUsage(ctx, providerClient, flowDisplayName, flowID, sessionState)
 			continue
 		case line == "/clear":
-			fmt.Fprint(a.stdout, "\033[H\033[2J")
+			a.clearInteractiveScreen()
 			continue
 		case line == "/session":
 			a.printSessionStatus(ctx, providerClient, flowDisplayName, flowID, sessionState)
@@ -218,6 +218,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			if err := a.sessionStore.Delete(flowID, workdir); err != nil {
 				return err
 			}
+			a.clearInteractiveScreen()
 			fmt.Fprintln(a.stdout, "已重置本地会话。")
 			continue
 		case strings.HasPrefix(strings.ToLower(line), "/config session "):
@@ -305,6 +306,10 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 		}
 		sessionState = updatedState
 	}
+}
+
+func (a *App) clearInteractiveScreen() {
+	fmt.Fprint(a.stdout, "\033[H\033[2J")
 }
 
 func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string) error {
@@ -497,7 +502,7 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 	fmt.Fprintln(a.stdout, "  /help     显示帮助")
 	fmt.Fprintln(a.stdout, "  /session  显示当前会话状态")
 	fmt.Fprintln(a.stdout, "  /sessions 显示本地已保存会话")
-	fmt.Fprintln(a.stdout, "  /new      重置当前智能体的本地会话")
+	fmt.Fprintln(a.stdout, "  /new      清屏并重置当前智能体的本地会话")
 	fmt.Fprintln(a.stdout, "  /clear    清屏")
 	fmt.Fprintln(a.stdout, "  /exit     退出")
 	fmt.Fprintln(a.stdout, "  启动参数: --show-stream-events 可显示系统提示与工具调用日志")
