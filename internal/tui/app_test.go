@@ -67,20 +67,25 @@ func TestVisibleSlashCommandsListsAgentBeforeAgents(t *testing.T) {
 	}
 }
 
-func TestRenderTransientStatusHiddenInAgentMode(t *testing.T) {
+func TestRenderTransientStatusShownInAllRequestModes(t *testing.T) {
 	model := model{
 		snapshot:     Snapshot{RequestMode: "agent"},
 		viewport:     viewport.Model{Width: 80},
 		activityHint: "执行 读取文件",
 	}
 
-	if got := sanitizeTerminalText(model.renderTransientStatus()); strings.TrimSpace(got) != "" {
-		t.Fatalf("expected no transient status in agent mode, got %q", got)
+	if got := sanitizeTerminalText(model.renderTransientStatus()); !strings.Contains(got, "执行 读取文件") {
+		t.Fatalf("expected transient status in agent mode, got %q", got)
 	}
 
 	model.snapshot.RequestMode = "ask"
 	if got := sanitizeTerminalText(model.renderTransientStatus()); !strings.Contains(got, "执行 读取文件") {
 		t.Fatalf("expected transient status in ask mode, got %q", got)
+	}
+
+	model.snapshot.RequestMode = "plan"
+	if got := sanitizeTerminalText(model.renderTransientStatus()); !strings.Contains(got, "执行 读取文件") {
+		t.Fatalf("expected transient status in plan mode, got %q", got)
 	}
 }
 
@@ -116,5 +121,44 @@ func TestRenderStatusBarShowsModeSegmentForAllRequestModes(t *testing.T) {
 				t.Fatalf("expected request mode segment %q in status bar, got %q", testCase.modeLabel, got)
 			}
 		})
+	}
+}
+
+func TestApplyLocalCommandResultClearHistoryDropsSnapshotHistory(t *testing.T) {
+	m := model{
+		snapshot: Snapshot{
+			BackendAvailable: true,
+			WelcomeMessage:   "欢迎回来",
+			History: []HistoryEntry{
+				{Role: "user", Content: "旧问题"},
+			},
+		},
+		entries: []entry{{role: "user", content: "旧问题"}},
+	}
+
+	updatedSnapshot := Snapshot{
+		BackendAvailable: true,
+		WelcomeMessage:   "欢迎回来",
+		History: []HistoryEntry{
+			{Role: "user", Content: "旧问题"},
+			{Role: "assistant", Content: "旧回答"},
+		},
+	}
+
+	m.applyLocalCommandResult(LocalCommandResult{
+		Handled:        true,
+		ClearHistory:   true,
+		Snapshot:       &updatedSnapshot,
+		RebuildEntries: true,
+	})
+
+	if len(m.entries) != 1 {
+		t.Fatalf("expected only welcome entry after clear history, got %#v", m.entries)
+	}
+	if m.entries[0].role != "welcome" || m.entries[0].content != "欢迎回来" {
+		t.Fatalf("expected welcome entry after clear history, got %#v", m.entries[0])
+	}
+	if len(m.snapshot.History) != 0 {
+		t.Fatalf("expected snapshot history to be cleared, got %#v", m.snapshot.History)
 	}
 }

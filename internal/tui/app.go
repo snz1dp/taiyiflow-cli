@@ -1688,9 +1688,6 @@ func (m model) historyPaneWidth() int {
 }
 
 func (m model) renderTransientStatus() string {
-	if requestModeKey(m.snapshot.RequestMode) == "agent" {
-		return ""
-	}
 	status := strings.TrimSpace(m.activityHint)
 	if status == "" {
 		return ""
@@ -2352,6 +2349,9 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		m.entries = buildWelcomeEntries(m.snapshot)
 		m.activityHint = ""
 		m.requestStats = RequestMetrics{}
+		if result.Snapshot != nil {
+			result.Snapshot.History = nil
+		}
 	}
 	if result.ConfigForm != nil {
 		m.configForm = newConfigFormState(*result.ConfigForm)

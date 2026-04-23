@@ -566,6 +566,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			updatedSnapshot.RequestMode = provider.RequestTypeAgent
 			updatedSnapshot.ContextDir = resolveLocalWorkdir(snapshot.Workdir)
 			updatedSnapshot.SessionSandboxEscapePolicy = ""
+			updatedSnapshot.History = nil
 			return tui.LocalCommandResult{
 				Handled:        true,
 				ClearHistory:   true,
