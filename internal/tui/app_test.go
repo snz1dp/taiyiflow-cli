@@ -95,9 +95,9 @@ func TestRenderStatusBarShowsModeSegmentForAllRequestModes(t *testing.T) {
 		mode      string
 		modeLabel string
 	}{
-		{name: "agent mode", mode: "agent", modeLabel: "执行模式"},
-		{name: "ask mode", mode: "ask", modeLabel: "问答模式"},
-		{name: "plan mode", mode: "plan", modeLabel: "计划模式"},
+		{name: "agent mode", mode: "agent", modeLabel: "执行"},
+		{name: "ask mode", mode: "ask", modeLabel: "问答"},
+		{name: "plan mode", mode: "plan", modeLabel: "计划"},
 	}
 
 	for _, testCase := range tests {
@@ -214,19 +214,13 @@ func TestInputContextUsageHintShowsCurrentUsageDetails(t *testing.T) {
 	}
 
 	got := model.inputContextUsageHint()
-	if !strings.Contains(got, "当前上下文 2.0k/8.2k 已用 25%") {
-		t.Fatalf("expected current usage summary in input hint, got %q", got)
+	if !strings.Contains(got, "2.0K/8.2K") {
+		t.Fatalf("expected compact current usage summary in input hint, got %q", got)
 	}
-	if !strings.Contains(got, "可用 6.1k") {
-		t.Fatalf("expected available token summary in input hint, got %q", got)
-	}
-	if !strings.Contains(got, "下轮可用率 75%") {
+	if !strings.Contains(got, "/6.1K") {
 		t.Fatalf("expected next-round availability rate in input hint, got %q", got)
 	}
-	if !strings.Contains(got, "历史 3.1k") {
-		t.Fatalf("expected history token summary in input hint, got %q", got)
-	}
-	if !strings.Contains(got, "12 条消息") {
+	if !strings.Contains(got, "历史 12") {
 		t.Fatalf("expected history message count in input hint, got %q", got)
 	}
 }
@@ -236,7 +230,7 @@ func TestInputContextUsageHintShowsProjectedUsageWhileTyping(t *testing.T) {
 	input.SetValue("请总结这段实现")
 	model := model{
 		snapshot: Snapshot{SessionID: "session-123"},
-		input: input,
+		input:    input,
 		requestStats: RequestMetrics{
 			TokenUsage: &TokenUsage{
 				ContextWindow: &ContextWindow{
@@ -249,16 +243,13 @@ func TestInputContextUsageHintShowsProjectedUsageWhileTyping(t *testing.T) {
 	}
 
 	got := model.inputContextUsageHint()
-	if !strings.Contains(got, "输入约 7") {
+	if !strings.Contains(got, "草稿 7") {
 		t.Fatalf("expected draft token estimate in input hint, got %q", got)
 	}
-	if !strings.Contains(got, "发送后约 2.1k/8.2k 25%") {
-		t.Fatalf("expected projected context usage in input hint, got %q", got)
+	if !strings.Contains(got, "本轮 25%") {
+		t.Fatalf("expected compact current usage summary in input hint, got %q", got)
 	}
-	if !strings.Contains(got, "剩余约 6.1k") {
-		t.Fatalf("expected projected remaining tokens in input hint, got %q", got)
-	}
-	if !strings.Contains(got, "下轮可用率 75%") {
+	if !strings.Contains(got, "下轮 75%") {
 		t.Fatalf("expected next-round availability rate in input hint, got %q", got)
 	}
 }
@@ -267,7 +258,7 @@ func TestInputContextUsageHintDefaultsToFullAvailabilityForNewSession(t *testing
 	model := model{}
 
 	got := model.inputContextUsageHint()
-	if got != "下轮可用率 100%" {
+	if got != "下轮 100%" {
 		t.Fatalf("expected default full availability hint for new session, got %q", got)
 	}
 }
@@ -276,7 +267,7 @@ func TestInputContextUsageHintDefaultsToPendingForReopenedSession(t *testing.T) 
 	model := model{snapshot: Snapshot{SessionID: "session-123"}}
 
 	got := model.inputContextUsageHint()
-	if got != "下轮可用率 待获取" {
+	if got != "正在输出..." {
 		t.Fatalf("expected pending availability hint for reopened session, got %q", got)
 	}
 }
@@ -305,11 +296,14 @@ func TestStatusBarSegmentsKeepContextBeforeTokenUsage(t *testing.T) {
 
 	segments := model.statusBarSegments(50)
 	joined := strings.Join(segments, " | ")
-	if !strings.Contains(joined, "上下文 2.0k/8.2k 可6.1k") {
-		t.Fatalf("expected context segment to survive width fitting, got %q", joined)
+	if strings.Contains(joined, "上下文 ") {
+		t.Fatalf("expected context text to move out of left status segments, got %q", joined)
 	}
 	if strings.Contains(joined, "Tk ") || strings.Contains(joined, "Token ") {
 		t.Fatalf("expected token usage segment to be dropped before context segment, got %q", joined)
+	}
+	if grid := model.contextUsageGrid(); !strings.Contains(grid, "25%") {
+		t.Fatalf("expected context grid to expose usage ratio, got %q", grid)
 	}
 }
 
@@ -346,15 +340,54 @@ func TestStatusBarSegmentsDoNotShowCompressionCount(t *testing.T) {
 	if strings.Contains(joined, "压缩 ") {
 		t.Fatalf("expected compression count to stay out of status bar, got %q", joined)
 	}
-	if !strings.Contains(joined, "上下文 2.0k/8.2k 可6.1k") {
-		t.Fatalf("expected context segment to be shown, got %q", joined)
+	if strings.Contains(joined, "上下文 ") {
+		t.Fatalf("expected context text to move out of left status segments, got %q", joined)
 	}
 	if strings.Contains(joined, "Tk ") || strings.Contains(joined, "Token ") {
 		t.Fatalf("expected token usage segment to be dropped before context segment, got %q", joined)
 	}
 }
 
-func TestApplyEventStatsUpdateAddsCompressionSummaryOnce(t *testing.T) {
+func TestRenderStatusBarShowsContextGrid(t *testing.T) {
+	model := model{
+		snapshot: Snapshot{
+			BackendAvailable: true,
+			RequestMode:      "agent",
+			ApprovalMode:     "confirm",
+		},
+		state:        newProgressState(progressStreaming),
+		width:        120,
+		contentWidth: 120,
+		requestStats: RequestMetrics{
+			TokenUsage: &TokenUsage{
+				ContextWindow: &ContextWindow{
+					MaxInputTokens:           8192,
+					CurrentRoundInputTokens:  2048,
+					NextRoundAvailableTokens: 6144,
+				},
+			},
+		},
+	}
+
+	got := sanitizeTerminalText(model.renderStatusBar())
+	if !strings.Contains(got, "■■■□□□□□□□  25%") {
+		t.Fatalf("expected context usage grid in status bar, got %q", got)
+	}
+	if !strings.Contains(got, "下轮 75%") {
+		t.Fatalf("expected compact context hint on the right side of status bar, got %q", got)
+	}
+}
+
+func TestFormatContextUsageGridClampsToBounds(t *testing.T) {
+	if got := formatContextUsageGrid(9999, 8192, 10); got != "■■■■■■■■■■ 100%" {
+		t.Fatalf("expected full grid when usage exceeds budget, got %q", got)
+	}
+	if got := formatContextUsageGrid(-1, 8192, 10); got != "□□□□□□□□□□   0%" {
+		t.Fatalf("expected empty grid for negative usage, got %q", got)
+	}
+}
+
+func TestApplyEventStatsUpdateStoresCompressionWithoutSummaryEntry(t *testing.T) {
 	model := model{}
 	stats := &RequestMetrics{
 		Compression: &CompressionStats{
@@ -368,15 +401,15 @@ func TestApplyEventStatsUpdateAddsCompressionSummaryOnce(t *testing.T) {
 	}
 
 	model.applyEvent(Event{Kind: EventStatsUpdate, Stats: stats})
-	if len(model.entries) != 1 {
-		t.Fatalf("expected one compression summary entry, got %#v", model.entries)
+	if len(model.entries) != 0 {
+		t.Fatalf("expected compression summary to stay out of transcript, got %#v", model.entries)
 	}
-	if !strings.Contains(model.entries[0].content, "上下文压缩 1 次") {
-		t.Fatalf("expected compression summary entry, got %q", model.entries[0].content)
+	if model.requestStats.Compression == nil || model.requestStats.Compression.Count != 1 {
+		t.Fatalf("expected compression stats to be stored, got %#v", model.requestStats.Compression)
 	}
 
 	model.applyEvent(Event{Kind: EventStatsUpdate, Stats: stats})
-	if len(model.entries) != 1 {
-		t.Fatalf("expected duplicated compression summary to be suppressed, got %#v", model.entries)
+	if len(model.entries) != 0 {
+		t.Fatalf("expected repeated compression updates to stay out of transcript, got %#v", model.entries)
 	}
 }

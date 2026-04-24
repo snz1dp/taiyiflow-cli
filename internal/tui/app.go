@@ -5,6 +5,7 @@ import (
 	cryptorand "crypto/rand"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1317,7 +1318,6 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		m.activityHint = "执行 " + m.currentToolLabel
 	case EventStatsUpdate:
 		if event.Stats != nil {
-			previousCompression := m.requestStats.Compression
 			if strings.TrimSpace(event.Stats.RunID) != "" {
 				m.requestStats.RunID = event.Stats.RunID
 			}
@@ -1326,9 +1326,6 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 			}
 			if event.Stats.Compression != nil {
 				m.requestStats.Compression = event.Stats.Compression
-				if summary := compressionUpdateSummary(previousCompression, event.Stats.Compression); summary != "" {
-					m.entries = append(m.entries, entry{role: "system", content: summary})
-				}
 			}
 		}
 	case EventSessionUpdate:
@@ -1469,6 +1466,10 @@ func (m *model) syncLayout() {
 	m.syncViewport()
 }
 
+func (m model) useMinimalChrome() bool {
+	return m.width > 0 && m.width < 76
+}
+
 func (m *model) syncViewport() {
 	content := renderEntries(m.entries, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot)
 	if transient := m.renderTransientStatus(); transient != "" {
@@ -1525,11 +1526,6 @@ func (m model) View() string {
 	}
 	if inputBoxWidth < 20 {
 		inputBoxWidth = 20
-	}
-	if contextUsageHint := m.inputContextUsageHint(); contextUsageHint != "" {
-		rightHint := trimForWidth(contextUsageHint, maxInt(8, inputBoxWidth-2))
-		rightLine := renderHeaderLine("", statusBarDimStyle.Render(rightHint), maxInt(12, inputBoxWidth-2), true)
-		inputView = lipgloss.JoinVertical(lipgloss.Left, inputView, rightLine)
 	}
 	inputBox := inputStyle.Width(inputBoxWidth).Render(inputView)
 	bodyParts = append(bodyParts, history, inputBox, m.renderStatusBar())
@@ -1730,9 +1726,42 @@ func (m model) renderStatusBar() string {
 	if bodyWidth < 12 {
 		bodyWidth = 12
 	}
-	segments := m.statusBarSegments(bodyWidth)
-	body := trimForWidth(joinStatusSegments(segments, "  ·  "), bodyWidth)
-	line := lipgloss.JoinHorizontal(lipgloss.Left, stateChip, " ", statusBarDimStyle.Render(body))
+	rightParts := []string{}
+	if contextGrid := m.contextUsageGrid(); contextGrid != "" {
+		rightParts = append(rightParts, contextGrid)
+	}
+	if contextHint := m.inputContextUsageHint(); contextHint != "" {
+		rightParts = append(
+			rightParts,
+			statusBarDimStyle.Render(trimForWidth(contextHint, maxInt(12, renderWidth/4))),
+		)
+	}
+	rightColumn := strings.Join(rightParts, " ")
+	rightWidth := lipgloss.Width(rightColumn)
+	leftWidth := bodyWidth
+	if rightWidth > 0 {
+		leftWidth -= rightWidth + 2
+		if leftWidth < 12 {
+			leftWidth = 12
+		}
+	}
+	segments := m.statusBarSegments(leftWidth)
+	body := trimForWidth(joinStatusSegments(segments, " · "), leftWidth)
+	leftColumn := statusBarDimStyle.Render(body)
+	bodyLine := leftColumn
+	if rightWidth > 0 {
+		spacerWidth := bodyWidth - lipgloss.Width(leftColumn) - rightWidth
+		if spacerWidth < 1 {
+			spacerWidth = 1
+		}
+		bodyLine = lipgloss.JoinHorizontal(
+			lipgloss.Left,
+			leftColumn,
+			strings.Repeat(" ", spacerWidth),
+			rightColumn,
+		)
+	}
+	line := lipgloss.JoinHorizontal(lipgloss.Left, stateChip, " ", bodyLine)
 	return statusBarStyle.Width(renderWidth).Render(trimForWidth(line, renderWidth-2))
 }
 
@@ -2057,12 +2086,6 @@ func (m model) statusBarSegments(maxWidth int) []string {
 	if requestSegment := m.requestStatsSegment(compact); requestSegment != "" {
 		segments = append(segments, statusSegment{text: requestSegment, priority: 5})
 	}
-	if contextSegment := m.contextUsageSegment(compact); contextSegment != "" {
-		segments = append(segments, statusSegment{text: contextSegment, priority: 2})
-	}
-	if tokenSegment := m.tokenUsageSegment(compact); tokenSegment != "" {
-		segments = append(segments, statusSegment{text: tokenSegment, priority: 4})
-	}
 	return fitStatusSegments(segments, maxWidth)
 }
 
@@ -2112,10 +2135,29 @@ func buildBackendStatusEntries(snapshot Snapshot) []entry {
 	return []entry{{role: "error", content: message}}
 }
 
+func backendStatusLabel(snapshot Snapshot) string {
+	if snapshot.BackendAvailable {
+		return "服务端已连接"
+	}
+	reason := strings.TrimSpace(snapshot.BackendStatusReason)
+	if reason == "" {
+		return "服务端未连接"
+	}
+	return "服务端未连接: " + reason
+}
+
 func (m model) backendUnavailableMessage() string {
 	message := "当前无法连接服务端，已进入只读模式。"
 	message += " 可用命令: /config /skills /help /clear /exit"
 	return message
+}
+
+func welcomeCommandsLabel(snapshot Snapshot) []string {
+	labelValue := "可用命令: "
+	if snapshot.BackendAvailable {
+		return []string{labelValue + "/agents /config /skills /session /new /exit"}
+	}
+	return []string{labelValue + "/config /skills /help /clear /exit"}
 }
 
 func isAvailableInReadOnlyMode(input string) bool {
@@ -2127,45 +2169,18 @@ func isAvailableInReadOnlyMode(input string) bool {
 		return true
 	case trimmed == "/config", strings.HasPrefix(trimmed, "/config "):
 		return true
+	case trimmed == "/session", strings.HasPrefix(trimmed, "/session "):
+		return true
+	case trimmed == "/new", strings.HasPrefix(trimmed, "/new "):
+		return true
 	default:
 		return false
 	}
 }
 
-func backendStatusLabel(snapshot Snapshot) string {
-	if snapshot.BackendAvailable {
-		return "服务端已连接"
-	}
-	return "服务端未连接"
-}
-
-func welcomeCommandsLabel(snapshot Snapshot) []string {
-	labelValues := []string{
-		" _____     _       _ _____ _",
-		"|_   _|_ _(_)_   _(_)  ___| | _____      __",
-		"  | |/ _` | | | | | | |_  | |/ _ \\ \\ /\\ / /",
-		"  | | (_| | | |_| | |  _| | | (_) \\ V  V /",
-		"  |_|\\__,_|_|\\__, |_|_|   |_|\\___/ \\_/\\_/",
-		"             |___/",
-		"  :: Snz1DP ::                 CLI v" + fallback(snapshot.Version, "0.1.0"),
-		"",
-	}
-	labelValue := "常用命令："
-	if snapshot.BackendAvailable {
-		labelValues = append(labelValues, labelValue+"/agents /config /skills /session /new /exit")
-	} else {
-		labelValues = append(labelValues, labelValue+"/config /skills /help /clear /exit")
-	}
-	return labelValues
-}
-
-func (m model) useMinimalChrome() bool {
-	return m.width > 0 && m.width < 76
-}
-
 func renderEntries(entries []entry, width int, height int, renderer *glamour.TermRenderer, snapshot Snapshot) string {
 	if len(entries) == 0 {
-		return hintStyle.Render("还没有消息。")
+		return ""
 	}
 	blocks := make([]string, 0, len(entries))
 	for _, item := range entries {
@@ -3129,6 +3144,48 @@ func (m model) contextUsageSegment(compact bool) string {
 	return fmt.Sprintf("上下文可用 %s", formatCompactInt(available))
 }
 
+func (m model) contextUsageGrid() string {
+	usage := m.requestStats.TokenUsage
+	if usage == nil || usage.ContextWindow == nil {
+		return ""
+	}
+	return formatContextUsageGrid(
+		usage.ContextWindow.CurrentRoundInputTokens,
+		usage.ContextWindow.MaxInputTokens,
+		8,
+	)
+}
+
+func formatContextUsageGrid(currentTokens int, maxTokens int, cellCount int) string {
+	if maxTokens <= 0 || cellCount <= 0 {
+		return ""
+	}
+	if currentTokens < 0 {
+		currentTokens = 0
+	}
+	if currentTokens > maxTokens {
+		currentTokens = maxTokens
+	}
+	usedRatio := float64(currentTokens) / float64(maxTokens)
+	usedCells := int(math.Round(usedRatio * float64(cellCount)))
+	if currentTokens > 0 && usedCells == 0 {
+		usedCells = 1
+	}
+	if usedCells > cellCount {
+		usedCells = cellCount
+	}
+	builder := strings.Builder{}
+	builder.Grow(cellCount)
+	for index := 0; index < cellCount; index++ {
+		if index < usedCells {
+			builder.WriteRune('■')
+			continue
+		}
+		builder.WriteRune('□')
+	}
+	return fmt.Sprintf("%s%3.0f%%", builder.String(), usedRatio*100)
+}
+
 func (m model) inputContextUsageHint() string {
 	usage := m.requestStats.TokenUsage
 	if usage == nil || usage.ContextWindow == nil {
@@ -3139,60 +3196,35 @@ func (m model) inputContextUsageHint() string {
 	maxTokens := contextWindow.MaxInputTokens
 	currentTokens := contextWindow.CurrentRoundInputTokens
 	available := resolveContextAvailableTokens(contextWindow)
-	draftTokens := estimateTextTokens(m.input.Value())
+	if draftTokens := estimateTextTokens(m.input.Value()); draftTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%s", formatCompactInt(draftTokens)))
+	}
 	if maxTokens > 0 {
 		if currentTokens < 0 {
 			currentTokens = 0
 		}
-		displayCurrentTokens := currentTokens
-		if displayCurrentTokens > maxTokens {
-			displayCurrentTokens = maxTokens
+		if currentTokens > maxTokens {
+			currentTokens = maxTokens
 		}
-		usedPercent := float64(displayCurrentTokens) / float64(maxTokens) * 100
-		parts = append(parts, fmt.Sprintf("当前上下文 %s/%s 已用 %.0f%%", formatCompactInt(displayCurrentTokens), formatCompactInt(maxTokens), usedPercent))
-	}
-	if draftTokens > 0 {
-		parts = append(parts, fmt.Sprintf("输入约 %s", formatCompactInt(draftTokens)))
-		projectedTokens := currentTokens + draftTokens
-		projectedAvailable := available - draftTokens
-		if projectedAvailable < 0 {
-			projectedAvailable = 0
-		}
-		if maxTokens > 0 {
-			projectedPercent := float64(projectedTokens) / float64(maxTokens) * 100
-			parts = append(parts, fmt.Sprintf("发送后约 %s/%s %.0f%%", formatCompactInt(projectedTokens), formatCompactInt(maxTokens), projectedPercent))
-		}
-		if projectedAvailable > 0 {
-			parts = append(parts, fmt.Sprintf("剩余约 %s", formatCompactInt(projectedAvailable)))
-		} else if maxTokens > 0 && projectedTokens > maxTokens {
-			parts = append(parts, fmt.Sprintf("超出约 %s", formatCompactInt(projectedTokens-maxTokens)))
-		}
-	} else if available > 0 {
-		parts = append(parts, fmt.Sprintf("可用 %s", formatCompactInt(available)))
+		parts = append(parts, fmt.Sprintf("%.0f", float64(currentTokens)/1000.0))
 	}
 	if nextRoundAvailabilityRate := formatContextAvailabilityRate(available, maxTokens); nextRoundAvailabilityRate != "" {
-		parts = append(parts, nextRoundAvailabilityRate)
-	}
-	if contextWindow.ShortTermContextTokens > 0 {
-		parts = append(parts, fmt.Sprintf("历史 %s", formatCompactInt(contextWindow.ShortTermContextTokens)))
+		parts[len(parts)-1] = fmt.Sprintf("%s/%s", parts[len(parts)-1], nextRoundAvailabilityRate)
 	}
 	if contextWindow.HistoryMessageCount > 0 {
-		parts = append(parts, fmt.Sprintf("%d 条消息", contextWindow.HistoryMessageCount))
+		parts = append(parts, fmt.Sprintf("共%d条消息", contextWindow.HistoryMessageCount))
 	}
 	if len(parts) > 0 {
 		return strings.Join(parts, " · ")
 	}
-	if available <= 0 {
-		return ""
-	}
-	return fmt.Sprintf("上下文可用 %s", formatCompactInt(available))
+	return ""
 }
 
 func (m model) defaultInputContextUsageHint() string {
 	if strings.TrimSpace(m.snapshot.SessionID) == "" {
-		return "上下文使用率 100%"
+		return "上下文窗口100%可用"
 	}
-	return "上下文使用率 待获取"
+	return "正在输出..."
 }
 
 func formatContextAvailabilityRate(available int, maxTokens int) string {
@@ -3202,8 +3234,8 @@ func formatContextAvailabilityRate(available int, maxTokens int) string {
 	if available > maxTokens {
 		available = maxTokens
 	}
-	rate := float64(available) / float64(maxTokens) * 100
-	return fmt.Sprintf("上下文使用率 %.0f%%", rate)
+	rate := float64(available) / 1000.0
+	return fmt.Sprintf("%.0fK", rate)
 }
 
 func resolveContextAvailableTokens(contextWindow *ContextWindow) int {

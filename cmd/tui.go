@@ -778,6 +778,12 @@ func loadRecentSessionHistory(ctx context.Context, providerClient provider.Provi
 }
 
 func loadLatestSessionMetrics(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string) *tui.RequestMetrics {
+	runMetrics := loadLatestRunMetrics(ctx, providerClient, flowID, sessionID)
+	sessionMetrics := loadSessionContextMetrics(ctx, providerClient, flowID, sessionID)
+	return mergeSessionMetrics(runMetrics, sessionMetrics)
+}
+
+func loadLatestRunMetrics(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string) *tui.RequestMetrics {
 	trimmedFlowID := strings.TrimSpace(flowID)
 	trimmedSessionID := strings.TrimSpace(sessionID)
 	if providerClient == nil || trimmedFlowID == "" || trimmedSessionID == "" {
@@ -806,6 +812,85 @@ func loadLatestSessionMetrics(ctx context.Context, providerClient provider.Provi
 		return nil
 	}
 	return buildTUIRequestMetrics(latestRunID, stats)
+}
+
+func loadSessionContextMetrics(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string) *tui.RequestMetrics {
+	trimmedFlowID := strings.TrimSpace(flowID)
+	trimmedSessionID := strings.TrimSpace(sessionID)
+	if providerClient == nil || trimmedFlowID == "" || trimmedSessionID == "" {
+		return nil
+	}
+	preview, err := providerClient.GetSessionContextWindow(ctx, trimmedFlowID, trimmedSessionID)
+	if err != nil || preview == nil || preview.ContextWindow == nil {
+		return nil
+	}
+	metrics := &tui.RequestMetrics{
+		TokenUsage: &tui.TokenUsage{
+			ContextWindow: &tui.ContextWindow{
+				MaxInputTokens:              preview.ContextWindow.MaxInputTokens,
+				ShortTermContextTokens:      preview.ContextWindow.ShortTermContextTokens,
+				CurrentRoundInputTokens:     preview.ContextWindow.CurrentRoundInputTokens,
+				NextRoundAvailableTokens:    preview.ContextWindow.NextRoundAvailableTokens,
+				CurrentRoundAvailableTokens: preview.ContextWindow.CurrentRoundAvailableTokens,
+				HistoryMessageCount:         preview.ContextWindow.HistoryMessageCount,
+				PreparedMessageCount:        preview.ContextWindow.PreparedMessageCount,
+			},
+		},
+	}
+	if preview.LatestCompression != nil {
+		metrics.Compression = &tui.CompressionStats{
+			Count:            1,
+			BeforeTokens:     preview.LatestCompression.BeforeTokens,
+			AfterTokens:      preview.LatestCompression.AfterTokens,
+			RemainingTokens:  preview.LatestCompression.RemainingTokens,
+			CompressionRatio: preview.LatestCompression.CompressionRatio,
+			TargetType:       preview.LatestCompression.TargetType,
+		}
+	}
+	return metrics
+}
+
+func mergeSessionMetrics(runMetrics *tui.RequestMetrics, sessionMetrics *tui.RequestMetrics) *tui.RequestMetrics {
+	if runMetrics == nil {
+		return sessionMetrics
+	}
+	if sessionMetrics == nil {
+		return runMetrics
+	}
+	merged := &tui.RequestMetrics{
+		RunID:         runMetrics.RunID,
+		StartedAt:     runMetrics.StartedAt,
+		CompletedAt:   runMetrics.CompletedAt,
+		InputChars:    runMetrics.InputChars,
+		OutputChars:   runMetrics.OutputChars,
+		ChunkCount:    runMetrics.ChunkCount,
+		ToolCallCount: runMetrics.ToolCallCount,
+		CommandCount:  runMetrics.CommandCount,
+	}
+	if runMetrics.TokenUsage != nil {
+		tokenUsage := *runMetrics.TokenUsage
+		merged.TokenUsage = &tokenUsage
+		if runMetrics.TokenUsage.ContextWindow != nil {
+			contextWindow := *runMetrics.TokenUsage.ContextWindow
+			merged.TokenUsage.ContextWindow = &contextWindow
+		}
+	}
+	if runMetrics.Compression != nil {
+		compression := *runMetrics.Compression
+		merged.Compression = &compression
+	}
+	if sessionMetrics.TokenUsage != nil && sessionMetrics.TokenUsage.ContextWindow != nil {
+		if merged.TokenUsage == nil {
+			merged.TokenUsage = &tui.TokenUsage{}
+		}
+		contextWindow := *sessionMetrics.TokenUsage.ContextWindow
+		merged.TokenUsage.ContextWindow = &contextWindow
+	}
+	if merged.Compression == nil && sessionMetrics.Compression != nil {
+		compression := *sessionMetrics.Compression
+		merged.Compression = &compression
+	}
+	return merged
 }
 
 func mapMessageRole(item provider.SessionMessage) string {

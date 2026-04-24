@@ -13,6 +13,46 @@
 			],
 			"isBackground": false,
 			"group": "build"
+		},
+		{
+			"label": "test tui package",
+			"type": "shell",
+			"command": "go",
+			"args": [
+				"test",
+				"./internal/tui"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "test tui package retry",
+			"type": "shell",
+			"command": "go",
+			"args": [
+				"test",
+				"./internal/tui"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "test tui package retry 2",
+			"type": "shell",
+			"command": "go",
+			"args": [
+				"test",
+				"./internal/tui"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "test tui package retry 3",
+			"type": "shell",
+			"command": "go",
+			"args": [
+				"test",
+				"./internal/tui"
+			],
+			"isBackground": false
 		}
 	]
 }

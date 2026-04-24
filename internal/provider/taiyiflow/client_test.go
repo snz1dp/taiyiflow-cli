@@ -174,6 +174,36 @@ func TestGetRunStatsPollsCompressionRecordsUntilAvailable(t *testing.T) {
 	}
 }
 
+func TestGetSessionContextWindowParsesResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/agents/flows/demo-flow/sessions/session-123/context-window" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"flow_id":"demo-flow","session_id":"session-123","context_window":{"max_input_tokens":8192,"short_term_context_tokens":3072,"current_round_input_tokens":3072,"next_round_available_tokens":5120,"current_round_available_tokens":5120,"history_message_count":14,"prepared_message_count":14},"latest_compression":{"trigger_reason":"input_max_tokens_exceeded","compression_strategy":"token_truncate","target_type":"history_messages","before_tokens":9200,"target_tokens":8192,"after_tokens":6000,"remaining_tokens":2192,"compression_ratio":0.65,"reserved_history_tokens":512},"source_updated_at":"2026-04-23T12:00:00Z","source":"history_rebuild"}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	preview, err := client.GetSessionContextWindow(context.Background(), "demo-flow", "session-123")
+	if err != nil {
+		t.Fatalf("expected GetSessionContextWindow to succeed, got %v", err)
+	}
+	if preview == nil || preview.ContextWindow == nil {
+		t.Fatalf("expected session context preview, got %#v", preview)
+	}
+	if preview.ContextWindow.CurrentRoundInputTokens != 3072 {
+		t.Fatalf("expected session context payload to be preserved, got %#v", preview.ContextWindow)
+	}
+	if preview.LatestCompression == nil || preview.LatestCompression.AfterTokens != 6000 {
+		t.Fatalf("expected latest compression payload, got %#v", preview.LatestCompression)
+	}
+	if preview.Source != "history_rebuild" {
+		t.Fatalf("expected preview source to be preserved, got %#v", preview)
+	}
+}
+
 func TestStreamParsesCompressionEvent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/api/v1/run/demo-flow/stream" {

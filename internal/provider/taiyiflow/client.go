@@ -169,6 +169,26 @@ type compressionRecordResponse struct {
 	RemainingTokens       int     `json:"remaining_tokens"`
 	CompressionRatio      float64 `json:"compression_ratio"`
 	ReservedHistoryTokens int     `json:"reserved_history_tokens"`
+	CreatedAt             string  `json:"created_at"`
+}
+
+type sessionContextWindowResponse struct {
+	MaxInputTokens              int `json:"max_input_tokens"`
+	ShortTermContextTokens      int `json:"short_term_context_tokens"`
+	CurrentRoundInputTokens     int `json:"current_round_input_tokens"`
+	NextRoundAvailableTokens    int `json:"next_round_available_tokens"`
+	CurrentRoundAvailableTokens int `json:"current_round_available_tokens"`
+	HistoryMessageCount         int `json:"history_message_count"`
+	PreparedMessageCount        int `json:"prepared_message_count"`
+}
+
+type sessionContextPreviewResponse struct {
+	FlowID            string                       `json:"flow_id"`
+	SessionID         string                       `json:"session_id"`
+	ContextWindow     *sessionContextWindowResponse `json:"context_window"`
+	LatestCompression *compressionRecordResponse   `json:"latest_compression"`
+	SourceUpdatedAt   string                       `json:"source_updated_at"`
+	Source            string                       `json:"source"`
 }
 
 type streamRequestBody struct {
@@ -636,17 +656,7 @@ func (c *Client) fetchCompressionRecords(ctx context.Context, runID string) ([]p
 		}
 		compressions := make([]provider.CompressionRecord, 0, len(compressionPayload))
 		for _, item := range compressionPayload {
-			compressions = append(compressions, provider.CompressionRecord{
-				TriggerReason:         item.TriggerReason,
-				CompressionStrategy:   item.CompressionStrategy,
-				TargetType:            item.TargetType,
-				BeforeTokens:          item.BeforeTokens,
-				TargetTokens:          item.TargetTokens,
-				AfterTokens:           item.AfterTokens,
-				RemainingTokens:       item.RemainingTokens,
-				CompressionRatio:      item.CompressionRatio,
-				ReservedHistoryTokens: item.ReservedHistoryTokens,
-			})
+			compressions = append(compressions, parseCompressionRecord(item))
 		}
 		if len(compressions) > 0 || attempt == attempts-1 || delay <= 0 {
 			return compressions, nil
@@ -661,6 +671,69 @@ func (c *Client) fetchCompressionRecords(ctx context.Context, runID string) ([]p
 		}
 	}
 	return nil, nil
+}
+
+func (c *Client) GetSessionContextWindow(ctx context.Context, flowID string, sessionID string) (*provider.SessionContextPreview, error) {
+	flowID = strings.TrimSpace(flowID)
+	sessionID = strings.TrimSpace(sessionID)
+	if flowID == "" {
+		return nil, fmt.Errorf("获取会话上下文失败: 智能体不能为空")
+	}
+	if sessionID == "" {
+		return &provider.SessionContextPreview{}, nil
+	}
+
+	endpoint := fmt.Sprintf(
+		"%s/api/v1/agents/flows/%s/sessions/%s/context-window",
+		c.baseURL,
+		url.PathEscape(flowID),
+		url.PathEscape(sessionID),
+	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建会话上下文请求失败: %w", err)
+	}
+	c.applyAuth(request)
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("请求会话上下文失败: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("获取会话上下文失败", response)
+	}
+
+	var payload sessionContextPreviewResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析会话上下文响应失败: %w", err)
+	}
+
+	preview := &provider.SessionContextPreview{
+		FlowID:    strings.TrimSpace(payload.FlowID),
+		SessionID: strings.TrimSpace(payload.SessionID),
+		Source:    strings.TrimSpace(payload.Source),
+	}
+	if payload.ContextWindow != nil {
+		preview.ContextWindow = &provider.ContextWindowUsage{
+			MaxInputTokens:              payload.ContextWindow.MaxInputTokens,
+			ShortTermContextTokens:      payload.ContextWindow.ShortTermContextTokens,
+			CurrentRoundInputTokens:     payload.ContextWindow.CurrentRoundInputTokens,
+			NextRoundAvailableTokens:    payload.ContextWindow.NextRoundAvailableTokens,
+			CurrentRoundAvailableTokens: payload.ContextWindow.CurrentRoundAvailableTokens,
+			HistoryMessageCount:         payload.ContextWindow.HistoryMessageCount,
+			PreparedMessageCount:        payload.ContextWindow.PreparedMessageCount,
+		}
+	}
+	if payload.LatestCompression != nil {
+		compression := parseCompressionRecord(*payload.LatestCompression)
+		preview.LatestCompression = &compression
+	}
+	if parsed, err := parseTaiyiTime(payload.SourceUpdatedAt); err == nil {
+		preview.SourceUpdatedAt = parsed
+	}
+	return preview, nil
 }
 
 func (c *Client) fetchCompressionPayload(ctx context.Context, runID string) ([]compressionRecordResponse, error) {
@@ -875,6 +948,20 @@ func parseTokenUsage(payload map[string]any) *provider.TokenUsage {
 	}
 
 	return usage
+}
+
+func parseCompressionRecord(payload compressionRecordResponse) provider.CompressionRecord {
+	return provider.CompressionRecord{
+		TriggerReason:         payload.TriggerReason,
+		CompressionStrategy:   payload.CompressionStrategy,
+		TargetType:            payload.TargetType,
+		BeforeTokens:          payload.BeforeTokens,
+		TargetTokens:          payload.TargetTokens,
+		AfterTokens:           payload.AfterTokens,
+		RemainingTokens:       payload.RemainingTokens,
+		CompressionRatio:      payload.CompressionRatio,
+		ReservedHistoryTokens: payload.ReservedHistoryTokens,
+	}
 }
 
 func intValue(value any) int {

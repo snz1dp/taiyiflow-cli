@@ -17,6 +17,7 @@ type stubProvider struct {
 	streamSession *provider.StreamSession
 	messages      *provider.SessionMessageList
 	runStats      *provider.RunStats
+	sessionContext *provider.SessionContextPreview
 }
 
 func (s stubProvider) Name() string { return "stub" }
@@ -47,6 +48,10 @@ func (s stubProvider) Stream(context.Context, provider.StreamRequest) (<-chan pr
 
 func (s stubProvider) GetRunStats(context.Context, string, string, string) (*provider.RunStats, error) {
 	return s.runStats, nil
+}
+
+func (s stubProvider) GetSessionContextWindow(context.Context, string, string) (*provider.SessionContextPreview, error) {
+	return s.sessionContext, nil
 }
 
 func (s stubProvider) SubmitClientCallResult(context.Context, provider.ClientCallResult) error {
@@ -204,5 +209,53 @@ func TestLoadLatestSessionMetricsUsesLatestRunStats(t *testing.T) {
 	}
 	if metrics.TokenUsage.ContextWindow.CurrentRoundInputTokens != 2048 {
 		t.Fatalf("expected current round input tokens to be preserved, got %#v", metrics.TokenUsage.ContextWindow)
+	}
+}
+
+func TestLoadLatestSessionMetricsOverridesContextWindowWithSessionPreview(t *testing.T) {
+	metrics := loadLatestSessionMetrics(
+		context.Background(),
+		stubProvider{
+			messages: &provider.SessionMessageList{
+				Items: []provider.SessionMessage{{RunID: "run-latest"}},
+			},
+			runStats: &provider.RunStats{
+				RunID: "run-latest",
+				TokenUsage: &provider.TokenUsage{
+					InputTokens:  1200,
+					OutputTokens: 800,
+					TotalTokens:  2000,
+					ContextWindow: &provider.ContextWindowUsage{
+						MaxInputTokens:           8192,
+						CurrentRoundInputTokens:  2048,
+						NextRoundAvailableTokens: 6144,
+					},
+				},
+			},
+			sessionContext: &provider.SessionContextPreview{
+				FlowID:    "demo-flow",
+				SessionID: "session-123",
+				ContextWindow: &provider.ContextWindowUsage{
+					MaxInputTokens:           8192,
+					CurrentRoundInputTokens:  3072,
+					NextRoundAvailableTokens: 5120,
+				},
+			},
+		},
+		"demo-flow",
+		"session-123",
+	)
+
+	if metrics == nil || metrics.TokenUsage == nil || metrics.TokenUsage.ContextWindow == nil {
+		t.Fatalf("expected merged metrics with session context, got %#v", metrics)
+	}
+	if metrics.RunID != "run-latest" {
+		t.Fatalf("expected latest run id to survive merge, got %#v", metrics)
+	}
+	if metrics.TokenUsage.TotalTokens != 2000 {
+		t.Fatalf("expected run token totals to survive merge, got %#v", metrics.TokenUsage)
+	}
+	if metrics.TokenUsage.ContextWindow.CurrentRoundInputTokens != 3072 {
+		t.Fatalf("expected session preview context window to override run stats, got %#v", metrics.TokenUsage.ContextWindow)
 	}
 }

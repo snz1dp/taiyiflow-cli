@@ -128,6 +128,15 @@ type RunStats struct {
 	Compressions []CompressionRecord
 }
 
+type SessionContextPreview struct {
+	FlowID            string
+	SessionID         string
+	ContextWindow     *ContextWindowUsage
+	LatestCompression *CompressionRecord
+	SourceUpdatedAt   time.Time
+	Source            string
+}
+
 type FlowSummary struct {
 	ID          string
 	Name        string
@@ -193,5 +202,6 @@ type Provider interface {
 	GetMetadata(ctx context.Context, flowID string) (*Metadata, error)
 	Stream(ctx context.Context, request StreamRequest) (<-chan StreamEvent, *StreamSession, error)
 	GetRunStats(ctx context.Context, flowID string, sessionID string, runID string) (*RunStats, error)
+	GetSessionContextWindow(ctx context.Context, flowID string, sessionID string) (*SessionContextPreview, error)
 	SubmitClientCallResult(ctx context.Context, result ClientCallResult) error
 }
