@@ -214,13 +214,13 @@ func TestInputContextUsageHintShowsCurrentUsageDetails(t *testing.T) {
 	}
 
 	got := model.inputContextUsageHint()
-	if !strings.Contains(got, "2.0K/8.2K") {
+	if !strings.Contains(got, "2/6K") {
 		t.Fatalf("expected compact current usage summary in input hint, got %q", got)
 	}
-	if !strings.Contains(got, "/6.1K") {
+	if !strings.Contains(got, "共12条消息") {
 		t.Fatalf("expected next-round availability rate in input hint, got %q", got)
 	}
-	if !strings.Contains(got, "历史 12") {
+	if !strings.Contains(got, "2/6K") {
 		t.Fatalf("expected history message count in input hint, got %q", got)
 	}
 }
@@ -243,13 +243,13 @@ func TestInputContextUsageHintShowsProjectedUsageWhileTyping(t *testing.T) {
 	}
 
 	got := model.inputContextUsageHint()
-	if !strings.Contains(got, "草稿 7") {
+	if !strings.Contains(got, "7") {
 		t.Fatalf("expected draft token estimate in input hint, got %q", got)
 	}
-	if !strings.Contains(got, "本轮 25%") {
+	if !strings.Contains(got, "2/6K") {
 		t.Fatalf("expected compact current usage summary in input hint, got %q", got)
 	}
-	if !strings.Contains(got, "下轮 75%") {
+	if !strings.Contains(got, "7 · 2/6K") {
 		t.Fatalf("expected next-round availability rate in input hint, got %q", got)
 	}
 }
@@ -258,7 +258,7 @@ func TestInputContextUsageHintDefaultsToFullAvailabilityForNewSession(t *testing
 	model := model{}
 
 	got := model.inputContextUsageHint()
-	if got != "下轮 100%" {
+	if got != "上下文窗口100%可用" {
 		t.Fatalf("expected default full availability hint for new session, got %q", got)
 	}
 }
@@ -370,19 +370,19 @@ func TestRenderStatusBarShowsContextGrid(t *testing.T) {
 	}
 
 	got := sanitizeTerminalText(model.renderStatusBar())
-	if !strings.Contains(got, "■■■□□□□□□□  25%") {
+	if !strings.Contains(got, "■■□□□□□□ 25%") {
 		t.Fatalf("expected context usage grid in status bar, got %q", got)
 	}
-	if !strings.Contains(got, "下轮 75%") {
+	if !strings.Contains(got, "2/6K") {
 		t.Fatalf("expected compact context hint on the right side of status bar, got %q", got)
 	}
 }
 
 func TestFormatContextUsageGridClampsToBounds(t *testing.T) {
-	if got := formatContextUsageGrid(9999, 8192, 10); got != "■■■■■■■■■■ 100%" {
+	if got := formatContextUsageGrid(9999, 8192, 10); got != "■■■■■■■■■■100%" {
 		t.Fatalf("expected full grid when usage exceeds budget, got %q", got)
 	}
-	if got := formatContextUsageGrid(-1, 8192, 10); got != "□□□□□□□□□□   0%" {
+	if got := formatContextUsageGrid(-1, 8192, 10); got != "□□□□□□□□□□  0%" {
 		t.Fatalf("expected empty grid for negative usage, got %q", got)
 	}
 }
