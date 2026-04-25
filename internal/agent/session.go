@@ -23,7 +23,14 @@ type SessionState struct {
 	RequestMode     string    `json:"request_mode,omitempty"`
 	ContextDir      string    `json:"context_dir,omitempty"`
 	SandboxEscapePolicyOverride string `json:"sandbox_escape_policy_override,omitempty"`
+	TodoItems       []TodoItem `json:"todo_items,omitempty"`
 	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type TodoItem struct {
+	Title  string `json:"title"`
+	Status string `json:"status"`
+	Notes  string `json:"notes,omitempty"`
 }
 
 type SessionStore struct {
@@ -67,6 +74,7 @@ func (s *SessionStore) Load(flowID string, workdir string) (SessionState, error)
 		state.ContextDir = normalizeWorkdir(state.ContextDir)
 	}
 	state.SandboxEscapePolicyOverride = normalizeSandboxEscapePolicyOverride(state.SandboxEscapePolicyOverride)
+	state.TodoItems = normalizeTodoItems(state.TodoItems)
 	return state, nil
 }
 
@@ -84,6 +92,7 @@ func (s *SessionStore) Save(state SessionState) error {
 		state.ContextDir = normalizeWorkdir(state.ContextDir)
 	}
 	state.SandboxEscapePolicyOverride = normalizeSandboxEscapePolicyOverride(state.SandboxEscapePolicyOverride)
+	state.TodoItems = normalizeTodoItems(state.TodoItems)
 	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
 		return fmt.Errorf("创建会话目录失败: %w", err)
 	}
@@ -187,4 +196,32 @@ func normalizeSandboxEscapePolicyOverride(value string) string {
 		return ""
 	}
 	return internalconfig.NormalizeSandboxEscapePolicy(trimmed)
+}
+
+func normalizeTodoItems(items []TodoItem) []TodoItem {
+	result := make([]TodoItem, 0, len(items))
+	for _, item := range items {
+		title := strings.TrimSpace(item.Title)
+		if title == "" {
+			continue
+		}
+		status := normalizeTodoStatus(item.Status)
+		result = append(result, TodoItem{
+			Title:  title,
+			Status: status,
+			Notes:  strings.TrimSpace(item.Notes),
+		})
+	}
+	return result
+}
+
+func normalizeTodoStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "in_progress", "in-progress":
+		return "in_progress"
+	case "completed", "done":
+		return "completed"
+	default:
+		return "not_started"
+	}
 }

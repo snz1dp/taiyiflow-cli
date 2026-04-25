@@ -1003,25 +1003,10 @@ func buildTUIClientToolConfirmRequest(payload map[string]any) tui.ConfirmRequest
 	request := tui.ConfirmRequest{
 		Title:   "客户端工具待确认",
 		Command: clientruntime.PreviewClientToolCall(payload),
-		Detail:  "该工具会修改本地工作区或 Git 状态，是否允许执行？",
+		Detail:  "该工具会修改本地工作区或本地运行状态，是否允许执行？",
 		Hint:    "使用方向键或 Tab 选择，Enter 确认。",
 	}
 	switch strings.TrimSpace(toolName) {
-	case "apply_patch":
-		request.PreviewTitle = "补丁预览"
-		request.PreviewBody = summarizePatchPreview(stringMapValue(arguments, "patch"))
-	case "git_restore":
-		request.PreviewTitle = "恢复目标"
-		request.PreviewBody = summarizeGitRestorePreview(arguments)
-	case "git_reset_soft":
-		request.PreviewTitle = "软回退目标"
-		request.PreviewBody = summarizeGitResetSoftPreview(arguments)
-	case "git_add":
-		request.PreviewTitle = "暂存目标"
-		request.PreviewBody = summarizeGitAddPreview(arguments)
-	case "git_commit":
-		request.PreviewTitle = "提交草稿"
-		request.PreviewBody = summarizeGitCommitPreview(arguments)
 	case "write_file":
 		request.PreviewTitle = "写入目标"
 		request.PreviewBody = fmt.Sprintf("路径: %s\n模式: %s", fallbackString(stringMapValue(arguments, "path"), "."), fallbackString(stringMapValue(arguments, "mode"), "overwrite"))
@@ -1058,139 +1043,117 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 		return nil
 	}
 	switch strings.TrimSpace(toolName) {
-	case "git_diff":
-		content := strings.TrimSpace(stringMapValue(resultMap, "content"))
-		if content == "" {
+	case "lsp_query":
+		items := mapSliceValue(resultMap, "items")
+		if len(items) == 0 {
 			return nil
 		}
-		body := content
-		lineCount := intMapValue(resultMap, "line_count")
-		if lineCount == 0 {
-			lineCount = len(strings.Split(strings.TrimSpace(content), "\n"))
-		}
-		if boolMapValue(resultMap, "truncated") {
-			body += "\n\n[diff 已按 max_bytes 截断]"
+		lines := make([]string, 0, len(items))
+		for index, item := range items {
+			line := fmt.Sprintf("%d. %s", index+1, fallbackString(stringMapValue(item, "name"), fallbackString(stringMapValue(item, "path"), fallbackString(stringMapValue(item, "uri"), "<unknown>"))))
+			if path := strings.TrimSpace(stringMapValue(item, "path")); path != "" {
+				line += "\n   路径: " + path
+			}
+			if rangeValue, ok := item["range"].(map[string]any); ok {
+				line += fmt.Sprintf("\n   位置: %d:%d", intMapValue(rangeValue, "start_line"), intMapValue(rangeValue, "start_character"))
+			}
+			lines = append(lines, line)
 		}
 		return &tui.ToolPanel{
-			Title:   "Git Diff 预览",
-			Summary: fmt.Sprintf("git_diff %s（%d 行）", fallbackString(stringMapValue(resultMap, "path"), "."), lineCount),
-			Body:    body,
-			Hint:    "支持滚动浏览完整 diff，关闭后可继续查看后续对话输出。",
+			Title:   "LSP 查询结果",
+			Summary: fmt.Sprintf("%s 命中 %d 项", fallbackString(stringMapValue(resultMap, "operation"), "lsp_query"), len(items)),
+			Body:    strings.Join(lines, "\n\n"),
+			Hint:    "若结果为空，请确认语言服务器命令、工作区根目录和光标位置是否正确。",
 		}
-	case "apply_patch":
-		conflicts := mapSliceValue(resultMap, "conflicts")
-		if len(conflicts) == 0 && toolErr == nil {
+	case "task_output":
+		body := strings.TrimSpace(stringMapValue(resultMap, "stdout"))
+		stderr := strings.TrimSpace(stringMapValue(resultMap, "stderr"))
+		if stderr != "" {
+			if body != "" {
+				body += "\n\n"
+			}
+			body += "stderr:\n" + stderr
+		}
+		if body == "" {
+			body = "当前任务尚无输出。"
+		}
+		return &tui.ToolPanel{
+			Title:   "后台任务输出",
+			Summary: fmt.Sprintf("%s · %s", fallbackString(stringMapValue(resultMap, "task_id"), "<unknown>"), fallbackString(stringMapValue(resultMap, "status"), "unknown")),
+			Body:    body,
+			Hint:    "可滚动查看 stdout/stderr；继续对话时可再次调用 task_output 刷新。",
+		}
+	case "task_list":
+		tasks := mapSliceValue(resultMap, "tasks")
+		if len(tasks) == 0 {
 			return nil
 		}
-		lines := []string{}
-		for index, conflict := range conflicts {
-			line := fmt.Sprintf("%d. %s", index+1, fallbackString(stringMapValue(conflict, "path"), "<unknown>"))
-			reason := strings.TrimSpace(stringMapValue(conflict, "reason"))
-			if reason != "" {
-				line += "\n   原因: " + reason
-			}
-			if hunk := intMapValue(conflict, "hunk_index"); hunk > 0 {
-				line += fmt.Sprintf("\n   hunk: %d", hunk)
-			}
-			if lineNumber := intMapValue(conflict, "line_number"); lineNumber > 0 {
-				line += fmt.Sprintf("，行: %d", lineNumber)
-			}
-			if operation := strings.TrimSpace(stringMapValue(conflict, "operation")); operation != "" {
-				line += "，操作: " + operation
-			}
-			expected := strings.TrimSpace(stringMapValue(conflict, "expected"))
-			actual := strings.TrimSpace(stringMapValue(conflict, "actual"))
-			if expected != "" || actual != "" {
-				line += fmt.Sprintf("\n   期望: %s\n   实际: %s", fallbackString(expected, "<empty>"), fallbackString(actual, "<empty>"))
+		lines := make([]string, 0, len(tasks))
+		for index, item := range tasks {
+			lines = append(lines, fmt.Sprintf("%d. %s [%s]\n   %s", index+1, fallbackString(stringMapValue(item, "task_name"), fallbackString(stringMapValue(item, "task_id"), "<unknown>")), fallbackString(stringMapValue(item, "status"), "unknown"), fallbackString(stringMapValue(item, "command"), "<unknown>")))
+		}
+		return &tui.ToolPanel{
+			Title:   "后台任务列表",
+			Summary: fmt.Sprintf("task_list %d 个任务", len(tasks)),
+			Body:    strings.Join(lines, "\n\n"),
+			Hint:    "可根据 task_id 继续读取输出或停止任务。",
+		}
+	case "todo_read", "todo_write":
+		items := mapSliceValue(resultMap, "items")
+		lines := make([]string, 0, len(items))
+		for index, item := range items {
+			line := fmt.Sprintf("%d. [%s] %s", index+1, fallbackString(stringMapValue(item, "status"), "not_started"), fallbackString(stringMapValue(item, "title"), "<empty>"))
+			if notes := strings.TrimSpace(stringMapValue(item, "notes")); notes != "" {
+				line += "\n   " + notes
 			}
 			lines = append(lines, line)
 		}
 		if len(lines) == 0 {
-			lines = append(lines, strings.TrimSpace(errorText(toolErr)))
+			lines = append(lines, "当前会话暂无 Todo。")
 		}
 		return &tui.ToolPanel{
-			Title:   "补丁冲突详情",
-			Summary: fmt.Sprintf("apply_patch 冲突 %d 处", len(conflicts)),
+			Title:   "会话 Todo",
+			Summary: fmt.Sprintf("%s %d 项", toolName, len(items)),
 			Body:    strings.Join(lines, "\n\n"),
-			Hint:    "按 Enter 或 Esc 关闭，然后可继续让模型修正补丁。",
+			Hint:    "Todo 会保存在当前会话状态中，后续请求可继续读取。",
+		}
+	case "file_edit":
+		if toolErr != nil {
+			bodyLines := []string{
+				fmt.Sprintf("目标文件: %s", fallbackString(stringMapValue(resultMap, "path"), ".")),
+				fmt.Sprintf("状态: %s", fallbackString(stringMapValue(resultMap, "status"), "failed")),
+				fmt.Sprintf("摘要前: %s", fallbackString(stringMapValue(resultMap, "sha256_before"), "<missing>")),
+			}
+			if excerpt := strings.TrimSpace(stringMapValue(resultMap, "nearby_excerpt")); excerpt != "" {
+				bodyLines = append(bodyLines, "", "附近内容:", excerpt)
+			}
+			if rawSuggestions, ok := resultMap["suggestions"].([]string); ok && len(rawSuggestions) > 0 {
+				bodyLines = append(bodyLines, "", "建议:")
+				for _, item := range rawSuggestions {
+					bodyLines = append(bodyLines, "- "+item)
+				}
+			} else if rawSuggestions, ok := resultMap["suggestions"].([]any); ok && len(rawSuggestions) > 0 {
+				bodyLines = append(bodyLines, "", "建议:")
+				for _, item := range rawSuggestions {
+					bodyLines = append(bodyLines, "- "+fmt.Sprintf("%v", item))
+				}
+			}
+			return &tui.ToolPanel{
+				Title:   "文件编辑失败",
+				Summary: strings.TrimSpace(errorText(toolErr)),
+				Body:    strings.Join(bodyLines, "\n"),
+				Hint:    "先 read_file 再复制精确片段，通常比直接重试 file_edit 更有效。",
+			}
+		}
+		return &tui.ToolPanel{
+			Title:   "文件编辑摘要",
+			Summary: fmt.Sprintf("file_edit %s 替换 %d 处", fallbackString(stringMapValue(resultMap, "path"), "."), intMapValue(resultMap, "replacements")),
+			Body:    fmt.Sprintf("编辑前: %s\n编辑后: %s\n摘要前: %s\n摘要后: %s", fallbackString(stringMapValue(resultMap, "preview_before"), "<empty>"), fallbackString(stringMapValue(resultMap, "preview_after"), "<empty>"), fallbackString(stringMapValue(resultMap, "sha256_before"), "<missing>"), fallbackString(stringMapValue(resultMap, "sha256_after"), "<missing>")),
+			Hint:    "若替换范围过大，可改用更精确的 old_string 或关闭 replace_all。",
 		}
 	default:
 		return nil
 	}
-}
-
-func summarizePatchPreview(patch string) string {
-	trimmed := strings.TrimSpace(patch)
-	if trimmed == "" {
-		return "补丁内容为空。"
-	}
-	files := []string{}
-	for _, line := range strings.Split(trimmed, "\n") {
-		if strings.HasPrefix(line, "+++ ") {
-			path := strings.TrimSpace(strings.TrimPrefix(line, "+++ "))
-			path = strings.TrimPrefix(path, "b/")
-			if path != "" {
-				files = append(files, path)
-			}
-		}
-	}
-	if len(files) == 0 {
-		return trimText(trimmed, 240)
-	}
-	preview := []string{fmt.Sprintf("涉及 %d 个文件:", len(files))}
-	for _, file := range files {
-		preview = append(preview, "- "+file)
-	}
-	return strings.Join(preview, "\n")
-}
-
-func summarizeGitAddPreview(arguments map[string]any) string {
-	if boolMapValue(arguments, "all") {
-		return fmt.Sprintf("范围: %s\n动作: git add -A", fallbackString(stringMapValue(arguments, "path"), "."))
-	}
-	paths := stringSliceMapValue(arguments, "paths")
-	if len(paths) == 0 {
-		paths = []string{fallbackString(stringMapValue(arguments, "path"), ".")}
-	}
-	return "将暂存以下路径:\n- " + strings.Join(paths, "\n- ")
-}
-
-func summarizeGitRestorePreview(arguments map[string]any) string {
-	paths := stringSliceMapValue(arguments, "paths")
-	if len(paths) == 0 {
-		paths = []string{fallbackString(stringMapValue(arguments, "path"), ".")}
-	}
-	mode := []string{}
-	if boolMapValue(arguments, "staged") {
-		mode = append(mode, "staged")
-	}
-	if boolMapValue(arguments, "worktree") || len(mode) == 0 {
-		mode = append(mode, "worktree")
-	}
-	parts := []string{fmt.Sprintf("恢复范围: %s", strings.Join(paths, ", ")), fmt.Sprintf("恢复位置: %s", strings.Join(mode, " + "))}
-	if source := strings.TrimSpace(stringMapValue(arguments, "source")); source != "" {
-		parts = append(parts, "来源引用: "+source)
-	}
-	return strings.Join(parts, "\n")
-}
-
-func summarizeGitResetSoftPreview(arguments map[string]any) string {
-	return fmt.Sprintf("仓库定位: %s\n目标引用: %s\n动作: git reset --soft", fallbackString(stringMapValue(arguments, "path"), "."), fallbackString(stringMapValue(arguments, "target"), "<missing>"))
-}
-
-func summarizeGitCommitPreview(arguments map[string]any) string {
-	message := strings.TrimSpace(stringMapValue(arguments, "message"))
-	if message == "" {
-		message = "<空消息>"
-	}
-	parts := []string{"提交信息:", message}
-	if boolMapValue(arguments, "amend") {
-		parts = append(parts, "", "模式: amend")
-	}
-	if boolMapValue(arguments, "allow_empty") {
-		parts = append(parts, "允许空提交: true")
-	}
-	return strings.Join(parts, "\n")
 }
 
 func previewBuiltInCommand(payload map[string]any) string {

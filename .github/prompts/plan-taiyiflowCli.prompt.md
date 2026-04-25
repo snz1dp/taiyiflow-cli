@@ -6,17 +6,17 @@
 1. Phase A 能力基线与边界锁定（阻塞后续）
 1.1 明确对标范围：仅 CLI/TUI + 本地工具 + Skill 管理；排除 gateway、多平台消息、服务端调度。
 1.2 建立 Hermes→Taiyiflow 能力映射：
-- Hermes 已有：read_file、write_file、patch、search_files、list_dir、terminal/process、skills_list/skill_view/skill_manage。
+- Hermes 已有：read_file、write_file、search_files、list_dir、terminal/process、skills_list/skill_view/skill_manage。
 - Taiyiflow 当前：search_files、run_command_via_client、TUI 会话与状态栏、基础 slash。
 1.3 锁定安全边界：写入/补丁/命令执行统一遵循 approval_mode；默认工作目录沙箱。
 
 2. Phase B 文件工具闭环（最高优先级）
-2.1 工具注册扩展（*并行可行*）：在 ClientMCPServers 增加 read_file/list_dir/write_file/apply_patch schema 与参数约束。
+2.1 工具注册扩展（*并行可行*）：在 ClientMCPServers 增加 read_file/list_dir/write_file/file_edit schema 与参数约束。
 2.2 工具路由扩展（*依赖 2.1*）：在 HandleClientToolEvent 按 toolName 分发，回调沿用 submitCallback。
 2.3 read_file（*依赖 2.2*）：支持 start_line/end_line、最大读取行/字节、二进制检测、UTF-8 安全截断。
 2.4 list_dir（*依赖 2.2*）：支持 recursive/max_depth/include_hidden/glob，输出 name/type/size/mod_time。
 2.5 write_file（*依赖 2.2*）：支持 create/overwrite/append、临时文件原子写、路径安全校验、写后统计。
-2.6 apply_patch（*依赖 2.2*）：首版支持 unified diff 子集 + dry_run + 冲突报告（按文件/行定位）。
+2.6 file_edit（*依赖 2.2*）：支持 old_string/new_string/replace_all、读取后变更校验与失败诊断。
 2.7 search_files 增强（*并行可行*）：补 include/exclude、case_sensitive、is_regexp、分页字段。
 
 3. Phase C 安全与治理（与 Phase B 并行推进）
@@ -39,7 +39,7 @@
 5.4 窄终端降级：小宽度下自动简化状态栏信息，保留核心可见性。
 
 6. Phase F 交付节奏
-6.1 MVP（两周）：read_file/list_dir/write_file/apply_patch + 安全基线 + TUI 状态分层。
+6.1 MVP（两周）：read_file/list_dir/write_file/file_edit + 安全基线 + TUI 状态分层。
 6.2 Beta（一到两周）：skills list/view/enable/disable + RequestedSkillNames 透传 + /skills。
 6.3 GA（一周）：审计日志、错误分级完善、文档与回归测试。
 

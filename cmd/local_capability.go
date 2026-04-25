@@ -17,7 +17,7 @@ func modeAllowsClientTool(mode string, toolName string) bool {
 		return true
 	}
 	switch strings.TrimSpace(toolName) {
-	case "search_files", "git_status", "git_diff", "git_log", "read_file", "list_dir", "skills_list", "skill_view":
+	case "search_files", "read_file", "list_dir", "skills_list", "skill_view":
 		return true
 	default:
 		return false

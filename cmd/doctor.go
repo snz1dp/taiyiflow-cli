@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
 
@@ -45,7 +44,6 @@ func (a *App) runDoctor(args []string) error {
 	fmt.Fprintf(a.stdout, "- 后台服务地址: %s\n", config.BackendBaseURL)
 	fmt.Fprintf(a.stdout, "- 默认智能体: %s\n", flowDisplay)
 	fmt.Fprintf(a.stdout, "- 文件工具链: %s\n", detectLocalFileToolStatus())
-	fmt.Fprintf(a.stdout, "- Git 工具链: %s\n", detectLocalGitToolStatus())
 	if skillItems, directory, skillErr := skills.Discover(config); skillErr == nil {
 		enabledCount := 0
 		for _, item := range skillItems {
@@ -62,12 +60,5 @@ func (a *App) runDoctor(args []string) error {
 }
 
 func detectLocalFileToolStatus() string {
-	return "read_file/list_dir/write_file/apply_patch/search_files（内置可用）"
-}
-
-func detectLocalGitToolStatus() string {
-	if _, err := exec.LookPath("git"); err == nil {
-		return "git_status/git_diff/git_log/git_add/git_commit（可用）"
-	}
-	return "未检测到 git（Git 工作流工具不可用）"
+	return "read_file/list_dir/write_file/search_files（内置可用）"
 }

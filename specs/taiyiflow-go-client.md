@@ -141,16 +141,17 @@
 
 截至当前仓库实现，客户端已经具备以下能力基线：
 
-1. 本地客户端工具注册已覆盖 search_files、read_file、list_dir、write_file、apply_patch。
+1. 本地客户端工具注册已覆盖 search_files、glob_files、read_file、list_dir、write_file、file_edit、shell_exec、task_list、task_output、task_stop、todo_read、todo_write、lsp_query。
 2. 文件工具默认受工作目录访问边界限制，可附加 sandbox_roots 扩展额外外部资源访问根目录。
 3. 敏感目录（如 ~/.ssh、~/.gnupg、~/.aws、macOS Keychains）默认拒绝访问。
-4. 写文件、补丁和技能启停操作统一遵循 approval_mode；只读模式会直接拒绝执行。
+4. 写文件、细粒度编辑和技能启停操作统一遵循 approval_mode；只读模式会直接拒绝执行。
 5. 命令执行会剔除常见敏感环境变量，并对高风险命令在 auto 模式下阻断。
 6. 客户端支持 ~/.snz1dp/skills 目录下的 SKILL.md 发现、list/view/enable/disable 与 RequestedSkillNames、ClientSkillPackages 透传。
 7. TUI 与交互模式均提供 /skills 命令；doctor 会输出文件工具链和技能目录状态。
-8. TUI 状态栏已支持窄终端分级压缩，并将本地工具与命令执行摘要收敛到状态栏和关键里程碑消息；git_diff 与 apply_patch 冲突还会进入专门的工具结果面板。
-9. 客户端已补充 git_status、git_diff、git_log、git_add、git_commit 五个本地 Git 工具，用于在任务闭环中读取仓库状态、差异和提交历史，并执行受审批控制的暂存与提交。
-10. apply_patch 冲突报告已细化到文件、hunk、行号、操作类型和期望/实际文本；TUI 确认流会展示补丁/Git 目标摘要与提交草稿预览。
+8. TUI 状态栏已支持窄终端分级压缩，并将本地工具与命令执行摘要收敛到状态栏和关键里程碑消息；Todo、后台任务输出与 LSP 结果会进入专门的工具结果面板。
+9. shell_exec 已复用现有命令执行内核正式化为客户端工具，并补齐后台任务句柄、输出读取与停止能力。
+10. Todo 清单已保存到当前会话状态，CLI 进程内的后台任务列表与输出读取可跨多次请求复用。
+11. lsp_query 通过本地 stdio 语言服务器提供 definition、references、implementation、document_symbol、workspace_symbol 五类查询；当前不需要扩展太乙智启后台 stream 协议。
 
 ### 7.3 第二阶段增强
 
@@ -232,10 +233,11 @@ taiyiflow version
 
 首期建议内置工具：
 
-- 文件工具：读文件、列目录、搜索内容、写文件、生成补丁
-- 命令外壳（Shell）工具：执行构建、测试、脚本、查询命令
+- 文件工具：读文件、列目录、搜索内容、glob 枚举、写文件、生成补丁、file_edit 细粒度替换
+- 命令外壳（Shell）工具：执行构建、测试、脚本、查询命令，并支持后台任务输出读取与停止
+- 任务工具：会话级 Todo 清单读写、后台任务列表查询
+- 代码语义工具：通过本地语言服务器执行 definition、references、implementation、document_symbol、workspace_symbol
 - Skill 工具：列出技能、读取技能全文、启停技能
-- Git 工具：查看状态、差异（diff）、日志、暂存（git add）、提交（git commit）
 - 文档工具：提取 Markdown、纯文本（TXT）、逗号分隔值（CSV）、JSON 等内容
 
 首期工具治理要求：
@@ -244,6 +246,7 @@ taiyiflow version
 2. 写文件、补丁、技能启停等本地变更操作统一接入 approval_mode。
 3. 审计日志默认写入 ~/.snz1dp/logs/audit.log，可通过 audit_enabled 开关控制。
 4. 本地技能目录默认使用 ~/.snz1dp/skills，技能文件采用 SKILL.md（YAML frontmatter + Markdown body）。
+5. 通用客户端工具通过 client_mcp_servers 透传即可被后台消费；本轮新增 shell、Todo、LSP、FileEdit、Task 工具不需要额外扩展 stream 事件或回调 schema。
 
 第二阶段可补充：
 

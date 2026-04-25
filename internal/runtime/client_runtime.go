@@ -132,30 +132,32 @@ func (r *ClientRuntime) ExecuteClientToolPayload(
 		err    error
 	)
 	switch toolName {
+	case "lsp_query":
+		result, err = r.lspQuery(config, arguments)
+	case "glob_files":
+		result, err = r.globFiles(config, arguments)
+	case "todo_read":
+		result, err = r.todoRead(config, payload)
+	case "todo_write":
+		result, err = r.todoWrite(config, payload, arguments)
+	case "file_edit":
+		result, err = r.fileEdit(config, arguments)
+	case "shell_exec":
+		result, err = r.shellExec(ctx, config, arguments)
+	case "task_output":
+		result, err = r.taskOutput(config, arguments)
+	case "task_stop":
+		result, err = r.taskStop(config, arguments)
+	case "task_list":
+		result, err = r.taskList(config)
 	case "search_files":
 		result, err = r.searchFiles(ctx, config, arguments)
-	case "git_status":
-		result, err = r.gitStatus(ctx, config, arguments)
-	case "git_diff":
-		result, err = r.gitDiff(ctx, config, arguments)
-	case "git_log":
-		result, err = r.gitLog(ctx, config, arguments)
-	case "git_restore":
-		result, err = r.gitRestore(ctx, config, arguments)
-	case "git_reset_soft":
-		result, err = r.gitResetSoft(ctx, config, arguments)
-	case "git_add":
-		result, err = r.gitAdd(ctx, config, arguments)
-	case "git_commit":
-		result, err = r.gitCommit(ctx, config, arguments)
 	case "read_file":
 		result, err = r.readFile(config, arguments)
 	case "list_dir":
 		result, err = r.listDir(config, arguments)
 	case "write_file":
 		result, err = r.writeFile(config, arguments)
-	case "apply_patch":
-		result, err = r.applyPatch(config, arguments)
 	case "skills_list":
 		result, err = r.skillsList(config)
 	case "skill_view":
