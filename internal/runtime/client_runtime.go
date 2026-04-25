@@ -79,7 +79,7 @@ func (r *ClientRuntime) HandleBuiltInEvent(
 	serverName := nestedString(payload, "server", "name")
 	commandName := nestedString(payload, "command", "name")
 	if serverName != "built_in_command" || commandName != "run_command_via_client" {
-		return r.submitCallback(ctx, providerClient, payload, false, nil, fmt.Sprintf("不支持的 built_in 调用: %s/%s", serverName, commandName))
+		return r.submitCallback(ctx, providerClient, payload, false, nil, fmt.Sprintf("不支持的内置调用: %s/%s", serverName, commandName))
 	}
 
 	arguments := nestedMap(payload, "command", "arguments")
