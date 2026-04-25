@@ -1,12 +1,38 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
 )
+
+func TestStartStreamErrorDoesNotQueueDoneMessage(t *testing.T) {
+	eventCh := make(chan tea.Msg, 4)
+	runnerErr := errors.New("backend failed")
+	cmd := startStream(context.Background(), Request{}, func(ctx context.Context, request Request, emit func(Event), confirm func(ConfirmRequest) bool) error {
+		return runnerErr
+	}, eventCh)
+
+	msg := cmd()
+	failed, ok := msg.(streamFailedMsg)
+	if !ok {
+		t.Fatalf("expected streamFailedMsg, got %T", msg)
+	}
+	if !errors.Is(failed.err, runnerErr) {
+		t.Fatalf("expected runner error to propagate, got %v", failed.err)
+	}
+
+	select {
+	case extra := <-eventCh:
+		t.Fatalf("expected no trailing message after stream failure, got %T", extra)
+	default:
+	}
+}
 
 func TestTrimTextKeepsValidUTF8(t *testing.T) {
 	trimmed := trimText("执行 访问沙盒外目录命令预览", 9)

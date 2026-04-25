@@ -2290,6 +2290,7 @@ func startStream(ctx context.Context, request Request, runner Runner, eventCh ch
 			})
 			if err != nil && !errors.Is(err, context.Canceled) {
 				eventCh <- streamFailedMsg{err: err}
+				return
 			}
 			eventCh <- streamDoneMsg{}
 		}()
