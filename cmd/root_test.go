@@ -259,3 +259,48 @@ func TestLoadLatestSessionMetricsOverridesContextWindowWithSessionPreview(t *tes
 		t.Fatalf("expected session preview context window to override run stats, got %#v", metrics.TokenUsage.ContextWindow)
 	}
 }
+
+func TestBuildTUIAssistantChunkEventIncludesMetadata(t *testing.T) {
+	event, ok := buildTUIAssistantChunkEvent(map[string]any{
+		"chunk":      "回答片段",
+		"message_id": "msg-1",
+		"stage":      "end",
+		"event_type": "message",
+	})
+
+	if !ok {
+		t.Fatalf("expected assistant chunk event to be built")
+	}
+	if event.Kind != "assistant_chunk" {
+		t.Fatalf("expected assistant chunk kind, got %#v", event.Kind)
+	}
+	if event.Text != "回答片段" {
+		t.Fatalf("expected chunk text preserved, got %q", event.Text)
+	}
+	if event.MessageID != "msg-1" || event.Stage != "end" || event.EventType != "message" {
+		t.Fatalf("expected metadata to be preserved, got %#v", event)
+	}
+}
+
+func TestBuildTUIAssistantChunkEventFallsBackToIDAndText(t *testing.T) {
+	event, ok := buildTUIAssistantChunkEvent(map[string]any{
+		"text": "增量片段",
+		"id":   "node-1",
+	})
+
+	if !ok {
+		t.Fatalf("expected assistant event when text field exists")
+	}
+	if event.Text != "增量片段" {
+		t.Fatalf("expected text field as chunk fallback, got %q", event.Text)
+	}
+	if event.MessageID != "node-1" {
+		t.Fatalf("expected id fallback as message id, got %q", event.MessageID)
+	}
+}
+
+func TestBuildTUIAssistantChunkEventRejectsEmptyChunk(t *testing.T) {
+	if _, ok := buildTUIAssistantChunkEvent(map[string]any{"message": "仅进度"}); ok {
+		t.Fatalf("expected no assistant chunk event when chunk/text missing")
+	}
+}

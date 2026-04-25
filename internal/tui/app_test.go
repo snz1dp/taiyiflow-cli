@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -437,5 +438,178 @@ func TestApplyEventStatsUpdateStoresCompressionWithoutSummaryEntry(t *testing.T)
 	model.applyEvent(Event{Kind: EventStatsUpdate, Stats: stats})
 	if len(model.entries) != 0 {
 		t.Fatalf("expected repeated compression updates to stay out of transcript, got %#v", model.entries)
+	}
+}
+
+func TestAssistantChunkWithoutSplitBoundaryKeepsSingleEntry(t *testing.T) {
+	model := model{}
+
+	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "第一段", MessageID: "msg-1"})
+	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "第二段", MessageID: "msg-1"})
+
+	if len(model.entries) != 1 {
+		t.Fatalf("expected single assistant entry, got %#v", model.entries)
+	}
+	if model.entries[0].role != "assistant" || model.entries[0].content != "第一段第二段" {
+		t.Fatalf("expected merged assistant content, got %#v", model.entries[0])
+	}
+}
+
+func TestAssistantChunkSplitAfterToolCall(t *testing.T) {
+	model := model{}
+
+	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "第一段", MessageID: "msg-1"})
+	model.applyEvent(Event{Kind: EventToolCall, Text: "读取文件"})
+	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "第二段", MessageID: "msg-1"})
+
+	if len(model.entries) != 2 {
+		t.Fatalf("expected two assistant entries after tool call split, got %#v", model.entries)
+	}
+	if model.entries[0].content != "第一段" || model.entries[1].content != "第二段" {
+		t.Fatalf("unexpected split assistant content: %#v", model.entries)
+	}
+}
+
+func TestAssistantChunkSplitWhenMessageIDChanges(t *testing.T) {
+	model := model{}
+
+	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "第一条", MessageID: "msg-1"})
+	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "第二条", MessageID: "msg-2"})
+
+	if len(model.entries) != 2 {
+		t.Fatalf("expected two assistant entries when message_id changes, got %#v", model.entries)
+	}
+	if model.entries[0].content != "第一条" || model.entries[1].content != "第二条" {
+		t.Fatalf("unexpected assistant content after message_id split: %#v", model.entries)
+	}
+}
+
+func TestStartRequestStatsResetsAssistantSplitState(t *testing.T) {
+	model := model{splitNextAssistant: true, lastAssistantMessageID: "msg-old"}
+
+	model.startRequestStats("问题", "run-1")
+
+	if model.splitNextAssistant {
+		t.Fatalf("expected split state reset when request starts")
+	}
+	if model.lastAssistantMessageID != "" {
+		t.Fatalf("expected last assistant message id reset, got %q", model.lastAssistantMessageID)
+	}
+}
+
+func TestUpdateEndToEndToolCallAndAssistantSplitChain(t *testing.T) {
+	input := textarea.New()
+	m := model{
+		snapshot: Snapshot{BackendAvailable: true},
+		state:    newProgressState(progressSending),
+		eventCh:  make(chan tea.Msg),
+		input:    input,
+		viewport: viewport.New(80, 20),
+	}
+
+	messages := []tea.Msg{
+		streamEventMsg{event: Event{Kind: EventToolCall, Text: "读取文件"}},
+		streamEventMsg{event: Event{Kind: EventAssistantChunk, Text: "第一段答复", MessageID: "msg-1"}},
+		streamEventMsg{event: Event{Kind: EventToolCall, Text: "执行补丁"}},
+		streamEventMsg{event: Event{Kind: EventAssistantChunk, Text: "第二段答复", MessageID: "msg-1"}},
+		streamDoneMsg{},
+	}
+
+	for _, message := range messages {
+		updated, _ := m.Update(message)
+		typed, ok := updated.(model)
+		if !ok {
+			t.Fatalf("expected model type after update, got %T", updated)
+		}
+		m = typed
+	}
+
+	assistantEntries := []entry{}
+	for _, item := range m.entries {
+		if item.role == "assistant" {
+			assistantEntries = append(assistantEntries, item)
+		}
+	}
+
+	if len(assistantEntries) != 2 {
+		t.Fatalf("expected two assistant entries in end-to-end chain, got %#v", m.entries)
+	}
+	if assistantEntries[0].content != "第一段答复" || assistantEntries[1].content != "第二段答复" {
+		t.Fatalf("unexpected assistant contents in end-to-end chain: %#v", assistantEntries)
+	}
+	if m.state.phase != progressIdle {
+		t.Fatalf("expected progress idle after stream done, got %s", m.state.phase)
+	}
+	if m.splitNextAssistant {
+		t.Fatalf("expected split flag reset after stream done")
+	}
+}
+
+func TestAssistantChunkSplitAfterStageEndBoundary(t *testing.T) {
+	m := model{}
+
+	m.applyEvent(Event{Kind: EventAssistantChunk, Text: "第一段", MessageID: "msg-1", Stage: "end"})
+	m.applyEvent(Event{Kind: EventAssistantChunk, Text: "第二段", MessageID: "msg-1"})
+
+	assistantEntries := []entry{}
+	for _, item := range m.entries {
+		if item.role == "assistant" {
+			assistantEntries = append(assistantEntries, item)
+		}
+	}
+
+	if len(assistantEntries) != 2 {
+		t.Fatalf("expected stage end to split following assistant chunk, got %#v", m.entries)
+	}
+	if assistantEntries[0].content != "第一段" || assistantEntries[1].content != "第二段" {
+		t.Fatalf("unexpected assistant contents after stage split: %#v", assistantEntries)
+	}
+}
+
+func TestUpdateStreamFailedResetsAssistantSplitState(t *testing.T) {
+	m := model{
+		state:                  newProgressState(progressStreaming),
+		splitNextAssistant:     true,
+		lastAssistantMessageID: "msg-1",
+		requestStats: RequestMetrics{
+			StartedAt: time.Now(),
+		},
+		input: textarea.New(),
+	}
+
+	updated, _ := m.Update(streamFailedMsg{err: errors.New("stream failed")})
+	typed, ok := updated.(model)
+	if !ok {
+		t.Fatalf("expected model type after stream failed, got %T", updated)
+	}
+
+	if typed.splitNextAssistant {
+		t.Fatalf("expected split flag reset after stream failed")
+	}
+	if typed.lastAssistantMessageID != "" {
+		t.Fatalf("expected message id reset after stream failed, got %q", typed.lastAssistantMessageID)
+	}
+}
+
+func TestUpdateSessionChangedResetsAssistantSplitState(t *testing.T) {
+	m := model{
+		snapshot:               Snapshot{BackendAvailable: true},
+		state:                  newProgressState(progressSession),
+		splitNextAssistant:     true,
+		lastAssistantMessageID: "msg-1",
+		input:                  textarea.New(),
+	}
+
+	updated, _ := m.Update(sessionChangedMsg{snapshot: Snapshot{BackendAvailable: true, SessionID: "session-2"}})
+	typed, ok := updated.(model)
+	if !ok {
+		t.Fatalf("expected model type after session changed, got %T", updated)
+	}
+
+	if typed.splitNextAssistant {
+		t.Fatalf("expected split flag reset after session changed")
+	}
+	if typed.lastAssistantMessageID != "" {
+		t.Fatalf("expected message id reset after session changed, got %q", typed.lastAssistantMessageID)
 	}
 }

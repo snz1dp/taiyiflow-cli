@@ -132,8 +132,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		for event := range stream {
 			switch event.Type {
 			case provider.EventMessage:
-				if chunk, ok := event.Data["chunk"].(string); ok && chunk != "" {
-					emit(tui.Event{Kind: tui.EventAssistantChunk, Text: chunk})
+				if assistantChunkEvent, ok := buildTUIAssistantChunkEvent(event.Data); ok {
+					emit(assistantChunkEvent)
 					continue
 				}
 				if message, ok := event.Data["message"].(string); ok && strings.TrimSpace(message) != "" {
@@ -1227,6 +1227,38 @@ func submitTUIClientCallFailure(
 	errorMessage string,
 ) error {
 	return submitClientCallFailure(ctx, providerClient, payload, errorMessage)
+}
+
+func buildTUIAssistantChunkEvent(payload map[string]any) (tui.Event, bool) {
+	chunk := firstNonEmptyRawStringMapValue(payload, "chunk", "text")
+	if chunk == "" {
+		return tui.Event{}, false
+	}
+	return tui.Event{
+		Kind:      tui.EventAssistantChunk,
+		Text:      chunk,
+		MessageID: firstNonEmptyTrimmedStringMapValue(payload, "message_id", "id"),
+		Stage:     strings.TrimSpace(stringMapValue(payload, "stage")),
+		EventType: strings.TrimSpace(stringMapValue(payload, "event_type")),
+	}, true
+}
+
+func firstNonEmptyRawStringMapValue(payload map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := payload[key].(string); ok && value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstNonEmptyTrimmedStringMapValue(payload map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(stringMapValue(payload, key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func stringMapValue(payload map[string]any, key string) string {

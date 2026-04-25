@@ -140,6 +140,9 @@ const (
 type Event struct {
 	Kind      EventKind
 	Text      string
+	MessageID string
+	Stage     string
+	EventType string
 	SessionID string
 	Stats     *RequestMetrics
 	Panel     *ToolPanel
@@ -370,6 +373,8 @@ type model struct {
 	toolPanel         *ToolPanel
 	requestCancel     context.CancelFunc
 	interrupting      bool
+	splitNextAssistant bool
+	lastAssistantMessageID string
 }
 
 type configFormState struct {
@@ -677,6 +682,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
 		m.finishRequestStats()
+		m.resetAssistantChunkState()
 		m.activityHint = ""
 		m.currentToolLabel = ""
 		m.requestCancel = nil
@@ -697,6 +703,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, progressCmd
 		}
 		m.finishRequestStats()
+		m.resetAssistantChunkState()
 		m.activityHint = ""
 		m.currentToolLabel = ""
 		m.requestCancel = nil
@@ -723,6 +730,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flowFilter.SetValue("")
 		m.flowFilter.Blur()
 		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
+		m.resetAssistantChunkState()
 		m.activityHint = ""
 		m.entries = buildInitialEntries(m.snapshot)
 		m.entries = append(m.entries, entry{role: "system", content: fmt.Sprintf("已切换默认智能体: %s -> %s", fallback(previousFlow, "<未配置>"), fallback(m.snapshot.DefaultFlowLabel, sanitizeFlowLabel(m.snapshot.DefaultFlow)))})
@@ -740,6 +748,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.snapshot = typed.snapshot
 		m.sessionPicker = nil
 		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
+		m.resetAssistantChunkState()
 		m.activityHint = ""
 		m.entries = buildInitialEntries(m.snapshot)
 		m.entries = append(m.entries, entry{role: "system", content: RenderSessionStatusText(m.snapshot, "已切换会话")})
@@ -1258,11 +1267,25 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 	switch event.Kind {
 	case EventAssistantChunk:
 		chunk := event.Text
+		messageID := strings.TrimSpace(event.MessageID)
+		stage := strings.TrimSpace(strings.ToLower(event.Stage))
 		if chunk == "" {
+			if messageID != "" {
+				m.lastAssistantMessageID = messageID
+			}
+			if stage == "end" {
+				m.splitNextAssistant = true
+			}
 			break
 		}
 		hasAssistantEntry := len(m.entries) > 0 && m.entries[len(m.entries)-1].role == "assistant"
 		if !hasAssistantEntry && strings.TrimSpace(chunk) == "" {
+			if messageID != "" {
+				m.lastAssistantMessageID = messageID
+			}
+			if stage == "end" {
+				m.splitNextAssistant = true
+			}
 			break
 		}
 		m.activityHint = ""
@@ -1271,10 +1294,21 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		}
 		m.requestStats.OutputChars += utf8.RuneCountInString(chunk)
 		m.requestStats.ChunkCount++
-		if !hasAssistantEntry {
+		startNewAssistantEntry := !hasAssistantEntry || m.splitNextAssistant
+		if !startNewAssistantEntry && messageID != "" && m.lastAssistantMessageID != "" && messageID != m.lastAssistantMessageID {
+			startNewAssistantEntry = true
+		}
+		if startNewAssistantEntry {
 			m.entries = append(m.entries, entry{role: "assistant", content: chunk})
 		} else {
 			m.entries[len(m.entries)-1].content += chunk
+		}
+		m.splitNextAssistant = false
+		if messageID != "" {
+			m.lastAssistantMessageID = messageID
+		}
+		if stage == "end" {
+			m.splitNextAssistant = true
 		}
 	case EventProgressNote:
 		if strings.TrimSpace(event.Text) != "" {
@@ -1312,10 +1346,12 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		m.requestStats.ToolCallCount++
 		m.currentToolLabel = currentToolLabel(event.Text, "服务端工具调用")
 		m.activityHint = "执行 " + m.currentToolLabel
+		m.splitNextAssistant = true
 	case EventBuiltInCall, EventClientToolCall:
 		m.requestStats.CommandCount++
 		m.currentToolLabel = currentToolLabel(event.Text, "本地工具调用")
 		m.activityHint = "执行 " + m.currentToolLabel
+		m.splitNextAssistant = true
 	case EventStatsUpdate:
 		if event.Stats != nil {
 			if strings.TrimSpace(event.Stats.RunID) != "" {
@@ -1361,6 +1397,7 @@ func RenderSessionStatusText(snapshot Snapshot, prefix string) string {
 
 func (m *model) completeInterruptedRequest() tea.Cmd {
 	m.finishRequestStats()
+	m.resetAssistantChunkState()
 	m.activityHint = ""
 	m.currentToolLabel = ""
 	m.requestCancel = nil
@@ -2371,6 +2408,7 @@ func (m *model) handleLocalSlashCommand(command string) (bool, tea.Cmd) {
 func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 	if result.ClearHistory {
 		m.entries = buildWelcomeEntries(m.snapshot)
+		m.resetAssistantChunkState()
 		m.activityHint = ""
 		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
 		if result.Snapshot != nil {
@@ -2399,6 +2437,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		}
 		if result.RebuildEntries {
 			m.entries = buildInitialEntries(m.snapshot)
+			m.resetAssistantChunkState()
 			m.activityHint = ""
 			m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
 		}
@@ -2964,11 +3003,17 @@ func (m model) isBusy() bool {
 }
 
 func (m *model) startRequestStats(input string, runID string) {
+	m.resetAssistantChunkState()
 	m.requestStats = RequestMetrics{
 		RunID:      runID,
 		StartedAt:  time.Now(),
 		InputChars: utf8.RuneCountInString(input),
 	}
+}
+
+func (m *model) resetAssistantChunkState() {
+	m.splitNextAssistant = false
+	m.lastAssistantMessageID = ""
 }
 
 func (m *model) finishRequestStats() {
