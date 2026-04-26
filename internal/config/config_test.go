@@ -95,3 +95,14 @@ func TestManagerLoadAppliesDefaultStreamIdleTimeoutSeconds(t *testing.T) {
 		t.Fatalf("expected default stream idle timeout %d, got %d", DefaultStreamIdleTimeoutSeconds, loaded.StreamIdleTimeoutSeconds)
 	}
 }
+
+func TestDefaultBundledSkillsDirUsesRootDir(t *testing.T) {
+	t.Setenv(RootDirEnvName(), t.TempDir())
+	bundledDir, err := DefaultBundledSkillsDir()
+	if err != nil {
+		t.Fatalf("DefaultBundledSkillsDir failed: %v", err)
+	}
+	if filepath.Base(bundledDir) != "bundled-skills" {
+		t.Fatalf("unexpected bundled skills dir: %s", bundledDir)
+	}
+}

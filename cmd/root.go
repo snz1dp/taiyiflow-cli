@@ -162,7 +162,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	}
 
 	reader := bufio.NewScanner(a.stdin)
-	fmt.Fprintln(a.stdout, "进入交互模式，输入 /ask、/plan、/agent 切换请求模式，输入 /config 管理服务端配置，输入 /skills 查看本地技能。")
+	fmt.Fprintln(a.stdout, "进入交互模式，输入 /ask、/plan、/agent 切换请求模式，输入 /review 发起代码审查，输入 /permissions 查看本地权限设置。")
 
 	for {
 		fmt.Fprint(a.stdout, "> ")
@@ -181,6 +181,40 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 		switch {
 		case line == "/exit":
 			return nil
+		case line == "/review" || strings.HasPrefix(strings.ToLower(line), "/review "):
+			target, reviewErr := parseReviewSlashCommand(line)
+			if reviewErr != nil {
+				fmt.Fprintf(a.stderr, "审查命令执行失败: %v\n", reviewErr)
+				continue
+			}
+			prompt := a.buildReviewPrompt(ctx, workdir, target)
+			sessionState.RequestMode = provider.RequestTypeAgent
+			sessionState.ContextDir = workdir
+			sessionState.FlowDisplayName = flowDisplayName
+			updatedState, err := a.streamTask(ctx, providerClient, config, flowID, prompt, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents)
+			if err != nil {
+				fmt.Fprintf(a.stderr, "执行审查失败: %v\n", err)
+				continue
+			}
+			sessionState = updatedState
+			continue
+		case line == "/tasks" || strings.HasPrefix(strings.ToLower(line), "/tasks "):
+			output, _, err := a.executeTasksSlashCommand(ctx, config, line)
+			if err != nil {
+				fmt.Fprintf(a.stderr, "任务命令执行失败: %v\n", err)
+				continue
+			}
+			fmt.Fprintln(a.stdout, output)
+			continue
+		case line == "/permissions" || strings.HasPrefix(strings.ToLower(line), "/permissions "):
+			updatedConfig, output, _, err := a.executePermissionsCommand(line)
+			if err != nil {
+				fmt.Fprintf(a.stderr, "权限命令执行失败: %v\n", err)
+				continue
+			}
+			config = updatedConfig
+			fmt.Fprintln(a.stdout, output)
+			continue
 		case line == "/skills" || strings.HasPrefix(strings.ToLower(line), "/skills "):
 			output, err := a.executeSkillsCommand(parseSlashSkillsArgs(line))
 			if err != nil {
@@ -211,7 +245,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 				FlowID:                      flowID,
 				FlowDisplayName:             flowDisplayName,
 				Workdir:                     workdir,
-					RequestMode:                 provider.RequestTypeAgent,
+				RequestMode:                 provider.RequestTypeAgent,
 				ContextDir:                  workdir,
 				SandboxEscapePolicyOverride: sessionState.SandboxEscapePolicyOverride,
 			}
@@ -512,6 +546,9 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 	fmt.Fprintln(a.stdout, "  /agents   显示智能体切换说明")
 	fmt.Fprintln(a.stdout, "  /config   查看或更新服务端配置")
 	fmt.Fprintln(a.stdout, "  /config session [show|set|unset] external_resource_access_policy [值]   查看或设置会话外部资源访问策略")
+	fmt.Fprintln(a.stdout, "  /review   发起代码审查，可写成 /review [路径或范围说明]")
+	fmt.Fprintln(a.stdout, "  /tasks    查看后台任务，可写成 /tasks [list|output|capture|stop|remove] <task_id> 或 /tasks cleanup")
+	fmt.Fprintln(a.stdout, "  /permissions   查看或调整本地权限设置，可写成 /permissions [show|set|clear] ...")
 	fmt.Fprintln(a.stdout, "  /skills   列出、查看或切换本地技能")
 	fmt.Fprintln(a.stdout, "  /ask      切换为问答模式，可写成 /ask <问题>")
 	fmt.Fprintln(a.stdout, "  /plan     切换为计划模式，可写成 /plan <目标>")

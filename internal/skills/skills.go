@@ -15,10 +15,17 @@ import (
 const skillFileName = "SKILL.md"
 
 type Manifest struct {
-	Name          string   `yaml:"name"`
-	Description   string   `yaml:"description"`
-	Category      string   `yaml:"category"`
-	Prerequisites []string `yaml:"prerequisites"`
+	Name          string      `yaml:"name"`
+	Description   string      `yaml:"description"`
+	Category      string      `yaml:"category"`
+	Prerequisites []string    `yaml:"prerequisites"`
+	Files         []SkillFile `yaml:"files,omitempty"`
+}
+
+type SkillFile struct {
+	Source      string `yaml:"source,omitempty"`
+	Path        string `yaml:"path,omitempty"`
+	Description string `yaml:"description,omitempty"`
 }
 
 type Skill struct {
@@ -84,6 +91,7 @@ func Discover(config internalconfig.Config) ([]Skill, string, error) {
 	}
 
 	enabled := enabledSet(config.Skills.Enabled)
+	disabled := enabledSet(config.Skills.Disabled)
 	items := []Skill{}
 	seenNames := map[string]bool{}
 	seenPaths := map[string]bool{}
@@ -124,7 +132,7 @@ func Discover(config internalconfig.Config) ([]Skill, string, error) {
 				return nil
 			}
 			seenNames[nameKey] = true
-			skill.Enabled = enabled[nameKey]
+			skill.Enabled = resolveSkillEnabled(skill.Name, enabled, disabled, bundledSkillDefaultEnabled(skill.Name))
 			skill.Source = classifySkillSource(directory, config)
 			items = append(items, skill)
 			return nil
@@ -132,6 +140,15 @@ func Discover(config internalconfig.Config) ([]Skill, string, error) {
 		if err != nil {
 			return nil, "", err
 		}
+	}
+
+	for _, bundled := range discoverBundledSkills(config, enabled, disabled) {
+		nameKey := strings.ToLower(bundled.Name)
+		if seenNames[nameKey] {
+			continue
+		}
+		seenNames[nameKey] = true
+		items = append(items, bundled)
 	}
 
 	sort.Slice(items, func(left, right int) bool {
@@ -171,6 +188,7 @@ func Summaries(items []Skill) []map[string]any {
 			"description":   item.Description,
 			"category":      item.Category,
 			"prerequisites": item.Prerequisites,
+			"files":         item.Files,
 			"summary":       item.Summary,
 			"path":          item.Path,
 			"root_dir":      item.RootDir,
@@ -208,7 +226,12 @@ func ClientPackages(items []Skill, rootDir string) any {
 	for _, item := range enabledItems {
 		root := item.RootDir
 		if root == "" {
-			root = filepath.Dir(item.Path)
+			if item.Path != "" {
+				root = filepath.Dir(item.Path)
+			}
+		}
+		if root == "" {
+			root = item.Source
 		}
 		index, ok := packageIndexes[root]
 		if !ok {
@@ -226,6 +249,7 @@ func ClientPackages(items []Skill, rootDir string) any {
 			"description":   item.Description,
 			"category":      item.Category,
 			"prerequisites": item.Prerequisites,
+			"files":         item.Files,
 			"summary":       item.Summary,
 			"content":       item.Body,
 			"markdown":      renderClientSkillMarkdown(item),
@@ -318,6 +342,25 @@ func classifySkillSource(directory string, config internalconfig.Config) string 
 	return "home"
 }
 
+func resolveSkillEnabled(name string, enabled map[string]bool, disabled map[string]bool, defaultEnabled bool) bool {
+	nameKey := strings.ToLower(strings.TrimSpace(name))
+	if nameKey == "" {
+		return false
+	}
+	if disabled[nameKey] {
+		return false
+	}
+	if enabled[nameKey] {
+		return true
+	}
+	return defaultEnabled
+}
+
+func bundledSkillDefaultEnabled(name string) bool {
+	definition, ok := bundledSkillDefinitionByName(name)
+	return ok && definition.DefaultEnabled
+}
+
 func sourcePriority(source string) int {
 	switch strings.ToLower(strings.TrimSpace(source)) {
 	case "custom":
@@ -326,6 +369,8 @@ func sourcePriority(source string) int {
 		return 1
 	case "home":
 		return 2
+	case "bundled":
+		return 3
 	default:
 		return 9
 	}

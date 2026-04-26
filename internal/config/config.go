@@ -31,12 +31,20 @@ type Config struct {
 	OutputLanguage           string      `yaml:"output_language"`
 	AuditEnabled             bool        `yaml:"audit_enabled,omitempty"`
 	SandboxRoots             []string    `yaml:"sandbox_roots,omitempty"`
+	PermissionRules          []PermissionRule `yaml:"permission_rules,omitempty"`
 	Skills                   SkillConfig `yaml:"skills,omitempty"`
+}
+
+type PermissionRule struct {
+	Action        string `yaml:"action"`
+	ToolName      string `yaml:"tool_name,omitempty"`
+	CommandPrefix string `yaml:"command_prefix,omitempty"`
 }
 
 type SkillConfig struct {
 	Directory string   `yaml:"directory,omitempty"`
 	Enabled   []string `yaml:"enabled,omitempty"`
+	Disabled  []string `yaml:"disabled,omitempty"`
 }
 
 type Manager struct {
@@ -62,6 +70,17 @@ func NormalizeSandboxEscapePolicy(value string) string {
 		return SandboxEscapePolicyAllow
 	default:
 		return SandboxEscapePolicyConfirm
+	}
+}
+
+func NormalizePermissionAction(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "allow":
+		return "allow"
+	case "deny":
+		return "deny"
+	default:
+		return "ask"
 	}
 }
 
@@ -118,6 +137,14 @@ func DefaultSkillsDir() (string, error) {
 	return filepath.Join(rootDir, "skills"), nil
 }
 
+func DefaultBundledSkillsDir() (string, error) {
+	rootDir, err := DefaultRootDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(rootDir, "bundled-skills"), nil
+}
+
 func DefaultAuditLogPath() (string, error) {
 	rootDir, err := DefaultRootDir()
 	if err != nil {
@@ -161,10 +188,12 @@ func (m *Manager) Load() (Config, error) {
 	if config.OutputLanguage == "" {
 		config.OutputLanguage = Default().OutputLanguage
 	}
+	config.PermissionRules = NormalizePermissionRules(config.PermissionRules)
 	return config, nil
 }
 
 func (m *Manager) Save(config Config) error {
+	config.PermissionRules = NormalizePermissionRules(config.PermissionRules)
 	if err := os.MkdirAll(filepath.Dir(m.path), 0o755); err != nil {
 		return fmt.Errorf("创建配置目录失败: %w", err)
 	}
@@ -187,4 +216,20 @@ func (m *Manager) InitDefault() (Config, error) {
 		return Config{}, err
 	}
 	return config, nil
+}
+
+func NormalizePermissionRules(items []PermissionRule) []PermissionRule {
+	result := make([]PermissionRule, 0, len(items))
+	for _, item := range items {
+		rule := PermissionRule{
+			Action:        NormalizePermissionAction(item.Action),
+			ToolName:      strings.TrimSpace(item.ToolName),
+			CommandPrefix: strings.TrimSpace(item.CommandPrefix),
+		}
+		if rule.ToolName == "" && rule.CommandPrefix == "" {
+			continue
+		}
+		result = append(result, rule)
+	}
+	return result
 }

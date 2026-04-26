@@ -174,17 +174,17 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "file_edit",
-			"description":          "基于 old_string/new_string 的细粒度文本编辑，要求 old_string 与文件当前内容精确匹配；失败后应先 read_file 获取最新内容，不要盲目重复重试。",
+			"description":          "基于 old_string/new_string 的细粒度文本编辑，要求 old_string 与文件当前内容精确匹配；若返回 PATCH_CONFLICT，应优先使用结果中的 prefetched_read 与 retry_hint.recommended_args 组织下一次 file_edit，而不是盲目重试。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"path":                   map[string]any{"type": "string", "description": "目标文件路径。"},
-					"old_string":             map[string]any{"type": "string", "description": "要替换的旧文本。"},
+					"old_string":             map[string]any{"type": "string", "description": "要替换的旧文本；冲突后可优先复用 retry_hint.recommended_args.old_string。"},
 					"new_string":             map[string]any{"type": "string", "description": "替换后的新文本。"},
 					"replace_all":            map[string]any{"type": "boolean"},
 					"dry_run":                map[string]any{"type": "boolean"},
-					"expected_sha256_before": map[string]any{"type": "string", "description": "可选的编辑前内容摘要，用于检测文件是否变化。"},
+					"expected_sha256_before": map[string]any{"type": "string", "description": "可选的编辑前内容摘要，用于检测文件是否变化；冲突后可优先复用 retry_hint.recommended_args.expected_sha256_before。"},
 				},
 				"required":             []string{"path", "old_string", "new_string"},
 				"additionalProperties": false,
@@ -239,10 +239,47 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "task_list",
-			"description":          "列出当前 CLI 进程内已知的本地后台任务。",
+			"description":          "列出当前本地任务存储中已知的后台任务。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type":                 "object",
+				"additionalProperties": false,
+			},
+		},
+		{
+			"name":                 "task_delete",
+			"description":          "删除已完成、失败或已取消的后台任务及其持久化输出。",
+			"waiting_for_response": true,
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"task_id": map[string]any{"type": "string", "description": "后台任务 ID。"},
+				},
+				"required":             []string{"task_id"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			"name":                 "task_cleanup",
+			"description":          "批量清理所有已结束的后台任务及其持久化输出，保留运行中的任务。",
+			"waiting_for_response": true,
+			"inputSchema": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+			},
+		},
+		{
+			"name":                 "terminal_capture",
+			"description":          "读取后台任务的终端视角输出，适合持续查看 stdout/stderr。",
+			"waiting_for_response": true,
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"task_id":   map[string]any{"type": "string", "description": "后台任务 ID。"},
+					"stream":    map[string]any{"type": "string", "enum": []string{"stdout", "stderr", "both"}},
+					"max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": maxReadBytesHard},
+				},
+				"required":             []string{"task_id"},
 				"additionalProperties": false,
 			},
 		},
@@ -335,13 +372,14 @@ func allowedClientToolSetForMode(mode string) map[string]bool {
 		return map[string]bool{}
 	}
 	return map[string]bool{
-		"lsp_query":    true,
-		"glob_files":   true,
-		"task_output":  true,
-		"task_list":    true,
-		"search_files": true,
-		"read_file":    true,
-		"skill":        true,
+		"lsp_query":        true,
+		"glob_files":       true,
+		"task_output":      true,
+		"task_list":        true,
+		"terminal_capture": true,
+		"search_files":     true,
+		"read_file":        true,
+		"skill":            true,
 	}
 }
 
@@ -358,6 +396,26 @@ func PreviewClientToolCall(payload map[string]any) string {
 
 func (r *ClientRuntime) authorizeClientTool(toolName string, arguments map[string]any, config internalconfig.Config) error {
 	mode := strings.TrimSpace(config.ApprovalMode)
+	if action, matched := evaluatePermissionAction(config, toolName, commandPreview(arguments)); matched {
+		switch action {
+		case "deny":
+			return newToolError("PERMISSION_DENIED", "命中权限规则，拒绝执行 %s", canonicalClientToolName(toolName))
+		case "allow":
+			if mode == "readonly" && mutatingClientTool(toolName) {
+				return newToolError("PERMISSION_DENIED", "当前审批模式为只读，拒绝执行 %s", canonicalClientToolName(toolName))
+			}
+			return nil
+		case "ask":
+			approved, err := r.confirmClientTool(toolName, arguments)
+			if err != nil {
+				return err
+			}
+			if !approved {
+				return newToolError("PERMISSION_DENIED", "用户拒绝执行 %s", canonicalClientToolName(toolName))
+			}
+			return nil
+		}
+	}
 	if !mutatingClientTool(toolName) {
 		return nil
 	}
@@ -393,12 +451,15 @@ func (r *ClientRuntime) confirmClientTool(toolName string, arguments map[string]
 }
 
 func shouldConfirmMutatingTool(config internalconfig.Config, toolName string) bool {
+	if action, matched := evaluatePermissionAction(config, toolName, ""); matched {
+		return action == "ask"
+	}
 	return strings.TrimSpace(config.ApprovalMode) == "confirm" && mutatingClientTool(toolName)
 }
 
 func mutatingClientTool(toolName string) bool {
 	switch canonicalClientToolName(toolName) {
-	case "shell_exec", "task_stop", "todo_write", "file_edit", "write_file":
+	case "shell_exec", "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit", "write_file":
 		return true
 	default:
 		return false
@@ -428,8 +489,14 @@ func previewClientTool(toolName string, arguments map[string]any) string {
 		return fmt.Sprintf("task_output %s", fallbackString(stringValue(arguments["task_id"]), "<missing>"))
 	case "task_stop":
 		return fmt.Sprintf("task_stop %s", fallbackString(stringValue(arguments["task_id"]), "<missing>"))
+	case "task_delete":
+		return fmt.Sprintf("task_delete %s", fallbackString(stringValue(arguments["task_id"]), "<missing>"))
+	case "task_cleanup":
+		return "task_cleanup"
 	case "task_list":
 		return "task_list"
+	case "terminal_capture":
+		return fmt.Sprintf("terminal_capture %s", fallbackString(stringValue(arguments["task_id"]), "<missing>"))
 	case "write_file":
 		return fmt.Sprintf("write_file %s (%s)", path, fallbackString(stringValue(arguments["mode"]), "overwrite"))
 	case "read_file", "search_files":
@@ -558,14 +625,17 @@ func (r *ClientRuntime) skill(config internalconfig.Config, arguments map[string
 		return nil, newToolError("EXECUTION_FAILED", "%v", err)
 	}
 	return map[string]any{
-		"name":        item.Name,
-		"description": item.Description,
-		"input":       argumentString(arguments, "input"),
-		"prompt":      item.Body,
-		"markdown":    skills.Markdown(*item),
-		"path":        item.Path,
-		"source":      item.Source,
-		"kind":        "prompt",
+		"name":         item.Name,
+		"description":  item.Description,
+		"input":        argumentString(arguments, "input"),
+		"prompt":       item.Body,
+		"markdown":     skills.Markdown(*item),
+		"path":         item.Path,
+		"root_dir":     item.RootDir,
+		"source":       item.Source,
+		"relative_dir": item.RelativeDir,
+		"files":        item.Files,
+		"kind":         "prompt",
 	}, nil
 }
 

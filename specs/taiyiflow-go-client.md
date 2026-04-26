@@ -141,7 +141,7 @@
 
 截至当前仓库实现，客户端已经具备以下能力基线：
 
-1. 本地客户端工具注册已覆盖 search_files、glob_files、read_file、write_file、file_edit、shell_exec、task_list、task_output、task_stop、todo_write、lsp_query、skill。
+1. 本地客户端工具注册已覆盖 search_files、glob_files、read_file、write_file、file_edit、shell_exec、task_list、task_output、task_stop、task_delete、terminal_capture、todo_write、lsp_query、skill。
 2. 文件工具默认受工作目录访问边界限制，可附加 sandbox_roots 扩展额外外部资源访问根目录。
 3. 敏感目录（如 ~/.ssh、~/.gnupg、~/.aws、macOS Keychains）默认拒绝访问。
 4. 写文件、细粒度编辑、Todo 更新和任务停止操作统一遵循 approval_mode；只读模式会直接拒绝执行。
@@ -149,9 +149,10 @@
 6. 客户端支持 ~/.snz1dp/skills 目录下的 SKILL.md 发现与透传；运行时的 skill 工具已收窄为按名称装载单个技能提示内容(prompt)的执行入口。
 7. TUI 与交互模式均提供 /skills 命令；doctor 会输出文件工具链和技能目录状态。
 8. TUI 状态栏已支持窄终端分级压缩，并将本地工具与命令执行摘要收敛到状态栏和关键里程碑消息；Todo、后台任务输出与 lsp_query 结果会进入专门的工具结果面板。
-9. shell_exec 已复用现有命令执行内核正式化为客户端工具，并补齐后台任务句柄(task handle)、输出读取与停止能力。
-10. Todo 清单已保存到当前会话状态，CLI 进程内的后台任务列表与输出读取可跨多次请求复用。
+9. shell_exec 已复用现有命令执行内核正式化为客户端工具，并补齐后台任务句柄(task handle)、输出读取、终端捕获、停止与删除能力。
+10. Todo 清单已保存到当前会话状态，后台任务 metadata 与 stdout/stderr 会持久化到 `SNZ1DP_HOME/tasks/`；CLI 重启后仍可继续查看、捕获或删除已恢复任务。
 11. lsp_query 通过本地标准输入输出(stdio)语言服务器(language server)提供定义跳转(go_to_definition)、引用查询(find_references)、实现跳转(go_to_implementation)、文档符号(document_symbol)、工作区符号(workspace_symbol)五类查询；当前不需要扩展太乙智启后台 stream 协议。
+12. 交互式 CLI 与 TUI 已接入 `/review`、`/tasks`、`/permissions`、`/skills` 等本地工作流命令，其中 `/tasks` 已支持 `list`、`output`、`capture`、`stop`、`remove`。
 
 ### 7.3 第二阶段增强
 
@@ -196,6 +197,9 @@ taiyiflow version
 
 - /help
 - /clear
+- /review
+- /tasks
+- /permissions
 - /skills
 - /diff
 - /approve
@@ -233,7 +237,7 @@ taiyiflow version
 
 首期建议内置工具：
 
-- 文件工具：read_file 读文件、glob_files 枚举、search_files 搜索内容、write_file 写文件、file_edit 细粒度替换
+- 文件工具：read_file 读文件、glob_files 枚举、search_files 搜索内容、write_file 写文件、file_edit 细粒度替换；其中 file_edit 在 PATCH_CONFLICT 时返回 prefetched_read 与 retry_hint，供后续安全复用
 - 命令外壳(shell)工具：执行构建、测试、脚本、查询命令，并支持后台任务输出读取与停止
 - 任务工具：会话级 Todo 清单读写、后台任务列表查询
 - 代码语义工具：通过本地语言服务器(language server)执行 lsp_query

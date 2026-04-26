@@ -35,14 +35,23 @@ func TestDiscoverSkillsAndEnableState(t *testing.T) {
 	if directory != tempDir {
 		t.Fatalf("unexpected directory: %s", directory)
 	}
-	if len(items) != 2 {
-		t.Fatalf("expected 2 skills, got %d", len(items))
+	if len(items) < 2 {
+		t.Fatalf("expected at least 2 skills, got %d", len(items))
 	}
 	if !items[0].Enabled {
 		t.Fatalf("expected enabled skill to be sorted first")
 	}
-	if items[0].Name != "Code Review" {
-		t.Fatalf("unexpected first skill: %s", items[0].Name)
+	foundCodeReview := false
+	for _, item := range items {
+		if item.Name == "Code Review" {
+			foundCodeReview = true
+			if !item.Enabled {
+				t.Fatal("expected Code Review enabled")
+			}
+		}
+	}
+	if !foundCodeReview {
+		t.Fatal("expected custom Code Review skill in discovery result")
 	}
 
 	item, _, err := LoadByName(config, "draft writer")
@@ -80,14 +89,28 @@ func TestClientPackagesIncludeMarkdownAndContent(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected payload type: %T", ClientPackages(items, directory))
 	}
-	if len(payload) != 1 {
-		t.Fatalf("expected 1 package, got %d", len(payload))
+	if len(payload) < 1 {
+		t.Fatalf("expected at least 1 package, got %d", len(payload))
 	}
-	skillsPayload, ok := payload[0]["skills"].([]map[string]any)
-	if !ok || len(skillsPayload) != 1 {
-		t.Fatalf("unexpected skills payload: %#v", payload[0]["skills"])
+	var skillPayload map[string]any
+	for _, pkg := range payload {
+		skillsPayload, ok := pkg["skills"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		for _, candidate := range skillsPayload {
+			if candidate["name"] == "Code Review" {
+				skillPayload = candidate
+				break
+			}
+		}
+		if skillPayload != nil {
+			break
+		}
 	}
-	skillPayload := skillsPayload[0]
+	if skillPayload == nil {
+		t.Fatalf("expected Code Review payload in %#v", payload)
+	}
 	if got := skillPayload["content"]; got != "检查回归风险。" {
 		t.Fatalf("unexpected content: %#v", got)
 	}
@@ -100,5 +123,95 @@ func TestClientPackagesIncludeMarkdownAndContent(t *testing.T) {
 	}
 	if !strings.Contains(markdown, "检查回归风险。") {
 		t.Fatalf("markdown missing body: %s", markdown)
+	}
+}
+
+func TestDiscoverIncludesBundledSkillsByDefault(t *testing.T) {
+	config := internalconfig.Config{}
+
+	items, _, err := Discover(config)
+	if err != nil {
+		t.Fatalf("discover failed: %v", err)
+	}
+	if len(items) == 0 {
+		t.Fatal("expected bundled skills")
+	}
+
+	item, _, err := LoadByName(config, "updateConfig")
+	if err != nil {
+		t.Fatalf("load bundled skill failed: %v", err)
+	}
+	if item.Source != "bundled" {
+		t.Fatalf("expected bundled source, got %s", item.Source)
+	}
+	if !item.Enabled {
+		t.Fatal("expected bundled skill enabled by default")
+	}
+	if item.RootDir != "bundled" {
+		t.Fatalf("expected bundled root dir, got %s", item.RootDir)
+	}
+	if strings.TrimSpace(item.Body) == "" {
+		t.Fatal("expected bundled body content")
+	}
+	if !bundledSkillDefaultEnabled(item.Name) {
+		t.Fatalf("expected default enabled bundled skill: %s", item.Name)
+	}
+}
+
+func TestWorkspaceSkillOverridesBundledDefaultAndCanBeDisabled(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tempDir, "update-config"), 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	content := "---\nname: updateConfig\ndescription: 工作区覆盖版\ncategory: workspace\n---\n\n优先使用工作区 skill。\n"
+	if err := os.WriteFile(filepath.Join(tempDir, "update-config", "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill failed: %v", err)
+	}
+
+	config := internalconfig.Config{}
+	config.Skills.Directory = tempDir
+
+	item, _, err := LoadByName(config, "updateConfig")
+	if err != nil {
+		t.Fatalf("load skill failed: %v", err)
+	}
+	if item.Source != "custom" {
+		t.Fatalf("expected custom source, got %s", item.Source)
+	}
+	if !item.Enabled {
+		t.Fatal("expected overriding skill enabled because bundled default exists")
+	}
+
+	config.Skills.Disabled = []string{"updateConfig"}
+	item, _, err = LoadByName(config, "updateConfig")
+	if err != nil {
+		t.Fatalf("load disabled skill failed: %v", err)
+	}
+	if item.Enabled {
+		t.Fatal("expected disabled skill to be off")
+	}
+}
+
+func TestBundledSkillExtractsReferenceFiles(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	config := internalconfig.Config{}
+
+	item, _, err := LoadByName(config, "taiyiflowApi")
+	if err != nil {
+		t.Fatalf("load bundled skill failed: %v", err)
+	}
+	if item.RootDir == "bundled" || strings.TrimSpace(item.RootDir) == "" {
+		t.Fatalf("expected extracted root dir, got %q", item.RootDir)
+	}
+	if len(item.Files) != 1 {
+		t.Fatalf("expected extracted files metadata, got %#v", item.Files)
+	}
+	referencePath := filepath.Join(item.RootDir, filepath.FromSlash(item.Files[0].Path))
+	content, err := os.ReadFile(referencePath)
+	if err != nil {
+		t.Fatalf("read extracted reference failed: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(string(content)), "bundled skill") {
+		t.Fatalf("unexpected extracted content: %s", string(content))
 	}
 }

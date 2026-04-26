@@ -70,6 +70,29 @@ type SessionPickerState struct {
 	Items      []SessionItem
 }
 
+type SkillReferenceItem struct {
+	Path        string
+	Description string
+}
+
+type SkillItem struct {
+	Name           string
+	Description    string
+	Category       string
+	SourceLabel    string
+	StateLabel     string
+	RootDir        string
+	RelativeDir    string
+	Restriction    string
+	ReferenceFiles []SkillReferenceItem
+}
+
+type SkillsPickerState struct {
+	Title string
+	Hint  string
+	Items []SkillItem
+}
+
 type ApprovalOption struct {
 	Value       string
 	Label       string
@@ -219,6 +242,7 @@ type LocalCommandResult struct {
 	ClearHistory   bool
 	Events         []Event
 	SessionPicker  *SessionPickerState
+	SkillsPicker   *SkillsPickerState
 	ApprovalPicker *ApprovalPickerState
 	ConfigForm     *ConfigFormState
 	Snapshot       *Snapshot
@@ -330,50 +354,52 @@ type progressState struct {
 }
 
 type model struct {
-	ctx               context.Context
-	snapshot          Snapshot
-	flows             []FlowItem
-	runner            Runner
-	refreshSnapshot   SnapshotRefreshHandler
-	flowChange        FlowChangeHandler
-	sessionChange     SessionChangeHandler
-	approvalChange    ApprovalChangeHandler
-	configFormSubmit  ConfigFormSubmitHandler
-	localCommand      LocalCommandHandler
-	eventCh           chan tea.Msg
-	entries           []entry
-	input             textarea.Model
-	flowFilter        textinput.Model
-	viewport          viewport.Model
-	toolPanelViewport viewport.Model
-	progress          progress.Model
-	markdown          *glamour.TermRenderer
-	state             progressState
-	activityHint      string
-	currentToolLabel  string
-	latestToolSummary string
-	latestToolAt      time.Time
-	requestStats      RequestMetrics
-	width             int
-	height            int
-	contentWidth      int
-	ready             bool
-	quitting          bool
-	showFlowPicker    bool
-	sessionPicker     *SessionPickerState
-	approvalPicker    *ApprovalPickerState
-	configForm        *configFormState
-	flowCursor        int
-	sessionCursor     int
-	approvalCursor    int
-	commandCursor     int
-	startupCommand    string
-	queuedInput       string
-	pendingConfirm    *confirmState
-	toolPanel         *ToolPanel
-	requestCancel     context.CancelFunc
-	interrupting      bool
-	splitNextAssistant bool
+	ctx                    context.Context
+	snapshot               Snapshot
+	flows                  []FlowItem
+	runner                 Runner
+	refreshSnapshot        SnapshotRefreshHandler
+	flowChange             FlowChangeHandler
+	sessionChange          SessionChangeHandler
+	approvalChange         ApprovalChangeHandler
+	configFormSubmit       ConfigFormSubmitHandler
+	localCommand           LocalCommandHandler
+	eventCh                chan tea.Msg
+	entries                []entry
+	input                  textarea.Model
+	flowFilter             textinput.Model
+	viewport               viewport.Model
+	toolPanelViewport      viewport.Model
+	progress               progress.Model
+	markdown               *glamour.TermRenderer
+	state                  progressState
+	activityHint           string
+	currentToolLabel       string
+	latestToolSummary      string
+	latestToolAt           time.Time
+	requestStats           RequestMetrics
+	width                  int
+	height                 int
+	contentWidth           int
+	ready                  bool
+	quitting               bool
+	showFlowPicker         bool
+	sessionPicker          *SessionPickerState
+	skillsPicker           *SkillsPickerState
+	approvalPicker         *ApprovalPickerState
+	configForm             *configFormState
+	flowCursor             int
+	sessionCursor          int
+	skillsCursor           int
+	approvalCursor         int
+	commandCursor          int
+	startupCommand         string
+	queuedInput            string
+	pendingConfirm         *confirmState
+	toolPanel              *ToolPanel
+	requestCancel          context.CancelFunc
+	interrupting           bool
+	splitNextAssistant     bool
 	lastAssistantMessageID string
 }
 
@@ -532,9 +558,12 @@ var slashCommands = []slashCommand{
 	{Trigger: "/clear", Completion: "/clear", Description: "清空当前界面消息"},
 	{Trigger: "/session", Completion: "/session", Description: "显示当前会话状态"},
 	{Trigger: "/agent", Completion: "/agent ", Description: "切换为执行模式，或直接发送一个执行请求"},
+	{Trigger: "/review", Completion: "/review ", Description: "发起当前工作区或指定路径的代码审查"},
 	{Trigger: "/ask", Completion: "/ask ", Description: "切换为问答模式，或直接发送一个问答请求"},
 	{Trigger: "/plan", Completion: "/plan ", Description: "切换为计划模式，或直接发送一个计划请求"},
 	{Trigger: "/agents", Completion: "/agents ", Description: "打开智能体选择，或用 /agents <名称> 直接切换"},
+	{Trigger: "/tasks", Completion: "/tasks ", Description: "查看、捕获、停止或清理本地后台任务"},
+	{Trigger: "/permissions", Completion: "/permissions ", Description: "查看或调整本地权限设置"},
 	{Trigger: "/skills", Completion: "/skills ", Description: "列出、查看或启停本地技能"},
 	{Trigger: "/sessions", Completion: "/sessions ", Description: "列出当前智能体的服务端会话，可附页码"},
 	{Trigger: "/help", Completion: "/help", Description: "显示可用命令帮助"},
@@ -547,7 +576,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 	if snapshot.BackendAvailable {
 		inputModel.Placeholder = "输入内容后回车发送"
 	} else {
-		inputModel.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/skills、/help、/clear、/exit"
+		inputModel.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/permissions、/tasks、/skills、/help、/clear、/exit"
 	}
 	inputModel.Prompt = "> "
 	inputModel.ShowLineNumbers = false
@@ -650,6 +679,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.snapshot.BackendAvailable {
 			m.showFlowPicker = false
 			m.sessionPicker = nil
+			m.skillsPicker = nil
 			m.approvalPicker = nil
 			m.flowFilter.Blur()
 			if previouslyAvailable {
@@ -735,6 +765,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.entries = buildInitialEntries(m.snapshot)
 		m.entries = append(m.entries, entry{role: "system", content: fmt.Sprintf("已切换默认智能体: %s -> %s", fallback(previousFlow, "<未配置>"), fallback(m.snapshot.DefaultFlowLabel, sanitizeFlowLabel(m.snapshot.DefaultFlow)))})
 		m.showFlowPicker = false
+		m.skillsPicker = nil
 		m.syncViewport()
 		m.input.Focus()
 		return m, m.transitionProgress(progressIdle)
@@ -747,6 +778,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.snapshot = typed.snapshot
 		m.sessionPicker = nil
+		m.skillsPicker = nil
 		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
 		m.resetAssistantChunkState()
 		m.activityHint = ""
@@ -771,6 +803,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.snapshot = typed.snapshot
 		m.approvalPicker = nil
+		m.skillsPicker = nil
 		m.approvalCursor = 0
 		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
 		m.input.Focus()
@@ -813,6 +846,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.approvalPicker != nil {
 			return m.handleApprovalPickerKey(typed)
+		}
+		if m.skillsPicker != nil {
+			return m.handleSkillsPickerKey(typed)
 		}
 		if m.sessionPicker != nil {
 			return m.handleSessionPickerKey(typed)
@@ -1225,6 +1261,43 @@ func (m model) handleSessionPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m model) handleSkillsPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.skillsPicker == nil {
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc", "q", "ctrl+c":
+		m.closeSkillsPicker()
+		return m, nil
+	case "up", "k":
+		if m.skillsCursor > 0 {
+			m.skillsCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.skillsCursor < len(m.skillsPicker.Items)-1 {
+			m.skillsCursor++
+		}
+		return m, nil
+	case "tab":
+		if len(m.skillsPicker.Items) > 0 {
+			m.skillsCursor = (m.skillsCursor + 1) % len(m.skillsPicker.Items)
+		}
+		return m, nil
+	case "enter":
+		if len(m.skillsPicker.Items) == 0 {
+			m.closeSkillsPicker()
+			return m, nil
+		}
+		selected := m.skillsPicker.Items[m.skillsCursor]
+		m.closeSkillsPicker()
+		m.openToolPanel(buildSkillDetailPanel(selected))
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
 func (m model) handleFlowPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q", "ctrl+c":
@@ -1552,7 +1625,7 @@ func (m model) View() string {
 	bodyParts := []string{}
 	history := m.renderHistoryPane()
 	inputView := m.input.View()
-	if m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil {
+	if m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.skillsPicker != nil || m.approvalPicker != nil {
 		inputView = hintStyle.Render("当前有未处理的弹层，请先完成操作。")
 	} else if commandHints := m.renderSlashCommandHints(); commandHints != "" {
 		inputView = lipgloss.JoinVertical(lipgloss.Left, inputView, "", commandHints)
@@ -1836,6 +1909,9 @@ func (m model) renderOverlay() string {
 	if m.approvalPicker != nil {
 		return overlayStyle.Width(minInt(m.contentWidth-6, 90)).Render(m.renderApprovalPicker())
 	}
+	if m.skillsPicker != nil {
+		return overlayStyle.Width(minInt(m.contentWidth-6, 100)).Render(m.renderSkillsPicker())
+	}
 	if m.sessionPicker != nil {
 		return overlayStyle.Width(minInt(m.contentWidth-6, 90)).Render(m.renderSessionPicker())
 	}
@@ -2062,6 +2138,87 @@ func (m model) renderSessionPicker() string {
 	return strings.Join(lines, "\n")
 }
 
+func (m model) renderSkillsPicker() string {
+	if m.skillsPicker == nil {
+		return ""
+	}
+	lines := []string{
+		m.skillsPicker.Title,
+		fallback(strings.TrimSpace(m.skillsPicker.Hint), "使用方向键选择，Enter 查看详情，Esc 关闭。"),
+		"",
+	}
+	if len(m.skillsPicker.Items) == 0 {
+		lines = append(lines, hintStyle.Render("当前没有可展示的技能。"))
+		return strings.Join(lines, "\n")
+	}
+	for index, item := range m.skillsPicker.Items {
+		line := fmt.Sprintf("%s  %s", flowCursor(index == m.skillsCursor), item.Name)
+		meta := []string{}
+		if strings.TrimSpace(item.SourceLabel) != "" {
+			meta = append(meta, item.SourceLabel)
+		}
+		if strings.TrimSpace(item.StateLabel) != "" {
+			meta = append(meta, item.StateLabel)
+		}
+		if strings.TrimSpace(item.Restriction) != "" {
+			meta = append(meta, item.Restriction)
+		}
+		if len(item.ReferenceFiles) > 0 {
+			meta = append(meta, fmt.Sprintf("参考文件 %d", len(item.ReferenceFiles)))
+		}
+		if len(meta) > 0 {
+			line += "  " + strings.Join(meta, "  ")
+		}
+		description := strings.TrimSpace(item.Description)
+		if description != "" {
+			line += "\n   " + description
+		}
+		if index == m.skillsCursor {
+			line = selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-16))
+		} else {
+			line = commandHintStyle.Render(trimForWidth(line, m.contentWidth-16))
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildSkillDetailPanel(item SkillItem) *ToolPanel {
+	body := []string{
+		fmt.Sprintf("名称: %s", item.Name),
+		fmt.Sprintf("来源: %s", fallback(strings.TrimSpace(item.SourceLabel), "<未填写>")),
+		fmt.Sprintf("状态: %s", fallback(strings.TrimSpace(item.StateLabel), "<未填写>")),
+	}
+	if strings.TrimSpace(item.Category) != "" {
+		body = append(body, fmt.Sprintf("分类: %s", item.Category))
+	}
+	if strings.TrimSpace(item.RootDir) != "" {
+		body = append(body, fmt.Sprintf("根目录: %s", item.RootDir))
+	}
+	if strings.TrimSpace(item.RelativeDir) != "" {
+		body = append(body, fmt.Sprintf("相对目录: %s", item.RelativeDir))
+	}
+	if strings.TrimSpace(item.Restriction) != "" {
+		body = append(body, fmt.Sprintf("能力标记: %s", item.Restriction))
+	}
+	if len(item.ReferenceFiles) > 0 {
+		body = append(body, "", "参考文件:")
+		for _, file := range item.ReferenceFiles {
+			line := "- " + fallback(strings.TrimSpace(file.Path), "<未填写>")
+			if strings.TrimSpace(file.Description) != "" {
+				line += " - " + strings.TrimSpace(file.Description)
+			}
+			body = append(body, line)
+		}
+	}
+	return &ToolPanel{
+		Title:   fmt.Sprintf("技能详情｜%s", item.Name),
+		Summary: fallback(strings.TrimSpace(item.Description), "当前技能没有额外说明。"),
+		Body:    strings.Join(body, "\n"),
+		Hint:    "Esc 关闭详情面板。",
+	}
+}
+
 func (m model) renderOverlayOption(label string, selected bool) string {
 	if selected {
 		return selectedFlowStyle.Render(label)
@@ -2168,7 +2325,7 @@ func buildBackendStatusEntries(snapshot Snapshot) []entry {
 		return nil
 	}
 	message := "当前无法连接服务端，已进入只读模式。"
-	message += "\n可用命令: /config /skills /help /clear /exit"
+	message += "\n可用命令: /config /permissions /tasks /skills /help /clear /exit"
 	return []entry{{role: "error", content: message}}
 }
 
@@ -2185,16 +2342,16 @@ func backendStatusLabel(snapshot Snapshot) string {
 
 func (m model) backendUnavailableMessage() string {
 	message := "当前无法连接服务端，已进入只读模式。"
-	message += " 可用命令: /config /skills /help /clear /exit"
+	message += " 可用命令: /config /permissions /tasks /skills /help /clear /exit"
 	return message
 }
 
 func welcomeCommandsLabel(snapshot Snapshot) []string {
 	labelValue := "可用命令: "
 	if snapshot.BackendAvailable {
-		return []string{labelValue + "/agents /config /skills /session /new /exit"}
+		return []string{labelValue + "/agents /config /permissions /tasks /skills /session /new /exit"}
 	}
-	return []string{labelValue + "/config /skills /help /clear /exit"}
+	return []string{labelValue + "/config /permissions /tasks /skills /help /clear /exit"}
 }
 
 func isAvailableInReadOnlyMode(input string) bool {
@@ -2203,6 +2360,12 @@ func isAvailableInReadOnlyMode(input string) bool {
 	case trimmed == "/help", trimmed == "/clear", trimmed == "/exit":
 		return true
 	case trimmed == "/skills", strings.HasPrefix(trimmed, "/skills "):
+		return true
+	case trimmed == "/review", strings.HasPrefix(trimmed, "/review "):
+		return true
+	case trimmed == "/tasks", strings.HasPrefix(trimmed, "/tasks "):
+		return true
+	case trimmed == "/permissions", strings.HasPrefix(trimmed, "/permissions "):
 		return true
 	case trimmed == "/config", strings.HasPrefix(trimmed, "/config "):
 		return true
@@ -2419,6 +2582,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		m.configForm = newConfigFormState(*result.ConfigForm)
 		m.approvalPicker = nil
 		m.sessionPicker = nil
+		m.skillsPicker = nil
 		m.showFlowPicker = false
 		m.flowFilter.Blur()
 		m.input.Blur()
@@ -2432,6 +2596,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		if !m.snapshot.BackendAvailable {
 			m.showFlowPicker = false
 			m.sessionPicker = nil
+			m.skillsPicker = nil
 			m.approvalPicker = nil
 			m.flowFilter.Blur()
 		}
@@ -2445,6 +2610,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 	if result.SessionPicker != nil {
 		m.sessionPicker = result.SessionPicker
 		m.sessionCursor = 0
+		m.skillsPicker = nil
 		m.approvalPicker = nil
 		m.configForm = nil
 		m.input.Blur()
@@ -2453,6 +2619,15 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		m.approvalPicker = result.ApprovalPicker
 		m.approvalCursor = 0
 		m.sessionPicker = nil
+		m.skillsPicker = nil
+		m.configForm = nil
+		m.input.Blur()
+	}
+	if result.SkillsPicker != nil {
+		m.skillsPicker = result.SkillsPicker
+		m.skillsCursor = 0
+		m.sessionPicker = nil
+		m.approvalPicker = nil
 		m.configForm = nil
 		m.input.Blur()
 	}
@@ -2471,7 +2646,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 }
 
 func (m model) showSlashCommandHints() bool {
-	if m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.approvalPicker != nil || m.isBusy() {
+	if m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.skillsPicker != nil || m.approvalPicker != nil || m.isBusy() {
 		return false
 	}
 	trimmed := strings.TrimSpace(m.input.Value())
@@ -2605,6 +2780,12 @@ func (m *model) loadSessionPickerPage(page int) tea.Cmd {
 func (m *model) closeSessionPicker() {
 	m.sessionPicker = nil
 	m.sessionCursor = 0
+	m.input.Focus()
+}
+
+func (m *model) closeSkillsPicker() {
+	m.skillsPicker = nil
+	m.skillsCursor = 0
 	m.input.Focus()
 }
 
@@ -3726,6 +3907,22 @@ func isExecutableSlashCommandInput(input string) bool {
 		return true
 	case strings.HasPrefix(strings.ToLower(trimmed), "/skills "):
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/skills ")) != ""
+	case strings.EqualFold(trimmed, "/review"):
+		return true
+	case strings.HasPrefix(strings.ToLower(trimmed), "/review "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/review ")) != ""
+	case strings.EqualFold(trimmed, "/tasks"):
+		return true
+	case strings.EqualFold(trimmed, "/tasks list"):
+		return true
+	case strings.HasPrefix(strings.ToLower(trimmed), "/tasks "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/tasks ")) != ""
+	case strings.EqualFold(trimmed, "/permissions"):
+		return true
+	case strings.EqualFold(trimmed, "/permissions show"):
+		return true
+	case strings.HasPrefix(strings.ToLower(trimmed), "/permissions "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/permissions ")) != ""
 	case strings.EqualFold(trimmed, "/sessions"):
 		return true
 	case strings.HasPrefix(strings.ToLower(trimmed), "/sessions "):

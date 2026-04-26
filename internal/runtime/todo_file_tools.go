@@ -135,7 +135,7 @@ func (r *ClientRuntime) fileEdit(config internalconfig.Config, arguments map[str
 			"occurrences":            0,
 			"replacements":           0,
 		})
-		return result, newToolError("PATCH_CONFLICT", "文件内容摘要不匹配，当前=%s；请先 read_file 获取最新内容后再重试", beforeHash)
+		return result, newToolError("PATCH_CONFLICT", "%s", fileEditConflictMessage("文件内容摘要不匹配，当前="+beforeHash+"；请先 read_file 获取最新内容后再重试", result))
 	}
 	occurrences := strings.Count(before, oldString)
 	if occurrences == 0 {
@@ -144,7 +144,7 @@ func (r *ClientRuntime) fileEdit(config internalconfig.Config, arguments map[str
 			"occurrences":  0,
 			"replacements": 0,
 		})
-		return result, newToolError("PATCH_CONFLICT", "file_edit 未找到 old_string；old_string 必须与当前文件内容完全一致，请先 read_file 后再重试")
+		return result, newToolError("PATCH_CONFLICT", "%s", fileEditConflictMessage("file_edit 未找到 old_string；old_string 必须与当前文件内容完全一致，请先 read_file 后再重试", result))
 	}
 	replaceAll := boolValue(arguments["replace_all"])
 	if occurrences > 1 && !replaceAll {
@@ -154,7 +154,7 @@ func (r *ClientRuntime) fileEdit(config internalconfig.Config, arguments map[str
 			"replacements": 0,
 			"replace_all":  false,
 		})
-		return result, newToolError("PATCH_CONFLICT", "file_edit 匹配到 %d 处，需显式开启 replace_all 或提供更精确的 old_string", occurrences)
+		return result, newToolError("PATCH_CONFLICT", "%s", fileEditConflictMessage(fmt.Sprintf("file_edit 匹配到 %d 处，需显式开启 replace_all 或提供更精确的 old_string", occurrences), result))
 	}
 	newString := stringValue(arguments["new_string"])
 	replacements := 1
@@ -171,19 +171,19 @@ func (r *ClientRuntime) fileEdit(config internalconfig.Config, arguments map[str
 		}
 	}
 	result := map[string]any{
-		"status":              "applied",
-		"path":                resolvedPath,
-		"dry_run":             dryRun,
-		"replacements":        replacements,
-		"occurrences":         occurrences,
-		"replace_all":         replaceAll,
-		"bytes_before":        len(before),
-		"bytes_after":         len(after),
-		"sha256_before":       beforeHash,
-		"sha256_after":        afterHash,
-		"changed":             before != after,
-		"preview_before":      trimMultilinePreview(oldString, 120),
-		"preview_after":       trimMultilinePreview(newString, 120),
+		"status":         "applied",
+		"path":           resolvedPath,
+		"dry_run":        dryRun,
+		"replacements":   replacements,
+		"occurrences":    occurrences,
+		"replace_all":    replaceAll,
+		"bytes_before":   len(before),
+		"bytes_after":    len(after),
+		"sha256_before":  beforeHash,
+		"sha256_after":   afterHash,
+		"changed":        before != after,
+		"preview_before": trimMultilinePreview(oldString, 120),
+		"preview_after":  trimMultilinePreview(newString, 120),
 	}
 	r.writeStreamEventf(r.stdout, "[本地工具] file_edit %s 替换 %d 处%s\n", resolvedPath, replacements, map[bool]string{true: "（dry-run）", false: ""}[dryRun])
 	_ = appendAuditLog(config, "file_edit", map[string]any{"path": resolvedPath, "replacements": replacements, "dry_run": dryRun})
@@ -208,11 +208,84 @@ func buildFileEditDiagnosticResult(path string, before string, beforeHash string
 	if trimmed := strings.TrimSpace(oldString); trimmed != "" && trimmed != oldString && strings.Contains(before, trimmed) {
 		result["trimmed_match_found"] = true
 	}
-	if excerpt := nearestFileEditExcerpt(before, oldString); excerpt != "" {
-		result["nearby_excerpt"] = excerpt
+	if excerpt := nearestFileEditExcerpt(before, oldString); excerpt.Excerpt != "" {
+		result["nearby_excerpt"] = excerpt.Excerpt
+		result["nearby_excerpt_start_line"] = excerpt.StartLine
+		result["nearby_excerpt_end_line"] = excerpt.EndLine
+		result["suggested_read_start_line"] = excerpt.StartLine
+		result["suggested_read_end_line"] = excerpt.EndLine
+		prefetchedRead := buildPrefetchedReadResult(path, before, excerpt.StartLine, excerpt.EndLine)
+		result["prefetched_read"] = prefetchedRead
+		result["retry_hint"] = buildFileEditRetryHint(path, beforeHash, prefetchedRead)
 	}
 	return result
+}
+
+func buildFileEditRetryHint(path string, beforeHash string, prefetchedRead map[string]any) map[string]any {
+	content := strings.TrimSpace(stringValue(prefetchedRead["content"]))
+	arguments := map[string]any{
+		"path":                   path,
+		"expected_sha256_before": beforeHash,
 	}
+	if content != "" {
+		arguments["old_string"] = content
+	}
+	return map[string]any{
+		"tool_name":         "file_edit",
+		"required_fields":   []string{"new_string"},
+		"recommended_args":  arguments,
+		"prefetched_read":   prefetchedRead,
+		"reusable_directly": content != "",
+	}
+}
+
+func fileEditConflictMessage(base string, diagnostic map[string]any) string {
+	startLine := intValue(diagnostic["suggested_read_start_line"], 0)
+	endLine := intValue(diagnostic["suggested_read_end_line"], 0)
+	path := strings.TrimSpace(stringValue(diagnostic["path"]))
+	if startLine < 1 || endLine < startLine || path == "" {
+		return base
+	}
+	return fmt.Sprintf("%s；建议先 read_file %s 行 %d-%d", base, path, startLine, endLine)
+}
+
+func buildPrefetchedReadResult(path string, before string, startLine int, endLine int) map[string]any {
+	lines := splitLines(before)
+	if len(lines) == 0 {
+		return map[string]any{
+			"path":         path,
+			"content":      "",
+			"binary":       false,
+			"truncated":    false,
+			"start_line":   1,
+			"end_line":     0,
+			"total_lines":  0,
+			"total_bytes":  len(before),
+			"content_type": "text/utf-8",
+		}
+	}
+	if startLine < 1 {
+		startLine = 1
+	}
+	if endLine < startLine {
+		endLine = startLine
+	}
+	if endLine > len(lines) {
+		endLine = len(lines)
+	}
+	selected := strings.Join(lines[startLine-1:endLine], "\n")
+	return map[string]any{
+		"path":         path,
+		"content":      selected,
+		"binary":       false,
+		"truncated":    false,
+		"start_line":   startLine,
+		"end_line":     endLine,
+		"total_lines":  len(lines),
+		"total_bytes":  len(before),
+		"content_type": "text/utf-8",
+	}
+}
 
 func buildFileEditSuggestions(before string, oldString string) []string {
 	suggestions := []string{
@@ -232,10 +305,16 @@ func buildFileEditSuggestions(before string, oldString string) []string {
 	return suggestions
 }
 
-func nearestFileEditExcerpt(before string, oldString string) string {
+type fileEditExcerpt struct {
+	Excerpt   string
+	StartLine int
+	EndLine   int
+}
+
+func nearestFileEditExcerpt(before string, oldString string) fileEditExcerpt {
 	lines := splitLines(before)
 	if len(lines) == 0 {
-		return ""
+		return fileEditExcerpt{}
 	}
 	needleLines := splitLines(oldString)
 	needle := ""
@@ -250,7 +329,7 @@ func nearestFileEditExcerpt(before string, oldString string) string {
 		needle = strings.TrimSpace(oldString)
 	}
 	if needle == "" {
-		return ""
+		return fileEditExcerpt{}
 	}
 	for index, line := range lines {
 		if !strings.Contains(line, needle) {
@@ -268,7 +347,7 @@ func nearestFileEditExcerpt(before string, oldString string) string {
 		for current := start; current < end; current++ {
 			preview = append(preview, fmt.Sprintf("%d: %s", current+1, lines[current]))
 		}
-		return strings.Join(preview, "\n")
+		return fileEditExcerpt{Excerpt: strings.Join(preview, "\n"), StartLine: start + 1, EndLine: end}
 	}
 	end := 3
 	if end > len(lines) {
@@ -278,7 +357,7 @@ func nearestFileEditExcerpt(before string, oldString string) string {
 	for current := 0; current < end; current++ {
 		preview = append(preview, fmt.Sprintf("%d: %s", current+1, lines[current]))
 	}
-	return strings.Join(preview, "\n")
+	return fileEditExcerpt{Excerpt: strings.Join(preview, "\n"), StartLine: 1, EndLine: end}
 }
 
 func parseTodoItems(arguments map[string]any) ([]agent.TodoItem, error) {

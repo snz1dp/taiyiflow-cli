@@ -102,6 +102,33 @@ func TestToolErrorDoesNotExposeBracketCode(t *testing.T) {
 	}
 }
 
+func TestFileEditToolDefinitionMentionsRetryHintReuse(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	definitions := runtimeClient.clientToolDefinitionsForMode("agent")
+	for _, item := range definitions {
+		name, _ := item["name"].(string)
+		if name != "file_edit" {
+			continue
+		}
+		description, _ := item["description"].(string)
+		if !strings.Contains(description, "prefetched_read") || !strings.Contains(description, "retry_hint.recommended_args") {
+			t.Fatalf("expected file_edit description to mention retry reuse, got %q", description)
+		}
+		inputSchema, _ := item["inputSchema"].(map[string]any)
+		properties, _ := inputSchema["properties"].(map[string]any)
+		oldStringSchema, _ := properties["old_string"].(map[string]any)
+		expectedHashSchema, _ := properties["expected_sha256_before"].(map[string]any)
+		if !strings.Contains(stringValue(oldStringSchema["description"]), "retry_hint.recommended_args.old_string") {
+			t.Fatalf("expected old_string description to mention retry reuse, got %#v", oldStringSchema)
+		}
+		if !strings.Contains(stringValue(expectedHashSchema["description"]), "retry_hint.recommended_args.expected_sha256_before") {
+			t.Fatalf("expected expected_sha256_before description to mention retry reuse, got %#v", expectedHashSchema)
+		}
+		return
+	}
+	t.Fatal("expected file_edit tool definition")
+}
+
 func TestSandboxEscapeAlwaysApproveSkipsSubsequentConfirmations(t *testing.T) {
 	tempDir := t.TempDir()
 	outsideDir := t.TempDir()
@@ -260,5 +287,65 @@ func TestSetStreamEventLogsEnabledSuppressesBracketLogs(t *testing.T) {
 	}
 	if !strings.Contains(output, "[本地命令]") {
 		t.Fatalf("expected run command stream log, got %q", output)
+	}
+}
+
+func TestPermissionRuleDeniesMutatingClientTool(t *testing.T) {
+	tempDir := t.TempDir()
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	config := internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		PermissionRules: []internalconfig.PermissionRule{{
+			Action:   "deny",
+			ToolName: "write_file",
+		}},
+	}
+	_, _, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": "write_file",
+			"arguments": map[string]any{
+				"path":    "notes.txt",
+				"content": "blocked",
+				"mode":    "create",
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "命中权限规则") {
+		t.Fatalf("expected permission rule denial, got %v", err)
+	}
+}
+
+func TestPermissionRuleAskAndAllowShellExec(t *testing.T) {
+	tempDir := t.TempDir()
+	askRuntime := NewClientRuntime(strings.NewReader("n\n"), io.Discard, io.Discard)
+	askConfig := internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		PermissionRules: []internalconfig.PermissionRule{{
+			Action:        "ask",
+			CommandPrefix: "echo",
+		}},
+	}
+	if _, err := askRuntime.ExecuteShellCommand(context.Background(), askConfig, "echo blocked"); err == nil || !strings.Contains(err.Error(), "用户拒绝执行") {
+		t.Fatalf("expected ask rule rejection, got %v", err)
+	}
+
+	allowRuntime := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	allowConfig := internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "confirm",
+		PermissionRules: []internalconfig.PermissionRule{{
+			Action:        "allow",
+			CommandPrefix: "echo",
+		}},
+	}
+	result, err := allowRuntime.ExecuteShellCommand(context.Background(), allowConfig, "echo allowed")
+	if err != nil {
+		t.Fatalf("expected allow rule to bypass confirmation, got %v", err)
+	}
+	if !strings.Contains(stringValue(result["stdout"]), "allowed") {
+		t.Fatalf("unexpected allow rule stdout: %#v", result)
 	}
 }

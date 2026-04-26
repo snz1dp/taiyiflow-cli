@@ -119,6 +119,7 @@ func (r *ClientRuntime) ExecuteClientToolPayload(
 	serverName := nestedString(payload, "server", "name")
 	toolName := canonicalClientToolName(nestedString(payload, "function", "name"))
 	arguments := nestedMap(payload, "function", "arguments")
+	arguments = enrichToolArgumentsWithContext(arguments, payload)
 
 	if serverName != localToolServerName {
 		return toolName, nil, fmt.Errorf("不支持的客户端工具服务: %s", serverName)
@@ -146,8 +147,14 @@ func (r *ClientRuntime) ExecuteClientToolPayload(
 		result, err = r.taskOutput(config, arguments)
 	case "task_stop":
 		result, err = r.taskStop(config, arguments)
+	case "task_delete":
+		result, err = r.taskDelete(config, arguments)
+	case "task_cleanup":
+		result, err = r.taskCleanup(config, arguments)
 	case "task_list":
 		result, err = r.taskList(config)
+	case "terminal_capture":
+		result, err = r.terminalCapture(config, arguments)
 	case "search_files":
 		result, err = r.searchFiles(ctx, config, arguments)
 	case "read_file":
@@ -160,6 +167,32 @@ func (r *ClientRuntime) ExecuteClientToolPayload(
 		err = fmt.Errorf("不支持的客户端工具: %s", toolName)
 	}
 	return toolName, result, err
+}
+
+func enrichToolArgumentsWithContext(arguments map[string]any, payload map[string]any) map[string]any {
+	if len(arguments) == 0 {
+		arguments = map[string]any{}
+	}
+	cloned := map[string]any{}
+	for key, value := range arguments {
+		cloned[key] = value
+	}
+	if strings.TrimSpace(stringValue(cloned["flow_id"])) == "" {
+		if flowID := strings.TrimSpace(stringValue(payload["flow_id"])); flowID != "" {
+			cloned["flow_id"] = flowID
+		}
+	}
+	if strings.TrimSpace(stringValue(cloned["session_id"])) == "" {
+		if sessionID := strings.TrimSpace(nestedString(payload, "context", "session_id")); sessionID != "" {
+			cloned["session_id"] = sessionID
+		}
+	}
+	if strings.TrimSpace(stringValue(cloned["run_id"])) == "" {
+		if runID := strings.TrimSpace(nestedString(payload, "context", "run_id")); runID != "" {
+			cloned["run_id"] = runID
+		}
+	}
+	return cloned
 }
 
 func (r *ClientRuntime) SubmitClientToolCallback(
@@ -237,6 +270,22 @@ func (r *ClientRuntime) runCommand(
 	config internalconfig.Config,
 	arguments map[string]any,
 ) (map[string]any, error) {
+	if action, matched := evaluatePermissionAction(config, "shell_exec", commandPreview(arguments)); matched {
+		switch action {
+		case "deny":
+			return nil, newToolError("PERMISSION_DENIED", "命中权限规则，拒绝执行 shell_exec")
+		case "ask":
+			confirmConfig := config
+			confirmConfig.ApprovalMode = "confirm"
+			approved, err := r.confirmCommand(arguments, confirmConfig)
+			if err != nil {
+				return nil, err
+			}
+			if !approved {
+				return nil, newToolError("PERMISSION_DENIED", "用户拒绝执行 shell_exec")
+			}
+		}
+	}
 	payload, err := r.normalizeCommandArguments(arguments, config)
 	if err != nil {
 		return nil, err

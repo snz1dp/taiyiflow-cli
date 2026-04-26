@@ -16,6 +16,7 @@ import (
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/tui"
 )
 
@@ -359,6 +360,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				"可用命令:",
 				"/new 重置当前智能体的本地会话",
 				"/clear 清空当前界面消息",
+				"/review [路径] 发起当前工作区或指定路径的代码审查",
 				"/agent 或 /agent <任务> 切换执行模式",
 				"/ask 或 /ask <问题> 切换问答模式",
 				"/plan 或 /plan <目标> 切换计划模式",
@@ -367,6 +369,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				"/config 打开服务端配置弹窗",
 				"!<shell 命令> 在当前目录执行本地命令",
 				"/agents 或 /agents <名称> 选择智能体",
+				"/tasks [list|output|capture|stop|remove] 管理本地后台任务",
+				"/permissions [show|set|clear] 查看或调整本地权限设置",
 				"/skills [list|view|enable|disable] 管理本地技能",
 				"/exit 退出",
 			}
@@ -381,6 +385,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					"可用命令:",
 					"/clear 清空当前界面消息",
 					"/config 打开当前配置弹窗",
+					"/tasks 查看本地后台任务",
+					"/permissions 查看本地权限设置",
 					"/skills 查看本地技能",
 					"/help 查看当前提示",
 					"/exit 退出",
@@ -414,7 +420,65 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			updatedSnapshot.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, snapshot.Workdir))
 			updatedSnapshot.SessionSandboxEscapePolicy = strings.TrimSpace(sessionState.SandboxEscapePolicyOverride)
 			return tui.LocalCommandResult{Handled: true, Snapshot: &updatedSnapshot, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: output}}}, nil
-		case strings.EqualFold(trimmed, "/skills") || strings.HasPrefix(strings.ToLower(trimmed), "/skills "):
+		case strings.EqualFold(trimmed, "/skills") || strings.EqualFold(trimmed, "/skills list"):
+			localConfig, configErr := a.configManager.Load()
+			if configErr != nil {
+				return tui.LocalCommandResult{}, configErr
+			}
+			picker, pickerErr := buildTUISkillsPicker(localConfig)
+			if pickerErr != nil {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: pickerErr.Error()}}}, nil
+			}
+			return tui.LocalCommandResult{Handled: true, SkillsPicker: picker}, nil
+		case strings.EqualFold(trimmed, "/tasks") || strings.EqualFold(trimmed, "/tasks list") || strings.HasPrefix(strings.ToLower(trimmed), "/tasks "):
+			localConfig, configErr := a.configManager.Load()
+			if configErr != nil {
+				return tui.LocalCommandResult{}, configErr
+			}
+			output, panel, commandErr := a.executeTasksSlashCommand(commandCtx, localConfig, trimmed)
+			if commandErr != nil {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: commandErr.Error()}}}, nil
+			}
+			events := []tui.Event{}
+			if panel != nil {
+				events = append(events, tui.Event{Kind: tui.EventToolPanel, Panel: panel})
+			} else if strings.TrimSpace(output) != "" {
+				events = append(events, tui.Event{Kind: tui.EventSystemNote, Text: output})
+			}
+			return tui.LocalCommandResult{Handled: true, Events: events}, nil
+		case strings.EqualFold(trimmed, "/permissions") || strings.EqualFold(trimmed, "/permissions show") || strings.HasPrefix(strings.ToLower(trimmed), "/permissions "):
+			_, output, panel, commandErr := a.executePermissionsCommand(trimmed)
+			if commandErr != nil {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: commandErr.Error()}}}, nil
+			}
+			events := []tui.Event{}
+			if panel != nil {
+				events = append(events, tui.Event{Kind: tui.EventToolPanel, Panel: panel})
+			}
+			if strings.TrimSpace(output) != "" && panel == nil {
+				events = append(events, tui.Event{Kind: tui.EventSystemNote, Text: output})
+			}
+			return tui.LocalCommandResult{Handled: true, Events: events}, nil
+		case strings.EqualFold(trimmed, "/review") || strings.HasPrefix(strings.ToLower(trimmed), "/review "):
+			target, reviewErr := parseReviewSlashCommand(trimmed)
+			if reviewErr != nil {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: reviewErr.Error()}}}, nil
+			}
+			resolvedWorkdir := resolveLocalWorkdir(snapshot.Workdir)
+			prompt := a.buildReviewPrompt(ctx, resolvedWorkdir, target)
+			updatedSnapshot := snapshot
+			updatedSnapshot.RequestMode = provider.RequestTypeAgent
+			updatedSnapshot.ContextDir = resolvedWorkdir
+			return tui.LocalCommandResult{
+				Handled:     true,
+				Snapshot:    &updatedSnapshot,
+				QueuedInput: strings.TrimSpace(prompt),
+				Events: []tui.Event{{
+					Kind: tui.EventSystemNote,
+					Text: "已切换为执行模式，正在发起代码审查。",
+				}},
+			}, nil
+		case strings.HasPrefix(strings.ToLower(trimmed), "/skills "):
 			output, err := a.executeSkillsCommand(parseSlashSkillsArgs(trimmed))
 			if err != nil {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
@@ -1083,6 +1147,17 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 			Body:    body,
 			Hint:    "可滚动查看 stdout/stderr；继续对话时可再次调用 task_output 刷新。",
 		}
+	case "terminal_capture":
+		body := strings.TrimSpace(stringMapValue(resultMap, "content"))
+		if body == "" {
+			body = "当前任务尚无终端输出。"
+		}
+		return &tui.ToolPanel{
+			Title:   "终端捕获(terminal_capture)",
+			Summary: fmt.Sprintf("%s · %s · %s", fallbackString(stringMapValue(resultMap, "task_id"), "<unknown>"), fallbackString(stringMapValue(resultMap, "status"), "unknown"), fallbackString(stringMapValue(resultMap, "stream"), "both")),
+			Body:    body,
+			Hint:    "适合持续查看终端视角输出；需要结构化状态时继续使用 task_output。",
+		}
 	case "task_list":
 		tasks := mapSliceValue(resultMap, "tasks")
 		if len(tasks) == 0 {
@@ -1090,13 +1165,47 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 		}
 		lines := make([]string, 0, len(tasks))
 		for index, item := range tasks {
-			lines = append(lines, fmt.Sprintf("%d. %s [%s]\n   %s", index+1, fallbackString(stringMapValue(item, "task_name"), fallbackString(stringMapValue(item, "task_id"), "<unknown>")), fallbackString(stringMapValue(item, "status"), "unknown"), fallbackString(stringMapValue(item, "command"), "<unknown>")))
+			line := fmt.Sprintf("%d. %s [%s]\n   %s", index+1, fallbackString(stringMapValue(item, "task_name"), fallbackString(stringMapValue(item, "task_id"), "<unknown>")), fallbackString(stringMapValue(item, "status"), "unknown"), fallbackString(stringMapValue(item, "command"), "<unknown>"))
+			if taskID := strings.TrimSpace(stringMapValue(item, "task_id")); taskID != "" {
+				line += "\n   task_id: " + taskID
+			}
+			if sessionID := strings.TrimSpace(stringMapValue(item, "session_id")); sessionID != "" {
+				line += "\n   session_id: " + sessionID
+			}
+			if cwd := strings.TrimSpace(stringMapValue(item, "cwd")); cwd != "" {
+				line += "\n   cwd: " + cwd
+			}
+			lines = append(lines, line)
 		}
 		return &tui.ToolPanel{
-			Title:   "后台任务列表(task_list)",
+			Title:   "后台任务列表",
 			Summary: fmt.Sprintf("task_list %d 个任务", len(tasks)),
 			Body:    strings.Join(lines, "\n\n"),
-			Hint:    "可根据 task_id 继续读取输出或停止任务。",
+			Hint:    "可根据 task_id 继续读取输出、停止任务或删除已结束任务，也可用 /tasks cleanup 批量清理已结束任务。",
+		}
+	case "task_delete":
+		return &tui.ToolPanel{
+			Title:   "后台任务删除",
+			Summary: fmt.Sprintf("%s · %s", fallbackString(stringMapValue(resultMap, "task_id"), "<unknown>"), fallbackString(stringMapValue(resultMap, "status"), "unknown")),
+			Body:    "任务及其持久化输出已删除。",
+			Hint:    "再次查看时，该任务不会出现在 /tasks list 中。",
+		}
+	case "task_cleanup":
+		deletedCount := intMapValue(resultMap, "deleted_count")
+		runningCount := intMapValue(resultMap, "running_count")
+		body := fmt.Sprintf("已清理 %d 个已结束任务。", deletedCount)
+		deletedTaskIDs := stringSliceMapValue(resultMap, "deleted_task_ids")
+		if len(deletedTaskIDs) > 0 {
+			body += "\n\n已清理任务:\n- " + strings.Join(deletedTaskIDs, "\n- ")
+		}
+		if runningCount > 0 {
+			body += fmt.Sprintf("\n\n保留 %d 个运行中任务。", runningCount)
+		}
+		return &tui.ToolPanel{
+			Title:   "后台任务清理",
+			Summary: fmt.Sprintf("已清理 %d 个任务", deletedCount),
+			Body:    body,
+			Hint:    "该操作只会删除已结束任务；运行中的任务会被保留。",
 		}
 	case "todo_write":
 		items := mapSliceValue(resultMap, "items")
@@ -1134,8 +1243,27 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 				fmt.Sprintf("状态: %s", fallbackString(stringMapValue(resultMap, "status"), "failed")),
 				fmt.Sprintf("摘要前: %s", fallbackString(stringMapValue(resultMap, "sha256_before"), "<missing>")),
 			}
+			if startLine := intMapValue(resultMap, "suggested_read_start_line"); startLine > 0 {
+				endLine := intMapValue(resultMap, "suggested_read_end_line")
+				if endLine < startLine {
+					endLine = startLine
+				}
+				bodyLines = append(bodyLines, fmt.Sprintf("建议先读: read_file %s 行 %d-%d", fallbackString(stringMapValue(resultMap, "path"), "."), startLine, endLine))
+			}
 			if excerpt := strings.TrimSpace(stringMapValue(resultMap, "nearby_excerpt")); excerpt != "" {
 				bodyLines = append(bodyLines, "", "附近内容:", excerpt)
+			}
+			if prefetchedRead, ok := resultMap["prefetched_read"].(map[string]any); ok {
+				prefetchedContent := strings.TrimSpace(stringMapValue(prefetchedRead, "content"))
+				if prefetchedContent != "" {
+					startLine := intMapValue(prefetchedRead, "start_line")
+					endLine := intMapValue(prefetchedRead, "end_line")
+					sectionTitle := "预取上下文:"
+					if startLine > 0 && endLine >= startLine {
+						sectionTitle = fmt.Sprintf("预取上下文(%d-%d 行):", startLine, endLine)
+					}
+					bodyLines = append(bodyLines, "", sectionTitle, prefetchedContent)
+				}
 			}
 			if rawSuggestions, ok := resultMap["suggestions"].([]string); ok && len(rawSuggestions) > 0 {
 				bodyLines = append(bodyLines, "", "建议:")
@@ -1689,4 +1817,41 @@ func buildApprovalPicker(snapshot tui.Snapshot) *tui.ApprovalPickerState {
 			{Value: "readonly", Label: "只读模式", Description: "禁止执行本地命令。", IsCurrent: current == "readonly"},
 		},
 	}
+}
+
+func buildTUISkillsPicker(config internalconfig.Config) (*tui.SkillsPickerState, error) {
+	items, _, err := skills.Discover(config)
+	if err != nil {
+		return nil, err
+	}
+	pickerItems := make([]tui.SkillItem, 0, len(items))
+	for _, item := range items {
+		referenceFiles := make([]tui.SkillReferenceItem, 0, len(item.Files))
+		for _, file := range item.Files {
+			referenceFiles = append(referenceFiles, tui.SkillReferenceItem{
+				Path:        strings.TrimSpace(file.Path),
+				Description: strings.TrimSpace(file.Description),
+			})
+		}
+		pickerItems = append(pickerItems, tui.SkillItem{
+			Name:           item.Name,
+			Description:    item.Description,
+			Category:       item.Category,
+			SourceLabel:    sourceDisplayLabel(item.Source),
+			StateLabel:     skillStateLabel(item, config),
+			RootDir:        item.RootDir,
+			RelativeDir:    item.RelativeDir,
+			Restriction:    skillRestrictionNote(item.Name),
+			ReferenceFiles: referenceFiles,
+		})
+	}
+	hint := "使用方向键选择，Enter 查看详情，Esc 关闭。"
+	if len(pickerItems) == 0 {
+		hint = "当前没有可展示的技能，Esc 关闭。"
+	}
+	return &tui.SkillsPickerState{
+		Title: "技能列表",
+		Hint:  hint,
+		Items: pickerItems,
+	}, nil
 }

@@ -325,6 +325,14 @@ func isSensitiveEnvKey(key string) bool {
 }
 
 func guardDangerousCommand(payload commandArguments, config internalconfig.Config) error {
+	if action, matched := evaluatePermissionAction(config, "shell_exec", payload.RawCommand+" "+payload.Command+" "+strings.Join(payload.Args, " ")); matched {
+		switch action {
+		case "deny":
+			return newToolError("PERMISSION_DENIED", "命中权限规则，拒绝执行 shell_exec")
+		case "allow":
+			return nil
+		}
+	}
 	preview := strings.ToLower(strings.TrimSpace(payload.RawCommand + " " + payload.Command + " " + strings.Join(payload.Args, " ")))
 	highRiskPatterns := []string{"rm -rf /", "mkfs", "shutdown", "reboot", "dd if=", "killall", "sudo "}
 	for _, pattern := range highRiskPatterns {
@@ -333,6 +341,20 @@ func guardDangerousCommand(payload commandArguments, config internalconfig.Confi
 		}
 	}
 	return nil
+}
+
+func evaluatePermissionAction(config internalconfig.Config, toolName string, commandPreview string) (string, bool) {
+	normalizedTool := strings.ToLower(strings.TrimSpace(toolName))
+	normalizedCommand := strings.ToLower(strings.TrimSpace(commandPreview))
+	for _, rule := range config.PermissionRules {
+		if tool := strings.ToLower(strings.TrimSpace(rule.ToolName)); tool != "" && tool == normalizedTool {
+			return internalconfig.NormalizePermissionAction(rule.Action), true
+		}
+		if prefix := strings.ToLower(strings.TrimSpace(rule.CommandPrefix)); prefix != "" && strings.HasPrefix(normalizedCommand, prefix) {
+			return internalconfig.NormalizePermissionAction(rule.Action), true
+		}
+	}
+	return "", false
 }
 
 func isHiddenPath(path string) bool {

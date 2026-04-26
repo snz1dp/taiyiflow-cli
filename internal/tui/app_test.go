@@ -198,6 +198,56 @@ func TestApplyLocalCommandResultClearHistoryDropsSnapshotHistory(t *testing.T) {
 	}
 }
 
+func TestApplyLocalCommandResultOpensSkillsPicker(t *testing.T) {
+	m := model{}
+	result := LocalCommandResult{
+		Handled: true,
+		SkillsPicker: &SkillsPickerState{
+			Title: "技能列表",
+			Items: []SkillItem{{Name: "taiyiflowApi", Description: "接口参考"}},
+		},
+	}
+
+	m.applyLocalCommandResult(result)
+	if m.skillsPicker == nil || len(m.skillsPicker.Items) != 1 {
+		t.Fatalf("expected skills picker to be applied, got %#v", m.skillsPicker)
+	}
+	if m.skillsCursor != 0 {
+		t.Fatalf("expected skills cursor reset, got %d", m.skillsCursor)
+	}
+}
+
+func TestHandleSkillsPickerEnterOpensToolPanel(t *testing.T) {
+	m := model{
+		contentWidth: 80,
+		input:        textarea.New(),
+		skillsPicker: &SkillsPickerState{
+			Title: "技能列表",
+			Items: []SkillItem{{
+				Name:        "taiyiflowApi",
+				Description: "接口参考",
+				SourceLabel: "内置技能",
+				StateLabel:  "默认启用",
+			}},
+		},
+	}
+
+	updatedModel, _ := m.handleSkillsPickerKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, ok := updatedModel.(model)
+	if !ok {
+		t.Fatalf("expected model type, got %T", updatedModel)
+	}
+	if updated.skillsPicker != nil {
+		t.Fatalf("expected skills picker to close after enter, got %#v", updated.skillsPicker)
+	}
+	if updated.toolPanel == nil {
+		t.Fatal("expected tool panel to open from selected skill")
+	}
+	if !strings.Contains(updated.toolPanel.Title, "taiyiflowApi") {
+		t.Fatalf("unexpected tool panel title: %#v", updated.toolPanel)
+	}
+}
+
 func TestContextUsageSegmentShowsCurrentRoundUsage(t *testing.T) {
 	model := model{
 		requestStats: RequestMetrics{
