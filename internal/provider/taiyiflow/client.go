@@ -180,6 +180,10 @@ type sessionContextWindowResponse struct {
 	CurrentRoundAvailableTokens int `json:"current_round_available_tokens"`
 	HistoryMessageCount         int `json:"history_message_count"`
 	PreparedMessageCount        int `json:"prepared_message_count"`
+	HighWatermarkRatio          float64 `json:"high_watermark_ratio"`
+	CompressionTargetRatio      float64 `json:"compression_target_ratio"`
+	HighWatermarkTokens         int `json:"high_watermark_tokens"`
+	CompressionTargetTokens     int `json:"compression_target_tokens"`
 }
 
 type sessionContextPreviewResponse struct {
@@ -724,6 +728,10 @@ func (c *Client) GetSessionContextWindow(ctx context.Context, flowID string, ses
 			CurrentRoundAvailableTokens: payload.ContextWindow.CurrentRoundAvailableTokens,
 			HistoryMessageCount:         payload.ContextWindow.HistoryMessageCount,
 			PreparedMessageCount:        payload.ContextWindow.PreparedMessageCount,
+			HighWatermarkRatio:          payload.ContextWindow.HighWatermarkRatio,
+			CompressionTargetRatio:      payload.ContextWindow.CompressionTargetRatio,
+			HighWatermarkTokens:         payload.ContextWindow.HighWatermarkTokens,
+			CompressionTargetTokens:     payload.ContextWindow.CompressionTargetTokens,
 		}
 	}
 	if payload.LatestCompression != nil {
@@ -940,6 +948,10 @@ func parseTokenUsage(payload map[string]any) *provider.TokenUsage {
 			CurrentRoundAvailableTokens: intValue(contextWindow["current_round_available_tokens"]),
 			HistoryMessageCount:         intValue(contextWindow["history_message_count"]),
 			PreparedMessageCount:        intValue(contextWindow["prepared_message_count"]),
+			HighWatermarkRatio:          floatValue(contextWindow["high_watermark_ratio"]),
+			CompressionTargetRatio:      floatValue(contextWindow["compression_target_ratio"]),
+			HighWatermarkTokens:         intValue(contextWindow["high_watermark_tokens"]),
+			CompressionTargetTokens:     intValue(contextWindow["compression_target_tokens"]),
 		}
 	}
 
@@ -989,6 +1001,25 @@ func intValue(value any) int {
 	default:
 		return 0
 	}
+}
+
+func floatValue(value any) float64 {
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case float32:
+		return float64(typed)
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case json.Number:
+		parsed, err := typed.Float64()
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
 }
 
 func stringValue(value any) string {

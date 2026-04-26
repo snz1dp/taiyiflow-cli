@@ -898,6 +898,10 @@ func loadSessionContextMetrics(ctx context.Context, providerClient provider.Prov
 				CurrentRoundAvailableTokens: preview.ContextWindow.CurrentRoundAvailableTokens,
 				HistoryMessageCount:         preview.ContextWindow.HistoryMessageCount,
 				PreparedMessageCount:        preview.ContextWindow.PreparedMessageCount,
+				HighWatermarkRatio:          preview.ContextWindow.HighWatermarkRatio,
+				CompressionTargetRatio:      preview.ContextWindow.CompressionTargetRatio,
+				HighWatermarkTokens:         preview.ContextWindow.HighWatermarkTokens,
+				CompressionTargetTokens:     preview.ContextWindow.CompressionTargetTokens,
 			},
 		},
 	}
@@ -1543,6 +1547,10 @@ func buildTUIRequestMetrics(runID string, stats *provider.RunStats) *tui.Request
 				CurrentRoundAvailableTokens: stats.TokenUsage.ContextWindow.CurrentRoundAvailableTokens,
 				HistoryMessageCount:         stats.TokenUsage.ContextWindow.HistoryMessageCount,
 				PreparedMessageCount:        stats.TokenUsage.ContextWindow.PreparedMessageCount,
+				HighWatermarkRatio:          stats.TokenUsage.ContextWindow.HighWatermarkRatio,
+				CompressionTargetRatio:      stats.TokenUsage.ContextWindow.CompressionTargetRatio,
+				HighWatermarkTokens:         stats.TokenUsage.ContextWindow.HighWatermarkTokens,
+				CompressionTargetTokens:     stats.TokenUsage.ContextWindow.CompressionTargetTokens,
 			}
 		}
 	}

@@ -98,6 +98,10 @@ type ContextWindowUsage struct {
 	CurrentRoundAvailableTokens int
 	HistoryMessageCount         int
 	PreparedMessageCount        int
+	HighWatermarkRatio          float64
+	CompressionTargetRatio      float64
+	HighWatermarkTokens         int
+	CompressionTargetTokens     int
 }
 
 type TokenUsage struct {

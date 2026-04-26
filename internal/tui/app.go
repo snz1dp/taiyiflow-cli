@@ -186,6 +186,10 @@ type ContextWindow struct {
 	CurrentRoundAvailableTokens int
 	HistoryMessageCount         int
 	PreparedMessageCount        int
+	HighWatermarkRatio          float64
+	CompressionTargetRatio      float64
+	HighWatermarkTokens         int
+	CompressionTargetTokens     int
 }
 
 type TokenUsage struct {
@@ -3360,6 +3364,9 @@ func (m model) contextUsageSegment(compact bool) string {
 		if contextWindow.ShortTermContextTokens > 0 {
 			parts = append(parts, fmt.Sprintf("历史 %s", formatCompactInt(contextWindow.ShortTermContextTokens)))
 		}
+		if watermarkWarning := formatContextWatermarkWarning(contextWindow); watermarkWarning != "" {
+			parts = append(parts, watermarkWarning)
+		}
 		return strings.Join(parts, " · ")
 	}
 	if available <= 0 {
@@ -3441,6 +3448,9 @@ func (m model) inputContextUsageHint() string {
 	if contextWindow.HistoryMessageCount > 0 {
 		parts = append(parts, fmt.Sprintf("共%d条消息", contextWindow.HistoryMessageCount))
 	}
+	if watermarkWarning := formatContextWatermarkWarning(contextWindow); watermarkWarning != "" {
+		parts = append(parts, watermarkWarning)
+	}
 	if len(parts) > 0 {
 		return strings.Join(parts, " · ")
 	}
@@ -3482,6 +3492,23 @@ func resolveContextAvailableTokens(contextWindow *ContextWindow) int {
 		}
 	}
 	return 0
+}
+
+func formatContextWatermarkWarning(contextWindow *ContextWindow) string {
+	if contextWindow == nil {
+		return ""
+	}
+	if contextWindow.HighWatermarkTokens <= 0 {
+		return ""
+	}
+	currentTokens := contextWindow.CurrentRoundInputTokens
+	if currentTokens < contextWindow.HighWatermarkTokens {
+		return ""
+	}
+	if contextWindow.CompressionTargetTokens > 0 {
+		return fmt.Sprintf("已过高水位→%s", formatCompactInt(contextWindow.CompressionTargetTokens))
+	}
+	return "已过高水位"
 }
 
 func cloneRequestMetrics(source *RequestMetrics) RequestMetrics {

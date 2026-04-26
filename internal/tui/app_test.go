@@ -274,6 +274,30 @@ func TestContextUsageSegmentShowsCurrentRoundUsage(t *testing.T) {
 	}
 }
 
+func TestContextUsageSegmentShowsWatermarkWarning(t *testing.T) {
+	model := model{
+		requestStats: RequestMetrics{
+			TokenUsage: &TokenUsage{
+				ContextWindow: &ContextWindow{
+					MaxInputTokens:           8192,
+					CurrentRoundInputTokens:  7000,
+					NextRoundAvailableTokens: 1192,
+					HighWatermarkTokens:      6963,
+					CompressionTargetTokens:  4915,
+				},
+			},
+		},
+	}
+
+	got := model.contextUsageSegment(false)
+	if !strings.Contains(got, "已过高水位") {
+		t.Fatalf("expected watermark warning in context segment, got %q", got)
+	}
+	if !strings.Contains(got, "4.9k") {
+		t.Fatalf("expected compression target hint in context segment, got %q", got)
+	}
+}
+
 func TestInputContextUsageHintShowsCurrentUsageDetails(t *testing.T) {
 	model := model{
 		snapshot: Snapshot{SessionID: "session-123"},
