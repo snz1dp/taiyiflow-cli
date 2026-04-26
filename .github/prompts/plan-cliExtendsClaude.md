@@ -42,12 +42,12 @@ claude-code-haha的源码在「/Users/neeker/工作/技术开发平台/人工智
 
 - 包含范围：仅比较 CLI 本地工具层，重点看代码任务闭环，不把对标仓库的桌面端、Computer Use、Channel、远程触发、Web 搜索、远端 MCP 资源、多 Agent 团队协作纳入首轮对标要求。
 - 后台同步原则：如果 CLI 新工具落地依赖太乙智启后台扩展 stream 协议、请求 schema、事件模型、会话字段或客户端回调协议，则 CLI 与后台必须同批次设计、实现和联调，不接受单边兼容绕行。
-- 当前最核心的 5 个缺口：正式 shell_exec、任务输出或后台任务管理、Todo 或 Task、lsp_query、file_edit。
-- 次优先缺口：独立 glob_files 工具、terminal_capture、notebook_edit、结构化 ask_user_question。
-- 现有 search_files 参数已经能覆盖部分 grep 或 glob 场景，因此继续细化 search_files/glob_files 不是绝对阻塞项；但 lsp_query 与 shell_exec 不能继续由现有能力替代。
+- 当前最核心的缺口已从基础本地工具补齐，转向命令工作流层、权限治理层和任务持久化层：优先看 /review 类工作流命令、/permissions 或等价权限管理入口、会话级任务治理与持久化能力。
+- 次优先缺口：terminal_capture、notebook_edit、结构化 ask_user_question，以及更完整的 Task CRUD 与任务面板联动。
+- 现有 shell_exec、task_output/task_stop/task_list、todo_write、lsp_query、file_edit 已经覆盖首轮代码任务闭环；后续重点不再是补齐同名工具，而是补齐更高阶的命令编排、权限规则与跨会话状态管理。
 
 **Further Considerations**
 
-1. shell_exec 设计建议优先复用现有 runCommand 核心，再补任务状态与输出读取，避免先重写执行层。选项 A：内聚在现有 runtime。选项 B：抽成独立本地任务执行器。推荐 A。
-2. Todo 与 Task 二选一时，建议先做 Todo 的轻量闭环，再看是否需要升级为完整 Task CRUD。选项 A：先 Todo。选项 B：直接 Task 系统。推荐 A。
-3. NotebookEdit 只有在明确支持数据分析或 Jupyter 场景时才进入近期计划，否则会稀释首版代码任务闭环。推荐延后。
+1. shell_exec 已复用现有 runCommand 内核并补齐后台任务输出读取与停止；下一步不建议再重写执行层，而应优先补任务持久化、terminal_capture 和任务面板联动。
+2. 当前 todo_write 已完成会话级轻量闭环；若继续对标 claude-code-haha，下一步更有价值的是补齐完整 Task CRUD、任务状态迁移与命令层入口，而不是回退重做 Todo 基础能力。
+3. notebook_edit 只有在明确支持数据分析或 Jupyter 场景时才进入近期计划，否则仍会稀释首版代码任务闭环。推荐延后。
