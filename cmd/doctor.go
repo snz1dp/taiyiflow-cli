@@ -51,9 +51,9 @@ func (a *App) runDoctor(args []string) error {
 				enabledCount++
 			}
 		}
-		fmt.Fprintf(a.stdout, "- 技能目录: %s（发现 %d，启用 %d）\n", directory, len(skillItems), enabledCount)
+		fmt.Fprintf(a.stdout, "- 技能包目录: %s（发现 %d，启用 %d）\n", directory, len(skillItems), enabledCount)
 	} else {
-		fmt.Fprintf(a.stdout, "- 技能目录: 检查失败（%v）\n", skillErr)
+		fmt.Fprintf(a.stdout, "- 技能包目录: 检查失败（%v）\n", skillErr)
 	}
 
 	return nil

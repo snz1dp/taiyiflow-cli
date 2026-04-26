@@ -151,6 +151,8 @@ func Discover(config internalconfig.Config) ([]Skill, string, error) {
 		items = append(items, bundled)
 	}
 
+	availableDirectories = append(availableDirectories, "bundled")
+
 	sort.Slice(items, func(left, right int) bool {
 		if items[left].Enabled != items[right].Enabled {
 			return items[left].Enabled
