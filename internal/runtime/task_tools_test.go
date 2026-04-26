@@ -95,6 +95,42 @@ func TestTaskStopCancelsBackgroundCommand(t *testing.T) {
 	t.Fatalf("expected task to become cancelled")
 }
 
+func TestSkillReturnsInvocationPayload(t *testing.T) {
+	workdir := t.TempDir()
+	skillDir := t.TempDir()
+	if err := os.MkdirAll(skillDir+"/reviewer", 0o755); err != nil {
+		t.Fatalf("mkdir skill dir failed: %v", err)
+	}
+	content := "---\nname: Code Review\ndescription: 审查变更\ncategory: engineering\n---\n\n检查回归风险。\n"
+	if err := os.WriteFile(skillDir+"/reviewer/SKILL.md", []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill failed: %v", err)
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: workdir, ApprovalMode: "auto"}
+	configValue.Skills.Directory = skillDir
+
+	if _, err := runtimeClient.skill(configValue, map[string]any{}); err == nil {
+		t.Fatal("expected Skill to require name")
+	}
+
+	result, err := runtimeClient.skill(configValue, map[string]any{"name": "Code Review", "input": "检查 cmd/root.go"})
+	if err != nil {
+		t.Fatalf("skill failed: %v", err)
+	}
+	if result["name"].(string) != "Code Review" {
+		t.Fatalf("unexpected skill result: %#v", result)
+	}
+	if result["input"].(string) != "检查 cmd/root.go" {
+		t.Fatalf("unexpected skill input: %#v", result)
+	}
+	if !strings.Contains(result["prompt"].(string), "检查回归风险") {
+		t.Fatalf("unexpected skill prompt: %#v", result)
+	}
+	if !strings.Contains(result["markdown"].(string), "name: Code Review") {
+		t.Fatalf("unexpected skill markdown: %#v", result)
+	}
+}
+
 func TestGlobFilesFileEditAndTodo(t *testing.T) {
 	rootDir := t.TempDir()
 	if err := os.Setenv(config.RootDirEnvName(), rootDir); err != nil {
@@ -143,12 +179,9 @@ func TestGlobFilesFileEditAndTodo(t *testing.T) {
 	}
 
 	payload := map[string]any{"flow_id": "demo-flow", "context": map[string]any{"session_id": "session-1"}}
-	if _, err := runtimeClient.todoWrite(configValue, payload, map[string]any{"items": []any{map[string]any{"title": "补齐 file_edit", "status": "in_progress"}}}); err != nil {
-		t.Fatalf("todoWrite failed: %v", err)
-	}
-	todoResult, err := runtimeClient.todoRead(configValue, payload)
+	todoResult, err := runtimeClient.todoWrite(configValue, payload, map[string]any{"items": []any{map[string]any{"title": "补齐 file_edit", "status": "in_progress"}}})
 	if err != nil {
-		t.Fatalf("todoRead failed: %v", err)
+		t.Fatalf("todoWrite failed: %v", err)
 	}
 	if todoResult["count"].(int) != 1 {
 		t.Fatalf("unexpected todo result: %#v", todoResult)

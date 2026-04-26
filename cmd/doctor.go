@@ -60,5 +60,5 @@ func (a *App) runDoctor(args []string) error {
 }
 
 func detectLocalFileToolStatus() string {
-	return "read_file/list_dir/write_file/search_files（内置可用）"
+	return "read_file/glob_files/write_file/file_edit/search_files（内置可用）"
 }

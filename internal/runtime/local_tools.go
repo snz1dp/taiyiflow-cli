@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
@@ -39,29 +38,95 @@ func newToolError(code string, format string, args ...any) error {
 	return toolError{Code: code, Message: fmt.Sprintf(format, args...)}
 }
 
+func canonicalClientToolName(toolName string) string {
+	switch strings.TrimSpace(toolName) {
+	case "skill":
+		return "skill"
+	case "lsp_query":
+		return "lsp_query"
+	case "glob_files":
+		return "glob_files"
+	case "search_files":
+		return "search_files"
+	case "shell_exec":
+		return "shell_exec"
+	default:
+		return strings.TrimSpace(toolName)
+	}
+}
+
+func firstArgument(arguments map[string]any, keys ...string) (any, bool) {
+	for _, key := range keys {
+		if value, ok := arguments[key]; ok {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func argumentString(arguments map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := firstArgument(arguments, key); ok {
+			if trimmed := strings.TrimSpace(stringValue(value)); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
+}
+
+func argumentStringSlice(arguments map[string]any, keys ...string) []string {
+	for _, key := range keys {
+		if value, ok := firstArgument(arguments, key); ok {
+			if items := stringSlice(value); len(items) > 0 {
+				return items
+			}
+		}
+	}
+	return nil
+}
+
+func argumentBool(arguments map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if value, ok := firstArgument(arguments, key); ok {
+			return boolValue(value)
+		}
+	}
+	return false
+}
+
+func argumentInt(arguments map[string]any, defaultValue int, keys ...string) int {
+	for _, key := range keys {
+		if value, ok := firstArgument(arguments, key); ok {
+			return intValue(value, defaultValue)
+		}
+	}
+	return defaultValue
+}
+
 func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]any {
 	definitions := []map[string]any{
 		{
 			"name":                 "lsp_query",
-			"description":          "通过本地 stdio 语言服务器（LSP）执行 definition、references、implementation、document_symbol、workspace_symbol 查询。",
+			"description":          "通过本地标准输入输出(stdio)语言服务器(language server)执行定义跳转(go_to_definition)、引用查询(find_references)、实现跳转(go_to_implementation)、文档符号(document_symbol)、工作区符号(workspace_symbol)查询。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"server_command":      map[string]any{"type": "string", "description": "语言服务器命令，例如 gopls 或 pyright-langserver。"},
-					"server_args":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					"workspace_root":      map[string]any{"type": "string", "description": "LSP 工作区根目录，默认当前工作目录。"},
-					"operation":           map[string]any{"type": "string", "enum": []string{"definition", "references", "implementation", "document_symbol", "workspace_symbol"}},
-					"path":                map[string]any{"type": "string", "description": "需要定位的文件路径；workspace_symbol 可省略。"},
-					"line":                map[string]any{"type": "integer", "minimum": 1},
-					"character":           map[string]any{"type": "integer", "minimum": 1},
-					"symbol_query":        map[string]any{"type": "string", "description": "workspace_symbol 查询关键字。"},
-					"language_id":         map[string]any{"type": "string", "description": "可选语言 ID；默认按文件扩展名推断。"},
-					"include_declaration": map[string]any{"type": "boolean"},
-					"max_results":         map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
-					"timeout":             map[string]any{"type": "integer", "minimum": 1, "maximum": maxCommandTimeout},
+					"serverCommand":      map[string]any{"type": "string", "description": "语言服务器命令(language server command)，例如 gopls 或 pyright-langserver。"},
+					"serverArgs":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"workspaceRoot":      map[string]any{"type": "string", "description": "工作区根目录(workspace root)，默认当前工作目录。"},
+					"operation":          map[string]any{"type": "string", "enum": []string{"go_to_definition", "find_references", "go_to_implementation", "document_symbol", "workspace_symbol"}},
+					"filePath":           map[string]any{"type": "string", "description": "需要定位的文件路径(file path)；workspace_symbol 可省略。"},
+					"line":               map[string]any{"type": "integer", "minimum": 1},
+					"character":          map[string]any{"type": "integer", "minimum": 1},
+					"query":              map[string]any{"type": "string", "description": "工作区符号查询关键字(query)。"},
+					"languageId":         map[string]any{"type": "string", "description": "可选语言标识(language id)；默认按文件扩展名推断。"},
+					"includeDeclaration": map[string]any{"type": "boolean"},
+					"maxResults":         map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
+					"timeout":            map[string]any{"type": "integer", "minimum": 1, "maximum": maxCommandTimeout},
 				},
-				"required":             []string{"server_command", "operation"},
+				"required":             []string{"serverCommand", "operation"},
 				"additionalProperties": false,
 			},
 		},
@@ -72,22 +137,13 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"path":           map[string]any{"type": "string", "description": "起始目录，默认当前工作目录。"},
-					"pattern":        map[string]any{"type": "string", "description": "glob 模式，例如 **/*.go 或 cmd/*.go。"},
-					"include_hidden": map[string]any{"type": "boolean"},
-					"kind":           map[string]any{"type": "string", "enum": []string{"all", "file", "directory"}},
-					"max_results":    map[string]any{"type": "integer", "minimum": 1, "maximum": 1000},
+					"path":          map[string]any{"type": "string", "description": "起始目录，默认当前工作目录。"},
+					"pattern":       map[string]any{"type": "string", "description": "glob 模式，例如 **/*.go 或 cmd/*.go。"},
+					"includeHidden": map[string]any{"type": "boolean"},
+					"kind":          map[string]any{"type": "string", "enum": []string{"all", "file", "directory"}},
+					"maxResults":    map[string]any{"type": "integer", "minimum": 1, "maximum": 1000},
 				},
 				"required":             []string{"pattern"},
-				"additionalProperties": false,
-			},
-		},
-		{
-			"name":                 "todo_read",
-			"description":          "读取当前会话保存的 Todo 清单。",
-			"waiting_for_response": true,
-			"inputSchema": map[string]any{
-				"type":                 "object",
 				"additionalProperties": false,
 			},
 		},
@@ -141,15 +197,15 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"raw_command":       map[string]any{"type": "string", "description": "直接交给 shell 执行的原始命令。"},
-					"command":           map[string]any{"type": "string", "description": "可执行文件名；与 args 配合使用。"},
-					"args":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					"working_directory": map[string]any{"type": "string", "description": "命令工作目录，默认当前工作目录。"},
-					"timeout":           map[string]any{"type": "integer", "minimum": 1, "maximum": maxCommandTimeout},
-					"env_overrides":     map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
-					"expect_json":       map[string]any{"type": "boolean"},
-					"background":        map[string]any{"type": "boolean", "description": "为 true 时转为后台任务并返回 task_id。"},
-					"task_name":         map[string]any{"type": "string", "description": "可选任务名称，便于 TUI 与模型识别。"},
+					"rawCommand":       map[string]any{"type": "string", "description": "直接交给 shell 执行的原始命令。"},
+					"command":          map[string]any{"type": "string", "description": "可执行文件名；与 args 配合使用。"},
+					"args":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"workingDirectory": map[string]any{"type": "string", "description": "命令工作目录，默认当前工作目录。"},
+					"timeout":          map[string]any{"type": "integer", "minimum": 1, "maximum": maxCommandTimeout},
+					"env":              map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+					"expectJson":       map[string]any{"type": "boolean"},
+					"background":       map[string]any{"type": "boolean", "description": "为 true 时转为后台任务并返回 task_id。"},
+					"taskName":         map[string]any{"type": "string", "description": "可选任务名称，便于 TUI 与模型识别。"},
 				},
 				"additionalProperties": false,
 			},
@@ -192,23 +248,25 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "search_files",
-			"description":          "在当前工作目录访问范围内搜索文本，支持正则、大小写、include/exclude 与分页。",
+			"description":          "在当前工作目录访问范围内搜索文本，支持 ripgrep 风格模式、glob 过滤和输出模式。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"query":            map[string]any{"type": "string", "description": "要搜索的文本或正则表达式。"},
-					"path":             map[string]any{"type": "string", "description": "搜索根目录，默认当前工作目录。"},
-					"glob":             map[string]any{"type": "string", "description": "兼容旧参数，等同附加一条 include_patterns。"},
-					"include_patterns": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					"exclude_patterns": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					"case_sensitive":   map[string]any{"type": "boolean"},
-					"is_regexp":        map[string]any{"type": "boolean"},
-					"include_hidden":   map[string]any{"type": "boolean"},
-					"offset":           map[string]any{"type": "integer", "minimum": 0},
-					"max_results":      map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
+					"pattern":         map[string]any{"type": "string", "description": "要搜索的文本或正则表达式。"},
+					"path":            map[string]any{"type": "string", "description": "搜索根目录，默认当前工作目录。"},
+					"glob":            map[string]any{"type": "string", "description": "文件 glob 过滤，例如 **/*.go。"},
+					"includePatterns": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"excludePatterns": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"caseSensitive":   map[string]any{"type": "boolean"},
+					"isRegexp":        map[string]any{"type": "boolean"},
+					"includeHidden":   map[string]any{"type": "boolean"},
+					"outputMode":      map[string]any{"type": "string", "enum": []string{"content", "files_with_matches", "count"}},
+					"multiline":       map[string]any{"type": "boolean"},
+					"offset":          map[string]any{"type": "integer", "minimum": 0},
+					"maxResults":      map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
 				},
-				"required":             []string{"query"},
+				"required":             []string{"pattern"},
 				"additionalProperties": false,
 			},
 		},
@@ -229,22 +287,6 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 			},
 		},
 		{
-			"name":                 "list_dir",
-			"description":          "列出当前工作目录访问范围内的目录内容，支持递归、深度限制、隐藏文件过滤和 glob。",
-			"waiting_for_response": true,
-			"inputSchema": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path":           map[string]any{"type": "string", "description": "目标目录路径。默认当前工作目录。"},
-					"recursive":      map[string]any{"type": "boolean"},
-					"max_depth":      map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
-					"include_hidden": map[string]any{"type": "boolean"},
-					"glob":           map[string]any{"type": "string"},
-				},
-				"additionalProperties": false,
-			},
-		},
-		{
 			"name":                 "write_file",
 			"description":          "在当前工作目录访问范围内写入文本文件，支持 create、overwrite、append 和原子写入。",
 			"waiting_for_response": true,
@@ -260,38 +302,16 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 			},
 		},
 		{
-			"name":                 "skills_list",
-			"description":          "列出本地已发现的技能（Skill）摘要及启用状态。",
-			"waiting_for_response": true,
-			"inputSchema": map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-			},
-		},
-		{
-			"name":                 "skill_view",
-			"description":          "读取单个本地技能（Skill）的完整内容。",
+			"name":                 "skill",
+			"description":          "按名称装载本地技能(skill)，返回可立即执行的技能提示内容(prompt)。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"name": map[string]any{"type": "string", "description": "技能名称。"},
+					"name":  map[string]any{"type": "string", "description": "技能名称。"},
+					"input": map[string]any{"type": "string", "description": "可选技能输入，用于补充本次技能调用上下文。"},
 				},
 				"required":             []string{"name"},
-				"additionalProperties": false,
-			},
-		},
-		{
-			"name":                 "skill_manage",
-			"description":          "启用或禁用本地技能（Skill）。",
-			"waiting_for_response": true,
-			"inputSchema": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"action": map[string]any{"type": "string", "enum": []string{"enable", "disable"}},
-					"name":   map[string]any{"type": "string", "description": "技能名称。"},
-				},
-				"required":             []string{"action", "name"},
 				"additionalProperties": false,
 			},
 		},
@@ -317,24 +337,21 @@ func allowedClientToolSetForMode(mode string) map[string]bool {
 	return map[string]bool{
 		"lsp_query":    true,
 		"glob_files":   true,
-		"todo_read":    true,
 		"task_output":  true,
 		"task_list":    true,
 		"search_files": true,
 		"read_file":    true,
-		"list_dir":     true,
-		"skills_list":  true,
-		"skill_view":   true,
+		"skill":        true,
 	}
 }
 
 func RequiresClientToolConfirmation(config internalconfig.Config, payload map[string]any) bool {
-	toolName := nestedString(payload, "function", "name")
+	toolName := canonicalClientToolName(nestedString(payload, "function", "name"))
 	return shouldConfirmMutatingTool(config, toolName)
 }
 
 func PreviewClientToolCall(payload map[string]any) string {
-	toolName := nestedString(payload, "function", "name")
+	toolName := canonicalClientToolName(nestedString(payload, "function", "name"))
 	arguments := nestedMap(payload, "function", "arguments")
 	return previewClientTool(toolName, arguments)
 }
@@ -380,8 +397,8 @@ func shouldConfirmMutatingTool(config internalconfig.Config, toolName string) bo
 }
 
 func mutatingClientTool(toolName string) bool {
-	switch strings.TrimSpace(toolName) {
-	case "shell_exec", "task_stop", "todo_write", "file_edit", "write_file", "skill_manage":
+	switch canonicalClientToolName(toolName) {
+	case "shell_exec", "task_stop", "todo_write", "file_edit", "write_file":
 		return true
 	default:
 		return false
@@ -389,16 +406,14 @@ func mutatingClientTool(toolName string) bool {
 }
 
 func previewClientTool(toolName string, arguments map[string]any) string {
-	path := strings.TrimSpace(stringValue(arguments["path"]))
-	name := strings.TrimSpace(stringValue(arguments["name"]))
-	switch toolName {
+	path := argumentString(arguments, "path", "filePath")
+	name := argumentString(arguments, "name")
+	switch canonicalClientToolName(toolName) {
 	case "lsp_query":
-		operation := fallbackString(stringValue(arguments["operation"]), "<missing>")
-		return fmt.Sprintf("lsp_query %s (%s)", operation, fallbackString(stringValue(arguments["server_command"]), "<missing>"))
+		operation := fallbackString(argumentString(arguments, "operation"), "<missing>")
+		return fmt.Sprintf("lsp_query %s (%s)", operation, fallbackString(argumentString(arguments, "serverCommand", "server_command"), "<missing>"))
 	case "glob_files":
-		return fmt.Sprintf("glob_files %s @ %s", fallbackString(stringValue(arguments["pattern"]), "<missing>"), fallbackString(path, "."))
-	case "todo_read":
-		return "todo_read"
+		return fmt.Sprintf("glob_files %s @ %s", fallbackString(argumentString(arguments, "pattern"), "<missing>"), fallbackString(argumentString(arguments, "path"), "."))
 	case "todo_write":
 		items := 0
 		if rawItems, ok := arguments["items"].([]any); ok {
@@ -417,14 +432,10 @@ func previewClientTool(toolName string, arguments map[string]any) string {
 		return "task_list"
 	case "write_file":
 		return fmt.Sprintf("write_file %s (%s)", path, fallbackString(stringValue(arguments["mode"]), "overwrite"))
-	case "skill_manage":
-		return fmt.Sprintf("skill_manage %s %s", strings.TrimSpace(stringValue(arguments["action"])), name)
-	case "read_file", "list_dir", "search_files":
+	case "read_file", "search_files":
 		return fmt.Sprintf("%s %s", toolName, fallbackString(path, "."))
-	case "skill_view":
-		return fmt.Sprintf("skill_view %s", name)
-	case "skills_list":
-		return "skills_list"
+	case "skill":
+		return fmt.Sprintf("skill %s", fallbackString(name, "<missing>"))
 	default:
 		return toolName
 	}
@@ -493,92 +504,6 @@ func (r *ClientRuntime) readFile(config internalconfig.Config, arguments map[str
 	}, nil
 }
 
-func (r *ClientRuntime) listDir(config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
-	resolvedPath, err := r.resolveAllowedDirectoryWithPolicy(config, stringValue(arguments["path"]))
-	if err != nil {
-		return nil, err
-	}
-	recursive := boolValue(arguments["recursive"])
-	includeHidden := boolValue(arguments["include_hidden"])
-	glob := strings.TrimSpace(stringValue(arguments["glob"]))
-	maxDepth := intValue(arguments["max_depth"], 1)
-	if recursive && maxDepth < 1 {
-		maxDepth = 3
-	}
-	if !recursive {
-		maxDepth = 1
-	}
-	entries := []map[string]any{}
-	err = filepath.WalkDir(resolvedPath, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if path == resolvedPath {
-			return nil
-		}
-		relativePath, relErr := filepath.Rel(resolvedPath, path)
-		if relErr != nil {
-			relativePath = filepath.Base(path)
-		}
-		relativePath = filepath.ToSlash(relativePath)
-		if isHiddenPath(relativePath) && !includeHidden {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		depth := 1
-		if relativePath != "." {
-			depth = strings.Count(relativePath, "/") + 1
-		}
-		if depth > maxDepth {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if glob != "" && !matchesSearchGlob(path, resolvedPath, glob) {
-			if entry.IsDir() {
-				return nil
-			}
-			return nil
-		}
-		info, statErr := entry.Info()
-		if statErr != nil {
-			return statErr
-		}
-		entryType := "file"
-		if entry.IsDir() {
-			entryType = "directory"
-		} else if info.Mode()&os.ModeSymlink != 0 {
-			entryType = "symlink"
-		}
-		entries = append(entries, map[string]any{
-			"name":     entry.Name(),
-			"path":     relativePath,
-			"type":     entryType,
-			"size":     info.Size(),
-			"mod_time": info.ModTime().Format(time.RFC3339),
-		})
-		return nil
-	})
-	if err != nil {
-		return nil, newToolError("EXECUTION_FAILED", "列目录失败: %v", err)
-	}
-	sort.Slice(entries, func(left, right int) bool {
-		return stringValue(entries[left]["path"]) < stringValue(entries[right]["path"])
-	})
-	r.writeStreamEventf(r.stdout, "[本地工具] list_dir %s，共 %d 项\n", resolvedPath, len(entries))
-	_ = appendAuditLog(config, "list_dir", map[string]any{"path": resolvedPath, "count": len(entries)})
-	return map[string]any{
-		"root":      resolvedPath,
-		"entries":   entries,
-		"count":     len(entries),
-		"recursive": recursive,
-		"max_depth": maxDepth,
-	}, nil
-}
-
 func (r *ClientRuntime) writeFile(config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
 	targetPath := strings.TrimSpace(stringValue(arguments["path"]))
 	if targetPath == "" {
@@ -623,97 +548,37 @@ func (r *ClientRuntime) writeFile(config internalconfig.Config, arguments map[st
 	}, nil
 }
 
-func (r *ClientRuntime) skillsList(config internalconfig.Config) (map[string]any, error) {
-	items, directory, err := skills.Discover(config)
-	if err != nil {
-		return nil, newToolError("EXECUTION_FAILED", "%v", err)
-	}
-	enabledNames := skills.EnabledSkillNames(items)
-	return map[string]any{
-		"directory":     directory,
-		"skills":        skills.Summaries(items),
-		"count":         len(items),
-		"enabled_count": len(enabledNames),
-		"enabled":       enabledNames,
-	}, nil
-}
-
-func (r *ClientRuntime) skillView(config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
-	name := strings.TrimSpace(stringValue(arguments["name"]))
+func (r *ClientRuntime) skill(config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
+	name := argumentString(arguments, "name")
 	if name == "" {
-		return nil, newToolError("PARAM_ERROR", "skill_view 缺少 name")
+		return nil, newToolError("PARAM_ERROR", "skill 缺少 name")
 	}
 	item, _, err := skills.LoadByName(config, name)
 	if err != nil {
 		return nil, newToolError("EXECUTION_FAILED", "%v", err)
 	}
 	return map[string]any{
-		"name":          item.Name,
-		"description":   item.Description,
-		"category":      item.Category,
-		"prerequisites": item.Prerequisites,
-		"path":          item.Path,
-		"enabled":       item.Enabled,
-		"content":       item.Body,
-	}, nil
-}
-
-func (r *ClientRuntime) skillManage(config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
-	action := strings.ToLower(strings.TrimSpace(stringValue(arguments["action"])))
-	name := strings.TrimSpace(stringValue(arguments["name"]))
-	if name == "" {
-		return nil, newToolError("PARAM_ERROR", "skill_manage 缺少 name")
-	}
-	if action != "enable" && action != "disable" {
-		return nil, newToolError("PARAM_ERROR", "skill_manage action 仅支持 enable、disable")
-	}
-	manager, err := internalconfig.NewManager()
-	if err != nil {
-		return nil, newToolError("EXECUTION_FAILED", "加载配置管理器失败: %v", err)
-	}
-	latestConfig, err := manager.Load()
-	if err != nil {
-		return nil, newToolError("EXECUTION_FAILED", "读取配置失败: %v", err)
-	}
-	item, _, err := skills.LoadByName(latestConfig, name)
-	if err != nil {
-		return nil, newToolError("EXECUTION_FAILED", "%v", err)
-	}
-	enabled := normalizeSkillList(latestConfig.Skills.Enabled)
-	if action == "enable" {
-		enabled = append(enabled, item.Name)
-	} else {
-		filtered := []string{}
-		for _, current := range enabled {
-			if !strings.EqualFold(current, item.Name) {
-				filtered = append(filtered, current)
-			}
-		}
-		enabled = filtered
-	}
-	latestConfig.Skills.Enabled = normalizeSkillList(enabled)
-	if err := manager.Save(latestConfig); err != nil {
-		return nil, newToolError("EXECUTION_FAILED", "保存配置失败: %v", err)
-	}
-	_ = appendAuditLog(latestConfig, "skill_manage", map[string]any{"action": action, "name": item.Name})
-	return map[string]any{
-		"action":         action,
-		"name":           item.Name,
-		"enabled_skills": latestConfig.Skills.Enabled,
-		"config_path":    manager.Path(),
+		"name":        item.Name,
+		"description": item.Description,
+		"input":       argumentString(arguments, "input"),
+		"prompt":      item.Body,
+		"markdown":    skills.Markdown(*item),
+		"path":        item.Path,
+		"source":      item.Source,
+		"kind":        "prompt",
 	}, nil
 }
 
 func (r *ClientRuntime) searchFilesLocal(_ context.Context, config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
-	query := strings.TrimSpace(stringValue(arguments["query"]))
-	if query == "" {
+	pattern := argumentString(arguments, "pattern", "query")
+	if pattern == "" {
 		return nil, newToolError("PARAM_ERROR", "文件搜索缺少关键词")
 	}
 	baseDir, err := r.resolveAllowedDirectoryWithPolicy(config, stringValue(arguments["path"]))
 	if err != nil {
 		return nil, err
 	}
-	maxResults := intValue(arguments["max_results"], 50)
+	maxResults := argumentInt(arguments, 50, "maxResults", "max_results")
 	if maxResults < 1 {
 		maxResults = 1
 	}
@@ -724,16 +589,21 @@ func (r *ClientRuntime) searchFilesLocal(_ context.Context, config internalconfi
 	if offset < 0 {
 		offset = 0
 	}
-	includeHidden := boolValue(arguments["include_hidden"])
-	includePatterns := normalizePatternList(stringSlice(arguments["include_patterns"]), strings.TrimSpace(stringValue(arguments["glob"])))
-	excludePatterns := normalizePatternList(stringSlice(arguments["exclude_patterns"]))
-	matcher, err := buildSearchMatcher(query, boolValue(arguments["is_regexp"]), boolValue(arguments["case_sensitive"]))
+	includeHidden := argumentBool(arguments, "includeHidden", "include_hidden")
+	includePatterns := normalizePatternList(argumentStringSlice(arguments, "includePatterns", "include_patterns"), strings.TrimSpace(stringValue(arguments["glob"])))
+	excludePatterns := normalizePatternList(argumentStringSlice(arguments, "excludePatterns", "exclude_patterns"))
+	matcher, err := buildSearchMatcher(pattern, argumentBool(arguments, "isRegexp", "is_regexp"), argumentBool(arguments, "caseSensitive", "case_sensitive"))
 	if err != nil {
 		return nil, newToolError("PARAM_ERROR", "%v", err)
+	}
+	outputMode := strings.ToLower(strings.TrimSpace(fallbackString(argumentString(arguments, "outputMode", "output_mode"), "content")))
+	if outputMode != "content" && outputMode != "files_with_matches" && outputMode != "count" {
+		return nil, newToolError("PARAM_ERROR", "search_files 的输出模式(output mode)仅支持 content、files_with_matches、count")
 	}
 	total := 0
 	hasMore := false
 	results := []map[string]any{}
+	fileCounts := map[string]int{}
 	stopSearch := errors.New("search_limit_reached")
 	err = filepath.WalkDir(baseDir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -763,6 +633,7 @@ func (r *ClientRuntime) searchFilesLocal(_ context.Context, config internalconfi
 			if !matcher(line) {
 				continue
 			}
+			fileCounts[filepath.ToSlash(relativePath)]++
 			if total >= offset && len(results) < maxResults {
 				results = append(results, map[string]any{
 					"path":          path,
@@ -782,8 +653,8 @@ func (r *ClientRuntime) searchFilesLocal(_ context.Context, config internalconfi
 		return nil, newToolError("EXECUTION_FAILED", "文件搜索失败: %v", err)
 	}
 	r.writeStreamEventf(r.stdout, "[本地工具] search_files %s 命中 %d 条\n", baseDir, len(results))
-	_ = appendAuditLog(config, "search_files", map[string]any{"path": baseDir, "query": query, "count": len(results)})
-	return map[string]any{
+	_ = appendAuditLog(config, "search_files", map[string]any{"path": baseDir, "pattern": pattern, "count": len(results), "output_mode": outputMode})
+	response := map[string]any{
 		"matches":       results,
 		"count":         len(results),
 		"total_matches": total,
@@ -791,7 +662,26 @@ func (r *ClientRuntime) searchFilesLocal(_ context.Context, config internalconfi
 		"has_more":      hasMore,
 		"root":          baseDir,
 		"engine":        "go",
-	}, nil
+		"output_mode":   outputMode,
+	}
+	if outputMode == "files_with_matches" {
+		files := make([]map[string]any, 0, len(fileCounts))
+		for relativePath, count := range fileCounts {
+			files = append(files, map[string]any{"relative_path": relativePath, "count": count})
+		}
+		sort.Slice(files, func(left, right int) bool {
+			return stringValue(files[left]["relative_path"]) < stringValue(files[right]["relative_path"])
+		})
+		response["files"] = files
+		response["count"] = len(files)
+		return response, nil
+	}
+	if outputMode == "count" {
+		response["count"] = total
+		response["matches"] = []map[string]any{}
+		return response, nil
+	}
+	return response, nil
 }
 
 func buildSearchMatcher(query string, isRegexp bool, caseSensitive bool) (func(string) bool, error) {
@@ -943,7 +833,6 @@ func writeFileAtomically(path string, content []byte) error {
 	return os.Rename(temporaryPath, path)
 }
 
-
 func fallbackString(value string, fallback string) string {
 	if strings.TrimSpace(value) == "" {
 		return fallback
@@ -964,4 +853,3 @@ func trimMultilinePreview(value string, maxLen int) string {
 	}
 	return trimmed[:maxLen-3] + "..."
 }
-

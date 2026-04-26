@@ -117,7 +117,7 @@ func (r *ClientRuntime) ExecuteClientToolPayload(
 	payload map[string]any,
 ) (string, any, error) {
 	serverName := nestedString(payload, "server", "name")
-	toolName := nestedString(payload, "function", "name")
+	toolName := canonicalClientToolName(nestedString(payload, "function", "name"))
 	arguments := nestedMap(payload, "function", "arguments")
 
 	if serverName != localToolServerName {
@@ -136,8 +136,6 @@ func (r *ClientRuntime) ExecuteClientToolPayload(
 		result, err = r.lspQuery(config, arguments)
 	case "glob_files":
 		result, err = r.globFiles(config, arguments)
-	case "todo_read":
-		result, err = r.todoRead(config, payload)
 	case "todo_write":
 		result, err = r.todoWrite(config, payload, arguments)
 	case "file_edit":
@@ -154,16 +152,10 @@ func (r *ClientRuntime) ExecuteClientToolPayload(
 		result, err = r.searchFiles(ctx, config, arguments)
 	case "read_file":
 		result, err = r.readFile(config, arguments)
-	case "list_dir":
-		result, err = r.listDir(config, arguments)
 	case "write_file":
 		result, err = r.writeFile(config, arguments)
-	case "skills_list":
-		result, err = r.skillsList(config)
-	case "skill_view":
-		result, err = r.skillView(config, arguments)
-	case "skill_manage":
-		result, err = r.skillManage(config, arguments)
+	case "skill":
+		result, err = r.skill(config, arguments)
 	default:
 		err = fmt.Errorf("不支持的客户端工具: %s", toolName)
 	}
@@ -503,24 +495,26 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 		timeout = maxCommandTimeout
 	}
 
-	workingDirectory, err := r.resolveAllowedDirectoryWithPolicy(config, stringValue(arguments["working_directory"]))
+	workingDirectory, err := r.resolveAllowedDirectoryWithPolicy(config, argumentString(arguments, "workingDirectory", "working_directory"))
 	if err != nil {
 		return commandArguments{}, err
 	}
 
 	envOverrides := map[string]string{}
-	if rawEnv, ok := arguments["env_overrides"].(map[string]any); ok {
-		for key, value := range rawEnv {
-			envOverrides[strings.TrimSpace(key)] = stringValue(value)
-		}
-	} else if rawEnv, ok := arguments["env_overrides"].(map[string]string); ok {
-		for key, value := range rawEnv {
-			envOverrides[strings.TrimSpace(key)] = value
+	if rawEnv, ok := firstArgument(arguments, "env", "env_overrides"); ok {
+		if rawEnvMap, ok := rawEnv.(map[string]any); ok {
+			for key, value := range rawEnvMap {
+				envOverrides[strings.TrimSpace(key)] = stringValue(value)
+			}
+		} else if rawEnvMap, ok := rawEnv.(map[string]string); ok {
+			for key, value := range rawEnvMap {
+				envOverrides[strings.TrimSpace(key)] = value
+			}
 		}
 	}
 	envOverrides = sanitizeEnvOverrides(envOverrides)
 
-	rawCommand := strings.TrimSpace(stringValue(arguments["raw_command"]))
+	rawCommand := argumentString(arguments, "rawCommand", "raw_command")
 	if rawCommand != "" {
 		return commandArguments{
 			Mode:             "shell",
@@ -528,7 +522,7 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 			WorkingDirectory: workingDirectory,
 			Timeout:          timeout,
 			EnvOverrides:     envOverrides,
-			ExpectJSON:       boolValue(arguments["expect_json"]),
+			ExpectJSON:       argumentBool(arguments, "expectJson", "expect_json"),
 		}, nil
 	}
 
@@ -545,7 +539,7 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 		WorkingDirectory: workingDirectory,
 		Timeout:          timeout,
 		EnvOverrides:     envOverrides,
-		ExpectJSON:       boolValue(arguments["expect_json"]),
+		ExpectJSON:       argumentBool(arguments, "expectJson", "expect_json"),
 	}, nil
 }
 
@@ -624,11 +618,11 @@ func mergeEnv(overrides map[string]string) []string {
 }
 
 func commandPreview(arguments map[string]any) string {
-	rawCommand := strings.TrimSpace(stringValue(arguments["raw_command"]))
+	rawCommand := argumentString(arguments, "rawCommand", "raw_command")
 	if rawCommand != "" {
 		return rawCommand
 	}
-	parts := append([]string{strings.TrimSpace(stringValue(arguments["command"]))}, stringSlice(arguments["args"])...)
+	parts := append([]string{strings.TrimSpace(stringValue(arguments["command"]))}, argumentStringSlice(arguments, "args")...)
 	return strings.TrimSpace(strings.Join(parts, " "))
 }
 

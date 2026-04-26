@@ -38,26 +38,24 @@ type lspError struct {
 }
 
 func (r *ClientRuntime) lspQuery(config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
-	serverCommand := strings.TrimSpace(stringValue(arguments["server_command"]))
+	serverCommand := argumentString(arguments, "serverCommand", "server_command")
 	if serverCommand == "" {
 		return nil, newToolError("PARAM_ERROR", "lsp_query 缺少 server_command")
 	}
-	operation := strings.TrimSpace(stringValue(arguments["operation"]))
-	switch operation {
-	case "definition", "references", "implementation", "document_symbol", "workspace_symbol":
-	default:
-		return nil, newToolError("PARAM_ERROR", "不支持的 lsp 操作: %s", operation)
-	}
-
-	workspaceRoot, err := r.resolveAllowedDirectoryWithPolicy(config, stringValue(arguments["workspace_root"]))
+	operation, err := normalizeLSPOperation(argumentString(arguments, "operation"))
 	if err != nil {
 		return nil, err
 	}
-	requestPath := strings.TrimSpace(stringValue(arguments["path"]))
+
+	workspaceRoot, err := r.resolveAllowedDirectoryWithPolicy(config, argumentString(arguments, "workspaceRoot", "workspace_root"))
+	if err != nil {
+		return nil, err
+	}
+	requestPath := argumentString(arguments, "filePath", "path")
 	resolvedPath := ""
-	if operation != "workspace_symbol" {
+	if operation != "workspaceSymbol" {
 		if requestPath == "" {
-			return nil, newToolError("PARAM_ERROR", "%s 缺少 path", operation)
+			return nil, newToolError("PARAM_ERROR", "%s 缺少 filePath", operation)
 		}
 		resolvedPath, err = r.resolveAllowedFilePathWithPolicy(config, requestPath, false)
 		if err != nil {
@@ -81,20 +79,20 @@ func (r *ClientRuntime) lspQuery(config internalconfig.Config, arguments map[str
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	command := exec.CommandContext(ctx, serverCommand, stringSlice(arguments["server_args"])...)
+	command := exec.CommandContext(ctx, serverCommand, argumentStringSlice(arguments, "serverArgs", "server_args")...)
 	command.Dir = workspaceRoot
 	stdin, err := command.StdinPipe()
 	if err != nil {
-		return nil, newToolError("EXECUTION_FAILED", "创建 LSP stdin 失败: %v", err)
+		return nil, newToolError("EXECUTION_FAILED", "创建 lsp_query 标准输入(stdin)失败: %v", err)
 	}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
-		return nil, newToolError("EXECUTION_FAILED", "创建 LSP stdout 失败: %v", err)
+		return nil, newToolError("EXECUTION_FAILED", "创建 lsp_query 标准输出(stdout)失败: %v", err)
 	}
 	stderr := &bytes.Buffer{}
 	command.Stderr = stderr
 	if err := command.Start(); err != nil {
-		return nil, newToolError("EXECUTION_FAILED", "启动 LSP 服务失败: %v", err)
+		return nil, newToolError("EXECUTION_FAILED", "启动 lsp_query 语言服务器(language server)失败: %v", err)
 	}
 	defer func() {
 		_ = stdin.Close()
@@ -105,10 +103,10 @@ func (r *ClientRuntime) lspQuery(config internalconfig.Config, arguments map[str
 	reader := bufio.NewReader(stdout)
 	rootURI := pathToFileURI(workspaceRoot)
 	initializeParams := map[string]any{
-		"processId": os.Getpid(),
-		"rootUri":   rootURI,
+		"processId":    os.Getpid(),
+		"rootUri":      rootURI,
 		"capabilities": map[string]any{},
-		"clientInfo": map[string]any{"name": "taiyiflow-cli", "version": "dev"},
+		"clientInfo":   map[string]any{"name": "taiyiflow-cli", "version": "dev"},
 	}
 	if _, err := callLSP(ctx, stdin, reader, 1, "initialize", initializeParams); err != nil {
 		return nil, withLSPStderr(err, stderr.String())
@@ -120,12 +118,12 @@ func (r *ClientRuntime) lspQuery(config internalconfig.Config, arguments map[str
 	if resolvedPath != "" {
 		content, readErr := os.ReadFile(resolvedPath)
 		if readErr != nil {
-			return nil, newToolError("EXECUTION_FAILED", "读取 LSP 目标文件失败: %v", readErr)
+			return nil, newToolError("EXECUTION_FAILED", "读取 lsp_query 目标文件失败: %v", readErr)
 		}
 		if err := sendLSP(stdin, lspRequest{JSONRPC: "2.0", Method: "textDocument/didOpen", Params: map[string]any{
 			"textDocument": map[string]any{
 				"uri":        pathToFileURI(resolvedPath),
-				"languageId": fallbackString(stringValue(arguments["language_id"]), inferLanguageID(resolvedPath)),
+				"languageId": fallbackString(argumentString(arguments, "languageId", "language_id"), inferLanguageID(resolvedPath)),
 				"version":    1,
 				"text":       string(content),
 			},
@@ -142,7 +140,7 @@ func (r *ClientRuntime) lspQuery(config internalconfig.Config, arguments map[str
 	if err != nil {
 		return nil, withLSPStderr(err, stderr.String())
 	}
-	items, err := normalizeLSPResult(operation, response.Result, workspaceRoot, intValue(arguments["max_results"], 50))
+	items, err := normalizeLSPResult(operation, response.Result, workspaceRoot, argumentInt(arguments, 50, "maxResults", "max_results"))
 	if err != nil {
 		return nil, err
 	}
@@ -155,6 +153,23 @@ func (r *ClientRuntime) lspQuery(config internalconfig.Config, arguments map[str
 		"items":          items,
 		"count":          len(items),
 	}, nil
+}
+
+func normalizeLSPOperation(operation string) (string, error) {
+	switch strings.TrimSpace(operation) {
+	case "definition", "goToDefinition", "go_to_definition":
+		return "goToDefinition", nil
+	case "references", "findReferences", "find_references":
+		return "findReferences", nil
+	case "implementation", "goToImplementation", "go_to_implementation":
+		return "goToImplementation", nil
+	case "document_symbol", "documentSymbol":
+		return "documentSymbol", nil
+	case "workspace_symbol", "workspaceSymbol":
+		return "workspaceSymbol", nil
+	default:
+		return "", newToolError("PARAM_ERROR", "不支持的 lsp_query 操作(operation): %s", operation)
+	}
 }
 
 func sendLSP(writer io.Writer, request lspRequest) error {
@@ -171,21 +186,21 @@ func sendLSP(writer io.Writer, request lspRequest) error {
 
 func callLSP(ctx context.Context, writer io.Writer, reader *bufio.Reader, id int, method string, params any) (lspResponse, error) {
 	if err := sendLSP(writer, lspRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params}); err != nil {
-		return lspResponse{}, newToolError("EXECUTION_FAILED", "发送 LSP 请求失败: %v", err)
+		return lspResponse{}, newToolError("EXECUTION_FAILED", "发送 lsp_query 请求失败: %v", err)
 	}
 	for {
 		select {
 		case <-ctx.Done():
-			return lspResponse{}, newToolError("EXECUTION_FAILED", "LSP 请求超时")
+			return lspResponse{}, newToolError("EXECUTION_FAILED", "lsp_query 请求超时")
 		default:
 		}
 		message, err := readLSPMessage(reader)
 		if err != nil {
-			return lspResponse{}, newToolError("EXECUTION_FAILED", "读取 LSP 响应失败: %v", err)
+			return lspResponse{}, newToolError("EXECUTION_FAILED", "读取 lsp_query 响应失败: %v", err)
 		}
 		var response lspResponse
 		if err := json.Unmarshal(message, &response); err != nil {
-			return lspResponse{}, newToolError("EXECUTION_FAILED", "解析 LSP 响应失败: %v", err)
+			return lspResponse{}, newToolError("EXECUTION_FAILED", "解析 lsp_query 响应失败: %v", err)
 		}
 		if response.Method != "" {
 			continue
@@ -194,7 +209,7 @@ func callLSP(ctx context.Context, writer io.Writer, reader *bufio.Reader, id int
 			continue
 		}
 		if response.Error != nil {
-			return lspResponse{}, newToolError("EXECUTION_FAILED", "LSP %s 失败: %s", method, response.Error.Message)
+			return lspResponse{}, newToolError("EXECUTION_FAILED", "lsp_query %s 失败: %s", method, response.Error.Message)
 		}
 		return response, nil
 	}
@@ -233,34 +248,40 @@ func readLSPMessage(reader *bufio.Reader) ([]byte, error) {
 
 func buildLSPQueryParams(operation string, arguments map[string]any, resolvedPath string, line int, character int) (map[string]any, error) {
 	switch operation {
-	case "workspace_symbol":
-		query := strings.TrimSpace(stringValue(arguments["symbol_query"]))
+	case "workspaceSymbol":
+		query := argumentString(arguments, "query", "symbolQuery", "symbol_query")
 		if query == "" {
-			return nil, newToolError("PARAM_ERROR", "workspace_symbol 缺少 symbol_query")
+			return nil, newToolError("PARAM_ERROR", "workspaceSymbol 缺少 query")
 		}
 		return map[string]any{"query": query}, nil
-	case "document_symbol":
+	case "documentSymbol":
 		return map[string]any{"textDocument": map[string]any{"uri": pathToFileURI(resolvedPath)}}, nil
-	case "definition", "references", "implementation":
+	case "goToDefinition", "findReferences", "goToImplementation":
 		params := map[string]any{
 			"textDocument": map[string]any{"uri": pathToFileURI(resolvedPath)},
 			"position":     map[string]any{"line": line - 1, "character": character - 1},
 		}
-		if operation == "references" {
-			params["context"] = map[string]any{"includeDeclaration": boolValue(arguments["include_declaration"])}
+		if operation == "findReferences" {
+			params["context"] = map[string]any{"includeDeclaration": argumentBool(arguments, "includeDeclaration", "include_declaration")}
 		}
 		return params, nil
 	default:
-		return nil, newToolError("PARAM_ERROR", "不支持的 lsp 操作: %s", operation)
+		return nil, newToolError("PARAM_ERROR", "不支持的 LSP 操作: %s", operation)
 	}
 }
 
 func lspMethodName(operation string) string {
 	switch operation {
-	case "document_symbol":
+	case "documentSymbol":
 		return "textDocument/documentSymbol"
-	case "workspace_symbol":
+	case "workspaceSymbol":
 		return "workspace/symbol"
+	case "goToDefinition":
+		return "textDocument/definition"
+	case "findReferences":
+		return "textDocument/references"
+	case "goToImplementation":
+		return "textDocument/implementation"
 	default:
 		return "textDocument/" + operation
 	}
@@ -274,12 +295,12 @@ func normalizeLSPResult(operation string, raw json.RawMessage, workspaceRoot str
 		return []map[string]any{}, nil
 	}
 	switch operation {
-	case "definition", "references", "implementation":
+	case "goToDefinition", "findReferences", "goToImplementation":
 		return normalizeLSPLocations(raw, workspaceRoot, maxResults)
-	case "document_symbol", "workspace_symbol":
+	case "documentSymbol", "workspaceSymbol":
 		return normalizeLSPSymbols(raw, workspaceRoot, maxResults)
 	default:
-		return nil, newToolError("PARAM_ERROR", "不支持的 lsp 操作: %s", operation)
+		return nil, newToolError("PARAM_ERROR", "不支持的 LSP 操作: %s", operation)
 	}
 }
 
@@ -417,7 +438,7 @@ func inferLanguageID(path string) string {
 
 func requiresLSPPosition(operation string) bool {
 	switch operation {
-	case "definition", "references", "implementation":
+	case "goToDefinition", "findReferences", "goToImplementation":
 		return true
 	default:
 		return false

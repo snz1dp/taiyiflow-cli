@@ -134,24 +134,24 @@
 6. 面向文档材料的总结与起草能力
 7. 配置管理和模型提供方（Provider）切换能力
 8. 与 ../taiyiflow/src/backend/base 后台 stream 接口的协议兼容能力
-9. 本地技能（Skill）发现、查看、启停与透传能力
+9. 本地技能(skill)发现、查看、启停与透传能力
 10. 工作目录访问边界、敏感路径拒绝、审计日志与审批模式联动
 
 ### 7.2 当前已落地能力
 
 截至当前仓库实现，客户端已经具备以下能力基线：
 
-1. 本地客户端工具注册已覆盖 search_files、glob_files、read_file、list_dir、write_file、file_edit、shell_exec、task_list、task_output、task_stop、todo_read、todo_write、lsp_query。
+1. 本地客户端工具注册已覆盖 search_files、glob_files、read_file、write_file、file_edit、shell_exec、task_list、task_output、task_stop、todo_write、lsp_query、skill。
 2. 文件工具默认受工作目录访问边界限制，可附加 sandbox_roots 扩展额外外部资源访问根目录。
 3. 敏感目录（如 ~/.ssh、~/.gnupg、~/.aws、macOS Keychains）默认拒绝访问。
-4. 写文件、细粒度编辑和技能启停操作统一遵循 approval_mode；只读模式会直接拒绝执行。
+4. 写文件、细粒度编辑、Todo 更新和任务停止操作统一遵循 approval_mode；只读模式会直接拒绝执行。
 5. 命令执行会剔除常见敏感环境变量，并对高风险命令在 auto 模式下阻断。
-6. 客户端支持 ~/.snz1dp/skills 目录下的 SKILL.md 发现、list/view/enable/disable 与 RequestedSkillNames、ClientSkillPackages 透传。
+6. 客户端支持 ~/.snz1dp/skills 目录下的 SKILL.md 发现与透传；运行时的 skill 工具已收窄为按名称装载单个技能提示内容(prompt)的执行入口。
 7. TUI 与交互模式均提供 /skills 命令；doctor 会输出文件工具链和技能目录状态。
-8. TUI 状态栏已支持窄终端分级压缩，并将本地工具与命令执行摘要收敛到状态栏和关键里程碑消息；Todo、后台任务输出与 LSP 结果会进入专门的工具结果面板。
-9. shell_exec 已复用现有命令执行内核正式化为客户端工具，并补齐后台任务句柄、输出读取与停止能力。
+8. TUI 状态栏已支持窄终端分级压缩，并将本地工具与命令执行摘要收敛到状态栏和关键里程碑消息；Todo、后台任务输出与 lsp_query 结果会进入专门的工具结果面板。
+9. shell_exec 已复用现有命令执行内核正式化为客户端工具，并补齐后台任务句柄(task handle)、输出读取与停止能力。
 10. Todo 清单已保存到当前会话状态，CLI 进程内的后台任务列表与输出读取可跨多次请求复用。
-11. lsp_query 通过本地 stdio 语言服务器提供 definition、references、implementation、document_symbol、workspace_symbol 五类查询；当前不需要扩展太乙智启后台 stream 协议。
+11. lsp_query 通过本地标准输入输出(stdio)语言服务器(language server)提供定义跳转(go_to_definition)、引用查询(find_references)、实现跳转(go_to_implementation)、文档符号(document_symbol)、工作区符号(workspace_symbol)五类查询；当前不需要扩展太乙智启后台 stream 协议。
 
 ### 7.3 第二阶段增强
 
@@ -233,11 +233,11 @@ taiyiflow version
 
 首期建议内置工具：
 
-- 文件工具：读文件、列目录、搜索内容、glob 枚举、写文件、生成补丁、file_edit 细粒度替换
-- 命令外壳（Shell）工具：执行构建、测试、脚本、查询命令，并支持后台任务输出读取与停止
+- 文件工具：read_file 读文件、glob_files 枚举、search_files 搜索内容、write_file 写文件、file_edit 细粒度替换
+- 命令外壳(shell)工具：执行构建、测试、脚本、查询命令，并支持后台任务输出读取与停止
 - 任务工具：会话级 Todo 清单读写、后台任务列表查询
-- 代码语义工具：通过本地语言服务器执行 definition、references、implementation、document_symbol、workspace_symbol
-- Skill 工具：列出技能、读取技能全文、启停技能
+- 代码语义工具：通过本地语言服务器(language server)执行 lsp_query
+- skill 工具：按名称装载单个技能提示内容(prompt)，执行入口与 /skills 管理命令分离
 - 文档工具：提取 Markdown、纯文本（TXT）、逗号分隔值（CSV）、JSON 等内容
 
 首期工具治理要求：
@@ -246,7 +246,7 @@ taiyiflow version
 2. 写文件、补丁、技能启停等本地变更操作统一接入 approval_mode。
 3. 审计日志默认写入 ~/.snz1dp/logs/audit.log，可通过 audit_enabled 开关控制。
 4. 本地技能目录默认使用 ~/.snz1dp/skills，技能文件采用 SKILL.md（YAML frontmatter + Markdown body）。
-5. 通用客户端工具通过 client_mcp_servers 透传即可被后台消费；本轮新增 shell、Todo、LSP、FileEdit、Task 工具不需要额外扩展 stream 事件或回调 schema。
+5. 通用客户端工具通过 client_mcp_servers 透传即可被后台消费；本轮新增 shell_exec、Todo、lsp_query、file_edit、Task 工具不需要额外扩展 stream 事件或回调 schema。
 
 第二阶段可补充：
 

@@ -124,7 +124,7 @@ func (m *localTaskManager) startTask(
 	taskID := fmt.Sprintf("task-%d", time.Now().UnixNano())
 	task := &localTask{
 		id:        taskID,
-		name:      strings.TrimSpace(fallbackString(stringValue(arguments["task_name"]), taskID)),
+		name:      strings.TrimSpace(fallbackString(argumentString(arguments, "taskName", "task_name"), taskID)),
 		preview:   commandPreview(arguments),
 		cwd:       payload.WorkingDirectory,
 		startedAt: time.Now(),

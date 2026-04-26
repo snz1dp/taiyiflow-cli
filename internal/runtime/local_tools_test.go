@@ -164,7 +164,7 @@ func TestSandboxEscapePolicyUsesInjectedConfirmer(t *testing.T) {
 	}
 }
 
-func TestSearchFilesAndListDir(t *testing.T) {
+func TestSearchFiles(t *testing.T) {
 	tempDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(tempDir, "docs"), 0o755); err != nil {
 		t.Fatalf("mkdir failed: %v", err)
@@ -176,10 +176,10 @@ func TestSearchFilesAndListDir(t *testing.T) {
 	config := internalconfig.Config{Workdir: tempDir, ApprovalMode: "auto"}
 
 	searchResult, err := runtimeClient.searchFiles(context.Background(), config, map[string]any{
-		"query":            "alpha",
-		"path":             "docs",
-		"include_patterns": []any{"*.md"},
-		"max_results":      1,
+		"pattern":         "alpha",
+		"path":            "docs",
+		"includePatterns": []any{"*.md"},
+		"maxResults":      1,
 	})
 	if err != nil {
 		t.Fatalf("search files failed: %v", err)
@@ -187,14 +187,38 @@ func TestSearchFilesAndListDir(t *testing.T) {
 	if searchResult["count"].(int) != 1 {
 		t.Fatalf("unexpected search count: %v", searchResult["count"])
 	}
+}
 
-	listResult, err := runtimeClient.listDir(config, map[string]any{"path": "docs"})
-	if err != nil {
-		t.Fatalf("list dir failed: %v", err)
+func TestCanonicalClientToolNameUsesSnakeCaseNamesOnly(t *testing.T) {
+	if got := canonicalClientToolName("lsp_query"); got != "lsp_query" {
+		t.Fatalf("unexpected canonical lsp_query name: %s", got)
 	}
-	entries := listResult["entries"].([]map[string]any)
-	if len(entries) != 1 || entries[0]["name"].(string) != "a.md" {
-		t.Fatalf("unexpected list dir result: %#v", entries)
+	if got := canonicalClientToolName("glob_files"); got != "glob_files" {
+		t.Fatalf("unexpected canonical glob_files name: %s", got)
+	}
+	if got := canonicalClientToolName("search_files"); got != "search_files" {
+		t.Fatalf("unexpected canonical search_files name: %s", got)
+	}
+	if got := canonicalClientToolName("shell_exec"); got != "shell_exec" {
+		t.Fatalf("unexpected canonical shell_exec name: %s", got)
+	}
+	if got := canonicalClientToolName("skill"); got != "skill" {
+		t.Fatalf("unexpected canonical skill name: %s", got)
+	}
+	if got := canonicalClientToolName("LSP"); got != "LSP" {
+		t.Fatalf("legacy alias should not be normalized: %s", got)
+	}
+	if got := canonicalClientToolName("Glob"); got != "Glob" {
+		t.Fatalf("legacy alias should not be normalized: %s", got)
+	}
+	if got := canonicalClientToolName("Grep"); got != "Grep" {
+		t.Fatalf("legacy alias should not be normalized: %s", got)
+	}
+	if got := canonicalClientToolName("Bash"); got != "Bash" {
+		t.Fatalf("legacy alias should not be normalized: %s", got)
+	}
+	if got := canonicalClientToolName("Skill"); got != "Skill" {
+		t.Fatalf("legacy alias should not be normalized: %s", got)
 	}
 }
 

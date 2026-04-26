@@ -550,7 +550,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			return tui.LocalCommandResult{
 				Handled: true,
 				SessionPicker: &tui.SessionPickerState{
-					Title:      fmt.Sprintf("会话列表（%s）", sanitizeFlowDisplay(agentLabel)),
+					Title:      fmt.Sprintf("会话列表(session list)（%s）", sanitizeFlowDisplay(agentLabel)),
 					Hint:       hint,
 					Page:       page,
 					TotalPages: pages,
@@ -989,7 +989,7 @@ func requiresTUICommandConfirmation(config internalconfig.Config, payload map[st
 
 func buildTUIConfirmRequest(payload map[string]any) tui.ConfirmRequest {
 	request := tui.ConfirmRequest{
-		Title:   "客户端命令待确认",
+		Title:   "客户端命令(client command)待确认",
 		Command: previewBuiltInCommand(payload),
 		Detail:  "该命令由服务端下发，是否允许在本地执行？",
 		Hint:    "使用方向键或 Tab 选择，Enter 确认。",
@@ -1001,14 +1001,14 @@ func buildTUIClientToolConfirmRequest(payload map[string]any) tui.ConfirmRequest
 	toolName := nestedStringValue(payload, "function", "name")
 	arguments, _ := nestedMapValue(payload, "function", "arguments")
 	request := tui.ConfirmRequest{
-		Title:   "客户端工具待确认",
+		Title:   "客户端工具(client tool)待确认",
 		Command: clientruntime.PreviewClientToolCall(payload),
 		Detail:  "该工具会修改本地工作区或本地运行状态，是否允许执行？",
 		Hint:    "使用方向键或 Tab 选择，Enter 确认。",
 	}
 	switch strings.TrimSpace(toolName) {
 	case "write_file":
-		request.PreviewTitle = "写入目标"
+		request.PreviewTitle = "写入目标(write target)"
 		request.PreviewBody = fmt.Sprintf("路径: %s\n模式: %s", fallbackString(stringMapValue(arguments, "path"), "."), fallbackString(stringMapValue(arguments, "mode"), "overwrite"))
 	}
 	return request
@@ -1016,10 +1016,10 @@ func buildTUIClientToolConfirmRequest(payload map[string]any) tui.ConfirmRequest
 
 func buildTUISandboxEscapeConfirmRequest(path string, alwaysApprove func(context.Context) error) tui.ConfirmRequest {
 	return tui.ConfirmRequest{
-		Title:                       "访问工作目录外路径",
+		Title:                       "工作目录外路径访问(sandbox escape)",
 		Command:                     path,
 		Detail:                      "目标路径位于当前工作目录外，是否允许本次访问？",
-		PreviewTitle:                "访问目标",
+		PreviewTitle:                "访问目标(target path)",
 		PreviewBody:                 fmt.Sprintf("路径: %s", path),
 		Hint:                        "使用方向键或 Tab 选择，Enter 确认。",
 		AlwaysApprove:               alwaysApprove,
@@ -1060,7 +1060,7 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 			lines = append(lines, line)
 		}
 		return &tui.ToolPanel{
-			Title:   "LSP 查询结果",
+			Title:   "语言服务查询(lsp_query)结果",
 			Summary: fmt.Sprintf("%s 命中 %d 项", fallbackString(stringMapValue(resultMap, "operation"), "lsp_query"), len(items)),
 			Body:    strings.Join(lines, "\n\n"),
 			Hint:    "若结果为空，请确认语言服务器命令、工作区根目录和光标位置是否正确。",
@@ -1078,7 +1078,7 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 			body = "当前任务尚无输出。"
 		}
 		return &tui.ToolPanel{
-			Title:   "后台任务输出",
+			Title:   "后台任务输出(task_output)",
 			Summary: fmt.Sprintf("%s · %s", fallbackString(stringMapValue(resultMap, "task_id"), "<unknown>"), fallbackString(stringMapValue(resultMap, "status"), "unknown")),
 			Body:    body,
 			Hint:    "可滚动查看 stdout/stderr；继续对话时可再次调用 task_output 刷新。",
@@ -1093,12 +1093,12 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 			lines = append(lines, fmt.Sprintf("%d. %s [%s]\n   %s", index+1, fallbackString(stringMapValue(item, "task_name"), fallbackString(stringMapValue(item, "task_id"), "<unknown>")), fallbackString(stringMapValue(item, "status"), "unknown"), fallbackString(stringMapValue(item, "command"), "<unknown>")))
 		}
 		return &tui.ToolPanel{
-			Title:   "后台任务列表",
+			Title:   "后台任务列表(task_list)",
 			Summary: fmt.Sprintf("task_list %d 个任务", len(tasks)),
 			Body:    strings.Join(lines, "\n\n"),
 			Hint:    "可根据 task_id 继续读取输出或停止任务。",
 		}
-	case "todo_read", "todo_write":
+	case "todo_write":
 		items := mapSliceValue(resultMap, "items")
 		lines := make([]string, 0, len(items))
 		for index, item := range items {
@@ -1112,11 +1112,21 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 			lines = append(lines, "当前会话暂无 Todo。")
 		}
 		return &tui.ToolPanel{
-			Title:   "会话 Todo",
+			Title:   "会话待办(todo_write)",
 			Summary: fmt.Sprintf("%s %d 项", toolName, len(items)),
 			Body:    strings.Join(lines, "\n\n"),
-			Hint:    "Todo 会保存在当前会话状态中，后续请求可继续读取。",
+			Hint:    "Todo 会保存在当前会话状态中，后续请求可继续覆盖更新。",
 		}
+	case "skill":
+		if prompt := strings.TrimSpace(stringMapValue(resultMap, "prompt")); prompt != "" {
+			return &tui.ToolPanel{
+				Title:   "技能装载(skill)结果",
+				Summary: fallbackString(stringMapValue(resultMap, "name"), "skill"),
+				Body:    prompt,
+				Hint:    "这是当前技能的提示主体，可作为后续执行上下文直接使用。",
+			}
+		}
+		return nil
 	case "file_edit":
 		if toolErr != nil {
 			bodyLines := []string{
@@ -1139,14 +1149,14 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 				}
 			}
 			return &tui.ToolPanel{
-				Title:   "文件编辑失败",
+				Title:   "文件编辑(file_edit)失败",
 				Summary: strings.TrimSpace(errorText(toolErr)),
 				Body:    strings.Join(bodyLines, "\n"),
 				Hint:    "先 read_file 再复制精确片段，通常比直接重试 file_edit 更有效。",
 			}
 		}
 		return &tui.ToolPanel{
-			Title:   "文件编辑摘要",
+			Title:   "文件编辑(file_edit)摘要",
 			Summary: fmt.Sprintf("file_edit %s 替换 %d 处", fallbackString(stringMapValue(resultMap, "path"), "."), intMapValue(resultMap, "replacements")),
 			Body:    fmt.Sprintf("编辑前: %s\n编辑后: %s\n摘要前: %s\n摘要后: %s", fallbackString(stringMapValue(resultMap, "preview_before"), "<empty>"), fallbackString(stringMapValue(resultMap, "preview_after"), "<empty>"), fallbackString(stringMapValue(resultMap, "sha256_before"), "<missing>"), fallbackString(stringMapValue(resultMap, "sha256_after"), "<missing>")),
 			Hint:    "若替换范围过大，可改用更精确的 old_string 或关闭 replace_all。",
@@ -1547,7 +1557,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 	}
 
 	return &tui.ConfigFormState{
-		Title:       "配置服务端连接",
+		Title:       "服务端连接配置(server connection)",
 		Hint:        "修改服务端地址、鉴权和运行默认项。保存后会立即刷新连接状态。",
 		Path:        a.configManager.Path(),
 		HasAPIKey:   strings.TrimSpace(config.APIKey) != "",
@@ -1671,7 +1681,7 @@ func buildApprovalPicker(snapshot tui.Snapshot) *tui.ApprovalPickerState {
 		current = "confirm"
 	}
 	return &tui.ApprovalPickerState{
-		Title: "命令执行模式",
+		Title: "命令执行模式(command execution mode)",
 		Hint:  "选择客户端命令的执行模式。",
 		Options: []tui.ApprovalOption{
 			{Value: "confirm", Label: "每次确认", Description: "执行客户端命令前逐次确认。", IsCurrent: current == "confirm"},

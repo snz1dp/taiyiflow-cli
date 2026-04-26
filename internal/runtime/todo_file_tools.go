@@ -23,8 +23,8 @@ func (r *ClientRuntime) globFiles(config internalconfig.Config, arguments map[st
 		return nil, newToolError("PARAM_ERROR", "glob_files 缺少 pattern")
 	}
 	kind := strings.ToLower(strings.TrimSpace(fallbackString(stringValue(arguments["kind"]), "all")))
-	includeHidden := boolValue(arguments["include_hidden"])
-	maxResults := intValue(arguments["max_results"], 200)
+	includeHidden := argumentBool(arguments, "includeHidden", "include_hidden")
+	maxResults := argumentInt(arguments, 200, "maxResults", "max_results")
 	if maxResults < 1 {
 		maxResults = 1
 	}
@@ -79,20 +79,6 @@ func (r *ClientRuntime) globFiles(config internalconfig.Config, arguments map[st
 	r.writeStreamEventf(r.stdout, "[本地工具] glob_files %s 命中 %d 项\n", pattern, len(items))
 	_ = appendAuditLog(config, "glob_files", map[string]any{"path": baseDir, "pattern": pattern, "count": len(items)})
 	return map[string]any{"root": baseDir, "pattern": pattern, "items": items, "count": len(items)}, nil
-}
-
-func (r *ClientRuntime) todoRead(config internalconfig.Config, payload map[string]any) (map[string]any, error) {
-	state, err := loadRuntimeSessionState(payload, config)
-	if err != nil {
-		return nil, err
-	}
-	items := make([]map[string]any, 0, len(state.TodoItems))
-	for _, item := range state.TodoItems {
-		items = append(items, map[string]any{"title": item.Title, "status": item.Status, "notes": item.Notes})
-	}
-	r.writeStreamEventf(r.stdout, "[本地工具] todo_read %d 项\n", len(items))
-	_ = appendAuditLog(config, "todo_read", map[string]any{"flow_id": state.FlowID, "count": len(items)})
-	return map[string]any{"items": items, "count": len(items), "session_id": state.SessionID}, nil
 }
 
 func (r *ClientRuntime) todoWrite(config internalconfig.Config, payload map[string]any, arguments map[string]any) (map[string]any, error) {

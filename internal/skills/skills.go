@@ -240,6 +240,10 @@ func ClientPackages(items []Skill, rootDir string) any {
 	return packages
 }
 
+func Markdown(item Skill) string {
+	return renderClientSkillMarkdown(item)
+}
+
 func renderClientSkillMarkdown(item Skill) string {
 	manifestBytes, err := yaml.Marshal(item.Manifest)
 	if err != nil {

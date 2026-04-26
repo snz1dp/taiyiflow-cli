@@ -37,7 +37,7 @@ func (a *App) executeSkillsCommand(args []string) (string, error) {
 		}
 		lines := []string{fmt.Sprintf("技能目录: %s", directory)}
 		if len(items) == 0 {
-			lines = append(lines, "当前未发现任何技能（Skill）。")
+			lines = append(lines, "当前未发现任何技能(skill)。")
 			return strings.Join(lines, "\n"), nil
 		}
 		for _, item := range items {
