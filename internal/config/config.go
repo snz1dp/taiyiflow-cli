@@ -17,6 +17,7 @@ const (
 	DefaultCommandTimeoutSeconds    = 30
 	MaxCommandTimeoutSeconds        = 300
 	DefaultStreamIdleTimeoutSeconds = 300
+	DefaultAgentAutoLoopMaxRounds   = 3
 	SandboxEscapePolicyConfirm      = "confirm"
 	SandboxEscapePolicyDeny         = "deny"
 	SandboxEscapePolicyAllow        = "allow"
@@ -32,6 +33,8 @@ type Config struct {
 	SandboxEscapePolicy      string           `yaml:"sandbox_escape_policy,omitempty"`
 	CommandTimeoutSeconds    int              `yaml:"command_timeout_seconds,omitempty"`
 	StreamIdleTimeoutSeconds int              `yaml:"stream_idle_timeout_seconds,omitempty"`
+	AgentAutoLoopEnabled     bool             `yaml:"agent_auto_loop_enabled,omitempty"`
+	AgentAutoLoopMaxRounds   int              `yaml:"agent_auto_loop_max_rounds,omitempty"`
 	OutputLanguage           string           `yaml:"output_language"`
 	AuditEnabled             bool             `yaml:"audit_enabled,omitempty"`
 	SandboxRoots             []string         `yaml:"sandbox_roots,omitempty"`
@@ -69,6 +72,8 @@ func Default() Config {
 		SandboxEscapePolicy:      SandboxEscapePolicyConfirm,
 		CommandTimeoutSeconds:    DefaultCommandTimeoutSeconds,
 		StreamIdleTimeoutSeconds: DefaultStreamIdleTimeoutSeconds,
+		AgentAutoLoopEnabled:     false,
+		AgentAutoLoopMaxRounds:   DefaultAgentAutoLoopMaxRounds,
 		OutputLanguage:           "zh-CN",
 		AuditEnabled:             false,
 		Skills: SkillConfig{
@@ -112,6 +117,13 @@ func NormalizePermissionAction(value string) string {
 func NormalizeStreamIdleTimeoutSeconds(value int) int {
 	if value < 0 {
 		return DefaultStreamIdleTimeoutSeconds
+	}
+	return value
+}
+
+func NormalizeAgentAutoLoopMaxRounds(value int) int {
+	if value < 1 {
+		return DefaultAgentAutoLoopMaxRounds
 	}
 	return value
 }
@@ -211,6 +223,7 @@ func (m *Manager) Load() (Config, error) {
 	config.SandboxEscapePolicy = NormalizeSandboxEscapePolicy(config.SandboxEscapePolicy)
 	config.CommandTimeoutSeconds = NormalizeCommandTimeoutSeconds(config.CommandTimeoutSeconds)
 	config.StreamIdleTimeoutSeconds = NormalizeStreamIdleTimeoutSeconds(config.StreamIdleTimeoutSeconds)
+	config.AgentAutoLoopMaxRounds = NormalizeAgentAutoLoopMaxRounds(config.AgentAutoLoopMaxRounds)
 	if config.OutputLanguage == "" {
 		config.OutputLanguage = Default().OutputLanguage
 	}

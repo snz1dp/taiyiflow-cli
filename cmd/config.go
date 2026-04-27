@@ -177,6 +177,18 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("stream_idle_timeout_seconds 仅支持大于等于 0 的整数秒，0 表示禁用")
 		}
 		config.StreamIdleTimeoutSeconds = seconds
+	case "agent_auto_loop_enabled":
+		normalized := strings.ToLower(trimmedValue)
+		if normalized != "true" && normalized != "false" {
+			return fmt.Errorf("agent_auto_loop_enabled 仅支持 true 或 false")
+		}
+		config.AgentAutoLoopEnabled = normalized == "true"
+	case "agent_auto_loop_max_rounds":
+		rounds, err := strconv.Atoi(trimmedValue)
+		if err != nil || rounds < 1 {
+			return fmt.Errorf("agent_auto_loop_max_rounds 仅支持大于等于 1 的整数")
+		}
+		config.AgentAutoLoopMaxRounds = rounds
 	case "output_language":
 		if trimmedValue == "" {
 			return fmt.Errorf("output_language 不能为空，如需重置请使用 taiyiflow-cli config unset output_language")
@@ -233,6 +245,10 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.CommandTimeoutSeconds = defaults.CommandTimeoutSeconds
 	case "stream_idle_timeout_seconds":
 		config.StreamIdleTimeoutSeconds = defaults.StreamIdleTimeoutSeconds
+	case "agent_auto_loop_enabled":
+		config.AgentAutoLoopEnabled = defaults.AgentAutoLoopEnabled
+	case "agent_auto_loop_max_rounds":
+		config.AgentAutoLoopMaxRounds = defaults.AgentAutoLoopMaxRounds
 	case "output_language":
 		config.OutputLanguage = defaults.OutputLanguage
 	case "audit_enabled":
@@ -260,6 +276,10 @@ func normalizeConfigKey(key string) string {
 		return "command_timeout_seconds"
 	case "stream_idle_timeout":
 		return "stream_idle_timeout_seconds"
+	case "agent_auto_continue_enabled", "agent_autoloop_enabled", "agent_auto_loop":
+		return "agent_auto_loop_enabled"
+	case "agent_auto_continue_max_rounds", "agent_autoloop_max_rounds", "agent_auto_loop_rounds":
+		return "agent_auto_loop_max_rounds"
 	default:
 		return normalized
 	}

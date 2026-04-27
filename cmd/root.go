@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"golang.org/x/term"
@@ -261,12 +262,14 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			continue
 		case line == "/new":
 			sessionState = agent.SessionState{
-				FlowID:                      flowID,
-				FlowDisplayName:             flowDisplayName,
-				Workdir:                     workdir,
-				RequestMode:                 provider.RequestTypeAgent,
-				ContextDir:                  workdir,
-				SandboxEscapePolicyOverride: sessionState.SandboxEscapePolicyOverride,
+				FlowID:                         flowID,
+				FlowDisplayName:                flowDisplayName,
+				Workdir:                        workdir,
+				RequestMode:                    provider.RequestTypeAgent,
+				ContextDir:                     workdir,
+				AgentAutoLoopEnabledOverride:   sessionState.AgentAutoLoopEnabledOverride,
+				AgentAutoLoopMaxRoundsOverride: sessionState.AgentAutoLoopMaxRoundsOverride,
+				SandboxEscapePolicyOverride:    sessionState.SandboxEscapePolicyOverride,
 			}
 			if err := a.sessionStore.Delete(flowID, workdir); err != nil {
 				return err
@@ -303,11 +306,13 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 				flowID = strings.TrimSpace(firstNonEmpty(options.Flow, config.DefaultFlow))
 				flowDisplayName = a.resolveFlowDisplayName(ctx, providerClient, flowID)
 				sessionState = agent.SessionState{
-					FlowID:                      flowID,
-					FlowDisplayName:             flowDisplayName,
-					Workdir:                     workdir,
-					RequestMode:                 firstNonEmpty(sessionState.RequestMode, provider.RequestTypeAgent),
-					SandboxEscapePolicyOverride: sessionState.SandboxEscapePolicyOverride,
+					FlowID:                         flowID,
+					FlowDisplayName:                flowDisplayName,
+					Workdir:                        workdir,
+					RequestMode:                    firstNonEmpty(sessionState.RequestMode, provider.RequestTypeAgent),
+					AgentAutoLoopEnabledOverride:   sessionState.AgentAutoLoopEnabledOverride,
+					AgentAutoLoopMaxRoundsOverride: sessionState.AgentAutoLoopMaxRoundsOverride,
+					SandboxEscapePolicyOverride:    sessionState.SandboxEscapePolicyOverride,
 				}
 				fmt.Fprintf(a.stderr, "提示: 新配置尚未连通服务端: %v\n", err)
 				continue
@@ -450,6 +455,8 @@ func (a *App) streamTask(
 		SessionID:              sessionState.SessionID,
 		RequestType:            normalizeRequestMode(sessionState.RequestMode),
 		ReasoningEnabled:       resolveReasoningEnabled(config, sessionState.ReasoningOverride),
+		AgentAutoLoopEnabled:   resolveAgentAutoLoopEnabled(config, sessionState, sessionState.RequestMode),
+		AgentAutoLoopMaxRounds: resolveAgentAutoLoopMaxRounds(config, sessionState, sessionState.RequestMode),
 		DeviceType:             provider.DeviceTypeCLI,
 		ClientContextDir:       resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir)),
 		CommandExecutionTarget: "client",
@@ -717,47 +724,123 @@ func (a *App) runInteractiveConfigCommand(command string) error {
 func (a *App) runInteractiveSessionConfigCommand(command string, state *agent.SessionState) (string, error) {
 	args := parseSlashConfigArgs(command)
 	if len(args) < 2 || strings.ToLower(strings.TrimSpace(args[0])) != "session" {
-		return "", fmt.Errorf("用法: /config session [show|set|unset] external_resource_access_policy [confirm|deny|allow]")
+		return "", fmt.Errorf("用法: /config session [show|set|unset] <external_resource_access_policy|agent_auto_loop_enabled|agent_auto_loop_max_rounds> [value]")
 	}
 	action := strings.ToLower(strings.TrimSpace(args[1]))
 	key := ""
 	if len(args) >= 3 {
 		key = normalizeConfigKey(args[2])
 	}
-	if key != "" && key != "external_resource_access_policy" {
-		return "", fmt.Errorf("会话配置仅支持 external_resource_access_policy")
+	if key != "" && key != "external_resource_access_policy" && key != "agent_auto_loop_enabled" && key != "agent_auto_loop_max_rounds" {
+		return "", fmt.Errorf("会话配置仅支持 external_resource_access_policy、agent_auto_loop_enabled、agent_auto_loop_max_rounds")
 	}
 	switch action {
 	case "show":
-		value := strings.TrimSpace(state.SandboxEscapePolicyOverride)
-		if value == "" {
-			value = "<继承全局配置>"
+		if key == "external_resource_access_policy" {
+			value := strings.TrimSpace(state.SandboxEscapePolicyOverride)
+			if value == "" {
+				value = "<继承全局配置>"
+			}
+			return fmt.Sprintf("会话外部资源访问策略: %s", value), nil
 		}
-		return fmt.Sprintf("会话外部资源访问策略: %s", value), nil
+		if key == "agent_auto_loop_enabled" {
+			value := strings.TrimSpace(state.AgentAutoLoopEnabledOverride)
+			if value == "" {
+				value = "<继承全局配置>"
+			}
+			return fmt.Sprintf("会话 Agent 自动续跑开关: %s", value), nil
+		}
+		if key == "agent_auto_loop_max_rounds" {
+			if state.AgentAutoLoopMaxRoundsOverride < 1 {
+				return "会话 Agent 自动续跑最大轮数: <继承全局配置>", nil
+			}
+			return fmt.Sprintf("会话 Agent 自动续跑最大轮数: %d", state.AgentAutoLoopMaxRoundsOverride), nil
+		}
+		policy := strings.TrimSpace(state.SandboxEscapePolicyOverride)
+		if policy == "" {
+			policy = "<继承全局配置>"
+		}
+		autoLoop := strings.TrimSpace(state.AgentAutoLoopEnabledOverride)
+		if autoLoop == "" {
+			autoLoop = "<继承全局配置>"
+		}
+		maxRounds := "<继承全局配置>"
+		if state.AgentAutoLoopMaxRoundsOverride > 0 {
+			maxRounds = strconv.Itoa(state.AgentAutoLoopMaxRoundsOverride)
+		}
+		return fmt.Sprintf("会话外部资源访问策略: %s\n会话 Agent 自动续跑开关: %s\n会话 Agent 自动续跑最大轮数: %s", policy, autoLoop, maxRounds), nil
 	case "set":
-		if key != "external_resource_access_policy" || len(args) < 4 {
-			return "", fmt.Errorf("用法: /config session set external_resource_access_policy <confirm|deny|allow>")
+		if len(args) < 4 {
+			return "", fmt.Errorf("用法: /config session set <external_resource_access_policy|agent_auto_loop_enabled|agent_auto_loop_max_rounds> <value>")
 		}
-		policy := internalconfig.NormalizeSandboxEscapePolicy(args[3])
-		if strings.ToLower(strings.TrimSpace(args[3])) != policy {
-			return "", fmt.Errorf("external_resource_access_policy 仅支持 confirm、deny、allow")
+		switch key {
+		case "external_resource_access_policy":
+			policy := internalconfig.NormalizeSandboxEscapePolicy(args[3])
+			if strings.ToLower(strings.TrimSpace(args[3])) != policy {
+				return "", fmt.Errorf("external_resource_access_policy 仅支持 confirm、deny、allow")
+			}
+			state.SandboxEscapePolicyOverride = policy
+		case "agent_auto_loop_enabled":
+			override := normalizeAgentAutoLoopEnabledOverride(args[3])
+			if override == "" {
+				return "", fmt.Errorf("agent_auto_loop_enabled 仅支持 on、off、true、false")
+			}
+			state.AgentAutoLoopEnabledOverride = override
+		case "agent_auto_loop_max_rounds":
+			rounds, err := strconv.Atoi(strings.TrimSpace(args[3]))
+			if err != nil || rounds < 1 {
+				return "", fmt.Errorf("agent_auto_loop_max_rounds 仅支持大于等于 1 的整数")
+			}
+			state.AgentAutoLoopMaxRoundsOverride = rounds
+		default:
+			return "", fmt.Errorf("用法: /config session set <external_resource_access_policy|agent_auto_loop_enabled|agent_auto_loop_max_rounds> <value>")
 		}
-		state.SandboxEscapePolicyOverride = policy
 		if err := a.sessionStore.Save(*state); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("已设置会话外部资源访问策略: %s", policy), nil
+		switch key {
+		case "external_resource_access_policy":
+			return fmt.Sprintf("已设置会话外部资源访问策略: %s", state.SandboxEscapePolicyOverride), nil
+		case "agent_auto_loop_enabled":
+			return fmt.Sprintf("已设置会话 Agent 自动续跑开关: %s", state.AgentAutoLoopEnabledOverride), nil
+		default:
+			return fmt.Sprintf("已设置会话 Agent 自动续跑最大轮数: %d", state.AgentAutoLoopMaxRoundsOverride), nil
+		}
 	case "unset", "clear":
-		if key != "external_resource_access_policy" {
-			return "", fmt.Errorf("用法: /config session unset external_resource_access_policy")
+		switch key {
+		case "external_resource_access_policy":
+			state.SandboxEscapePolicyOverride = ""
+		case "agent_auto_loop_enabled":
+			state.AgentAutoLoopEnabledOverride = ""
+		case "agent_auto_loop_max_rounds":
+			state.AgentAutoLoopMaxRoundsOverride = 0
+		default:
+			return "", fmt.Errorf("用法: /config session unset <external_resource_access_policy|agent_auto_loop_enabled|agent_auto_loop_max_rounds>")
 		}
-		state.SandboxEscapePolicyOverride = ""
 		if err := a.sessionStore.Save(*state); err != nil {
 			return "", err
 		}
-		return "已清空会话外部资源访问策略，恢复继承全局配置", nil
+		switch key {
+		case "external_resource_access_policy":
+			return "已清空会话外部资源访问策略，恢复继承全局配置", nil
+		case "agent_auto_loop_enabled":
+			return "已清空会话 Agent 自动续跑开关，恢复继承全局配置", nil
+		default:
+			return "已清空会话 Agent 自动续跑最大轮数，恢复继承全局配置", nil
+		}
 	default:
 		return "", fmt.Errorf("会话配置操作仅支持 show、set、unset")
+	}
+}
+
+func normalizeAgentAutoLoopEnabledOverride(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "on", "true", "enable", "enabled":
+		return "on"
+	case "off", "false", "disable", "disabled":
+		return "off"
+	default:
+		return ""
 	}
 }
 

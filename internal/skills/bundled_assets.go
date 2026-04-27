@@ -66,33 +66,33 @@ func extractBundledSkillFiles(config internalconfig.Config, definition BundledSk
 	_ = config
 	rootDir, err := internalconfig.DefaultBundledSkillsDir()
 	if err != nil {
-		return "", nil, fmt.Errorf("解析 bundled 技能目录失败 %s: %w", definition.Name, err)
+		return "", nil, fmt.Errorf("解析内置技能目录失败 %s: %w", definition.Name, err)
 	}
 	targetRoot := filepath.Join(rootDir, definition.RelativeDir)
 	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
-		return "", nil, fmt.Errorf("创建 bundled 技能目录失败 %s: %w", definition.Name, err)
+		return "", nil, fmt.Errorf("创建内置技能目录失败 %s: %w", definition.Name, err)
 	}
 	normalizedFiles := make([]SkillFile, 0, len(files))
 	for _, item := range files {
 		source := strings.TrimSpace(item.Source)
 		if source == "" {
-			return "", nil, fmt.Errorf("bundled 技能 %s 存在缺少 source 的 files 条目", definition.Name)
+			return "", nil, fmt.Errorf("内置技能 %s 缺少文件条目", definition.Name)
 		}
 		relPath, err := normalizeBundledRelativePath(fallbackFilePath(item.Path, source))
 		if err != nil {
-			return "", nil, fmt.Errorf("bundled 技能 %s 的 files.path 无效: %w", definition.Name, err)
+			return "", nil, fmt.Errorf("内置技能 %s 的文件路径无效: %w", definition.Name, err)
 		}
 		assetPath := path.Join("builtin", definition.RelativeDir, path.Clean(source))
 		content, err := bundledSkillFS.ReadFile(assetPath)
 		if err != nil {
-			return "", nil, fmt.Errorf("读取 bundled 技能参考文件失败 %s: %w", assetPath, err)
+			return "", nil, fmt.Errorf("读取内置技能参考文件失败 %s: %w", assetPath, err)
 		}
 		targetPath := filepath.Join(targetRoot, filepath.FromSlash(relPath))
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-			return "", nil, fmt.Errorf("创建 bundled 技能参考文件目录失败 %s: %w", targetPath, err)
+			return "", nil, fmt.Errorf("创建内置技能参考文件目录失败 %s: %w", targetPath, err)
 		}
 		if err := os.WriteFile(targetPath, content, 0o644); err != nil {
-			return "", nil, fmt.Errorf("写入 bundled 技能参考文件失败 %s: %w", targetPath, err)
+			return "", nil, fmt.Errorf("写入内置技能参考文件失败 %s: %w", targetPath, err)
 		}
 		normalizedFiles = append(normalizedFiles, SkillFile{
 			Source:      source,

@@ -9,20 +9,20 @@ import (
 type StreamEventType string
 
 const (
-	EventMessage    StreamEventType = "message"
-	EventError      StreamEventType = "error"
-	EventClose      StreamEventType = "close"
+	EventMessage     StreamEventType = "message"
+	EventError       StreamEventType = "error"
+	EventClose       StreamEventType = "close"
 	EventCompression StreamEventType = "compression"
-	EventBytes      StreamEventType = "bytes"
-	EventCustom     StreamEventType = "custom"
-	EventToolCall   StreamEventType = "tool_call"
-	EventBuiltIn    StreamEventType = "built_in"
-	EventClientTool StreamEventType = "client_tool"
-	EventMCPTool    StreamEventType = "mcp_tool"
-	RequestTypeAsk                 = "ask"
-	RequestTypePlan                = "plan"
-	RequestTypeAgent               = "agent"
-	DeviceTypeCLI                  = "cli"
+	EventBytes       StreamEventType = "bytes"
+	EventCustom      StreamEventType = "custom"
+	EventToolCall    StreamEventType = "tool_call"
+	EventBuiltIn     StreamEventType = "built_in"
+	EventClientTool  StreamEventType = "client_tool"
+	EventMCPTool     StreamEventType = "mcp_tool"
+	RequestTypeAsk                   = "ask"
+	RequestTypePlan                  = "plan"
+	RequestTypeAgent                 = "agent"
+	DeviceTypeCLI                    = "cli"
 )
 
 func NormalizeRequestType(value string) string {
@@ -61,6 +61,8 @@ type StreamRequest struct {
 	CommandExecutionTarget string
 	MaxIterations          int
 	AgentContinueWindows   int
+	AgentAutoLoopEnabled   *bool
+	AgentAutoLoopMaxRounds int
 	MessageID              string
 	RequestedSkillNames    []string
 	AgentInputs            map[string]any

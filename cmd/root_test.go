@@ -120,6 +120,62 @@ func TestPrepareSessionNewSessionDefaultsToAgentMode(t *testing.T) {
 	}
 }
 
+func TestRunInteractiveSessionConfigCommandPersistsAgentAutoLoopOverrides(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	workdir := t.TempDir()
+	state := agent.SessionState{FlowID: "demo-flow", Workdir: workdir, RequestMode: provider.RequestTypeAgent}
+
+	output, err := app.runInteractiveSessionConfigCommand("/config session set agent_auto_loop_enabled off", &state)
+	if err != nil {
+		t.Fatalf("set agent_auto_loop_enabled failed: %v", err)
+	}
+	if output != "已设置会话 Agent 自动续跑开关: off" {
+		t.Fatalf("unexpected output: %q", output)
+	}
+
+	output, err = app.runInteractiveSessionConfigCommand("/config session set agent_auto_loop_max_rounds 5", &state)
+	if err != nil {
+		t.Fatalf("set agent_auto_loop_max_rounds failed: %v", err)
+	}
+	if output != "已设置会话 Agent 自动续跑最大轮数: 5" {
+		t.Fatalf("unexpected output: %q", output)
+	}
+
+	loaded, err := app.prepareSession("demo-flow", false, workdir, provider.RequestTypeAgent)
+	if err != nil {
+		t.Fatalf("prepareSession failed: %v", err)
+	}
+	if loaded.AgentAutoLoopEnabledOverride != "off" {
+		t.Fatalf("expected saved auto loop enabled override off, got %q", loaded.AgentAutoLoopEnabledOverride)
+	}
+	if loaded.AgentAutoLoopMaxRoundsOverride != 5 {
+		t.Fatalf("expected saved auto loop max rounds override 5, got %d", loaded.AgentAutoLoopMaxRoundsOverride)
+	}
+
+	output, err = app.runInteractiveSessionConfigCommand("/config session unset agent_auto_loop_enabled", &state)
+	if err != nil {
+		t.Fatalf("unset agent_auto_loop_enabled failed: %v", err)
+	}
+	if output != "已清空会话 Agent 自动续跑开关，恢复继承全局配置" {
+		t.Fatalf("unexpected output: %q", output)
+	}
+	if state.AgentAutoLoopEnabledOverride != "" {
+		t.Fatalf("expected in-memory auto loop enabled override cleared, got %q", state.AgentAutoLoopEnabledOverride)
+	}
+}
+
+func TestResolveAgentAutoLoopEnabledPreservesFalseOverride(t *testing.T) {
+	config := internalconfig.Default()
+	config.AgentAutoLoopEnabled = true
+	resolved := resolveAgentAutoLoopEnabled(config, agent.SessionState{AgentAutoLoopEnabledOverride: "off"}, provider.RequestTypeAgent)
+	if resolved == nil {
+		t.Fatal("expected explicit agent auto loop override to be sent")
+	}
+	if *resolved {
+		t.Fatal("expected false override to win over global config")
+	}
+}
+
 func TestDisableCLIFocusReportingWritesSequenceToTerminalOutput(t *testing.T) {
 	app := newTestAppWithSessionStore(t)
 	stdout := &fakeTTYWriter{fd: 1}

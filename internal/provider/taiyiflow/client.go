@@ -89,11 +89,11 @@ func (r *idleTimeoutReadCloser) closeUnderlying() error {
 }
 
 type Client struct {
-	baseURL           string
-	apiKey            string
-	httpClient        *http.Client
-	streamHTTPClient  *http.Client
-	streamIdleTimeout time.Duration
+	baseURL                 string
+	apiKey                  string
+	httpClient              *http.Client
+	streamHTTPClient        *http.Client
+	streamIdleTimeout       time.Duration
 	compressionPollDelay    time.Duration
 	compressionPollAttempts int
 }
@@ -173,26 +173,26 @@ type compressionRecordResponse struct {
 }
 
 type sessionContextWindowResponse struct {
-	MaxInputTokens              int `json:"max_input_tokens"`
-	ShortTermContextTokens      int `json:"short_term_context_tokens"`
-	CurrentRoundInputTokens     int `json:"current_round_input_tokens"`
-	NextRoundAvailableTokens    int `json:"next_round_available_tokens"`
-	CurrentRoundAvailableTokens int `json:"current_round_available_tokens"`
-	HistoryMessageCount         int `json:"history_message_count"`
-	PreparedMessageCount        int `json:"prepared_message_count"`
+	MaxInputTokens              int     `json:"max_input_tokens"`
+	ShortTermContextTokens      int     `json:"short_term_context_tokens"`
+	CurrentRoundInputTokens     int     `json:"current_round_input_tokens"`
+	NextRoundAvailableTokens    int     `json:"next_round_available_tokens"`
+	CurrentRoundAvailableTokens int     `json:"current_round_available_tokens"`
+	HistoryMessageCount         int     `json:"history_message_count"`
+	PreparedMessageCount        int     `json:"prepared_message_count"`
 	HighWatermarkRatio          float64 `json:"high_watermark_ratio"`
 	CompressionTargetRatio      float64 `json:"compression_target_ratio"`
-	HighWatermarkTokens         int `json:"high_watermark_tokens"`
-	CompressionTargetTokens     int `json:"compression_target_tokens"`
+	HighWatermarkTokens         int     `json:"high_watermark_tokens"`
+	CompressionTargetTokens     int     `json:"compression_target_tokens"`
 }
 
 type sessionContextPreviewResponse struct {
-	FlowID            string                       `json:"flow_id"`
-	SessionID         string                       `json:"session_id"`
+	FlowID            string                        `json:"flow_id"`
+	SessionID         string                        `json:"session_id"`
 	ContextWindow     *sessionContextWindowResponse `json:"context_window"`
-	LatestCompression *compressionRecordResponse   `json:"latest_compression"`
-	SourceUpdatedAt   string                       `json:"source_updated_at"`
-	Source            string                       `json:"source"`
+	LatestCompression *compressionRecordResponse    `json:"latest_compression"`
+	SourceUpdatedAt   string                        `json:"source_updated_at"`
+	Source            string                        `json:"source"`
 }
 
 type streamRequestBody struct {
@@ -212,6 +212,8 @@ type streamRequestBody struct {
 	CommandExecutionTarget string         `json:"command_execution_target,omitempty"`
 	MaxIterations          int            `json:"max_iterations,omitempty"`
 	AgentContinueWindows   int            `json:"agent_continue_windows,omitempty"`
+	AgentAutoLoopEnabled   *bool          `json:"agent_auto_loop_enabled,omitempty"`
+	AgentAutoLoopMaxRounds int            `json:"agent_auto_loop_max_rounds,omitempty"`
 	MessageID              string         `json:"message_id,omitempty"`
 	RequestedSkillNames    []string       `json:"requested_skill_names,omitempty"`
 	AgentInputs            map[string]any `json:"agent_inputs,omitempty"`
@@ -235,11 +237,11 @@ type clientCallResultBody struct {
 
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
-		baseURL:           strings.TrimRight(baseURL, "/"),
-		apiKey:            apiKey,
-		httpClient:        &http.Client{Timeout: 60 * time.Second},
-		streamHTTPClient:  &http.Client{},
-		streamIdleTimeout: defaultStreamIdleTimeout,
+		baseURL:                 strings.TrimRight(baseURL, "/"),
+		apiKey:                  apiKey,
+		httpClient:              &http.Client{Timeout: 60 * time.Second},
+		streamHTTPClient:        &http.Client{},
+		streamIdleTimeout:       defaultStreamIdleTimeout,
 		compressionPollDelay:    defaultCompressionPollDelay,
 		compressionPollAttempts: defaultCompressionPollAttempts,
 	}
@@ -542,6 +544,8 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 		CommandExecutionTarget: firstNonEmpty(request.CommandExecutionTarget, "client"),
 		MaxIterations:          request.MaxIterations,
 		AgentContinueWindows:   request.AgentContinueWindows,
+		AgentAutoLoopEnabled:   request.AgentAutoLoopEnabled,
+		AgentAutoLoopMaxRounds: request.AgentAutoLoopMaxRounds,
 		MessageID:              request.MessageID,
 		RequestedSkillNames:    request.RequestedSkillNames,
 		AgentInputs:            request.AgentInputs,

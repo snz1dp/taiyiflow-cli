@@ -2,6 +2,7 @@ package taiyiflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -251,5 +252,47 @@ func TestStreamParsesCompressionEvent(t *testing.T) {
 		t.Fatalf("expected target type in compression payload, got %#v", event.Data)
 	}
 	for range stream {
+	}
+}
+
+func TestStreamIncludesAgentAutoLoopRequestFields(t *testing.T) {
+	var captured streamRequestBody
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/run/demo-flow/stream" {
+			http.NotFound(writer, request)
+			return
+		}
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request body failed: %v", err)
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.Header().Set(SessionHeader, "session-auto-loop")
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	enabled := false
+	stream, session, err := client.Stream(context.Background(), provider.StreamRequest{
+		FlowID:                 "demo-flow",
+		RequestType:            provider.RequestTypeAgent,
+		AgentAutoLoopEnabled:   &enabled,
+		AgentAutoLoopMaxRounds: 5,
+	})
+	if err != nil {
+		t.Fatalf("expected stream request to succeed, got %v", err)
+	}
+	if session == nil || session.SessionID != "session-auto-loop" {
+		t.Fatalf("expected session header to be preserved, got %#v", session)
+	}
+	for range stream {
+	}
+	if captured.AgentAutoLoopEnabled == nil {
+		t.Fatal("expected agent_auto_loop_enabled to be sent")
+	}
+	if *captured.AgentAutoLoopEnabled {
+		t.Fatal("expected agent_auto_loop_enabled to preserve false override")
+	}
+	if captured.AgentAutoLoopMaxRounds != 5 {
+		t.Fatalf("expected agent_auto_loop_max_rounds 5, got %d", captured.AgentAutoLoopMaxRounds)
 	}
 }

@@ -106,6 +106,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			RunID:                  request.RunID,
 			RequestType:            normalizeRequestMode(request.RequestMode),
 			ReasoningEnabled:       request.ReasoningEnabled,
+			AgentAutoLoopEnabled:   resolveAgentAutoLoopEnabled(config, sessionState, request.RequestMode),
+			AgentAutoLoopMaxRounds: resolveAgentAutoLoopMaxRounds(config, sessionState, request.RequestMode),
 			DeviceType:             provider.DeviceTypeCLI,
 			ClientContextDir:       resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir)),
 			CommandExecutionTarget: "client",
@@ -307,14 +309,16 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			return tui.Snapshot{}, loadErr
 		}
 		if err := a.sessionStore.Save(agent.SessionState{
-			FlowID:                      flowID,
-			FlowDisplayName:             strings.TrimSpace(current.DefaultFlowLabel),
-			SessionID:                   strings.TrimSpace(sessionID),
-			SessionTitle:                "",
-			Workdir:                     current.Workdir,
-			RequestMode:                 normalizeRequestMode(firstNonEmpty(current.RequestMode, loadedState.RequestMode)),
-			ContextDir:                  resolveLocalWorkdir(firstNonEmpty(loadedState.ContextDir, current.Workdir)),
-			SandboxEscapePolicyOverride: loadedState.SandboxEscapePolicyOverride,
+			FlowID:                         flowID,
+			FlowDisplayName:                strings.TrimSpace(current.DefaultFlowLabel),
+			SessionID:                      strings.TrimSpace(sessionID),
+			SessionTitle:                   "",
+			Workdir:                        current.Workdir,
+			RequestMode:                    normalizeRequestMode(firstNonEmpty(current.RequestMode, loadedState.RequestMode)),
+			ContextDir:                     resolveLocalWorkdir(firstNonEmpty(loadedState.ContextDir, current.Workdir)),
+			AgentAutoLoopEnabledOverride:   loadedState.AgentAutoLoopEnabledOverride,
+			AgentAutoLoopMaxRoundsOverride: loadedState.AgentAutoLoopMaxRoundsOverride,
+			SandboxEscapePolicyOverride:    loadedState.SandboxEscapePolicyOverride,
 		}); err != nil {
 			return tui.Snapshot{}, err
 		}
@@ -525,15 +529,17 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						return tui.LocalCommandResult{}, sessionErr
 					}
 					if err := a.sessionStore.Save(agent.SessionState{
-						FlowID:                      snapshot.DefaultFlow,
-						FlowDisplayName:             strings.TrimSpace(snapshot.DefaultFlowLabel),
-						SessionID:                   snapshot.SessionID,
-						SessionTitle:                strings.TrimSpace(snapshot.SessionTitle),
-						Workdir:                     snapshot.Workdir,
-						RequestMode:                 mode,
-						ContextDir:                  updatedSnapshot.ContextDir,
-						ReasoningOverride:           currentSessionState.ReasoningOverride,
-						SandboxEscapePolicyOverride: currentSessionState.SandboxEscapePolicyOverride,
+						FlowID:                         snapshot.DefaultFlow,
+						FlowDisplayName:                strings.TrimSpace(snapshot.DefaultFlowLabel),
+						SessionID:                      snapshot.SessionID,
+						SessionTitle:                   strings.TrimSpace(snapshot.SessionTitle),
+						Workdir:                        snapshot.Workdir,
+						RequestMode:                    mode,
+						ContextDir:                     updatedSnapshot.ContextDir,
+						ReasoningOverride:              currentSessionState.ReasoningOverride,
+						AgentAutoLoopEnabledOverride:   currentSessionState.AgentAutoLoopEnabledOverride,
+						AgentAutoLoopMaxRoundsOverride: currentSessionState.AgentAutoLoopMaxRoundsOverride,
+						SandboxEscapePolicyOverride:    currentSessionState.SandboxEscapePolicyOverride,
 					}); err != nil {
 						return tui.LocalCommandResult{}, err
 					}
@@ -1742,6 +1748,8 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			Workdir:                  strings.TrimSpace(config.Workdir),
 			CommandTimeoutSeconds:    strconv.Itoa(config.CommandTimeoutSeconds),
 			StreamIdleTimeoutSeconds: strconv.Itoa(config.StreamIdleTimeoutSeconds),
+			AgentAutoLoopEnabled:     strconv.FormatBool(config.AgentAutoLoopEnabled),
+			AgentAutoLoopMaxRounds:   strconv.Itoa(config.AgentAutoLoopMaxRounds),
 			OutputLanguage:           strings.TrimSpace(config.OutputLanguage),
 			SkillsDirectory:          strings.TrimSpace(config.Skills.Directory),
 			SkillsRegistryURL:        strings.TrimSpace(config.Skills.RegistryURL),
@@ -1817,6 +1825,18 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		return internalconfig.Config{}, err
 	}
 
+	if strings.TrimSpace(submission.Values.AgentAutoLoopEnabled) == "" {
+		config.AgentAutoLoopEnabled = internalconfig.Default().AgentAutoLoopEnabled
+	} else if err := assignConfigValue(&config, "agent_auto_loop_enabled", submission.Values.AgentAutoLoopEnabled); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if strings.TrimSpace(submission.Values.AgentAutoLoopMaxRounds) == "" {
+		config.AgentAutoLoopMaxRounds = internalconfig.Default().AgentAutoLoopMaxRounds
+	} else if err := assignConfigValue(&config, "agent_auto_loop_max_rounds", submission.Values.AgentAutoLoopMaxRounds); err != nil {
+		return internalconfig.Config{}, err
+	}
+
 	if strings.TrimSpace(submission.Values.OutputLanguage) == "" {
 		config.OutputLanguage = internalconfig.Default().OutputLanguage
 	} else if err := assignConfigValue(&config, "output_language", submission.Values.OutputLanguage); err != nil {
@@ -1851,6 +1871,30 @@ func resolveReasoningEnabled(config internalconfig.Config, override string) bool
 	default:
 		return config.ReasoningEnabled
 	}
+}
+
+func resolveAgentAutoLoopEnabled(config internalconfig.Config, state agent.SessionState, requestMode string) *bool {
+	if normalizeRequestMode(requestMode) != provider.RequestTypeAgent {
+		return nil
+	}
+	value := config.AgentAutoLoopEnabled
+	switch strings.ToLower(strings.TrimSpace(state.AgentAutoLoopEnabledOverride)) {
+	case "on":
+		value = true
+	case "off":
+		value = false
+	}
+	return &value
+}
+
+func resolveAgentAutoLoopMaxRounds(config internalconfig.Config, state agent.SessionState, requestMode string) int {
+	if normalizeRequestMode(requestMode) != provider.RequestTypeAgent {
+		return 0
+	}
+	if state.AgentAutoLoopMaxRoundsOverride > 0 {
+		return state.AgentAutoLoopMaxRoundsOverride
+	}
+	return config.AgentAutoLoopMaxRounds
 }
 
 func reasoningStatusText(enabled bool) string {
@@ -1903,16 +1947,22 @@ func (a *App) executeTUIReasoningCommand(command string, snapshot tui.Snapshot) 
 	if err != nil {
 		return "", nil, err
 	}
+	currentState, err := a.prepareSession(snapshot.DefaultFlow, false, snapshot.Workdir, snapshot.RequestMode)
+	if err != nil {
+		return "", nil, err
+	}
 	state := agent.SessionState{
-		FlowID:                      snapshot.DefaultFlow,
-		FlowDisplayName:             snapshot.DefaultFlowLabel,
-		SessionID:                   snapshot.SessionID,
-		SessionTitle:                snapshot.SessionTitle,
-		Workdir:                     snapshot.Workdir,
-		RequestMode:                 snapshot.RequestMode,
-		ContextDir:                  snapshot.ContextDir,
-		ReasoningOverride:           snapshot.ReasoningOverride,
-		SandboxEscapePolicyOverride: snapshot.SessionSandboxEscapePolicy,
+		FlowID:                         snapshot.DefaultFlow,
+		FlowDisplayName:                snapshot.DefaultFlowLabel,
+		SessionID:                      snapshot.SessionID,
+		SessionTitle:                   snapshot.SessionTitle,
+		Workdir:                        snapshot.Workdir,
+		RequestMode:                    snapshot.RequestMode,
+		ContextDir:                     snapshot.ContextDir,
+		ReasoningOverride:              snapshot.ReasoningOverride,
+		AgentAutoLoopEnabledOverride:   currentState.AgentAutoLoopEnabledOverride,
+		AgentAutoLoopMaxRoundsOverride: currentState.AgentAutoLoopMaxRoundsOverride,
+		SandboxEscapePolicyOverride:    snapshot.SessionSandboxEscapePolicy,
 	}
 	output, updatedState, err := a.executeReasoningCommand(config, command, state)
 	if err != nil {

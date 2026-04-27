@@ -60,6 +60,33 @@ func TestNormalizeCommandTimeoutSeconds(t *testing.T) {
 	}
 }
 
+func TestNormalizeAgentAutoLoopMaxRounds(t *testing.T) {
+	cases := []struct {
+		input    int
+		expected int
+	}{
+		{input: DefaultAgentAutoLoopMaxRounds, expected: DefaultAgentAutoLoopMaxRounds},
+		{input: 5, expected: 5},
+		{input: 0, expected: DefaultAgentAutoLoopMaxRounds},
+		{input: -1, expected: DefaultAgentAutoLoopMaxRounds},
+	}
+	for _, item := range cases {
+		if got := NormalizeAgentAutoLoopMaxRounds(item.input); got != item.expected {
+			t.Fatalf("NormalizeAgentAutoLoopMaxRounds(%d) = %d, want %d", item.input, got, item.expected)
+		}
+	}
+}
+
+func TestDefaultConfigIncludesAgentAutoLoopDefaults(t *testing.T) {
+	config := Default()
+	if config.AgentAutoLoopEnabled {
+		t.Fatal("expected agent auto loop to default to disabled")
+	}
+	if config.AgentAutoLoopMaxRounds != DefaultAgentAutoLoopMaxRounds {
+		t.Fatalf("expected default agent auto loop max rounds %d, got %d", DefaultAgentAutoLoopMaxRounds, config.AgentAutoLoopMaxRounds)
+	}
+}
+
 func TestManagerLoadAppliesDefaultSandboxEscapePolicy(t *testing.T) {
 	tempDir := t.TempDir()
 	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}

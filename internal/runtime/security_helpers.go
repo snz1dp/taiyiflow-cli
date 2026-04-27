@@ -37,10 +37,10 @@ func resolveAllowedDirectory(config internalconfig.Config, requested string) (st
 	}
 	info, err := os.Stat(resolved)
 	if err != nil {
-		return "", newToolError("EXECUTION_FAILED", "目录不存在: %v", err)
+		return "", newToolError("EXECUTION_FAILED", "“%s”目录不存在", resolved)
 	}
 	if !info.IsDir() {
-		return "", newToolError("PARAM_ERROR", "目标必须是目录: %s", resolved)
+		return "", newToolError("PARAM_ERROR", "“%s”是一个文件", resolved)
 	}
 	return resolved, nil
 }
@@ -52,10 +52,10 @@ func (r *ClientRuntime) resolveAllowedDirectoryWithPolicy(config internalconfig.
 	}
 	info, statErr := os.Stat(resolved)
 	if statErr != nil {
-		return "", newToolError("EXECUTION_FAILED", "目录不存在: %v", statErr)
+		return "", newToolError("EXECUTION_FAILED", "“%s”目录不存在", resolved)
 	}
 	if !info.IsDir() {
-		return "", newToolError("PARAM_ERROR", "目标必须是目录: %s", resolved)
+		return "", newToolError("PARAM_ERROR", "“%s”是一个文件", resolved)
 	}
 	return resolved, nil
 }
@@ -68,10 +68,10 @@ func (r *ClientRuntime) resolveAllowedFilePathWithPolicy(config internalconfig.C
 	if !allowCreate {
 		info, statErr := os.Stat(resolved)
 		if statErr != nil {
-			return "", newToolError("EXECUTION_FAILED", "文件不存在: %v", statErr)
+			return "", newToolError("EXECUTION_FAILED", "“%s”文件不存在", resolved)
 		}
 		if info.IsDir() {
-			return "", newToolError("PARAM_ERROR", "目标必须是文件: %s", resolved)
+			return "", newToolError("PARAM_ERROR", "“%s”是一个目录", resolved)
 		}
 	}
 	return resolved, nil
@@ -97,7 +97,7 @@ func (r *ClientRuntime) resolveAllowedPathWithPolicy(config internalconfig.Confi
 				return "", err
 			}
 		case internalconfig.SandboxEscapePolicyDeny:
-			return "", newToolError("PERMISSION_DENIED", "路径超出当前工作目录访问范围，已按 deny 策略拒绝: %s", escapeErr.ResolvedPath)
+			return "", newToolError("PERMISSION_DENIED", "“%s”超出当前工作目录访问范围，已按策略拒绝访问", escapeErr.ResolvedPath)
 		default:
 			approved, interactive, confirmErr := r.confirmSandboxEscapePath(escapeErr.ResolvedPath)
 			if confirmErr != nil {
@@ -105,9 +105,9 @@ func (r *ClientRuntime) resolveAllowedPathWithPolicy(config internalconfig.Confi
 			}
 			if !approved {
 				if !interactive {
-					return "", newToolError("PERMISSION_DENIED", "路径超出当前工作目录访问范围，当前为 confirm 且无交互输入，请改用 allow 或会话覆盖")
+					return "", newToolError("PERMISSION_DENIED", "“%s”超出当前工作目录访问范围，请使用--allow参数允许访问", escapeErr.ResolvedPath)
 				}
-				return "", newToolError("PERMISSION_DENIED", "路径超出当前工作目录访问范围，用户拒绝访问: %s", escapeErr.ResolvedPath)
+				return "", newToolError("PERMISSION_DENIED", "“%s”超出当前工作目录访问范围，用户拒绝访问", escapeErr.ResolvedPath)
 			}
 			bypassConfig := config
 			bypassConfig.SandboxEscapePolicy = internalconfig.SandboxEscapePolicyAllow
@@ -162,14 +162,14 @@ func resolveAllowedPath(config internalconfig.Config, requested string, allowCre
 	}
 	resolved, err := filepath.Abs(target)
 	if err != nil {
-		return "", newToolError("PARAM_ERROR", "解析路径失败: %v", err)
+		return "", newToolError("PARAM_ERROR", "“%s”解析路径失败: %v", target, err)
 	}
 	resolved, err = resolveWithExistingParent(resolved)
 	if err != nil {
-		return "", newToolError("PARAM_ERROR", "解析真实路径失败: %v", err)
+		return "", newToolError("PARAM_ERROR", "“%s”解析路径失败: %v", target, err)
 	}
 	if isSensitivePath(resolved) {
-		return "", newToolError("PERMISSION_DENIED", "目标路径属于受保护目录: %s", resolved)
+		return "", newToolError("PERMISSION_DENIED", "“%s”属于受保护目录", resolved)
 	}
 	allowedRoots, err := resolveSandboxRoots(config, baseDir)
 	if err != nil {
@@ -205,11 +205,11 @@ func resolveSandboxRoots(config internalconfig.Config, baseDir string) ([]string
 		}
 		resolved, err := filepath.Abs(root)
 		if err != nil {
-			return nil, newToolError("PARAM_ERROR", "解析外部资源访问根目录 sandbox_roots 失败: %v", err)
+			return nil, newToolError("PARAM_ERROR", "解析外部资源访问根目录失败: %v", err)
 		}
 		resolved, err = resolveWithExistingParent(resolved)
 		if err != nil {
-			return nil, newToolError("PARAM_ERROR", "解析外部资源访问根目录 sandbox_roots 的真实路径失败: %v", err)
+			return nil, newToolError("PARAM_ERROR", "解析外部资源访问根目录路径失败: %v", err)
 		}
 		roots = append(roots, resolved)
 	}
@@ -328,7 +328,7 @@ func guardDangerousCommand(payload commandArguments, config internalconfig.Confi
 	if action, matched := evaluatePermissionAction(config, "shell_exec", payload.RawCommand+" "+payload.Command+" "+strings.Join(payload.Args, " ")); matched {
 		switch action {
 		case "deny":
-			return newToolError("PERMISSION_DENIED", "命中权限规则，拒绝执行 shell_exec")
+			return newToolError("PERMISSION_DENIED", "命中权限规则，拒绝执行")
 		case "allow":
 			return nil
 		}
@@ -337,7 +337,7 @@ func guardDangerousCommand(payload commandArguments, config internalconfig.Confi
 	highRiskPatterns := []string{"rm -rf /", "mkfs", "shutdown", "reboot", "dd if=", "killall", "sudo "}
 	for _, pattern := range highRiskPatterns {
 		if strings.Contains(preview, pattern) && strings.TrimSpace(config.ApprovalMode) == "auto" {
-			return newToolError("PERMISSION_DENIED", "检测到高风险命令，请切换到 confirm 模式后再执行")
+			return newToolError("PERMISSION_DENIED", "检测到高风险命令，请切换到允许模式后再执行")
 		}
 	}
 	return nil
