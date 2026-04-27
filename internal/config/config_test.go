@@ -42,6 +42,24 @@ func TestNormalizeStreamIdleTimeoutSeconds(t *testing.T) {
 	}
 }
 
+func TestNormalizeCommandTimeoutSeconds(t *testing.T) {
+	cases := []struct {
+		input    int
+		expected int
+	}{
+		{input: DefaultCommandTimeoutSeconds, expected: DefaultCommandTimeoutSeconds},
+		{input: 1, expected: 1},
+		{input: MaxCommandTimeoutSeconds + 1, expected: MaxCommandTimeoutSeconds},
+		{input: 0, expected: DefaultCommandTimeoutSeconds},
+		{input: -1, expected: DefaultCommandTimeoutSeconds},
+	}
+	for _, item := range cases {
+		if got := NormalizeCommandTimeoutSeconds(item.input); got != item.expected {
+			t.Fatalf("NormalizeCommandTimeoutSeconds(%d) = %d, want %d", item.input, got, item.expected)
+		}
+	}
+}
+
 func TestManagerLoadAppliesDefaultSandboxEscapePolicy(t *testing.T) {
 	tempDir := t.TempDir()
 	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
@@ -93,6 +111,24 @@ func TestManagerLoadAppliesDefaultStreamIdleTimeoutSeconds(t *testing.T) {
 	}
 	if loaded.StreamIdleTimeoutSeconds != DefaultStreamIdleTimeoutSeconds {
 		t.Fatalf("expected default stream idle timeout %d, got %d", DefaultStreamIdleTimeoutSeconds, loaded.StreamIdleTimeoutSeconds)
+	}
+}
+
+func TestManagerLoadNormalizesInvalidCommandTimeoutSeconds(t *testing.T) {
+	tempDir := t.TempDir()
+	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
+
+	content := []byte("backend_base_url: http://localhost:7860\napproval_mode: confirm\ncommand_timeout_seconds: 999\n")
+	if err := os.WriteFile(manager.path, content, 0o644); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	if loaded.CommandTimeoutSeconds != MaxCommandTimeoutSeconds {
+		t.Fatalf("expected normalized command timeout %d, got %d", MaxCommandTimeoutSeconds, loaded.CommandTimeoutSeconds)
 	}
 }
 

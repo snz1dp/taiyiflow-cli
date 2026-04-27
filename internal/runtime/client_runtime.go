@@ -23,9 +23,7 @@ import (
 )
 
 const (
-	defaultCommandTimeout = 30
-	maxCommandTimeout     = 300
-	localToolServerName   = "local"
+	localToolServerName = "local"
 )
 
 type ClientRuntime struct {
@@ -548,12 +546,12 @@ type commandArguments struct {
 }
 
 func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, config internalconfig.Config) (commandArguments, error) {
-	timeout := intValue(arguments["timeout"], defaultCommandTimeout)
+	timeout := intValue(arguments["timeout"], defaultCommandTimeoutSeconds(config))
 	if timeout < 1 {
 		timeout = 1
 	}
-	if timeout > maxCommandTimeout {
-		timeout = maxCommandTimeout
+	if timeout > internalconfig.MaxCommandTimeoutSeconds {
+		timeout = internalconfig.MaxCommandTimeoutSeconds
 	}
 
 	workingDirectory, err := r.resolveAllowedDirectoryWithPolicy(config, argumentString(arguments, "workingDirectory", "working_directory"))
@@ -602,6 +600,10 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 		EnvOverrides:     envOverrides,
 		ExpectJSON:       argumentBool(arguments, "expectJson", "expect_json"),
 	}, nil
+}
+
+func defaultCommandTimeoutSeconds(config internalconfig.Config) int {
+	return internalconfig.NormalizeCommandTimeoutSeconds(config.CommandTimeoutSeconds)
 }
 
 func buildCommand(ctx context.Context, payload commandArguments) (*exec.Cmd, error) {

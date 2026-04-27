@@ -124,7 +124,7 @@ func TestExecuteSkillsListGroupsBundledSkillsBySource(t *testing.T) {
 	if !strings.Contains(output, "taiyiflowApi") {
 		t.Fatalf("expected renamed bundled skill, got %q", output)
 	}
-	if !strings.Contains(output, "状态 默认显示") {
+	if !strings.Contains(output, "状态 渐进披露") {
 		t.Fatalf("expected status badge, got %q", output)
 	}
 }
@@ -150,7 +150,7 @@ func TestExecuteSkillsViewShowsFilesAndDisplayLabels(t *testing.T) {
 	if !strings.Contains(output, "参考文件:") || !strings.Contains(output, "taiyiflow-cli-api-notes.md") {
 		t.Fatalf("expected extracted file listing, got %q", output)
 	}
-	if !strings.Contains(output, "状态: 默认显示") {
+	if !strings.Contains(output, "状态: 渐进披露") {
 		t.Fatalf("expected state label, got %q", output)
 	}
 }
@@ -210,6 +210,9 @@ func TestExecuteSkillsRemoteLifecycle(t *testing.T) {
 	}
 	if !strings.Contains(searchOutput, registry.URL) || !strings.Contains(searchOutput, "remote-skill") {
 		t.Fatalf("unexpected search output: %q", searchOutput)
+	}
+	if !strings.Contains(searchOutput, "远程技能摘要") || strings.Contains(searchOutput, `\n  远程技能摘要`) {
+		t.Fatalf("expected sanitized remote summary in search output, got %q", searchOutput)
 	}
 
 	viewOutput, err := app.executeSkillsCommand([]string{"view-remote", "remote-skill"})

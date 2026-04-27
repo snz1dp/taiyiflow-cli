@@ -66,6 +66,9 @@ func TestBuildTUISkillsPickerLoadsRemoteItems(t *testing.T) {
 	if picker.RemoteItems[0].Slug != "remote-skill" || picker.RemoteItems[0].Version != "1.2.3" {
 		t.Fatalf("unexpected remote item: %#v", picker.RemoteItems[0])
 	}
+	if picker.RemoteItems[0].Summary != "远程技能摘要" {
+		t.Fatalf("expected sanitized remote summary, got %#v", picker.RemoteItems[0])
+	}
 	if picker.RemoteQuery != "remote" {
 		t.Fatalf("expected remote query to persist, got %#v", picker)
 	}
@@ -132,10 +135,10 @@ func TestExecuteTUISkillsPickerInstallDetailRefreshesPickerAndPanel(t *testing.T
 
 func TestBuildTUIClientToolPanelShowsSuggestedReadRangeForFileEditFailure(t *testing.T) {
 	panel := buildTUIClientToolPanel("file_edit", map[string]any{
-		"path":                      "cmd/root.go",
-		"status":                    "not_found",
-		"sha256_before":             "abc123",
-		"nearby_excerpt":            "10: func main() {\n11: \tprintln(\"hello\")",
+		"path":           "cmd/root.go",
+		"status":         "not_found",
+		"sha256_before":  "abc123",
+		"nearby_excerpt": "10: func main() {\n11: \tprintln(\"hello\")",
 		"prefetched_read": map[string]any{
 			"start_line": 10,
 			"end_line":   11,
@@ -175,6 +178,7 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 			PermissionRules:          "tool:shell_exec=deny; shell:git status=allow",
 			ReasoningEnabled:         true,
 			Workdir:                  "/workspace/demo",
+			CommandTimeoutSeconds:    "45",
 			StreamIdleTimeoutSeconds: "300",
 			OutputLanguage:           "zh-CN",
 			SkillsDirectory:          "/workspace/demo/.snz1dp/skills",
@@ -203,6 +207,9 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	if updated.Skills.Directory != "/workspace/demo/.snz1dp/skills" {
 		t.Fatalf("expected skills directory saved, got %#v", updated.Skills)
 	}
+	if updated.CommandTimeoutSeconds != 45 {
+		t.Fatalf("expected command timeout saved, got %#v", updated.CommandTimeoutSeconds)
+	}
 
 	reloaded, err := manager.Load()
 	if err != nil {
@@ -213,6 +220,9 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	}
 	if reloaded.Skills.Directory != "/workspace/demo/.snz1dp/skills" {
 		t.Fatalf("expected persisted skills directory, got %#v", reloaded.Skills)
+	}
+	if reloaded.CommandTimeoutSeconds != 45 {
+		t.Fatalf("expected persisted command timeout, got %#v", reloaded.CommandTimeoutSeconds)
 	}
 	if got := formatPermissionRulesInline(reloaded.PermissionRules); got != "tool:shell_exec=deny; shell:git status=allow" {
 		t.Fatalf("unexpected formatted rules: %q", got)

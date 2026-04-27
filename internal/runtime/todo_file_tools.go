@@ -123,7 +123,7 @@ func (r *ClientRuntime) fileEdit(config internalconfig.Config, arguments map[str
 	if err != nil {
 		return nil, newToolError("EXECUTION_FAILED", "读取文件失败: %v", err)
 	}
-	if looksBinaryContent(content) {
+	if looksBinaryEditableContent(content) {
 		return nil, newToolError("PARAM_ERROR", "file_edit 不支持二进制文件: %s", resolvedPath)
 	}
 	before := string(content)

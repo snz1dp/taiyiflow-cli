@@ -170,6 +170,7 @@ type ConfigFormValues struct {
 	PermissionRules          string
 	ReasoningEnabled         bool
 	Workdir                  string
+	CommandTimeoutSeconds    string
 	StreamIdleTimeoutSeconds string
 	OutputLanguage           string
 	SkillsDirectory          string
@@ -515,6 +516,7 @@ const (
 	configFieldPermissionRules
 	configFieldReasoningMode
 	configFieldWorkdir
+	configFieldCommandTimeout
 	configFieldStreamIdleTimeout
 	configFieldOutputLanguage
 	configFieldSkillsDirectory
@@ -3669,7 +3671,8 @@ func configFormFieldSpecs(hasAPIKey bool) []configFieldSpec {
 		{label: "细粒度权限规则", placeholder: "tool:shell_exec=deny; shell:git status=allow", description: "使用 tool:name=动作 或 shell:prefix=动作，多个规则用分号分隔。"},
 		{label: "默认思考模式", placeholder: "", description: "左右键或空格切换是否默认启用思考模式。"},
 		{label: "工作区目录", placeholder: "留空表示当前目录", description: "默认使用当前工作目录。"},
-		{label: "请求超时（秒）", placeholder: "300", description: "大于等于 0 的整数秒，0 表示禁用流式空闲超时。"},
+		{label: "命令执行超时（秒）", placeholder: "30", description: "本地命令与语言服务查询在未显式传 timeout 时使用该默认值，范围 1-300 秒。"},
+		{label: "流式空闲超时（秒）", placeholder: "300", description: "大于等于 0 的整数秒，0 表示禁用流式空闲超时。"},
 		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
 		{label: "技能目录", placeholder: "留空表示默认 ~/.snz1dp/skills", description: "远程技能安装默认写入该目录；留空时使用用户级全局目录。"},
 		{label: "技能仓库地址", placeholder: "https://mirror-cn.clawhub.com", description: "远程技能搜索、详情和安装默认使用该镜像站。"},
@@ -3700,12 +3703,14 @@ func configFormFieldValue(index int, values ConfigFormValues, hasAPIKey bool) st
 	case 8:
 		return strings.TrimSpace(values.Workdir)
 	case 9:
-		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
+		return strings.TrimSpace(values.CommandTimeoutSeconds)
 	case 10:
-		return strings.TrimSpace(values.OutputLanguage)
+		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
 	case 11:
-		return strings.TrimSpace(values.SkillsDirectory)
+		return strings.TrimSpace(values.OutputLanguage)
 	case 12:
+		return strings.TrimSpace(values.SkillsDirectory)
+	case 13:
 		return strings.TrimSpace(values.SkillsRegistryURL)
 	default:
 		return ""
@@ -3730,23 +3735,26 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 		values.Workdir = strings.TrimSpace(inputs[8].Value())
 	}
 	if len(inputs) > 9 {
-		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[9].Value())
+		values.CommandTimeoutSeconds = strings.TrimSpace(inputs[9].Value())
 	}
 	if len(inputs) > 10 {
-		values.OutputLanguage = strings.TrimSpace(inputs[10].Value())
+		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[10].Value())
 	}
 	if len(inputs) > 11 {
-		values.SkillsDirectory = strings.TrimSpace(inputs[11].Value())
+		values.OutputLanguage = strings.TrimSpace(inputs[11].Value())
 	}
 	if len(inputs) > 12 {
-		values.SkillsRegistryURL = strings.TrimSpace(inputs[12].Value())
+		values.SkillsDirectory = strings.TrimSpace(inputs[12].Value())
+	}
+	if len(inputs) > 13 {
+		values.SkillsRegistryURL = strings.TrimSpace(inputs[13].Value())
 	}
 	return values
 }
 
 func isConfigTextField(index int) bool {
 	switch index {
-	case configFieldBackendBaseURL, configFieldAPIKey, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldStreamIdleTimeout, configFieldOutputLanguage, configFieldSkillsDirectory, configFieldSkillsRegistryURL:
+	case configFieldBackendBaseURL, configFieldAPIKey, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldOutputLanguage, configFieldSkillsDirectory, configFieldSkillsRegistryURL:
 		return true
 	default:
 		return false

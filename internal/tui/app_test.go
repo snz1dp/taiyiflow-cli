@@ -283,7 +283,7 @@ func TestHandleSkillsPickerEnterOpensToolPanel(t *testing.T) {
 				Name:        "taiyiflowApi",
 				Description: "接口参考",
 				SourceLabel: "内置技能",
-					StateLabel:  "默认显示",
+				StateLabel:  "渐进披露",
 			}},
 		},
 	}

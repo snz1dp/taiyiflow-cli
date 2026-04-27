@@ -69,12 +69,12 @@ func (r *ClientRuntime) lspQuery(config internalconfig.Config, arguments map[str
 			return nil, newToolError("PARAM_ERROR", "%s 需要从 1 开始的 line 和 character", operation)
 		}
 	}
-	timeout := intValue(arguments["timeout"], defaultCommandTimeout)
+	timeout := intValue(arguments["timeout"], defaultCommandTimeoutSeconds(config))
 	if timeout < 1 {
-		timeout = defaultCommandTimeout
+		timeout = defaultCommandTimeoutSeconds(config)
 	}
-	if timeout > maxCommandTimeout {
-		timeout = maxCommandTimeout
+	if timeout > internalconfig.MaxCommandTimeoutSeconds {
+		timeout = internalconfig.MaxCommandTimeoutSeconds
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()

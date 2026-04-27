@@ -14,6 +14,8 @@ const (
 	defaultRootDirName              = ".snz1dp"
 	defaultConfigRel                = "config/taiyiflow.yaml"
 	rootDirEnvName                  = "SNZ1DP_HOME"
+	DefaultCommandTimeoutSeconds    = 30
+	MaxCommandTimeoutSeconds        = 300
 	DefaultStreamIdleTimeoutSeconds = 300
 	SandboxEscapePolicyConfirm      = "confirm"
 	SandboxEscapePolicyDeny         = "deny"
@@ -21,19 +23,20 @@ const (
 )
 
 type Config struct {
-	BackendBaseURL           string      `yaml:"backend_base_url"`
-	APIKey                   string      `yaml:"api_key,omitempty"`
-	DefaultFlow              string      `yaml:"default_flow,omitempty"`
-	ApprovalMode             string      `yaml:"approval_mode"`
-	ReasoningEnabled         bool        `yaml:"reasoning_enabled,omitempty"`
-	Workdir                  string      `yaml:"workdir,omitempty"`
-	SandboxEscapePolicy      string      `yaml:"sandbox_escape_policy,omitempty"`
-	StreamIdleTimeoutSeconds int         `yaml:"stream_idle_timeout_seconds,omitempty"`
-	OutputLanguage           string      `yaml:"output_language"`
-	AuditEnabled             bool        `yaml:"audit_enabled,omitempty"`
-	SandboxRoots             []string    `yaml:"sandbox_roots,omitempty"`
+	BackendBaseURL           string           `yaml:"backend_base_url"`
+	APIKey                   string           `yaml:"api_key,omitempty"`
+	DefaultFlow              string           `yaml:"default_flow,omitempty"`
+	ApprovalMode             string           `yaml:"approval_mode"`
+	ReasoningEnabled         bool             `yaml:"reasoning_enabled,omitempty"`
+	Workdir                  string           `yaml:"workdir,omitempty"`
+	SandboxEscapePolicy      string           `yaml:"sandbox_escape_policy,omitempty"`
+	CommandTimeoutSeconds    int              `yaml:"command_timeout_seconds,omitempty"`
+	StreamIdleTimeoutSeconds int              `yaml:"stream_idle_timeout_seconds,omitempty"`
+	OutputLanguage           string           `yaml:"output_language"`
+	AuditEnabled             bool             `yaml:"audit_enabled,omitempty"`
+	SandboxRoots             []string         `yaml:"sandbox_roots,omitempty"`
 	PermissionRules          []PermissionRule `yaml:"permission_rules,omitempty"`
-	Skills                   SkillConfig `yaml:"skills,omitempty"`
+	Skills                   SkillConfig      `yaml:"skills,omitempty"`
 }
 
 type PermissionRule struct {
@@ -43,10 +46,15 @@ type PermissionRule struct {
 }
 
 type SkillConfig struct {
-	Directory   string   `yaml:"directory,omitempty"`
-	RegistryURL string   `yaml:"registry_url,omitempty"`
-	Enabled     []string `yaml:"enabled,omitempty"`
-	Disabled    []string `yaml:"disabled,omitempty"`
+	// Directory 指向全局技能目录；发现顺序始终是“当前工作区 .snz1dp/skills 优先，
+	// 然后再到这里配置的全局目录”，留空时回退到默认 ~/.snz1dp/skills。
+	Directory   string `yaml:"directory,omitempty"`
+	RegistryURL string `yaml:"registry_url,omitempty"`
+	// Enabled 保留为显式放行/兼容配置。当前默认策略不是白名单启用，未列入 enabled
+	// 的技能只要没有被 disabled 命中，仍会纳入渐进式披露候选集合。
+	Enabled []string `yaml:"enabled,omitempty"`
+	// Disabled 是显式禁用列表，优先级高于 enabled。命中后该技能不会纳入候选集合。
+	Disabled []string `yaml:"disabled,omitempty"`
 }
 
 type Manager struct {
@@ -59,6 +67,7 @@ func Default() Config {
 		ApprovalMode:             "confirm",
 		ReasoningEnabled:         false,
 		SandboxEscapePolicy:      SandboxEscapePolicyConfirm,
+		CommandTimeoutSeconds:    DefaultCommandTimeoutSeconds,
 		StreamIdleTimeoutSeconds: DefaultStreamIdleTimeoutSeconds,
 		OutputLanguage:           "zh-CN",
 		AuditEnabled:             false,
@@ -66,6 +75,16 @@ func Default() Config {
 			RegistryURL: "https://mirror-cn.clawhub.com",
 		},
 	}
+}
+
+func NormalizeCommandTimeoutSeconds(value int) int {
+	if value < 1 {
+		return DefaultCommandTimeoutSeconds
+	}
+	if value > MaxCommandTimeoutSeconds {
+		return MaxCommandTimeoutSeconds
+	}
+	return value
 }
 
 func NormalizeSandboxEscapePolicy(value string) string {
@@ -190,6 +209,7 @@ func (m *Manager) Load() (Config, error) {
 		config.ApprovalMode = Default().ApprovalMode
 	}
 	config.SandboxEscapePolicy = NormalizeSandboxEscapePolicy(config.SandboxEscapePolicy)
+	config.CommandTimeoutSeconds = NormalizeCommandTimeoutSeconds(config.CommandTimeoutSeconds)
 	config.StreamIdleTimeoutSeconds = NormalizeStreamIdleTimeoutSeconds(config.StreamIdleTimeoutSeconds)
 	if config.OutputLanguage == "" {
 		config.OutputLanguage = Default().OutputLanguage

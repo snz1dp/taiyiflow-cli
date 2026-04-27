@@ -21,7 +21,7 @@ func discoverBundledSkills(config internalconfig.Config, enabled map[string]bool
 		if err != nil {
 			continue
 		}
-		item.Enabled = resolveSkillEnabled(item.Name, enabled, disabled, definition.DefaultEnabled)
+		item.Enabled = resolveSkillEnabled(item.Name, enabled, disabled)
 		items = append(items, item)
 	}
 	return items

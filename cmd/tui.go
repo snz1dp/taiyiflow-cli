@@ -372,11 +372,11 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				"/reasoning [on|off|default|status] 切换当前会话思考模式",
 				"/session 查看当前会话",
 				"/sessions [页码] 查看当前智能体的服务端会话列表",
-					"/config 打开全局与权限配置弹窗",
+				"/config 打开全局与权限配置弹窗",
 				"!<shell 命令> 在当前目录执行本地命令",
 				"/agents 或 /agents <名称> 选择智能体",
 				"/tasks [list|output|capture|stop|remove] 管理本地后台任务",
-					"/skills [list|view|search|view-remote|install|remove|update|source|enable|disable|help] 管理本地技能与远程仓库技能",
+				"/skills [list|view|search|view-remote|install|remove|update|source|enable|disable|help] 管理本地技能与远程仓库技能",
 				"/exit 退出",
 			}
 			if !snapshot.BackendAvailable {
@@ -493,7 +493,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			resolvedWorkdir := resolveLocalWorkdir(snapshot.Workdir)
 			prompt := a.buildReviewPrompt(ctx, resolvedWorkdir, target)
 			updatedSnapshot := snapshot
-			updatedSnapshot.RequestMode = provider.RequestTypeAgent
+			updatedSnapshot.RequestMode = reviewRequestMode()
 			updatedSnapshot.ContextDir = resolvedWorkdir
 			return tui.LocalCommandResult{
 				Handled:     true,
@@ -501,7 +501,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				QueuedInput: strings.TrimSpace(prompt),
 				Events: []tui.Event{{
 					Kind: tui.EventSystemNote,
-					Text: "已切换为执行模式，正在发起代码审查。",
+					Text: "已切换为问答只读模式，正在发起代码审查。",
 				}},
 			}, nil
 		case strings.HasPrefix(strings.ToLower(trimmed), "/skills "):
@@ -1740,6 +1740,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			PermissionRules:          formatPermissionRulesInline(config.PermissionRules),
 			ReasoningEnabled:         config.ReasoningEnabled,
 			Workdir:                  strings.TrimSpace(config.Workdir),
+			CommandTimeoutSeconds:    strconv.Itoa(config.CommandTimeoutSeconds),
 			StreamIdleTimeoutSeconds: strconv.Itoa(config.StreamIdleTimeoutSeconds),
 			OutputLanguage:           strings.TrimSpace(config.OutputLanguage),
 			SkillsDirectory:          strings.TrimSpace(config.Skills.Directory),
@@ -1801,6 +1802,12 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 	if strings.TrimSpace(submission.Values.Workdir) == "" {
 		config.Workdir = ""
 	} else if err := assignConfigValue(&config, "workdir", submission.Values.Workdir); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if strings.TrimSpace(submission.Values.CommandTimeoutSeconds) == "" {
+		config.CommandTimeoutSeconds = internalconfig.Default().CommandTimeoutSeconds
+	} else if err := assignConfigValue(&config, "command_timeout_seconds", submission.Values.CommandTimeoutSeconds); err != nil {
 		return internalconfig.Config{}, err
 	}
 

@@ -12,11 +12,11 @@ import (
 )
 
 type stubProvider struct {
-	stream        <-chan provider.StreamEvent
-	streamErr     error
-	streamSession *provider.StreamSession
-	messages      *provider.SessionMessageList
-	runStats      *provider.RunStats
+	stream         <-chan provider.StreamEvent
+	streamErr      error
+	streamSession  *provider.StreamSession
+	messages       *provider.SessionMessageList
+	runStats       *provider.RunStats
 	sessionContext *provider.SessionContextPreview
 }
 
@@ -173,6 +173,38 @@ func TestStreamTaskDoesNotPrefixFirstSystemNoteWithBlankLine(t *testing.T) {
 
 	if got := stdout.String(); got != "[系统提示]: 准备开始\n\n" {
 		t.Fatalf("unexpected stdout: %q", got)
+	}
+}
+
+func TestStreamTaskSanitizesTerminalEscapeSequencesFromChunks(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	stream := make(chan provider.StreamEvent, 2)
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "\x1b[O\x1b[I正式输出"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err := app.streamTask(
+		context.Background(),
+		stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+
+	if got := stdout.String(); got != "正式输出\n" {
+		t.Fatalf("expected sanitized stdout, got %q", got)
 	}
 }
 

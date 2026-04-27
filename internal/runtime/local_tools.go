@@ -124,7 +124,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 					"languageId":         map[string]any{"type": "string", "description": "可选语言标识(language id)；默认按文件扩展名推断。"},
 					"includeDeclaration": map[string]any{"type": "boolean"},
 					"maxResults":         map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
-					"timeout":            map[string]any{"type": "integer", "minimum": 1, "maximum": maxCommandTimeout},
+					"timeout":            map[string]any{"type": "integer", "minimum": 1, "maximum": internalconfig.MaxCommandTimeoutSeconds},
 				},
 				"required":             []string{"serverCommand", "operation"},
 				"additionalProperties": false,
@@ -201,7 +201,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 					"command":          map[string]any{"type": "string", "description": "可执行文件名；与 args 配合使用。"},
 					"args":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 					"workingDirectory": map[string]any{"type": "string", "description": "命令工作目录，默认当前工作目录。"},
-					"timeout":          map[string]any{"type": "integer", "minimum": 1, "maximum": maxCommandTimeout},
+					"timeout":          map[string]any{"type": "integer", "minimum": 1, "maximum": internalconfig.MaxCommandTimeoutSeconds},
 					"env":              map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
 					"expectJson":       map[string]any{"type": "boolean"},
 					"background":       map[string]any{"type": "boolean", "description": "为 true 时转为后台任务并返回 task_id。"},
@@ -877,6 +877,34 @@ func looksBinaryContent(content []byte) bool {
 		return true
 	}
 	return !utf8.Valid(sample)
+}
+
+func looksBinaryEditableContent(content []byte) bool {
+	if len(content) == 0 {
+		return false
+	}
+	limit := len(content)
+	if limit > 8192 {
+		limit = 8192
+	}
+	sample := content[:limit]
+	if bytes.IndexByte(sample, 0) >= 0 {
+		return true
+	}
+	if utf8.Valid(sample) {
+		return false
+	}
+	controlCount := 0
+	for _, value := range sample {
+		switch value {
+		case '\n', '\r', '\t', '\f':
+			continue
+		}
+		if value < 0x20 || value == 0x7f {
+			controlCount++
+		}
+	}
+	return controlCount > 0 && controlCount*10 > len(sample)
 }
 
 func writeFileAtomically(path string, content []byte) error {

@@ -165,6 +165,12 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			}
 		}
 		config.SandboxEscapePolicy = normalizedPolicy
+	case "command_timeout_seconds":
+		seconds, err := strconv.Atoi(trimmedValue)
+		if err != nil || seconds < 1 || seconds > internalconfig.MaxCommandTimeoutSeconds {
+			return fmt.Errorf("command_timeout_seconds 仅支持 1-%d 的整数秒", internalconfig.MaxCommandTimeoutSeconds)
+		}
+		config.CommandTimeoutSeconds = seconds
 	case "stream_idle_timeout_seconds":
 		seconds, err := strconv.Atoi(trimmedValue)
 		if err != nil || seconds < 0 {
@@ -223,6 +229,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.Workdir = ""
 	case "external_resource_access_policy":
 		config.SandboxEscapePolicy = defaults.SandboxEscapePolicy
+	case "command_timeout_seconds":
+		config.CommandTimeoutSeconds = defaults.CommandTimeoutSeconds
 	case "stream_idle_timeout_seconds":
 		config.StreamIdleTimeoutSeconds = defaults.StreamIdleTimeoutSeconds
 	case "output_language":
@@ -248,6 +256,8 @@ func normalizeConfigKey(key string) string {
 	switch normalized {
 	case "sandbox_escape_policy", "external_resource_policy":
 		return "external_resource_access_policy"
+	case "command_timeout", "local_command_timeout", "local_command_timeout_seconds":
+		return "command_timeout_seconds"
 	case "stream_idle_timeout":
 		return "stream_idle_timeout_seconds"
 	default:
@@ -283,6 +293,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("默认思考模式: %t", config.ReasoningEnabled),
 		fmt.Sprintf("工作目录: %s", fallbackConfigValue(config.Workdir, "<当前目录>")),
 		fmt.Sprintf("外部资源访问策略: %s", fallbackConfigValue(config.SandboxEscapePolicy, internalconfig.Default().SandboxEscapePolicy)),
+		fmt.Sprintf("命令执行超时: %d 秒", config.CommandTimeoutSeconds),
 		fmt.Sprintf("流式空闲超时: %d 秒", config.StreamIdleTimeoutSeconds),
 		fmt.Sprintf("输出语言: %s", fallbackConfigValue(config.OutputLanguage, internalconfig.Default().OutputLanguage)),
 		fmt.Sprintf("审计日志: %t", config.AuditEnabled),

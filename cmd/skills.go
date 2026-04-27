@@ -31,8 +31,8 @@ func renderSkillsUsage(synopsis string) string {
 		"  remove <名称或slug>            删除已安装远程技能",
 		"  update <名称或slug|all>        更新指定远程技能或全部远程技能",
 		"  source [show|set|reset]        查看或切换远程技能仓库地址",
-		"  enable <名称>                  启用本地或已安装技能",
-		"  disable <名称>                 禁用本地或已安装技能",
+		"  enable <名称>                  恢复技能的候选资格",
+		"  disable <名称>                 将技能移出候选集合",
 		"  help                           显示当前帮助",
 		"",
 		"示例:",
@@ -126,7 +126,7 @@ func (a *App) executeSkillsCommand(args []string) (string, error) {
 			fmt.Sprintf("根目录: %s", fallbackConfigValue(item.RootDir, "<未填写>")),
 			fmt.Sprintf("相对目录: %s", fallbackConfigValue(item.RelativeDir, "<未填写>")),
 			fmt.Sprintf("状态: %s", skillStateLabel(*item, config)),
-			fmt.Sprintf("显示: %t", item.Enabled),
+			fmt.Sprintf("纳入候选: %t", item.Enabled),
 		}
 		if len(badges) > 0 {
 			lines = append(lines, fmt.Sprintf("标签: %s", strings.Join(badges, ", ")))
@@ -340,7 +340,10 @@ func (a *App) executeSkillsCommand(args []string) (string, error) {
 		if err := a.configManager.Save(config); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("已%s技能: %s", map[string]string{"enable": "启用", "disable": "禁用"}[subcommand], item.Name), nil
+		if subcommand == "enable" {
+			return fmt.Sprintf("已恢复技能候选资格: %s", item.Name), nil
+		}
+		return fmt.Sprintf("已禁用技能候选资格: %s", item.Name), nil
 	default:
 		return "", fmt.Errorf("不支持的 skills 子命令: %s\n\n%s", subcommand, skillsCommandUsage())
 	}
@@ -469,26 +472,20 @@ func sourceDisplayLabel(source string) string {
 func skillStateLabel(item skills.Skill, config internalconfig.Config) string {
 	name := strings.TrimSpace(item.Name)
 	if containsNormalizedSkillName(config.Skills.Disabled, name) {
-		return "显式隐藏"
+		return "显式禁用"
 	}
 	if containsNormalizedSkillName(config.Skills.Enabled, name) {
-		return "显式显示"
+		return "显式放行"
 	}
 	if item.Enabled {
-		if strings.EqualFold(item.Source, "bundled") {
-			return "默认显示"
-		}
-		return "已显示"
+		return "渐进披露"
 	}
-	return "默认配置"
+	return "未纳入候选"
 }
 
 func skillDisplayBadges(item skills.Skill, config internalconfig.Config) []string {
 	badges := []string{}
-	if strings.TrimSpace(item.Category) != "" {
-		badges = append(badges, fmt.Sprintf("分类 %s", item.Category))
-	}
-	badges = append(badges, fmt.Sprintf("状态 %s", skillStateLabel(item, config)))
+	badges = append(badges, fmt.Sprintf("%s", skillStateLabel(item, config)))
 	if len(item.Files) > 0 {
 		badges = append(badges, fmt.Sprintf("参考文件 %d", len(item.Files)))
 	}

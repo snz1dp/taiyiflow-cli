@@ -21,7 +21,7 @@
 - 默认从工作区 `.snz1dp/skills` 与用户级技能目录发现本地技能（Skill），并支持 `skills list`、`skills view`、`skills enable`、`skills disable` 管理。
 - 客户端同时支持远程技能仓库搜索、详情查看、安装、更新、删除与仓库源切换，默认仓库地址为 `https://mirror-cn.clawhub.com`。
 - TUI 与交互式会话中的 `/skills` 弹窗已支持“本地技能 / 远程仓库”双标签页，可直接浏览远程技能并执行安装、更新、删除。
-- 已显示的本地技能会在发起 stream 请求时通过 `client_skill_packages` 一并上送，包含技能元数据、正文内容与完整 markdown 文档，便于服务端按名称匹配或直接消费技能内容。
+- 默认未被显式禁用的本地技能都会纳入渐进式披露候选，并在发起 stream 请求时通过 `client_skill_packages` 一并上送，包含技能元数据、正文内容与完整 markdown 文档，便于服务端按名称匹配或直接消费技能内容。
 
 ## 构建
 

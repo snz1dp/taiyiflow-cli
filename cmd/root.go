@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
@@ -16,6 +17,11 @@ import (
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
+)
+
+var (
+	cmdANSICSIRegexp = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+	cmdANSIOSCRegexp = regexp.MustCompile(`\x1b\][^\a]*(\a|\x1b\\)`)
 )
 
 type App struct {
@@ -188,7 +194,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 				continue
 			}
 			prompt := a.buildReviewPrompt(ctx, workdir, target)
-			sessionState.RequestMode = provider.RequestTypeAgent
+			sessionState.RequestMode = reviewRequestMode()
 			sessionState.ContextDir = workdir
 			sessionState.FlowDisplayName = flowDisplayName
 			updatedState, err := a.streamTask(ctx, providerClient, config, flowID, prompt, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents)
@@ -465,6 +471,7 @@ func (a *App) streamTask(
 		switch event.Type {
 		case provider.EventMessage:
 			if chunk, ok := event.Data["chunk"].(string); ok && chunk != "" {
+				chunk = sanitizeCLIStreamText(chunk)
 				if !hasVisibleOutput {
 					chunk = strings.TrimLeft(chunk, "\r\n")
 					if chunk == "" {
@@ -477,6 +484,10 @@ func (a *App) streamTask(
 			}
 			if showStreamEvents {
 				if message, ok := event.Data["message"].(string); ok && strings.TrimSpace(message) != "" {
+					message = sanitizeCLIStreamText(message)
+					if strings.TrimSpace(message) == "" {
+						continue
+					}
 					if hasVisibleOutput {
 						fmt.Fprintf(a.stdout, "\n[系统提示]: %s\n", strings.TrimSpace(message))
 					} else {
@@ -520,6 +531,10 @@ func (a *App) streamTask(
 		case provider.EventToolCall:
 			if showStreamEvents {
 				if text, ok := event.Data["text"].(string); ok && text != "" {
+					text = sanitizeCLIStreamText(text)
+					if strings.TrimSpace(text) == "" {
+						continue
+					}
 					fmt.Fprintf(a.stdout, "[工具调用]: %s\n", text)
 					hasVisibleOutput = true
 				}
@@ -530,6 +545,15 @@ func (a *App) streamTask(
 	}
 
 	return sessionState, nil
+}
+
+func sanitizeCLIStreamText(content string) string {
+	if content == "" {
+		return ""
+	}
+	cleaned := cmdANSIOSCRegexp.ReplaceAllString(content, "")
+	cleaned = cmdANSICSIRegexp.ReplaceAllString(cleaned, "")
+	return strings.ReplaceAll(cleaned, "\x1b", "")
 }
 
 func (a *App) printRootUsage() {

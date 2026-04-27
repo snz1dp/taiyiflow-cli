@@ -28,6 +28,27 @@ func TestResetConfigValueStreamIdleTimeoutSeconds(t *testing.T) {
 	}
 }
 
+func TestAssignConfigValueCommandTimeoutSeconds(t *testing.T) {
+	config := internalconfig.Default()
+	if err := assignConfigValue(&config, "command_timeout_seconds", "45"); err != nil {
+		t.Fatalf("assignConfigValue returned error: %v", err)
+	}
+	if config.CommandTimeoutSeconds != 45 {
+		t.Fatalf("expected command timeout 45, got %d", config.CommandTimeoutSeconds)
+	}
+}
+
+func TestResetConfigValueCommandTimeoutSeconds(t *testing.T) {
+	config := internalconfig.Default()
+	config.CommandTimeoutSeconds = 45
+	if err := resetConfigValue(&config, "command_timeout_seconds"); err != nil {
+		t.Fatalf("resetConfigValue returned error: %v", err)
+	}
+	if config.CommandTimeoutSeconds != internalconfig.Default().CommandTimeoutSeconds {
+		t.Fatalf("expected default command timeout %d, got %d", internalconfig.Default().CommandTimeoutSeconds, config.CommandTimeoutSeconds)
+	}
+}
+
 func TestAssignConfigValueExternalResourceAccessPolicyAlias(t *testing.T) {
 	config := internalconfig.Default()
 	if err := assignConfigValue(&config, "external_resource_access_policy", "allow"); err != nil {

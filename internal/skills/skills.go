@@ -36,7 +36,11 @@ type Skill struct {
 	RelativeDir string
 	Body        string
 	Summary     string
-	Enabled     bool
+	// Enabled 表示该技能是否纳入“渐进式披露”候选集合，并会随请求一起上送给后端。
+	// 它不是“必须显式启用后才能使用”的白名单开关；当前默认策略是除非被
+	// skills.disabled 显式禁用，否则所有技能都可被选用。skills.enabled 仅保留为
+	// 显式放行/兼容配置。
+	Enabled bool
 }
 
 func ResolveDirectory(config internalconfig.Config) (string, error) {
@@ -71,23 +75,20 @@ func ResolveInstallDirectory(config internalconfig.Config) (string, error) {
 }
 
 func ResolveDirectories(config internalconfig.Config) ([]string, error) {
-	directory := strings.TrimSpace(config.Skills.Directory)
-	if directory != "" {
-		resolved, err := filepath.Abs(directory)
-		if err != nil {
-			return nil, err
-		}
-		return []string{resolved}, nil
-	}
 	items := []string{}
 	if workdir := resolveSkillWorkdir(config.Workdir); workdir != "" {
 		items = append(items, filepath.Join(workdir, ".snz1dp", "skills"))
 	}
-	homeSkillsDir, err := internalconfig.DefaultSkillsDir()
-	if err != nil {
-		return nil, err
+	directory := strings.TrimSpace(config.Skills.Directory)
+	if directory != "" {
+		items = append(items, directory)
+	} else {
+		homeSkillsDir, err := internalconfig.DefaultSkillsDir()
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, homeSkillsDir)
 	}
-	items = append(items, homeSkillsDir)
 	seen := map[string]bool{}
 	result := make([]string, 0, len(items))
 	for _, item := range items {
@@ -152,7 +153,7 @@ func Discover(config internalconfig.Config) ([]Skill, string, error) {
 				return nil
 			}
 			seenNames[nameKey] = true
-			skill.Enabled = resolveSkillEnabled(skill.Name, enabled, disabled, bundledSkillDefaultEnabled(skill.Name))
+			skill.Enabled = resolveSkillEnabled(skill.Name, enabled, disabled)
 			skill.Source = classifySkillSource(directory, config)
 			items = append(items, skill)
 			return nil
@@ -359,18 +360,21 @@ func resolveSkillWorkdir(configured string) string {
 }
 
 func classifySkillSource(directory string, config internalconfig.Config) string {
-	configured := strings.TrimSpace(config.Skills.Directory)
-	if configured != "" {
-		return "custom"
-	}
 	workdir := resolveSkillWorkdir(config.Workdir)
 	if workdir != "" && filepath.Clean(directory) == filepath.Clean(filepath.Join(workdir, ".snz1dp", "skills")) {
 		return "workspace"
 	}
+	configured := strings.TrimSpace(config.Skills.Directory)
+	if configured != "" {
+		resolvedConfigured, err := filepath.Abs(configured)
+		if err == nil && filepath.Clean(directory) == filepath.Clean(resolvedConfigured) {
+			return "custom"
+		}
+	}
 	return "home"
 }
 
-func resolveSkillEnabled(name string, enabled map[string]bool, disabled map[string]bool, defaultEnabled bool) bool {
+func resolveSkillEnabled(name string, enabled map[string]bool, disabled map[string]bool) bool {
 	nameKey := strings.ToLower(strings.TrimSpace(name))
 	if nameKey == "" {
 		return false
@@ -381,7 +385,7 @@ func resolveSkillEnabled(name string, enabled map[string]bool, disabled map[stri
 	if enabled[nameKey] {
 		return true
 	}
-	return defaultEnabled
+	return true
 }
 
 func bundledSkillDefaultEnabled(name string) bool {

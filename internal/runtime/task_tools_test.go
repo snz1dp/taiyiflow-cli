@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -59,6 +60,21 @@ func TestShellExecBackgroundAndTaskOutput(t *testing.T) {
 	}
 	if listed["count"].(int) < 1 {
 		t.Fatalf("expected task list to include background task, got %#v", listed)
+	}
+}
+
+func TestNormalizeCommandArgumentsUsesConfigCommandTimeout(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir(), CommandTimeoutSeconds: 45}
+
+	payload, err := runtimeClient.normalizeCommandArguments(map[string]any{
+		"raw_command": "printf 'hello'",
+	}, configValue)
+	if err != nil {
+		t.Fatalf("normalizeCommandArguments failed: %v", err)
+	}
+	if payload.Timeout != 45 {
+		t.Fatalf("expected timeout 45, got %#v", payload.Timeout)
 	}
 }
 
@@ -575,6 +591,38 @@ func TestFileEditReturnsDiagnosticsWhenOldStringNotFound(t *testing.T) {
 	}
 	if strings.TrimSpace(stringValue(recommendedArgs["old_string"])) == "" || recommendedArgs["expected_sha256_before"] != result["sha256_before"] {
 		t.Fatalf("expected reusable retry arguments, got %#v result=%#v", retryHint, result)
+	}
+}
+
+func TestFileEditAcceptsNonUTF8TextWithoutTreatingItAsBinary(t *testing.T) {
+	workdir := t.TempDir()
+	filePath := workdir + "/legacy.txt"
+	legacyComment := []byte{0xB2, 0xE2, 0xCA, 0xD4}
+	content := append([]byte("title=demo\ncomment="), legacyComment...)
+	content = append(content, '\n')
+	if err := os.WriteFile(filePath, content, 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: workdir, ApprovalMode: "auto"}
+
+	result, err := runtimeClient.fileEdit(configValue, map[string]any{
+		"path":       "legacy.txt",
+		"old_string": "demo",
+		"new_string": "updated",
+	})
+	if err != nil {
+		t.Fatalf("expected non-utf8 text file to remain editable, got %v", err)
+	}
+	if result["replacements"].(int) != 1 {
+		t.Fatalf("unexpected file edit result: %#v", result)
+	}
+	updatedContent, readErr := os.ReadFile(filePath)
+	if readErr != nil {
+		t.Fatalf("read updated file failed: %v", readErr)
+	}
+	if !bytes.Contains(updatedContent, []byte("title=updated")) {
+		t.Fatalf("expected updated ASCII segment, got %q", string(updatedContent))
 	}
 }
 

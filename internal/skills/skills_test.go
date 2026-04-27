@@ -26,7 +26,6 @@ func TestDiscoverSkillsAndEnableState(t *testing.T) {
 
 	config := internalconfig.Config{}
 	config.Skills.Directory = tempDir
-	config.Skills.Enabled = []string{"code review"}
 
 	items, directory, err := Discover(config)
 	if err != nil {
@@ -53,7 +52,20 @@ func TestDiscoverSkillsAndEnableState(t *testing.T) {
 	if !foundCodeReview {
 		t.Fatal("expected custom Code Review skill in discovery result")
 	}
+	foundDraftWriter := false
+	for _, item := range items {
+		if item.Name == "Draft Writer" {
+			foundDraftWriter = true
+			if !item.Enabled {
+				t.Fatal("expected Draft Writer enabled by default")
+			}
+		}
+	}
+	if !foundDraftWriter {
+		t.Fatal("expected Draft Writer skill in discovery result")
+	}
 
+	config.Skills.Disabled = []string{"draft writer"}
 	item, _, err := LoadByName(config, "draft writer")
 	if err != nil {
 		t.Fatalf("load by name failed: %v", err)
@@ -62,7 +74,7 @@ func TestDiscoverSkillsAndEnableState(t *testing.T) {
 		t.Fatalf("unexpected loaded skill: %s", item.Name)
 	}
 	if item.Enabled {
-		t.Fatalf("expected Draft Writer disabled")
+		t.Fatalf("expected Draft Writer disabled after explicit deny")
 	}
 }
 
@@ -78,7 +90,6 @@ func TestClientPackagesIncludeMarkdownAndContent(t *testing.T) {
 
 	config := internalconfig.Config{}
 	config.Skills.Directory = tempDir
-	config.Skills.Enabled = []string{"Code Review"}
 
 	items, directory, err := Discover(config)
 	if err != nil {
@@ -254,5 +265,67 @@ func TestResolveInstallDirectoryDefaultsToGlobalSkillsDir(t *testing.T) {
 	}
 	if resolved != defaultDir {
 		t.Fatalf("expected global default skills dir %q, got %q", defaultDir, resolved)
+	}
+}
+
+func TestResolveDirectoriesPreferWorkspaceThenGlobalConfig(t *testing.T) {
+	workspaceDir := t.TempDir()
+	globalDir := t.TempDir()
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.Directory = globalDir
+
+	directories, err := ResolveDirectories(config)
+	if err != nil {
+		t.Fatalf("resolve directories failed: %v", err)
+	}
+	expectedWorkspace := filepath.Join(workspaceDir, ".snz1dp", "skills")
+	if len(directories) != 2 {
+		t.Fatalf("expected workspace and global directories, got %#v", directories)
+	}
+	if directories[0] != expectedWorkspace {
+		t.Fatalf("expected workspace directory first, got %#v", directories)
+	}
+	if directories[1] != globalDir {
+		t.Fatalf("expected configured global directory second, got %#v", directories)
+	}
+}
+
+func TestWorkspaceSkillOverridesConfiguredGlobalSkill(t *testing.T) {
+	workspaceDir := t.TempDir()
+	globalDir := t.TempDir()
+	workspaceSkillDir := filepath.Join(workspaceDir, ".snz1dp", "skills", "shared-skill")
+	globalSkillDir := filepath.Join(globalDir, "shared-skill")
+	if err := os.MkdirAll(workspaceSkillDir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace skill failed: %v", err)
+	}
+	if err := os.MkdirAll(globalSkillDir, 0o755); err != nil {
+		t.Fatalf("mkdir global skill failed: %v", err)
+	}
+	workspaceContent := "---\nname: Shared Skill\ndescription: 工作区版本\ncategory: workspace\n---\n\n优先使用工作区版本。\n"
+	globalContent := "---\nname: Shared Skill\ndescription: 全局版本\ncategory: global\n---\n\n作为全局回退。\n"
+	if err := os.WriteFile(filepath.Join(workspaceSkillDir, "SKILL.md"), []byte(workspaceContent), 0o644); err != nil {
+		t.Fatalf("write workspace skill failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(globalSkillDir, "SKILL.md"), []byte(globalContent), 0o644); err != nil {
+		t.Fatalf("write global skill failed: %v", err)
+	}
+
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.Directory = globalDir
+
+	item, directory, err := LoadByName(config, "Shared Skill")
+	if err != nil {
+		t.Fatalf("load shared skill failed: %v", err)
+	}
+	if item.Source != "workspace" {
+		t.Fatalf("expected workspace source, got %#v", item)
+	}
+	if item.Description != "工作区版本" {
+		t.Fatalf("expected workspace description, got %#v", item)
+	}
+	if !strings.Contains(directory, workspaceDir) || !strings.Contains(directory, globalDir) {
+		t.Fatalf("expected discovery chain to include workspace and global dirs, got %q", directory)
 	}
 }

@@ -72,11 +72,11 @@ type RemoteUpdateResult struct {
 }
 
 type InstalledRemoteSkill struct {
-	Name            string
-	Slug            string
+	Name             string
+	Slug             string
 	InstalledVersion string
-	TargetDir       string
-	RegistryURL     string
+	TargetDir        string
+	RegistryURL      string
 }
 
 type remoteSearchResponse struct {
@@ -141,7 +141,7 @@ func SearchRemote(config internalconfig.Config, query string, limit int) ([]Remo
 		results = append(results, RemoteSearchResult{
 			Slug:        strings.TrimSpace(item.Slug),
 			DisplayName: strings.TrimSpace(item.DisplayName),
-			Summary:     strings.TrimSpace(item.Summary),
+			Summary:     normalizeRemoteSkillSummary(item.Summary),
 			Version:     strings.TrimSpace(item.Version),
 			UpdatedAt:   item.UpdatedAt,
 		})
@@ -169,7 +169,7 @@ func FetchRemoteDetail(config internalconfig.Config, slug string) (RemoteSkillDe
 	detail := RemoteSkillDetail{
 		Slug:        strings.TrimSpace(response.Skill.Slug),
 		DisplayName: strings.TrimSpace(response.Skill.DisplayName),
-		Summary:     strings.TrimSpace(response.Skill.Summary),
+		Summary:     normalizeRemoteSkillSummary(response.Skill.Summary),
 		UpdatedAt:   response.Skill.UpdatedAt,
 		RegistryURL: registryURL,
 	}
@@ -325,6 +325,24 @@ func normalizeRemoteSkillSlug(value string) (string, error) {
 		return "", fmt.Errorf("无效的技能 slug: %s", value)
 	}
 	return trimmed, nil
+}
+
+func normalizeRemoteSkillSummary(value string) string {
+	trimmed := strings.TrimSpace(value)
+	for {
+		next := strings.TrimSpace(trimmed)
+		next = strings.TrimPrefix(next, `\r\n`)
+		next = strings.TrimPrefix(next, `\n`)
+		next = strings.TrimPrefix(next, `\r`)
+		next = strings.TrimSuffix(next, `\r\n`)
+		next = strings.TrimSuffix(next, `\n`)
+		next = strings.TrimSuffix(next, `\r`)
+		next = strings.TrimSpace(next)
+		if next == trimmed {
+			return next
+		}
+		trimmed = next
+	}
 }
 
 func registryRequest(registryURL string, requestPath string, query url.Values) ([]byte, error) {

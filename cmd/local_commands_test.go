@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
 )
 
@@ -123,6 +124,21 @@ func TestBuildReviewPromptIncludesDiffSummary(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "当前工作区 diff 摘要") || !strings.Contains(prompt, "未暂存变更") || !strings.Contains(prompt, "demo.txt") {
 		t.Fatalf("expected diff summary in review prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "只做只读审查") || !strings.Contains(prompt, "不要调用 write_file、file_edit、shell_exec") {
+		t.Fatalf("expected read-only review constraint in prompt, got %q", prompt)
+	}
+}
+
+func TestReviewRequestModeIsReadOnlyForMutatingTools(t *testing.T) {
+	if reviewRequestMode() != provider.RequestTypeAsk {
+		t.Fatalf("expected review request mode to be ask, got %q", reviewRequestMode())
+	}
+	if modeAllowsClientTool(reviewRequestMode(), "file_edit") {
+		t.Fatal("expected review mode to reject file_edit")
+	}
+	if !modeAllowsClientTool(reviewRequestMode(), "read_file") {
+		t.Fatal("expected review mode to allow read_file")
 	}
 }
 
