@@ -32,8 +32,8 @@ func TestDiscoverSkillsAndEnableState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discover failed: %v", err)
 	}
-	if directory != tempDir {
-		t.Fatalf("unexpected directory: %s", directory)
+	if !strings.Contains(directory, tempDir) {
+		t.Fatalf("expected discovered directories to include custom dir %q, got %q", tempDir, directory)
 	}
 	if len(items) < 2 {
 		t.Fatalf("expected at least 2 skills, got %d", len(items))
@@ -213,5 +213,46 @@ func TestBundledSkillExtractsReferenceFiles(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(string(content)), "bundled skill") {
 		t.Fatalf("unexpected extracted content: %s", string(content))
+	}
+}
+
+func TestLoadFileFallsBackToMeaningfulSummary(t *testing.T) {
+	tempDir := t.TempDir()
+	skillDir := filepath.Join(tempDir, "summarized")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	content := "---\nname: Summarized Skill\n---\n\n# Summarized Skill\n\n>\n> 用于验证默认摘要提取不会退化成单独的 markdown 符号。\n\n后续正文。\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill failed: %v", err)
+	}
+
+	item, err := LoadFile(tempDir, filepath.Join(skillDir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("load file failed: %v", err)
+	}
+	if item.Description != "用于验证默认摘要提取不会退化成单独的 markdown 符号。" {
+		t.Fatalf("unexpected description: %q", item.Description)
+	}
+	if item.Summary != item.Description {
+		t.Fatalf("expected summary fallback to meaningful paragraph, got %#v", item)
+	}
+}
+
+func TestResolveInstallDirectoryDefaultsToGlobalSkillsDir(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	config := internalconfig.Default()
+	config.Workdir = t.TempDir()
+
+	resolved, err := ResolveInstallDirectory(config)
+	if err != nil {
+		t.Fatalf("resolve install directory failed: %v", err)
+	}
+	defaultDir, err := internalconfig.DefaultSkillsDir()
+	if err != nil {
+		t.Fatalf("default skills dir failed: %v", err)
+	}
+	if resolved != defaultDir {
+		t.Fatalf("expected global default skills dir %q, got %q", defaultDir, resolved)
 	}
 }

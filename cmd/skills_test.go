@@ -1,8 +1,15 @@
 package cmd
 
 import (
+	"archive/zip"
 	"bytes"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
@@ -117,7 +124,7 @@ func TestExecuteSkillsListGroupsBundledSkillsBySource(t *testing.T) {
 	if !strings.Contains(output, "taiyiflowApi") {
 		t.Fatalf("expected renamed bundled skill, got %q", output)
 	}
-	if !strings.Contains(output, "状态 默认启用") {
+	if !strings.Contains(output, "状态 默认显示") {
 		t.Fatalf("expected status badge, got %q", output)
 	}
 }
@@ -143,9 +150,169 @@ func TestExecuteSkillsViewShowsFilesAndDisplayLabels(t *testing.T) {
 	if !strings.Contains(output, "参考文件:") || !strings.Contains(output, "taiyiflow-cli-api-notes.md") {
 		t.Fatalf("expected extracted file listing, got %q", output)
 	}
-	if !strings.Contains(output, "状态: 默认启用") {
+	if !strings.Contains(output, "状态: 默认显示") {
 		t.Fatalf("expected state label, got %q", output)
 	}
+}
+
+func TestExecuteSkillsRemoteLifecycle(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	workspaceDir := t.TempDir()
+	app := &App{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, configManager: manager}
+
+	var (
+		versionMu     sync.RWMutex
+		latestVersion = "1.0.0"
+	)
+	registry := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.URL.Path == "/api/v1/search":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"远程技能摘要","version":"1.0.0","updatedAt":1710000000}]}`))
+		case request.URL.Path == "/api/v1/skills/remote-skill":
+			versionMu.RLock()
+			current := latestVersion
+			versionMu.RUnlock()
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(fmt.Sprintf(`{"skill":{"slug":"remote-skill","displayName":"Remote Skill","summary":"远程技能摘要","updatedAt":1710000000},"latestVersion":{"version":"%s"},"metadata":{"os":["macOS"],"systems":["cli"]},"owner":{"handle":"tester","displayName":"测试者"}}`, current)))
+		case request.URL.Path == "/api/v1/download":
+			requestedVersion := request.URL.Query().Get("version")
+			if requestedVersion == "" {
+				versionMu.RLock()
+				requestedVersion = latestVersion
+				versionMu.RUnlock()
+			}
+			archiveBytes := buildRemoteSkillArchive(t, requestedVersion)
+			writer.Header().Set("Content-Type", "application/zip")
+			_, _ = writer.Write(archiveBytes)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer registry.Close()
+
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.RegistryURL = registry.URL
+	config.Skills.Enabled = []string{"Remote Skill"}
+	config.Skills.Disabled = []string{"remote-skill"}
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	searchOutput, err := app.executeSkillsCommand([]string{"search", "remote"})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if !strings.Contains(searchOutput, registry.URL) || !strings.Contains(searchOutput, "remote-skill") {
+		t.Fatalf("unexpected search output: %q", searchOutput)
+	}
+
+	viewOutput, err := app.executeSkillsCommand([]string{"view-remote", "remote-skill"})
+	if err != nil {
+		t.Fatalf("view-remote failed: %v", err)
+	}
+	if !strings.Contains(viewOutput, "显示名称: Remote Skill") || !strings.Contains(viewOutput, "发布者: 测试者 (tester)") {
+		t.Fatalf("unexpected remote view output: %q", viewOutput)
+	}
+
+	installOutput, err := app.executeSkillsCommand([]string{"install", "remote-skill"})
+	if err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+	defaultSkillsDir, dirErr := internalconfig.DefaultSkillsDir()
+	if dirErr != nil {
+		t.Fatalf("default skills dir failed: %v", dirErr)
+	}
+	installedSkillPath := filepath.Join(defaultSkillsDir, "remote-skill", "SKILL.md")
+	if _, err := os.Stat(installedSkillPath); err != nil {
+		t.Fatalf("expected installed skill file: %v", err)
+	}
+	if !strings.Contains(installOutput, "已安装远程技能") || !strings.Contains(installOutput, "1.0.0") {
+		t.Fatalf("unexpected install output: %q", installOutput)
+	}
+
+	versionMu.Lock()
+	latestVersion = "2.0.0"
+	versionMu.Unlock()
+
+	updateOutput, err := app.executeSkillsCommand([]string{"update", "remote-skill"})
+	if err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+	installedBody, err := os.ReadFile(installedSkillPath)
+	if err != nil {
+		t.Fatalf("read installed skill failed: %v", err)
+	}
+	if !strings.Contains(string(installedBody), "Version 2.0.0") {
+		t.Fatalf("expected updated archive content, got %q", string(installedBody))
+	}
+	if !strings.Contains(updateOutput, "1.0.0 -> 2.0.0") {
+		t.Fatalf("unexpected update output: %q", updateOutput)
+	}
+
+	removeOutput, err := app.executeSkillsCommand([]string{"remove", "remote-skill"})
+	if err != nil {
+		t.Fatalf("remove failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(installedSkillPath)); !os.IsNotExist(err) {
+		t.Fatalf("expected skill directory removed, stat err=%v", err)
+	}
+	updatedConfig, err := manager.Load()
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	if containsIgnoreCase(updatedConfig.Skills.Enabled, "Remote Skill") || containsIgnoreCase(updatedConfig.Skills.Disabled, "remote-skill") {
+		t.Fatalf("expected removed skill aliases cleared, got enabled=%#v disabled=%#v", updatedConfig.Skills.Enabled, updatedConfig.Skills.Disabled)
+	}
+	if !strings.Contains(removeOutput, "已删除技能") {
+		t.Fatalf("unexpected remove output: %q", removeOutput)
+	}
+
+	sourceOutput, err := app.executeSkillsCommand([]string{"source", "set", "https://example.com/skills/"})
+	if err != nil {
+		t.Fatalf("source set failed: %v", err)
+	}
+	if !strings.Contains(sourceOutput, "https://example.com/skills") {
+		t.Fatalf("unexpected source set output: %q", sourceOutput)
+	}
+	updatedConfig, err = manager.Load()
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	if updatedConfig.Skills.RegistryURL != "https://example.com/skills" {
+		t.Fatalf("expected normalized registry URL, got %q", updatedConfig.Skills.RegistryURL)
+	}
+
+	resetOutput, err := app.executeSkillsCommand([]string{"source", "reset"})
+	if err != nil {
+		t.Fatalf("source reset failed: %v", err)
+	}
+	if !strings.Contains(resetOutput, internalconfig.Default().Skills.RegistryURL) {
+		t.Fatalf("unexpected source reset output: %q", resetOutput)
+	}
+}
+
+func buildRemoteSkillArchive(t *testing.T, version string) []byte {
+	t.Helper()
+	buffer := &bytes.Buffer{}
+	writer := zip.NewWriter(buffer)
+	fileWriter, err := writer.Create("remote-skill/SKILL.md")
+	if err != nil {
+		t.Fatalf("create zip entry failed: %v", err)
+	}
+	content := fmt.Sprintf("---\nname: Remote Skill\ndescription: 远程技能 %s\ncategory: remote\n---\n\nVersion %s\n", version, version)
+	if _, err := fileWriter.Write([]byte(content)); err != nil {
+		t.Fatalf("write zip entry failed: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close zip writer failed: %v", err)
+	}
+	return buffer.Bytes()
 }
 
 func containsIgnoreCase(items []string, target string) bool {

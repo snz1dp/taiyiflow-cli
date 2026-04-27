@@ -103,7 +103,7 @@ func TestTaskManagerRestoresPersistedTaskAcrossManagerInstances(t *testing.T) {
 	}
 	t.Setenv(config.RootDirEnvName(), t.TempDir())
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
-	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
+	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto", SandboxEscapePolicy: internalconfig.SandboxEscapePolicyAllow}
 	manager := newLocalTaskManager()
 
 	result, err := manager.startTask(runtimeClient, configValue, map[string]any{
@@ -165,7 +165,7 @@ func TestExecuteClientToolPayloadShellExecPersistsContextIdentifiers(t *testing.
 	}
 	t.Setenv(config.RootDirEnvName(), t.TempDir())
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
-	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
+	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto", SandboxEscapePolicy: internalconfig.SandboxEscapePolicyAllow}
 
 	toolName, resultAny, err := runtimeClient.ExecuteClientToolPayload(context.Background(), configValue, map[string]any{
 		"flow_id": "demo-flow",
@@ -204,6 +204,42 @@ func TestExecuteClientToolPayloadShellExecPersistsContextIdentifiers(t *testing.
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("expected background task to finish and preserve context identifiers")
+}
+
+func TestExecuteClientToolPayloadShellExecDefaultsToClientContextDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell test uses POSIX shell")
+	}
+	t.Setenv(config.RootDirEnvName(), t.TempDir())
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto", SandboxEscapePolicy: internalconfig.SandboxEscapePolicyAllow}
+	contextDir := t.TempDir()
+
+	_, resultAny, err := runtimeClient.ExecuteClientToolPayload(context.Background(), configValue, map[string]any{
+		"flow_id":            "demo-flow",
+		"client_context_dir": contextDir,
+		"server":             map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": "shell_exec",
+			"arguments": map[string]any{
+				"raw_command": "pwd",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteClientToolPayload failed: %v", err)
+	}
+	result := resultAny.(map[string]any)
+	resolvedContextDir, pathErr := filepath.EvalSymlinks(contextDir)
+	if pathErr != nil {
+		resolvedContextDir = contextDir
+	}
+	if strings.TrimSpace(stringValue(result["stdout"])) != resolvedContextDir {
+		t.Fatalf("expected stdout cwd %q, got %#v", resolvedContextDir, result)
+	}
+	if result["cwd"] != resolvedContextDir {
+		t.Fatalf("expected result cwd %q, got %#v", resolvedContextDir, result)
+	}
 }
 
 func TestTerminalCaptureReturnsCombinedOutput(t *testing.T) {

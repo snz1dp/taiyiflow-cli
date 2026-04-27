@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +23,8 @@ import (
 )
 
 var bracketErrorCodePattern = regexp.MustCompile(`^\[[A-Z0-9_]+\]\s*`)
+
+const skillsPickerCommandPrefix = "/skills-picker"
 
 func (a *App) runTUI(ctx context.Context, args []string) error {
 	startupCommand := ""
@@ -101,6 +105,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			SessionID:              sessionState.SessionID,
 			RunID:                  request.RunID,
 			RequestType:            normalizeRequestMode(request.RequestMode),
+			ReasoningEnabled:       request.ReasoningEnabled,
 			DeviceType:             provider.DeviceTypeCLI,
 			ClientContextDir:       resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir)),
 			CommandExecutionTarget: "client",
@@ -364,14 +369,14 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				"/agent 或 /agent <任务> 切换执行模式",
 				"/ask 或 /ask <问题> 切换问答模式",
 				"/plan 或 /plan <目标> 切换计划模式",
+				"/reasoning [on|off|default|status] 切换当前会话思考模式",
 				"/session 查看当前会话",
 				"/sessions [页码] 查看当前智能体的服务端会话列表",
-				"/config 打开服务端配置弹窗",
+					"/config 打开全局与权限配置弹窗",
 				"!<shell 命令> 在当前目录执行本地命令",
 				"/agents 或 /agents <名称> 选择智能体",
 				"/tasks [list|output|capture|stop|remove] 管理本地后台任务",
-				"/permissions [show|set|clear] 查看或调整本地权限设置",
-				"/skills [list|view|enable|disable] 管理本地技能",
+					"/skills [list|view|search|view-remote|install|remove|update|source|enable|disable|help] 管理本地技能与远程仓库技能",
 				"/exit 退出",
 			}
 			if !snapshot.BackendAvailable {
@@ -386,8 +391,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					"/clear 清空当前界面消息",
 					"/config 打开当前配置弹窗",
 					"/tasks 查看本地后台任务",
-					"/permissions 查看本地权限设置",
-					"/skills 查看本地技能",
+					"/skills 查看本地技能与远程仓库技能",
+					"/reasoning 查看思考模式",
 					"/help 查看当前提示",
 					"/exit 退出",
 				}
@@ -420,20 +425,52 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			updatedSnapshot.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, snapshot.Workdir))
 			updatedSnapshot.SessionSandboxEscapePolicy = strings.TrimSpace(sessionState.SandboxEscapePolicyOverride)
 			return tui.LocalCommandResult{Handled: true, Snapshot: &updatedSnapshot, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: output}}}, nil
+		case strings.EqualFold(trimmed, skillsPickerCommandPrefix) || strings.HasPrefix(strings.ToLower(trimmed), skillsPickerCommandPrefix+" "):
+			localConfig, configErr := a.configManager.Load()
+			if configErr != nil {
+				return tui.LocalCommandResult{}, configErr
+			}
+			result, pickerErr := a.executeTUISkillsPickerCommand(localConfig, trimmed)
+			if pickerErr != nil {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: pickerErr.Error()}}}, nil
+			}
+			return result, nil
 		case strings.EqualFold(trimmed, "/skills") || strings.EqualFold(trimmed, "/skills list"):
 			localConfig, configErr := a.configManager.Load()
 			if configErr != nil {
 				return tui.LocalCommandResult{}, configErr
 			}
-			picker, pickerErr := buildTUISkillsPicker(localConfig)
+			picker, pickerErr := buildTUISkillsPicker(localConfig, "")
 			if pickerErr != nil {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: pickerErr.Error()}}}, nil
 			}
 			return tui.LocalCommandResult{Handled: true, SkillsPicker: picker}, nil
+		case strings.EqualFold(trimmed, "/skills help"):
+			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: skillsSlashUsage()}}}, nil
+		case strings.EqualFold(trimmed, "/reasoning") || strings.HasPrefix(strings.ToLower(trimmed), "/reasoning "):
+			output, updatedSnapshot, err := a.executeTUIReasoningCommand(trimmed, snapshot)
+			if err != nil {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
+			}
+			result := tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: output}}}
+			if updatedSnapshot != nil {
+				result.Snapshot = updatedSnapshot
+			}
+			return result, nil
 		case strings.EqualFold(trimmed, "/tasks") || strings.EqualFold(trimmed, "/tasks list") || strings.HasPrefix(strings.ToLower(trimmed), "/tasks "):
 			localConfig, configErr := a.configManager.Load()
 			if configErr != nil {
 				return tui.LocalCommandResult{}, configErr
+			}
+			if strings.EqualFold(trimmed, "/tasks") || strings.EqualFold(trimmed, "/tasks list") {
+				picker, emptyMessage, pickerErr := buildTUITasksPicker(commandCtx, localConfig)
+				if pickerErr != nil {
+					return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: pickerErr.Error()}}}, nil
+				}
+				if picker != nil {
+					return tui.LocalCommandResult{Handled: true, TasksPicker: picker}, nil
+				}
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: emptyMessage}}}, nil
 			}
 			output, panel, commandErr := a.executeTasksSlashCommand(commandCtx, localConfig, trimmed)
 			if commandErr != nil {
@@ -447,18 +484,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			}
 			return tui.LocalCommandResult{Handled: true, Events: events}, nil
 		case strings.EqualFold(trimmed, "/permissions") || strings.EqualFold(trimmed, "/permissions show") || strings.HasPrefix(strings.ToLower(trimmed), "/permissions "):
-			_, output, panel, commandErr := a.executePermissionsCommand(trimmed)
-			if commandErr != nil {
-				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: commandErr.Error()}}}, nil
-			}
-			events := []tui.Event{}
-			if panel != nil {
-				events = append(events, tui.Event{Kind: tui.EventToolPanel, Panel: panel})
-			}
-			if strings.TrimSpace(output) != "" && panel == nil {
-				events = append(events, tui.Event{Kind: tui.EventSystemNote, Text: output})
-			}
-			return tui.LocalCommandResult{Handled: true, Events: events}, nil
+			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "/permissions 已移除，请使用 /config 管理权限与执行配置。"}}}, nil
 		case strings.EqualFold(trimmed, "/review") || strings.HasPrefix(strings.ToLower(trimmed), "/review "):
 			target, reviewErr := parseReviewSlashCommand(trimmed)
 			if reviewErr != nil {
@@ -506,6 +532,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						Workdir:                     snapshot.Workdir,
 						RequestMode:                 mode,
 						ContextDir:                  updatedSnapshot.ContextDir,
+						ReasoningOverride:           currentSessionState.ReasoningOverride,
 						SandboxEscapePolicyOverride: currentSessionState.SandboxEscapePolicyOverride,
 					}); err != nil {
 						return tui.LocalCommandResult{}, err
@@ -671,6 +698,7 @@ func (a *App) buildTUISnapshot(
 		ContextDir:          resolveLocalWorkdir(config.Workdir),
 		RequestMode:         provider.RequestTypeAgent,
 		ApprovalMode:        config.ApprovalMode,
+		ReasoningEnabled:    config.ReasoningEnabled,
 	}
 	if !backend.Available {
 		if strings.TrimSpace(flowID) == "" {
@@ -685,6 +713,8 @@ func (a *App) buildTUISnapshot(
 		snapshot.SessionTitle = resolveSessionTitle(sessionState)
 		snapshot.RequestMode = normalizeRequestMode(sessionState.RequestMode)
 		snapshot.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, snapshot.Workdir))
+		snapshot.ReasoningOverride = strings.TrimSpace(sessionState.ReasoningOverride)
+		snapshot.ReasoningEnabled = resolveReasoningEnabled(config, sessionState.ReasoningOverride)
 		snapshot.SessionSandboxEscapePolicy = strings.TrimSpace(sessionState.SandboxEscapePolicyOverride)
 		snapshot.DefaultFlowLabel = resolveFlowLabel(flowID, snapshot.DefaultFlowLabel, sessionState.FlowDisplayName)
 		return snapshot, nil
@@ -705,6 +735,8 @@ func (a *App) buildTUISnapshot(
 	snapshot.SessionTitle = resolveSessionTitle(sessionState)
 	snapshot.RequestMode = normalizeRequestMode(sessionState.RequestMode)
 	snapshot.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, snapshot.Workdir))
+	snapshot.ReasoningOverride = strings.TrimSpace(sessionState.ReasoningOverride)
+	snapshot.ReasoningEnabled = resolveReasoningEnabled(config, sessionState.ReasoningOverride)
 	snapshot.SessionSandboxEscapePolicy = strings.TrimSpace(sessionState.SandboxEscapePolicyOverride)
 	if strings.TrimSpace(snapshot.SessionID) != "" {
 		title, titleErr := lookupSessionTitle(ctx, providerClient, flowID, snapshot.SessionID)
@@ -1694,7 +1726,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 
 	return &tui.ConfigFormState{
 		Title:       "服务端连接配置(server connection)",
-		Hint:        "修改服务端地址、鉴权和运行默认项。保存后会立即刷新连接状态。",
+		Hint:        "修改服务端地址、鉴权、思考模式和运行默认项。保存后会立即刷新连接状态。",
 		Path:        a.configManager.Path(),
 		HasAPIKey:   strings.TrimSpace(config.APIKey) != "",
 		SubmitText:  "Ctrl+S 保存配置",
@@ -1703,9 +1735,15 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			BackendBaseURL:           strings.TrimSpace(config.BackendBaseURL),
 			DefaultFlow:              strings.TrimSpace(config.DefaultFlow),
 			ApprovalMode:             strings.TrimSpace(config.ApprovalMode),
+			SandboxEscapePolicy:      strings.TrimSpace(config.SandboxEscapePolicy),
+			SandboxRoots:             formatSandboxRootsInline(config.SandboxRoots),
+			PermissionRules:          formatPermissionRulesInline(config.PermissionRules),
+			ReasoningEnabled:         config.ReasoningEnabled,
 			Workdir:                  strings.TrimSpace(config.Workdir),
 			StreamIdleTimeoutSeconds: strconv.Itoa(config.StreamIdleTimeoutSeconds),
 			OutputLanguage:           strings.TrimSpace(config.OutputLanguage),
+			SkillsDirectory:          strings.TrimSpace(config.Skills.Directory),
+			SkillsRegistryURL:        strings.TrimSpace(config.Skills.RegistryURL),
 		},
 	}, nil
 }
@@ -1743,6 +1781,23 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		return internalconfig.Config{}, err
 	}
 
+	if strings.TrimSpace(submission.Values.SandboxEscapePolicy) == "" {
+		config.SandboxEscapePolicy = internalconfig.Default().SandboxEscapePolicy
+	} else if err := assignConfigValue(&config, "external_resource_access_policy", submission.Values.SandboxEscapePolicy); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	config.SandboxRoots = parseSandboxRootsInline(submission.Values.SandboxRoots)
+	parsedPermissionRules, err := parsePermissionRulesInline(submission.Values.PermissionRules)
+	if err != nil {
+		return internalconfig.Config{}, err
+	}
+	config.PermissionRules = parsedPermissionRules
+
+	if err := assignConfigValue(&config, "reasoning_enabled", strconv.FormatBool(submission.Values.ReasoningEnabled)); err != nil {
+		return internalconfig.Config{}, err
+	}
+
 	if strings.TrimSpace(submission.Values.Workdir) == "" {
 		config.Workdir = ""
 	} else if err := assignConfigValue(&config, "workdir", submission.Values.Workdir); err != nil {
@@ -1761,11 +1816,105 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		return internalconfig.Config{}, err
 	}
 
+	if strings.TrimSpace(submission.Values.SkillsDirectory) == "" {
+		config.Skills.Directory = ""
+	} else if err := assignConfigValue(&config, "skills_directory", submission.Values.SkillsDirectory); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if strings.TrimSpace(submission.Values.SkillsRegistryURL) == "" {
+		config.Skills.RegistryURL = internalconfig.Default().Skills.RegistryURL
+	} else if err := assignConfigValue(&config, "skills_registry_url", submission.Values.SkillsRegistryURL); err != nil {
+		return internalconfig.Config{}, err
+	}
+
 	if err := a.configManager.Save(config); err != nil {
 		return internalconfig.Config{}, err
 	}
 
 	return config, nil
+}
+
+func resolveReasoningEnabled(config internalconfig.Config, override string) bool {
+	switch strings.ToLower(strings.TrimSpace(override)) {
+	case "on":
+		return true
+	case "off":
+		return false
+	default:
+		return config.ReasoningEnabled
+	}
+}
+
+func reasoningStatusText(enabled bool) string {
+	if enabled {
+		return "开启"
+	}
+	return "关闭"
+}
+
+func executeReasoningDirective(argument string, config internalconfig.Config, state agent.SessionState) (string, agent.SessionState, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(argument))
+	switch trimmed {
+	case "", "status":
+		effective := resolveReasoningEnabled(config, state.ReasoningOverride)
+		source := "会话覆盖"
+		if strings.TrimSpace(state.ReasoningOverride) == "" {
+			source = "全局配置"
+		}
+		return fmt.Sprintf("当前思考模式: %s（来源: %s）", reasoningStatusText(effective), source), state, nil
+	case "on":
+		state.ReasoningOverride = "on"
+		return "已开启当前会话的思考模式。", state, nil
+	case "off":
+		state.ReasoningOverride = "off"
+		return "已关闭当前会话的思考模式。", state, nil
+	case "default", "reset", "clear":
+		state.ReasoningOverride = ""
+		return fmt.Sprintf("已恢复为全局默认思考模式：%s。", reasoningStatusText(config.ReasoningEnabled)), state, nil
+	default:
+		return "", state, fmt.Errorf("用法: /reasoning [on|off|default|status]")
+	}
+}
+
+func (a *App) executeReasoningCommand(config internalconfig.Config, command string, state agent.SessionState) (string, agent.SessionState, error) {
+	argument := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(command), "/reasoning"))
+	output, updatedState, err := executeReasoningDirective(argument, config, state)
+	if err != nil {
+		return "", state, err
+	}
+	if strings.TrimSpace(updatedState.FlowID) != "" && strings.TrimSpace(updatedState.Workdir) != "" {
+		if saveErr := a.sessionStore.Save(updatedState); saveErr != nil {
+			return "", state, saveErr
+		}
+	}
+	return output, updatedState, nil
+}
+
+func (a *App) executeTUIReasoningCommand(command string, snapshot tui.Snapshot) (string, *tui.Snapshot, error) {
+	config, err := a.configManager.Load()
+	if err != nil {
+		return "", nil, err
+	}
+	state := agent.SessionState{
+		FlowID:                      snapshot.DefaultFlow,
+		FlowDisplayName:             snapshot.DefaultFlowLabel,
+		SessionID:                   snapshot.SessionID,
+		SessionTitle:                snapshot.SessionTitle,
+		Workdir:                     snapshot.Workdir,
+		RequestMode:                 snapshot.RequestMode,
+		ContextDir:                  snapshot.ContextDir,
+		ReasoningOverride:           snapshot.ReasoningOverride,
+		SandboxEscapePolicyOverride: snapshot.SessionSandboxEscapePolicy,
+	}
+	output, updatedState, err := a.executeReasoningCommand(config, command, state)
+	if err != nil {
+		return "", nil, err
+	}
+	updatedSnapshot := snapshot
+	updatedSnapshot.ReasoningOverride = updatedState.ReasoningOverride
+	updatedSnapshot.ReasoningEnabled = resolveReasoningEnabled(config, updatedState.ReasoningOverride)
+	return output, &updatedSnapshot, nil
 }
 
 func totalPages(total int, pageSize int) int {
@@ -1827,7 +1976,7 @@ func buildApprovalPicker(snapshot tui.Snapshot) *tui.ApprovalPickerState {
 	}
 }
 
-func buildTUISkillsPicker(config internalconfig.Config) (*tui.SkillsPickerState, error) {
+func buildTUISkillsPicker(config internalconfig.Config, query string) (*tui.SkillsPickerState, error) {
 	items, _, err := skills.Discover(config)
 	if err != nil {
 		return nil, err
@@ -1857,9 +2006,283 @@ func buildTUISkillsPicker(config internalconfig.Config) (*tui.SkillsPickerState,
 	if len(pickerItems) == 0 {
 		hint = "当前没有可展示的技能，Esc 关闭。"
 	}
+	remoteQuery := strings.TrimSpace(query)
+	remoteResults, registryURL, remoteErr := skills.SearchRemote(config, remoteQuery, 20)
+	installedMap := map[string]skills.InstalledRemoteSkill{}
+	installedItems, installedErr := skills.ListInstalledRemoteSkills(config)
+	if installedErr == nil {
+		for _, item := range installedItems {
+			installedMap[strings.ToLower(strings.TrimSpace(item.Slug))] = item
+		}
+	}
+	registryLabel := compactSkillsRegistryLabel(registryURL)
+	remoteItems := make([]tui.RemoteSkillItem, 0, len(remoteResults))
+	for _, item := range remoteResults {
+		installed, ok := installedMap[strings.ToLower(strings.TrimSpace(item.Slug))]
+		remoteItems = append(remoteItems, tui.RemoteSkillItem{
+			Slug:             strings.TrimSpace(item.Slug),
+			DisplayName:      strings.TrimSpace(item.DisplayName),
+			Summary:          strings.TrimSpace(item.Summary),
+			Version:          strings.TrimSpace(item.Version),
+			RegistryLabel:    registryLabel,
+			Installed:        ok,
+			InstalledVersion: strings.TrimSpace(installed.InstalledVersion),
+			CanUpdate:        ok && !strings.EqualFold(strings.TrimSpace(installed.InstalledVersion), strings.TrimSpace(item.Version)),
+		})
+	}
+	sort.SliceStable(remoteItems, func(left int, right int) bool {
+		if remoteItems[left].Installed != remoteItems[right].Installed {
+			return remoteItems[left].Installed
+		}
+		if remoteItems[left].CanUpdate != remoteItems[right].CanUpdate {
+			return remoteItems[left].CanUpdate
+		}
+		leftName := strings.ToLower(firstNonEmpty(remoteItems[left].DisplayName, remoteItems[left].Slug))
+		rightName := strings.ToLower(firstNonEmpty(remoteItems[right].DisplayName, remoteItems[right].Slug))
+		return leftName < rightName
+	})
+	remoteError := ""
+	if remoteErr != nil {
+		remoteError = remoteErr.Error()
+	}
 	return &tui.SkillsPickerState{
-		Title: "技能列表",
-		Hint:  hint,
-		Items: pickerItems,
+		Title:         "技能列表",
+		Hint:          hint,
+		ActiveTab:     "local",
+		Items:         pickerItems,
+		RemoteItems:   remoteItems,
+		RemoteQuery:   remoteQuery,
+		RemoteHint:    "按 / 输入搜索词，Enter 查看详情，i 安装，u 更新，d 删除，r 刷新。",
+		RemoteError:   remoteError,
+		RegistryLabel: registryLabel,
 	}, nil
+}
+
+func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, command string) (tui.LocalCommandResult, error) {
+	remainder := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(command), skillsPickerCommandPrefix))
+	action := "open"
+	args := []string{}
+	if remainder != "" {
+		args = strings.Fields(remainder)
+		if len(args) > 0 {
+			action = strings.ToLower(strings.TrimSpace(args[0]))
+			args = args[1:]
+		}
+	}
+	buildPicker := func(query string) (tui.LocalCommandResult, error) {
+		picker, err := buildTUISkillsPicker(config, query)
+		if err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+		if picker != nil {
+			picker.ActiveTab = "remote"
+		}
+		return tui.LocalCommandResult{Handled: true, SkillsPicker: picker}, nil
+	}
+	buildDetailResult := func(slug string, query string, note string) (tui.LocalCommandResult, error) {
+		result, err := buildPicker(query)
+		if err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+		detail, _, detailErr := skills.FetchRemoteDetail(config, slug)
+		if detailErr != nil {
+			if note != "" {
+				result.Events = append(result.Events, tui.Event{Kind: tui.EventSystemNote, Text: note})
+			}
+			result.Events = append(result.Events, tui.Event{Kind: tui.EventErrorNote, Text: detailErr.Error()})
+			return result, nil
+		}
+		installedItems, installedErr := skills.ListInstalledRemoteSkills(config)
+		installed := skills.InstalledRemoteSkill{}
+		installedFound := false
+		if installedErr == nil {
+			for _, item := range installedItems {
+				if strings.EqualFold(strings.TrimSpace(item.Slug), strings.TrimSpace(slug)) {
+					installed = item
+					installedFound = true
+					break
+				}
+			}
+		}
+		panelItem := buildRemoteSkillDetailItem(detail, compactSkillsRegistryLabel(detail.RegistryURL), installed, installedFound)
+		if note != "" {
+			result.Events = append(result.Events, tui.Event{Kind: tui.EventSystemNote, Text: note})
+		}
+		result.Events = append(result.Events, tui.Event{Kind: tui.EventToolPanel, Panel: buildRemoteSkillPanel(panelItem, query)})
+		return result, nil
+	}
+	splitSlugAndQuery := func(values []string) (string, string, error) {
+		if len(values) == 0 || strings.TrimSpace(values[0]) == "" {
+			return "", "", fmt.Errorf("缺少远程技能 slug")
+		}
+		return strings.TrimSpace(values[0]), strings.TrimSpace(strings.Join(values[1:], " ")), nil
+	}
+	switch action {
+	case "open", "refresh", "search":
+		return buildPicker(strings.TrimSpace(strings.Join(args, " ")))
+	case "detail":
+		slug, query, err := splitSlugAndQuery(args)
+		if err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+		return buildDetailResult(slug, query, "")
+	case "install", "update", "remove":
+		slug, query, err := splitSlugAndQuery(args)
+		if err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+		output, commandErr := a.executeSkillsCommand([]string{action, slug})
+		result, pickerErr := buildPicker(query)
+		if pickerErr != nil {
+			return tui.LocalCommandResult{}, pickerErr
+		}
+		if commandErr != nil {
+			result.Events = []tui.Event{{Kind: tui.EventErrorNote, Text: commandErr.Error()}}
+			return result, nil
+		}
+		result.Events = []tui.Event{{Kind: tui.EventSystemNote, Text: output}}
+		return result, nil
+	case "install-detail", "update-detail", "remove-detail":
+		slug, query, err := splitSlugAndQuery(args)
+		if err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+		baseAction := strings.TrimSuffix(action, "-detail")
+		output, commandErr := a.executeSkillsCommand([]string{baseAction, slug})
+		if commandErr != nil {
+			result, pickerErr := buildPicker(query)
+			if pickerErr != nil {
+				return tui.LocalCommandResult{}, pickerErr
+			}
+			result.Events = []tui.Event{{Kind: tui.EventErrorNote, Text: commandErr.Error()}}
+			return result, nil
+		}
+		return buildDetailResult(slug, query, output)
+	default:
+		return tui.LocalCommandResult{}, fmt.Errorf("不支持的 skills picker 动作: %s", action)
+	}
+}
+
+func compactSkillsRegistryLabel(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Host == "" {
+		return trimmed
+	}
+	return parsed.Host
+}
+
+func buildRemoteSkillDetailItem(detail skills.RemoteSkillDetail, registryLabel string, installed skills.InstalledRemoteSkill, installedFound bool) tui.RemoteSkillItem {
+	ownerLabel := strings.TrimSpace(detail.OwnerName)
+	if ownerLabel == "" {
+		ownerLabel = strings.TrimSpace(detail.OwnerHandle)
+	} else if strings.TrimSpace(detail.OwnerHandle) != "" && !strings.EqualFold(ownerLabel, strings.TrimSpace(detail.OwnerHandle)) {
+		ownerLabel += fmt.Sprintf(" (%s)", strings.TrimSpace(detail.OwnerHandle))
+	}
+	return tui.RemoteSkillItem{
+		Slug:             strings.TrimSpace(detail.Slug),
+		DisplayName:      strings.TrimSpace(detail.DisplayName),
+		Summary:          strings.TrimSpace(detail.Summary),
+		Version:          strings.TrimSpace(detail.Version),
+		RegistryLabel:    registryLabel,
+		Installed:        installedFound,
+		InstalledVersion: strings.TrimSpace(installed.InstalledVersion),
+		CanUpdate:        installedFound && !strings.EqualFold(strings.TrimSpace(installed.InstalledVersion), strings.TrimSpace(detail.Version)),
+		OwnerLabel:       ownerLabel,
+		SupportedOS:      append([]string{}, detail.SupportedOS...),
+		SupportedEnvs:    append([]string{}, detail.SupportedEnvs...),
+	}
+}
+
+func buildRemoteSkillPanel(item tui.RemoteSkillItem, query string) *tui.ToolPanel {
+	return &tui.ToolPanel{
+		Title:   fmt.Sprintf("远程技能详情｜%s", firstNonEmpty(strings.TrimSpace(item.DisplayName), strings.TrimSpace(item.Slug))),
+		Summary: firstNonEmpty(strings.TrimSpace(item.Summary), "当前远程技能没有额外说明。"),
+		Body:    buildRemoteSkillPanelBody(item),
+		Hint:    "Esc 返回上层技能列表。",
+		Actions: []tui.ToolPanelAction{
+			{Key: "i", Label: "安装", Command: buildHiddenSkillsPickerCommand("install-detail", item.Slug, query), Disabled: item.Installed},
+			{Key: "u", Label: "更新", Command: buildHiddenSkillsPickerCommand("update-detail", item.Slug, query), Disabled: !item.Installed},
+			{Key: "d", Label: "删除", Command: buildHiddenSkillsPickerCommand("remove-detail", item.Slug, query), Disabled: !item.Installed},
+		},
+	}
+}
+
+func buildHiddenSkillsPickerCommand(action string, slug string, query string) string {
+	parts := []string{skillsPickerCommandPrefix, strings.TrimSpace(action)}
+	if strings.TrimSpace(slug) != "" {
+		parts = append(parts, strings.TrimSpace(slug))
+	}
+	if strings.TrimSpace(query) != "" {
+		parts = append(parts, strings.TrimSpace(query))
+	}
+	return strings.Join(parts, " ")
+}
+
+func buildRemoteSkillPanelBody(item tui.RemoteSkillItem) string {
+	lines := []string{
+		fmt.Sprintf("Slug: %s", firstNonEmpty(strings.TrimSpace(item.Slug), "<未填写>")),
+		fmt.Sprintf("显示名称: %s", firstNonEmpty(strings.TrimSpace(item.DisplayName), "<未填写>")),
+		fmt.Sprintf("摘要: %s", firstNonEmpty(strings.TrimSpace(item.Summary), "<未填写>")),
+		fmt.Sprintf("最新版本: %s", firstNonEmpty(strings.TrimSpace(item.Version), "<未填写>")),
+	}
+	if strings.TrimSpace(item.OwnerLabel) != "" {
+		lines = append(lines, fmt.Sprintf("发布者: %s", item.OwnerLabel))
+	}
+	if len(item.SupportedOS) > 0 {
+		lines = append(lines, fmt.Sprintf("支持系统: %s", strings.Join(item.SupportedOS, ", ")))
+	}
+	if len(item.SupportedEnvs) > 0 {
+		lines = append(lines, fmt.Sprintf("适用环境: %s", strings.Join(item.SupportedEnvs, ", ")))
+	}
+	if strings.TrimSpace(item.RegistryLabel) != "" {
+		lines = append(lines, fmt.Sprintf("仓库: %s", item.RegistryLabel))
+	}
+	if item.Installed {
+		lines = append(lines, fmt.Sprintf("安装状态: 已安装 %s", firstNonEmpty(strings.TrimSpace(item.InstalledVersion), "<未知版本>")))
+	} else {
+		lines = append(lines, "安装状态: 未安装")
+	}
+	if item.CanUpdate {
+		lines = append(lines, "更新状态: 有可用更新")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildTUITasksPicker(ctx context.Context, config internalconfig.Config) (*tui.TasksPickerState, string, error) {
+	_, result, err := runLocalReadTool(ctx, config, "task_list", map[string]any{})
+	if err != nil {
+		return nil, "", err
+	}
+	resultMap, _ := result.(map[string]any)
+	tasks := mapSliceValue(resultMap, "tasks")
+	if len(tasks) == 0 {
+		return nil, "当前没有后台任务。", nil
+	}
+	items := make([]tui.TaskItem, 0, len(tasks))
+	for _, item := range tasks {
+		exitCode := ""
+		if value, ok := item["exit_code"]; ok {
+			exitCode = fmt.Sprintf("%v", value)
+		}
+		items = append(items, tui.TaskItem{
+			ID:          strings.TrimSpace(stringMapValue(item, "task_id")),
+			Name:        fallbackString(stringMapValue(item, "task_name"), stringMapValue(item, "task_id")),
+			Status:      strings.TrimSpace(stringMapValue(item, "status")),
+			Command:     strings.TrimSpace(stringMapValue(item, "command")),
+			CWD:         strings.TrimSpace(stringMapValue(item, "cwd")),
+			SessionID:   strings.TrimSpace(stringMapValue(item, "session_id")),
+			StartedAt:   strings.TrimSpace(stringMapValue(item, "started_at")),
+			CompletedAt: strings.TrimSpace(stringMapValue(item, "completed_at")),
+			ExitCode:    strings.TrimSpace(exitCode),
+		})
+	}
+	return &tui.TasksPickerState{
+		Title: "后台任务(tasks)",
+		Hint:  "使用方向键选择任务，Enter 打开操作菜单，Esc 关闭。",
+		Items: items,
+	}, "", nil
 }

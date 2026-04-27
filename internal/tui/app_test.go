@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestStartStreamErrorDoesNotQueueDoneMessage(t *testing.T) {
@@ -91,6 +92,59 @@ func TestVisibleSlashCommandsListsAgentBeforeAgents(t *testing.T) {
 	}
 	if agentIndex >= agentsIndex {
 		t.Fatalf("expected /agent before /agents, got index %d and %d", agentIndex, agentsIndex)
+	}
+}
+
+func TestVisibleSlashCommandsOmitsPermissionsCommand(t *testing.T) {
+	input := textarea.New()
+	input.SetValue("/p")
+
+	model := model{
+		snapshot: Snapshot{BackendAvailable: true},
+		input:    input,
+	}
+
+	commands := model.visibleSlashCommands()
+	for _, command := range commands {
+		if command.Trigger == "/permissions" {
+			t.Fatalf("expected /permissions to be removed from slash commands, got %#v", commands)
+		}
+	}
+}
+
+func TestFitOverlayContentKeepsFocusedConfigFieldVisible(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{
+		Title:     "配置设置",
+		Hint:      "测试超长弹窗",
+		HasAPIKey: true,
+		Values: ConfigFormValues{
+			BackendBaseURL:           "http://localhost:7860",
+			SandboxRoots:             "/tmp/a, /tmp/b",
+			PermissionRules:          "tool:shell_exec=deny; shell:git status=allow",
+			Workdir:                  "/workspace/demo",
+			StreamIdleTimeoutSeconds: "300",
+			OutputLanguage:           "zh-CN",
+			SkillsRegistryURL:        "https://mirror-cn.clawhub.com",
+		},
+	})
+	state.cursor = configFieldSkillsRegistryURL
+
+	model := model{
+		width:        80,
+		height:       14,
+		contentWidth: 74,
+		configForm:   state,
+	}
+
+	rendered := sanitizeTerminalText(model.fitOverlayContent(model.renderConfigForm()))
+	if !strings.Contains(rendered, "技能仓库地址") {
+		t.Fatalf("expected focused field to remain visible, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "上方还有") {
+		t.Fatalf("expected cropped overlay indicator, got %q", rendered)
+	}
+	if strings.Contains(rendered, overlayFocusMarker) {
+		t.Fatalf("expected overlay marker to be stripped, got %q", rendered)
 	}
 }
 
@@ -204,6 +258,7 @@ func TestApplyLocalCommandResultOpensSkillsPicker(t *testing.T) {
 		Handled: true,
 		SkillsPicker: &SkillsPickerState{
 			Title: "技能列表",
+			ActiveTab: "local",
 			Items: []SkillItem{{Name: "taiyiflowApi", Description: "接口参考"}},
 		},
 	}
@@ -223,11 +278,12 @@ func TestHandleSkillsPickerEnterOpensToolPanel(t *testing.T) {
 		input:        textarea.New(),
 		skillsPicker: &SkillsPickerState{
 			Title: "技能列表",
+			ActiveTab: "local",
 			Items: []SkillItem{{
 				Name:        "taiyiflowApi",
 				Description: "接口参考",
 				SourceLabel: "内置技能",
-				StateLabel:  "默认启用",
+					StateLabel:  "默认显示",
 			}},
 		},
 	}
@@ -237,14 +293,176 @@ func TestHandleSkillsPickerEnterOpensToolPanel(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected model type, got %T", updatedModel)
 	}
-	if updated.skillsPicker != nil {
-		t.Fatalf("expected skills picker to close after enter, got %#v", updated.skillsPicker)
+	if updated.skillsPicker == nil {
+		t.Fatal("expected skills picker to remain open behind tool panel")
 	}
 	if updated.toolPanel == nil {
 		t.Fatal("expected tool panel to open from selected skill")
 	}
 	if !strings.Contains(updated.toolPanel.Title, "taiyiflowApi") {
 		t.Fatalf("unexpected tool panel title: %#v", updated.toolPanel)
+	}
+}
+
+func TestHandleSkillsPickerTabSwitchesToRemote(t *testing.T) {
+	m := model{
+		skillsPicker: &SkillsPickerState{
+			Title:      "技能列表",
+			ActiveTab:  "local",
+			Items:      []SkillItem{{Name: "local"}},
+			RemoteItems: []RemoteSkillItem{{Slug: "remote-skill", DisplayName: "Remote Skill"}},
+		},
+	}
+
+	updatedModel, _ := m.handleSkillsPickerKey(tea.KeyMsg{Type: tea.KeyTab})
+	updated := updatedModel.(model)
+	if updated.skillsPicker == nil || updated.skillsPicker.ActiveTab != "remote" {
+		t.Fatalf("expected remote tab after tab key, got %#v", updated.skillsPicker)
+	}
+}
+
+func TestHandleSkillsPickerEnterOnRemoteOpensRemoteToolPanel(t *testing.T) {
+	m := model{
+		contentWidth: 80,
+		input:        textarea.New(),
+		skillsPicker: &SkillsPickerState{
+			Title:      "技能列表",
+			ActiveTab:  "remote",
+			RemoteItems: []RemoteSkillItem{{
+				Slug:          "remote-skill",
+				DisplayName:   "Remote Skill",
+				Summary:       "远程技能摘要",
+				Version:       "1.2.3",
+				RegistryLabel: "https://registry.example.com",
+			}},
+		},
+	}
+
+	updatedModel, _ := m.handleSkillsPickerKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := updatedModel.(model)
+	if updated.toolPanel != nil {
+		t.Fatalf("expected remote detail to load asynchronously, got %#v", updated.toolPanel)
+	}
+	if updated.skillsPicker == nil {
+		t.Fatal("expected picker to remain visible while loading detail")
+	}
+}
+
+func TestHandleToolPanelEscReturnsToSkillsPicker(t *testing.T) {
+	m := model{
+		contentWidth: 80,
+		input:        textarea.New(),
+		skillsPicker: &SkillsPickerState{Title: "技能列表", ActiveTab: "local", Items: []SkillItem{{Name: "local"}}},
+		toolPanel:    &ToolPanel{Title: "技能详情"},
+	}
+
+	updatedModel, _ := m.handleToolPanelKey(tea.KeyMsg{Type: tea.KeyEsc})
+	updated := updatedModel.(model)
+	if updated.toolPanel != nil {
+		t.Fatalf("expected tool panel to close, got %#v", updated.toolPanel)
+	}
+	if updated.skillsPicker == nil {
+		t.Fatal("expected underlying skills picker to remain after esc")
+	}
+}
+
+func TestHandleSkillsPickerSearchInputUpdatesQueryAndRunsSearch(t *testing.T) {
+	captured := ""
+	m := model{
+		ctx:   context.Background(),
+		input: textarea.New(),
+		skillsPicker: &SkillsPickerState{
+			Title:       "技能列表",
+			ActiveTab:   "remote",
+			SearchMode:  true,
+			RemoteQuery: "rem",
+		},
+		localCommand: func(ctx context.Context, command string, snapshot Snapshot) (LocalCommandResult, error) {
+			captured = command
+			return LocalCommandResult{Handled: true, SkillsPicker: &SkillsPickerState{Title: "技能列表", ActiveTab: "remote", RemoteQuery: "remote debug"}}, nil
+		},
+	}
+
+	updatedModel, _ := m.handleSkillsPickerSearchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ote debug")})
+	updated := updatedModel.(model)
+	if updated.skillsPicker.RemoteQuery != "remote debug" {
+		t.Fatalf("expected remote query to update, got %#v", updated.skillsPicker)
+	}
+	_, cmd := updated.handleSkillsPickerSearchKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected search command")
+	}
+	msg := cmd()
+	resultMsg, ok := msg.(localCommandExecutedMsg)
+	if !ok {
+		t.Fatalf("expected localCommandExecutedMsg, got %T", msg)
+	}
+	if captured != "/skills-picker search remote debug" {
+		t.Fatalf("unexpected search command: %q", captured)
+	}
+	updated.applyLocalCommandResult(resultMsg.result)
+	if updated.skillsPicker == nil || updated.skillsPicker.RemoteQuery != "remote debug" {
+		t.Fatalf("expected refreshed picker query, got %#v", updated.skillsPicker)
+	}
+	if updated.skillsPicker.ActiveTab != "remote" {
+		t.Fatalf("expected remote tab, got %#v", updated.skillsPicker)
+	}
+	if updated.skillsPicker.SearchMode {
+		t.Fatalf("expected search mode to close after enter, got %#v", updated.skillsPicker)
+	}
+}
+
+func TestRenderSkillsPickerKeepsLongRemoteLinesWithinWidth(t *testing.T) {
+	m := model{
+		contentWidth: 40,
+		skillsPicker: &SkillsPickerState{
+			Title:         "这是一个非常长的技能弹窗标题，用来验证不会把窗口撑开",
+			Hint:          "这是一个更长的提示文案，用来验证远程搜索列表在窄窗口下仍然会被裁宽。",
+			ActiveTab:     "remote",
+			RegistryLabel: "registry.example.com/very/long/path/for/testing",
+			RemoteQuery:   "extremely long remote query text",
+			RemoteItems: []RemoteSkillItem{{
+				Slug:        "remote-skill-with-a-very-long-slug",
+				DisplayName: "Remote Skill With A Very Long Display Name",
+				Summary:     "这是一个很长的远程技能摘要，用来覆盖多行裁宽逻辑是否稳定。",
+				Version:     "1.2.3",
+				Installed:   true,
+				CanUpdate:   true,
+			}},
+		},
+	}
+
+	rendered := sanitizeTerminalText(m.renderSkillsPicker())
+	assertRenderedMaxLineWidth(t, rendered, 24)
+	if !strings.Contains(rendered, ">  Remote Skill") {
+		t.Fatalf("expected a single cursor marker on selected row, got %q", rendered)
+	}
+}
+
+func TestRenderToolPanelKeepsTitleAndHintWithinWidth(t *testing.T) {
+	m := model{
+		contentWidth:      40,
+		toolPanelViewport: viewport.New(24, 8),
+		toolPanel: &ToolPanel{
+			Title:   "这是一个非常长的详情标题，用来验证详情面板标题不会撑开弹窗宽度",
+			Summary: "摘要信息也比较长，用来覆盖 summary 的裁宽处理。",
+			Body:    "正文内容\n第二行内容",
+			Hint:    "这是一个很长的提示文案，用来验证详情面板底部提示不会撑开整块弹窗。",
+		},
+	}
+	m.syncToolPanelViewport()
+
+	rendered := sanitizeTerminalText(m.renderToolPanel())
+	assertRenderedMaxLineWidth(t, rendered, 24)
+}
+
+func assertRenderedMaxLineWidth(t *testing.T, rendered string, maxWidth int) {
+	t.Helper()
+	rendered = strings.ReplaceAll(rendered, overlayFocusMarker, "")
+	for _, line := range strings.Split(rendered, "\n") {
+		if lipgloss.Width(line) > maxWidth {
+			t.Fatalf("expected line width <= %d, got %d for %q", maxWidth, lipgloss.Width(line), line)
+		}
 	}
 }
 

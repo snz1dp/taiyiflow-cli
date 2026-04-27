@@ -95,7 +95,7 @@ func (r *ClientRuntime) todoWrite(config internalconfig.Config, payload map[stri
 		state.SessionID = sessionID
 	}
 	if err := store.Save(state); err != nil {
-		return nil, newToolError("EXECUTION_FAILED", "保存 Todo 失败: %v", err)
+		return nil, newToolError("EXECUTION_FAILED", "保存待办失败: %v", err)
 	}
 	resultItems := make([]map[string]any, 0, len(items))
 	for _, item := range items {

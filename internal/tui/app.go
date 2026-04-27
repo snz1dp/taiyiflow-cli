@@ -35,6 +35,8 @@ type Snapshot struct {
 	ContextDir                 string
 	RequestMode                string
 	ApprovalMode               string
+	ReasoningEnabled           bool
+	ReasoningOverride          string
 	SessionSandboxEscapePolicy string
 	SessionID                  string
 	SessionTitle               string
@@ -87,10 +89,62 @@ type SkillItem struct {
 	ReferenceFiles []SkillReferenceItem
 }
 
+type RemoteSkillItem struct {
+	Slug             string
+	DisplayName      string
+	Summary          string
+	Version          string
+	RegistryLabel    string
+	Installed        bool
+	InstalledVersion string
+	CanUpdate        bool
+	OwnerLabel       string
+	SupportedOS      []string
+	SupportedEnvs    []string
+}
+
 type SkillsPickerState struct {
+	Title         string
+	Hint          string
+	ActiveTab     string
+	Items         []SkillItem
+	RemoteItems   []RemoteSkillItem
+	RemoteQuery   string
+	RemoteHint    string
+	RemoteError   string
+	SearchMode    bool
+	RegistryLabel string
+}
+
+type TaskItem struct {
+	ID          string
+	Name        string
+	Status      string
+	Command     string
+	CWD         string
+	SessionID   string
+	StartedAt   string
+	CompletedAt string
+	ExitCode    string
+}
+
+type TasksPickerState struct {
 	Title string
 	Hint  string
-	Items []SkillItem
+	Items []TaskItem
+}
+
+type TaskActionItem struct {
+	Label       string
+	Description string
+	Command     string
+}
+
+type TaskActionPickerState struct {
+	Title string
+	Hint  string
+	Task  TaskItem
+	Items []TaskActionItem
 }
 
 type ApprovalOption struct {
@@ -111,9 +165,15 @@ type ConfigFormValues struct {
 	APIKey                   string
 	DefaultFlow              string
 	ApprovalMode             string
+	SandboxEscapePolicy      string
+	SandboxRoots             string
+	PermissionRules          string
+	ReasoningEnabled         bool
 	Workdir                  string
 	StreamIdleTimeoutSeconds string
 	OutputLanguage           string
+	SkillsDirectory          string
+	SkillsRegistryURL        string
 }
 
 type ConfigChoice struct {
@@ -172,10 +232,11 @@ type Event struct {
 }
 
 type Request struct {
-	Input       string
-	FlowID      string
-	RunID       string
-	RequestMode string
+	Input            string
+	FlowID           string
+	RunID            string
+	RequestMode      string
+	ReasoningEnabled bool
 }
 
 type ContextWindow struct {
@@ -239,6 +300,14 @@ type ToolPanel struct {
 	Summary string
 	Body    string
 	Hint    string
+	Actions []ToolPanelAction
+}
+
+type ToolPanelAction struct {
+	Key      string
+	Label    string
+	Command  string
+	Disabled bool
 }
 
 type LocalCommandResult struct {
@@ -247,6 +316,7 @@ type LocalCommandResult struct {
 	Events         []Event
 	SessionPicker  *SessionPickerState
 	SkillsPicker   *SkillsPickerState
+	TasksPicker    *TasksPickerState
 	ApprovalPicker *ApprovalPickerState
 	ConfigForm     *ConfigFormState
 	Snapshot       *Snapshot
@@ -390,17 +460,23 @@ type model struct {
 	showFlowPicker         bool
 	sessionPicker          *SessionPickerState
 	skillsPicker           *SkillsPickerState
+	tasksPicker            *TasksPickerState
+	taskActionPicker       *TaskActionPickerState
 	approvalPicker         *ApprovalPickerState
 	configForm             *configFormState
 	flowCursor             int
 	sessionCursor          int
 	skillsCursor           int
+	tasksCursor            int
+	taskActionCursor       int
 	approvalCursor         int
 	commandCursor          int
 	startupCommand         string
 	queuedInput            string
 	pendingConfirm         *confirmState
 	toolPanel              *ToolPanel
+	overlayManualScroll    bool
+	overlayScrollLine      int
 	requestCancel          context.CancelFunc
 	interrupting           bool
 	splitNextAssistant     bool
@@ -408,17 +484,19 @@ type model struct {
 }
 
 type configFormState struct {
-	title          string
-	hint           string
-	path           string
-	hasAPIKey      bool
-	submitText     string
-	inputs         []textinput.Model
-	cursor         int
-	flowOptions    []ConfigChoice
-	flowCursor     int
-	flowOpen       bool
-	approvalCursor int
+	title           string
+	hint            string
+	path            string
+	hasAPIKey       bool
+	submitText      string
+	inputs          []textinput.Model
+	cursor          int
+	flowOptions     []ConfigChoice
+	flowCursor      int
+	flowOpen        bool
+	approvalCursor  int
+	sandboxCursor   int
+	reasoningCursor int
 }
 
 type configFieldSpec struct {
@@ -432,15 +510,22 @@ const (
 	configFieldAPIKey
 	configFieldDefaultFlow
 	configFieldApprovalMode
+	configFieldSandboxPolicy
+	configFieldSandboxRoots
+	configFieldPermissionRules
+	configFieldReasoningMode
 	configFieldWorkdir
 	configFieldStreamIdleTimeout
 	configFieldOutputLanguage
+	configFieldSkillsDirectory
+	configFieldSkillsRegistryURL
 	configFieldCount
 )
 
 var (
-	ansiCSIRegexp = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
-	ansiOSCRegexp = regexp.MustCompile(`\x1b\][^\a]*(\a|\x1b\\)`)
+	ansiCSIRegexp      = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+	ansiOSCRegexp      = regexp.MustCompile(`\x1b\][^\a]*(\a|\x1b\\)`)
+	overlayFocusMarker = "<<overlay-focus>>"
 
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -561,14 +646,14 @@ var slashCommands = []slashCommand{
 	{Trigger: "/new", Completion: "/new", Description: "重置当前智能体的本地会话"},
 	{Trigger: "/clear", Completion: "/clear", Description: "清空当前界面消息"},
 	{Trigger: "/session", Completion: "/session", Description: "显示当前会话状态"},
+	{Trigger: "/reasoning", Completion: "/reasoning ", Description: "切换思考模式，支持 on、off、default、status"},
 	{Trigger: "/agent", Completion: "/agent ", Description: "切换为执行模式，或直接发送一个执行请求"},
 	{Trigger: "/review", Completion: "/review ", Description: "发起当前工作区或指定路径的代码审查"},
 	{Trigger: "/ask", Completion: "/ask ", Description: "切换为问答模式，或直接发送一个问答请求"},
 	{Trigger: "/plan", Completion: "/plan ", Description: "切换为计划模式，或直接发送一个计划请求"},
 	{Trigger: "/agents", Completion: "/agents ", Description: "打开智能体选择，或用 /agents <名称> 直接切换"},
 	{Trigger: "/tasks", Completion: "/tasks ", Description: "查看、捕获、停止或清理本地后台任务"},
-	{Trigger: "/permissions", Completion: "/permissions ", Description: "查看或调整本地权限设置"},
-	{Trigger: "/skills", Completion: "/skills ", Description: "列出、查看或启停本地技能"},
+	{Trigger: "/skills", Completion: "/skills ", Description: "列出本地技能，浏览远程仓库技能，并执行搜索、安装、更新或删除"},
 	{Trigger: "/sessions", Completion: "/sessions ", Description: "列出当前智能体的服务端会话，可附页码"},
 	{Trigger: "/help", Completion: "/help", Description: "显示可用命令帮助"},
 	{Trigger: "/config", Completion: "/config ", Description: "查看或更新系统全局配置"},
@@ -580,7 +665,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 	if snapshot.BackendAvailable {
 		inputModel.Placeholder = "输入内容后回车发送"
 	} else {
-		inputModel.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/permissions、/tasks、/skills、/help、/clear、/exit"
+		inputModel.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/tasks、/skills、/reasoning、/help、/clear、/exit"
 	}
 	inputModel.Prompt = "> "
 	inputModel.ShowLineNumbers = false
@@ -749,6 +834,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(progressCmd, m.maybeRefreshSessionSnapshot())
 	case confirmRequestMsg:
 		m.pendingConfirm = &confirmState{request: typed.request, responseCh: typed.responseCh, cursor: 0}
+		m.resetOverlayScroll()
 		m.input.Blur()
 		return m, tea.Batch(m.transitionProgress(progressConfirming), waitForStream(m.eventCh))
 	case flowChangedMsg:
@@ -808,6 +894,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.snapshot = typed.snapshot
 		m.approvalPicker = nil
 		m.skillsPicker = nil
+		m.tasksPicker = nil
+		m.taskActionPicker = nil
 		m.approvalCursor = 0
 		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
 		m.input.Focus()
@@ -848,8 +936,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.configForm != nil {
 			return m.handleConfigFormKey(typed)
 		}
+		if m.taskActionPicker != nil {
+			return m.handleTaskActionPickerKey(typed)
+		}
 		if m.approvalPicker != nil {
 			return m.handleApprovalPickerKey(typed)
+		}
+		if m.tasksPicker != nil {
+			return m.handleTasksPickerKey(typed)
 		}
 		if m.skillsPicker != nil {
 			return m.handleSkillsPickerKey(typed)
@@ -977,7 +1071,7 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		runID := newRequestRunID()
 		m.startRequestStats(input, runID)
 		m.syncViewport()
-		request := Request{Input: input, FlowID: m.snapshot.DefaultFlow, RunID: runID, RequestMode: requestModeKey(m.snapshot.RequestMode)}
+		request := Request{Input: input, FlowID: m.snapshot.DefaultFlow, RunID: runID, RequestMode: requestModeKey(m.snapshot.RequestMode), ReasoningEnabled: m.snapshot.ReasoningEnabled}
 		requestCtx, cancel := context.WithCancel(m.ctx)
 		m.requestCancel = cancel
 		return m, tea.Batch(m.transitionProgress(progressSending), startStream(requestCtx, request, m.runner, m.eventCh))
@@ -996,24 +1090,40 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "left", "h", "up", "k":
+		m.resetOverlayScroll()
 		if m.pendingConfirm.cursor > 0 {
 			m.pendingConfirm.cursor--
 		}
 		return m, nil
 	case "right", "l", "down", "j", "tab":
+		m.resetOverlayScroll()
 		if m.pendingConfirm.cursor < 2 {
 			m.pendingConfirm.cursor++
 		} else {
 			m.pendingConfirm.cursor = 0
 		}
 		return m, nil
+	case "pgdown", "f", " ":
+		m.scrollOverlayBy(m.overlayPageStep())
+		return m, nil
+	case "pgup", "b":
+		m.scrollOverlayBy(-m.overlayPageStep())
+		return m, nil
+	case "home", "g":
+		m.scrollOverlayTo(0)
+		return m, nil
+	case "end", "G":
+		m.scrollOverlayTo(1 << 30)
+		return m, nil
 	case "y", "Y":
+		m.resetOverlayScroll()
 		m.pendingConfirm.cursor = 0
 		m.pendingConfirm.responseCh <- true
 		close(m.pendingConfirm.responseCh)
 		m.pendingConfirm = nil
 		return m, tea.Batch(m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
 	case "a", "A":
+		m.resetOverlayScroll()
 		m.pendingConfirm.cursor = 2
 		alwaysApproveCmd := m.applyConfirmAlwaysApprove(m.pendingConfirm.request)
 		m.pendingConfirm.responseCh <- true
@@ -1021,6 +1131,7 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pendingConfirm = nil
 		return m, tea.Batch(alwaysApproveCmd, m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
 	case "enter":
+		m.resetOverlayScroll()
 		approved := m.pendingConfirm.cursor != 1
 		alwaysApprove := m.pendingConfirm.cursor == 2
 		alwaysApproveCmd := tea.Cmd(nil)
@@ -1035,6 +1146,7 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(m.transitionProgress(progressStreaming), waitForStream(m.eventCh))
 	case "n", "N", "q", "esc", "ctrl+c":
+		m.resetOverlayScroll()
 		m.pendingConfirm.cursor = 1
 		m.pendingConfirm.responseCh <- false
 		close(m.pendingConfirm.responseCh)
@@ -1061,6 +1173,17 @@ func (m *model) applyConfirmAlwaysApprove(request ConfirmRequest) tea.Cmd {
 }
 
 func (m model) handleToolPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.toolPanel != nil {
+		for _, action := range m.toolPanel.Actions {
+			if action.Disabled || strings.TrimSpace(action.Key) == "" {
+				continue
+			}
+			if msg.String() == action.Key {
+				m.activityHint = "正在执行技能操作..."
+				return m, tea.Batch(m.transitionProgress(progressExecuting), executeLocalCommandCmd(m.ctx, m.snapshot, action.Command, m.localCommand))
+			}
+		}
+	}
 	switch msg.String() {
 	case "enter", "esc", "q", "ctrl+c":
 		m.closeToolPanel()
@@ -1150,6 +1273,14 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveConfigApprovalCursor(-1)
 			return m, nil
 		}
+		if m.configForm.cursor == configFieldSandboxPolicy {
+			m.moveConfigSandboxCursor(-1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldReasoningMode {
+			m.moveConfigReasoningCursor(-1)
+			return m, nil
+		}
 		if m.configForm.cursor == configFieldDefaultFlow {
 			m.moveConfigFlowCursor(-1)
 			return m, nil
@@ -1157,6 +1288,14 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "right", "l":
 		if m.configForm.cursor == configFieldApprovalMode {
 			m.moveConfigApprovalCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldSandboxPolicy {
+			m.moveConfigSandboxCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldReasoningMode {
+			m.moveConfigReasoningCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldDefaultFlow {
@@ -1180,6 +1319,14 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldApprovalMode {
 			m.moveConfigApprovalCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldSandboxPolicy {
+			m.moveConfigSandboxCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldReasoningMode {
+			m.moveConfigReasoningCursor(1)
 			return m, nil
 		}
 	case "ctrl+s":
@@ -1269,9 +1416,18 @@ func (m model) handleSkillsPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.skillsPicker == nil {
 		return m, nil
 	}
+	if m.skillsPicker.SearchMode {
+		return m.handleSkillsPickerSearchKey(msg)
+	}
 	switch msg.String() {
 	case "esc", "q", "ctrl+c":
 		m.closeSkillsPicker()
+		return m, nil
+	case "left", "h", "shift+tab":
+		m.switchSkillsPickerTab("local")
+		return m, nil
+	case "right", "l":
+		m.switchSkillsPickerTab("remote")
 		return m, nil
 	case "up", "k":
 		if m.skillsCursor > 0 {
@@ -1279,24 +1435,165 @@ func (m model) handleSkillsPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "down", "j":
-		if m.skillsCursor < len(m.skillsPicker.Items)-1 {
+		if m.skillsCursor < m.activeSkillsPickerItemCount()-1 {
 			m.skillsCursor++
 		}
 		return m, nil
 	case "tab":
-		if len(m.skillsPicker.Items) > 0 {
-			m.skillsCursor = (m.skillsCursor + 1) % len(m.skillsPicker.Items)
+		if m.skillsPicker.ActiveTab == "remote" {
+			m.switchSkillsPickerTab("local")
+		} else {
+			m.switchSkillsPickerTab("remote")
 		}
 		return m, nil
+	case "/", "s":
+		if m.skillsPicker.ActiveTab == "remote" {
+			m.skillsPicker.SearchMode = true
+			return m, nil
+		}
+		return m, nil
+	case "r":
+		if m.skillsPicker.ActiveTab == "remote" {
+			return m, executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand("refresh", "", m.skillsPicker.RemoteQuery), m.localCommand)
+		}
+		return m, nil
+	case "i":
+		selected, ok := m.selectedRemoteSkill()
+		if !ok || m.skillsPicker.ActiveTab != "remote" {
+			return m, nil
+		}
+		m.activityHint = "正在安装远程技能..."
+		return m, tea.Batch(m.transitionProgress(progressExecuting), executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand("install", selected.Slug, m.skillsPicker.RemoteQuery), m.localCommand))
+	case "u":
+		selected, ok := m.selectedRemoteSkill()
+		if !ok || m.skillsPicker.ActiveTab != "remote" || !selected.Installed {
+			return m, nil
+		}
+		m.activityHint = "正在更新远程技能..."
+		return m, tea.Batch(m.transitionProgress(progressExecuting), executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand("update", selected.Slug, m.skillsPicker.RemoteQuery), m.localCommand))
+	case "d":
+		selected, ok := m.selectedRemoteSkill()
+		if !ok || m.skillsPicker.ActiveTab != "remote" || !selected.Installed {
+			return m, nil
+		}
+		m.activityHint = "正在删除远程技能..."
+		return m, tea.Batch(m.transitionProgress(progressExecuting), executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand("remove", selected.Slug, m.skillsPicker.RemoteQuery), m.localCommand))
 	case "enter":
-		if len(m.skillsPicker.Items) == 0 {
+		if m.activeSkillsPickerItemCount() == 0 {
 			m.closeSkillsPicker()
 			return m, nil
 		}
+		if m.skillsPicker.ActiveTab == "remote" {
+			selected, ok := m.selectedRemoteSkill()
+			if !ok {
+				return m, nil
+			}
+			m.activityHint = "正在加载技能详情..."
+			return m, tea.Batch(m.transitionProgress(progressExecuting), executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand("detail", selected.Slug, m.skillsPicker.RemoteQuery), m.localCommand))
+		}
 		selected := m.skillsPicker.Items[m.skillsCursor]
-		m.closeSkillsPicker()
 		m.openToolPanel(buildSkillDetailPanel(selected))
 		return m, nil
+	default:
+		return m, nil
+	}
+}
+
+func (m model) handleSkillsPickerSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.skillsPicker == nil {
+		return m, nil
+	}
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.skillsPicker.SearchMode = false
+		return m, nil
+	case tea.KeyEnter:
+		m.skillsPicker.SearchMode = false
+		return m, executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand("search", "", m.skillsPicker.RemoteQuery), m.localCommand)
+	case tea.KeyBackspace, tea.KeyCtrlH:
+		if m.skillsPicker.RemoteQuery != "" {
+			_, size := utf8.DecodeLastRuneInString(m.skillsPicker.RemoteQuery)
+			m.skillsPicker.RemoteQuery = m.skillsPicker.RemoteQuery[:len(m.skillsPicker.RemoteQuery)-size]
+		}
+		return m, nil
+	case tea.KeyRunes:
+		m.skillsPicker.RemoteQuery += msg.String()
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
+func (m model) handleTasksPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.tasksPicker == nil {
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc", "q", "ctrl+c":
+		m.closeTasksPicker()
+		return m, nil
+	case "up", "k":
+		if m.tasksCursor > 0 {
+			m.tasksCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.tasksCursor < len(m.tasksPicker.Items)-1 {
+			m.tasksCursor++
+		}
+		return m, nil
+	case "tab":
+		if len(m.tasksPicker.Items) > 0 {
+			m.tasksCursor = (m.tasksCursor + 1) % len(m.tasksPicker.Items)
+		}
+		return m, nil
+	case "enter":
+		if len(m.tasksPicker.Items) == 0 {
+			m.closeTasksPicker()
+			return m, nil
+		}
+		selected := m.tasksPicker.Items[m.tasksCursor]
+		m.resetOverlayScroll()
+		m.taskActionPicker = buildTaskActionPicker(selected)
+		m.taskActionCursor = 0
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
+func (m model) handleTaskActionPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.taskActionPicker == nil {
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc", "q", "ctrl+c":
+		m.closeTaskActionPicker(false)
+		return m, nil
+	case "up", "k":
+		if m.taskActionCursor > 0 {
+			m.taskActionCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.taskActionCursor < len(m.taskActionPicker.Items)-1 {
+			m.taskActionCursor++
+		}
+		return m, nil
+	case "tab":
+		if len(m.taskActionPicker.Items) > 0 {
+			m.taskActionCursor = (m.taskActionCursor + 1) % len(m.taskActionPicker.Items)
+		}
+		return m, nil
+	case "enter":
+		if len(m.taskActionPicker.Items) == 0 {
+			m.closeTaskActionPicker(true)
+			return m, nil
+		}
+		selected := m.taskActionPicker.Items[m.taskActionCursor]
+		m.closeTaskActionPicker(true)
+		_, cmd := m.handleLocalSlashCommand(selected.Command)
+		return m, cmd
 	default:
 		return m, nil
 	}
@@ -1457,6 +1754,7 @@ func RenderSessionStatusText(snapshot Snapshot, prefix string) string {
 		lines = append(lines, prefix)
 	}
 	lines = append(lines, fmt.Sprintf("当前模式: %s", requestModeLabel(snapshot.RequestMode)))
+	lines = append(lines, fmt.Sprintf("思考模式: %s", reasoningStatus(snapshot.ReasoningEnabled, false)))
 	sandboxPolicy := strings.TrimSpace(snapshot.SessionSandboxEscapePolicy)
 	if sandboxPolicy == "" {
 		sandboxPolicy = "<继承全局配置>"
@@ -1497,7 +1795,7 @@ func (m *model) startQueuedRequest() tea.Cmd {
 	runID := newRequestRunID()
 	m.startRequestStats(queued, runID)
 	m.syncViewport()
-	request := Request{Input: queued, FlowID: m.snapshot.DefaultFlow, RunID: runID, RequestMode: requestModeKey(m.snapshot.RequestMode)}
+	request := Request{Input: queued, FlowID: m.snapshot.DefaultFlow, RunID: runID, RequestMode: requestModeKey(m.snapshot.RequestMode), ReasoningEnabled: m.snapshot.ReasoningEnabled}
 	requestCtx, cancel := context.WithCancel(m.ctx)
 	m.requestCancel = cancel
 	return tea.Batch(m.transitionProgress(progressSending), startStream(requestCtx, request, m.runner, m.eventCh))
@@ -1629,7 +1927,7 @@ func (m model) View() string {
 	bodyParts := []string{}
 	history := m.renderHistoryPane()
 	inputView := m.input.View()
-	if m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.skillsPicker != nil || m.approvalPicker != nil {
+	if m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.skillsPicker != nil || m.tasksPicker != nil || m.taskActionPicker != nil || m.approvalPicker != nil {
 		inputView = hintStyle.Render("当前有未处理的弹层，请先完成操作。")
 	} else if commandHints := m.renderSlashCommandHints(); commandHints != "" {
 		inputView = lipgloss.JoinVertical(lipgloss.Left, inputView, "", commandHints)
@@ -1901,28 +2199,43 @@ func (m model) renderSlashCommandHints() string {
 }
 
 func (m model) renderOverlay() string {
+	content := ""
+	width := 0
 	if m.pendingConfirm != nil {
-		return overlayStyle.Width(minInt(m.contentWidth-6, 90)).Render(m.renderConfirmOverlay())
+		width = minInt(m.contentWidth-6, 90)
+		content = m.renderConfirmOverlay()
+	} else if m.toolPanel != nil {
+		width = minInt(m.contentWidth-6, 96)
+		content = m.renderToolPanel()
+	} else if m.configForm != nil {
+		width = minInt(m.contentWidth-6, 92)
+		content = m.renderConfigForm()
+	} else if m.taskActionPicker != nil {
+		width = minInt(m.contentWidth-6, 92)
+		content = m.renderTaskActionPicker()
+	} else if m.approvalPicker != nil {
+		width = minInt(m.contentWidth-6, 90)
+		content = m.renderApprovalPicker()
+	} else if m.tasksPicker != nil {
+		width = minInt(m.contentWidth-6, 100)
+		content = m.renderTasksPicker()
+	} else if m.skillsPicker != nil {
+		width = minInt(m.contentWidth-6, 100)
+		content = m.renderSkillsPicker()
+	} else if m.sessionPicker != nil {
+		width = minInt(m.contentWidth-6, 90)
+		content = m.renderSessionPicker()
+	} else if m.showFlowPicker {
+		width = minInt(m.contentWidth-6, 90)
+		content = m.renderFlowPicker()
 	}
-	if m.toolPanel != nil {
-		return overlayStyle.Width(minInt(m.contentWidth-6, 96)).Render(m.renderToolPanel())
+	if content == "" {
+		return ""
 	}
-	if m.configForm != nil {
-		return overlayStyle.Width(minInt(m.contentWidth-6, 92)).Render(m.renderConfigForm())
+	if width < 24 {
+		width = 24
 	}
-	if m.approvalPicker != nil {
-		return overlayStyle.Width(minInt(m.contentWidth-6, 90)).Render(m.renderApprovalPicker())
-	}
-	if m.skillsPicker != nil {
-		return overlayStyle.Width(minInt(m.contentWidth-6, 100)).Render(m.renderSkillsPicker())
-	}
-	if m.sessionPicker != nil {
-		return overlayStyle.Width(minInt(m.contentWidth-6, 90)).Render(m.renderSessionPicker())
-	}
-	if m.showFlowPicker {
-		return overlayStyle.Width(minInt(m.contentWidth-6, 90)).Render(m.renderFlowPicker())
-	}
-	return ""
+	return overlayStyle.Width(width).Render(m.fitOverlayContent(content))
 }
 
 func (m model) renderConfirmOverlay() string {
@@ -1947,9 +2260,9 @@ func (m model) renderConfirmOverlay() string {
 	}
 	hint := strings.TrimSpace(request.Hint)
 	if hint == "" {
-		hint = "使用方向键或 Tab 选择，Enter 确认。"
+		hint = "使用方向键或 Tab 选择，Enter 确认；PgUp/PgDn/Home/End 可滚动长内容。"
 	}
-	lines = append(lines, "", lipgloss.JoinHorizontal(lipgloss.Left, options[0], "  ", options[1], "  ", options[2]), hint)
+	lines = append(lines, "", markOverlayFocus(lipgloss.JoinHorizontal(lipgloss.Left, options[0], "  ", options[1], "  ", options[2]), true), hint)
 	return strings.Join(lines, "\n\n")
 }
 
@@ -1958,12 +2271,24 @@ func (m model) renderToolPanel() string {
 		return ""
 	}
 	panel := m.toolPanel
-	lines := []string{fallback(strings.TrimSpace(panel.Title), "工具结果")}
+	overlayWidth := maxInt(24, m.contentWidth-16)
+	lines := []string{trimForWidth(fallback(strings.TrimSpace(panel.Title), "工具结果"), overlayWidth)}
 	if strings.TrimSpace(panel.Summary) != "" {
-		lines = append(lines, hintStyle.Render(trimForWidth(panel.Summary, maxInt(24, m.contentWidth-16))))
+		lines = append(lines, hintStyle.Render(trimForWidth(panel.Summary, overlayWidth)))
 	}
 	if strings.TrimSpace(panel.Body) != "" {
 		lines = append(lines, "", m.toolPanelViewport.View())
+	}
+	if len(panel.Actions) > 0 {
+		parts := make([]string, 0, len(panel.Actions))
+		for _, action := range panel.Actions {
+			label := fmt.Sprintf("[%s] %s", action.Key, action.Label)
+			if action.Disabled {
+				label += "(不可用)"
+			}
+			parts = append(parts, label)
+		}
+		lines = append(lines, "", hintStyle.Render(trimForWidth("操作: "+strings.Join(parts, "  "), overlayWidth)))
 	}
 	hint := strings.TrimSpace(panel.Hint)
 	if hint == "" {
@@ -1971,7 +2296,7 @@ func (m model) renderToolPanel() string {
 	} else {
 		hint += " 方向键或 j/k 滚动。"
 	}
-	lines = append(lines, "", hintStyle.Render(hint))
+	lines = append(lines, "", hintStyle.Render(trimForWidth(hint, overlayWidth)))
 	return strings.Join(lines, "\n")
 }
 
@@ -1994,7 +2319,7 @@ func (m model) renderApprovalPicker() string {
 		} else {
 			line = commandHintStyle.Render(trimForWidth(line, m.contentWidth-16))
 		}
-		lines = append(lines, line)
+		lines = append(lines, markOverlayFocus(line, index == m.approvalCursor))
 		if strings.TrimSpace(option.Description) != "" {
 			lines = append(lines, hintStyle.Render(trimForWidth(option.Description, m.contentWidth-16)))
 		}
@@ -2023,6 +2348,9 @@ func (m model) renderConfigForm() string {
 		} else {
 			label = labelStyle.Render(trimForWidth(label, m.contentWidth-16))
 		}
+		if index == m.configForm.cursor && !m.configForm.flowOpen {
+			label = markOverlayFocus(label, true)
+		}
 		lines = append(lines, label)
 		switch index {
 		case configFieldDefaultFlow:
@@ -2032,6 +2360,10 @@ func (m model) renderConfigForm() string {
 			}
 		case configFieldApprovalMode:
 			lines = append(lines, m.renderConfigApprovalField())
+		case configFieldSandboxPolicy:
+			lines = append(lines, m.renderConfigSandboxField())
+		case configFieldReasoningMode:
+			lines = append(lines, m.renderConfigReasoningField())
 		default:
 			lines = append(lines, m.configForm.inputs[index].View())
 		}
@@ -2063,7 +2395,7 @@ func (m model) renderConfigFlowField() string {
 		line += "  [Enter 选择]"
 	}
 	if m.configForm.cursor == configFieldDefaultFlow {
-		return selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-16))
+		return markOverlayFocus(selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-16)), !m.configForm.flowOpen)
 	}
 	return commandHintStyle.Render(trimForWidth(line, m.contentWidth-16))
 }
@@ -2076,7 +2408,7 @@ func (m model) renderConfigFlowDropdown() string {
 	for index, option := range m.configForm.flowOptions {
 		line := fmt.Sprintf("%s  %s", flowCursor(index == m.configForm.flowCursor), option.Label)
 		if index == m.configForm.flowCursor {
-			lines = append(lines, selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-20)))
+			lines = append(lines, markOverlayFocus(selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-20)), true))
 		} else {
 			lines = append(lines, commandHintStyle.Render(trimForWidth(line, m.contentWidth-20)))
 		}
@@ -2110,13 +2442,60 @@ func (m model) renderConfigApprovalField() string {
 	return strings.Join(parts, "  ")
 }
 
+func (m model) renderConfigSandboxField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(configSandboxChoices()))
+	for index, option := range configSandboxChoices() {
+		selected := index == m.configForm.sandboxCursor
+		marker := "( )"
+		if selected {
+			marker = "(*)"
+		}
+		item := marker + " " + option.Label
+		if m.configForm.cursor == configFieldSandboxPolicy && selected {
+			parts = append(parts, selectedFlowStyle.Render(item))
+		} else if selected {
+			parts = append(parts, valueStyle.Render(item))
+		} else {
+			parts = append(parts, commandHintStyle.Render(item))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m model) renderConfigReasoningField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(configReasoningChoices()))
+	for index, option := range configReasoningChoices() {
+		selected := index == m.configForm.reasoningCursor
+		marker := "( )"
+		if selected {
+			marker = "(*)"
+		}
+		item := marker + " " + option.Label
+		if m.configForm.cursor == configFieldReasoningMode && selected {
+			parts = append(parts, selectedFlowStyle.Render(item))
+		} else if selected {
+			parts = append(parts, valueStyle.Render(item))
+		} else {
+			parts = append(parts, commandHintStyle.Render(item))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
 func (m model) renderSessionPicker() string {
 	if m.sessionPicker == nil {
 		return ""
 	}
+	overlayWidth := maxInt(24, m.contentWidth-16)
 	lines := []string{
-		m.sessionPicker.Title,
-		fallback(strings.TrimSpace(m.sessionPicker.Hint), "使用方向键选择，左右键翻页，Enter 切换当前会话，Esc 关闭。"),
+		trimForWidth(m.sessionPicker.Title, overlayWidth),
+		trimForWidth(fallback(strings.TrimSpace(m.sessionPicker.Hint), "使用方向键选择，左右键翻页，Enter 切换当前会话，Esc 关闭。"), overlayWidth),
 		fmt.Sprintf("第 %d / %d 页", m.sessionPicker.Page, m.sessionPicker.TotalPages),
 		"",
 	}
@@ -2137,7 +2516,7 @@ func (m model) renderSessionPicker() string {
 		} else {
 			line = commandHintStyle.Render(trimForWidth(line, m.contentWidth-16))
 		}
-		lines = append(lines, line)
+		lines = append(lines, markOverlayFocus(line, index == m.sessionCursor))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -2146,10 +2525,71 @@ func (m model) renderSkillsPicker() string {
 	if m.skillsPicker == nil {
 		return ""
 	}
+	overlayWidth := maxInt(24, m.contentWidth-16)
+	localTab := m.renderOverlayOption("本地技能", m.skillsPicker.ActiveTab != "remote")
+	remoteTab := m.renderOverlayOption("远程仓库", m.skillsPicker.ActiveTab == "remote")
 	lines := []string{
-		m.skillsPicker.Title,
-		fallback(strings.TrimSpace(m.skillsPicker.Hint), "使用方向键选择，Enter 查看详情，Esc 关闭。"),
+		trimForWidth(m.skillsPicker.Title, overlayWidth),
+		trimForWidth(fallback(strings.TrimSpace(m.skillsPicker.Hint), "使用方向键选择，Enter 查看详情，Esc 关闭。"), overlayWidth),
+		trimForWidth(localTab+"  "+remoteTab, overlayWidth),
 		"",
+	}
+	if m.skillsPicker.ActiveTab == "remote" {
+		if strings.TrimSpace(m.skillsPicker.RegistryLabel) != "" {
+			lines = append(lines, hintStyle.Render(trimForWidth("仓库: "+m.skillsPicker.RegistryLabel, overlayWidth)))
+		}
+		query := strings.TrimSpace(m.skillsPicker.RemoteQuery)
+		if query == "" {
+			query = "*"
+		}
+		searchLine := "搜索: " + query
+		if m.skillsPicker.SearchMode {
+			searchLine += "_"
+		}
+		lines = append(lines, trimForWidth(searchLine, overlayWidth))
+		lines = append(lines, hintStyle.Render(trimForWidth(fallback(strings.TrimSpace(m.skillsPicker.RemoteHint), "按 / 输入搜索词，Enter 查看详情，i 安装，u 更新，d 删除，r 刷新。"), overlayWidth)))
+		if strings.TrimSpace(m.skillsPicker.RemoteError) != "" {
+			lines = append(lines, errorMessageStyle.Render(trimForWidth(m.skillsPicker.RemoteError, overlayWidth)))
+		}
+		if len(m.skillsPicker.RemoteItems) == 0 {
+			lines = append(lines, hintStyle.Render("当前没有可展示的远程技能。"))
+			return strings.Join(lines, "\n")
+		}
+		for index, item := range m.skillsPicker.RemoteItems {
+			name := item.Slug
+			if strings.TrimSpace(item.DisplayName) != "" {
+				name = item.DisplayName + " (" + item.Slug + ")"
+			}
+			line := fmt.Sprintf("%s  %s", flowCursor(index == m.skillsCursor), name)
+			meta := []string{}
+			if strings.TrimSpace(item.Version) != "" {
+				meta = append(meta, "最新 "+item.Version)
+			}
+			if item.Installed {
+				installedLabel := "已安装"
+				if strings.TrimSpace(item.InstalledVersion) != "" {
+					installedLabel += " " + item.InstalledVersion
+				}
+				meta = append(meta, installedLabel)
+				if item.CanUpdate {
+					meta = append(meta, "可更新")
+				}
+			}
+			if len(meta) > 0 {
+				line += "  " + strings.Join(meta, "  ")
+			}
+			if strings.TrimSpace(item.Summary) != "" && strings.TrimSpace(item.Summary) != ">" {
+				line += "\n   " + item.Summary
+			}
+			line = trimMultilineForWidth(line, overlayWidth)
+			if index == m.skillsCursor {
+				line = selectedFlowStyle.Render(line)
+			} else {
+				line = commandHintStyle.Render(line)
+			}
+			lines = append(lines, markOverlayFocus(line, index == m.skillsCursor))
+		}
+		return strings.Join(lines, "\n")
 	}
 	if len(m.skillsPicker.Items) == 0 {
 		lines = append(lines, hintStyle.Render("当前没有可展示的技能。"))
@@ -2177,14 +2617,99 @@ func (m model) renderSkillsPicker() string {
 		if description != "" {
 			line += "\n   " + description
 		}
+		line = trimMultilineForWidth(line, overlayWidth)
 		if index == m.skillsCursor {
+			line = selectedFlowStyle.Render(line)
+		} else {
+			line = commandHintStyle.Render(line)
+		}
+		lines = append(lines, markOverlayFocus(line, index == m.skillsCursor))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m model) renderTasksPicker() string {
+	if m.tasksPicker == nil {
+		return ""
+	}
+	lines := []string{
+		m.tasksPicker.Title,
+		fallback(strings.TrimSpace(m.tasksPicker.Hint), "使用方向键选择任务，Enter 打开操作菜单，Esc 关闭。"),
+		"",
+	}
+	if len(m.tasksPicker.Items) == 0 {
+		lines = append(lines, hintStyle.Render("当前没有可展示的后台任务。"))
+		return strings.Join(lines, "\n")
+	}
+	for index, item := range m.tasksPicker.Items {
+		line := fmt.Sprintf("%s  %s [%s]", flowCursor(index == m.tasksCursor), fallback(strings.TrimSpace(item.Name), item.ID), fallback(strings.TrimSpace(item.Status), "unknown"))
+		meta := []string{}
+		if strings.TrimSpace(item.SessionID) != "" {
+			meta = append(meta, "session "+item.SessionID)
+		}
+		if strings.TrimSpace(item.ExitCode) != "" {
+			meta = append(meta, "exit "+item.ExitCode)
+		}
+		if len(meta) > 0 {
+			line += "  " + strings.Join(meta, "  ")
+		}
+		if strings.TrimSpace(item.Command) != "" {
+			line += "\n   " + item.Command
+		}
+		if strings.TrimSpace(item.CWD) != "" {
+			line += "\n   cwd: " + item.CWD
+		}
+		if index == m.tasksCursor {
 			line = selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-16))
 		} else {
 			line = commandHintStyle.Render(trimForWidth(line, m.contentWidth-16))
 		}
-		lines = append(lines, line)
+		lines = append(lines, markOverlayFocus(line, index == m.tasksCursor))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m model) renderTaskActionPicker() string {
+	if m.taskActionPicker == nil {
+		return ""
+	}
+	lines := []string{
+		m.taskActionPicker.Title,
+		fallback(strings.TrimSpace(m.taskActionPicker.Hint), "使用方向键选择操作，Enter 执行，Esc 返回任务列表。"),
+		"",
+	}
+	for index, item := range m.taskActionPicker.Items {
+		line := fmt.Sprintf("%s  %s", flowCursor(index == m.taskActionCursor), item.Label)
+		if strings.TrimSpace(item.Description) != "" {
+			line += "\n   " + item.Description
+		}
+		if index == m.taskActionCursor {
+			line = selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-16))
+		} else {
+			line = commandHintStyle.Render(trimForWidth(line, m.contentWidth-16))
+		}
+		lines = append(lines, markOverlayFocus(line, index == m.taskActionCursor))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildTaskActionPicker(item TaskItem) *TaskActionPickerState {
+	options := []TaskActionItem{
+		{Label: "查看结构化输出", Description: "读取 stdout、stderr、退出码等结构化信息。", Command: "/tasks output " + item.ID},
+		{Label: "查看终端输出", Description: "读取合并后的终端视图，适合持续查看日志。", Command: "/tasks capture " + item.ID},
+	}
+	status := strings.ToLower(strings.TrimSpace(item.Status))
+	if status == "running" {
+		options = append(options, TaskActionItem{Label: "停止任务", Description: "发送停止请求，并保留当前输出记录。", Command: "/tasks stop " + item.ID})
+	} else {
+		options = append(options, TaskActionItem{Label: "删除任务", Description: "删除任务及其持久化输出文件。", Command: "/tasks remove " + item.ID})
+	}
+	return &TaskActionPickerState{
+		Title: fmt.Sprintf("任务操作(tasks): %s", fallback(strings.TrimSpace(item.Name), item.ID)),
+		Hint:  "Enter 执行所选操作，Esc 返回任务列表。",
+		Task:  item,
+		Items: options,
+	}
 }
 
 func buildSkillDetailPanel(item SkillItem) *ToolPanel {
@@ -2223,6 +2748,17 @@ func buildSkillDetailPanel(item SkillItem) *ToolPanel {
 	}
 }
 
+func trimMultilineForWidth(content string, width int) string {
+	if width <= 0 {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	for index, line := range lines {
+		lines[index] = trimForWidth(line, width)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (m model) renderOverlayOption(label string, selected bool) string {
 	if selected {
 		return selectedFlowStyle.Render(label)
@@ -2255,7 +2791,7 @@ func (m model) renderFlowPicker() string {
 		if position == m.flowCursor {
 			line = selectedFlowStyle.Render(line)
 		}
-		lines = append(lines, line)
+		lines = append(lines, markOverlayFocus(line, position == m.flowCursor))
 		if description := strings.TrimSpace(item.Description); description != "" && position == m.flowCursor {
 			lines = append(lines, hintStyle.Render(trimText(description, 100)))
 		}
@@ -2271,6 +2807,7 @@ func (m model) statusBarSegments(maxWidth int) []string {
 	}
 	segments = append(segments, statusSegment{text: requestModeStatus(m.snapshot.RequestMode, compact), priority: 1})
 	segments = append(segments, statusSegment{text: approvalModeStatus(m.snapshot.ApprovalMode, compact), priority: 1})
+	segments = append(segments, statusSegment{text: reasoningStatus(m.snapshot.ReasoningEnabled, compact), priority: 1})
 	if sandboxSegment := sessionSandboxEscapePolicyStatus(m.snapshot.SessionSandboxEscapePolicy, compact); sandboxSegment != "" {
 		segments = append(segments, statusSegment{text: sandboxSegment, priority: 1})
 	}
@@ -2329,7 +2866,7 @@ func buildBackendStatusEntries(snapshot Snapshot) []entry {
 		return nil
 	}
 	message := "当前无法连接服务端，已进入只读模式。"
-	message += "\n可用命令: /config /permissions /tasks /skills /help /clear /exit"
+	message += "\n可用命令: /config /tasks /skills /reasoning /help /clear /exit"
 	return []entry{{role: "error", content: message}}
 }
 
@@ -2346,16 +2883,16 @@ func backendStatusLabel(snapshot Snapshot) string {
 
 func (m model) backendUnavailableMessage() string {
 	message := "当前无法连接服务端，已进入只读模式。"
-	message += " 可用命令: /config /permissions /tasks /skills /help /clear /exit"
+	message += " 可用命令: /config /tasks /skills /reasoning /help /clear /exit"
 	return message
 }
 
 func welcomeCommandsLabel(snapshot Snapshot) []string {
 	labelValue := "可用命令: "
 	if snapshot.BackendAvailable {
-		return []string{labelValue + "/agents /config /permissions /tasks /skills /session /new /exit"}
+		return []string{labelValue + "/agents /config /tasks /skills /reasoning /session /new /exit"}
 	}
-	return []string{labelValue + "/config /permissions /tasks /skills /help /clear /exit"}
+	return []string{labelValue + "/config /tasks /skills /reasoning /help /clear /exit"}
 }
 
 func isAvailableInReadOnlyMode(input string) bool {
@@ -2369,9 +2906,9 @@ func isAvailableInReadOnlyMode(input string) bool {
 		return true
 	case trimmed == "/tasks", strings.HasPrefix(trimmed, "/tasks "):
 		return true
-	case trimmed == "/permissions", strings.HasPrefix(trimmed, "/permissions "):
-		return true
 	case trimmed == "/config", strings.HasPrefix(trimmed, "/config "):
+		return true
+	case trimmed == "/reasoning", strings.HasPrefix(trimmed, "/reasoning "):
 		return true
 	case trimmed == "/session", strings.HasPrefix(trimmed, "/session "):
 		return true
@@ -2510,6 +3047,7 @@ func changeFlowCmd(ctx context.Context, flowID string, handler FlowChangeHandler
 }
 
 func (m *model) openFlowPicker() tea.Cmd {
+	m.resetOverlayScroll()
 	if m.isBusy() {
 		m.entries = append(m.entries, entry{role: "system", content: "当前正在处理请求，暂时不能切换智能体。"})
 		m.syncViewport()
@@ -2583,10 +3121,13 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		}
 	}
 	if result.ConfigForm != nil {
+		m.resetOverlayScroll()
 		m.configForm = newConfigFormState(*result.ConfigForm)
 		m.approvalPicker = nil
 		m.sessionPicker = nil
 		m.skillsPicker = nil
+		m.tasksPicker = nil
+		m.taskActionPicker = nil
 		m.showFlowPicker = false
 		m.flowFilter.Blur()
 		m.input.Blur()
@@ -2601,6 +3142,8 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 			m.showFlowPicker = false
 			m.sessionPicker = nil
 			m.skillsPicker = nil
+			m.tasksPicker = nil
+			m.taskActionPicker = nil
 			m.approvalPicker = nil
 			m.flowFilter.Blur()
 		}
@@ -2612,25 +3155,45 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		}
 	}
 	if result.SessionPicker != nil {
+		m.resetOverlayScroll()
 		m.sessionPicker = result.SessionPicker
 		m.sessionCursor = 0
 		m.skillsPicker = nil
+		m.tasksPicker = nil
+		m.taskActionPicker = nil
 		m.approvalPicker = nil
 		m.configForm = nil
 		m.input.Blur()
 	}
 	if result.ApprovalPicker != nil {
+		m.resetOverlayScroll()
 		m.approvalPicker = result.ApprovalPicker
 		m.approvalCursor = 0
 		m.sessionPicker = nil
 		m.skillsPicker = nil
+		m.tasksPicker = nil
+		m.taskActionPicker = nil
 		m.configForm = nil
 		m.input.Blur()
 	}
 	if result.SkillsPicker != nil {
+		m.resetOverlayScroll()
 		m.skillsPicker = result.SkillsPicker
 		m.skillsCursor = 0
 		m.sessionPicker = nil
+		m.tasksPicker = nil
+		m.taskActionPicker = nil
+		m.approvalPicker = nil
+		m.configForm = nil
+		m.input.Blur()
+	}
+	if result.TasksPicker != nil {
+		m.resetOverlayScroll()
+		m.tasksPicker = result.TasksPicker
+		m.tasksCursor = 0
+		m.taskActionPicker = nil
+		m.sessionPicker = nil
+		m.skillsPicker = nil
 		m.approvalPicker = nil
 		m.configForm = nil
 		m.input.Blur()
@@ -2650,7 +3213,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 }
 
 func (m model) showSlashCommandHints() bool {
-	if m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.skillsPicker != nil || m.approvalPicker != nil || m.isBusy() {
+	if m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.skillsPicker != nil || m.tasksPicker != nil || m.taskActionPicker != nil || m.approvalPicker != nil || m.isBusy() {
 		return false
 	}
 	trimmed := strings.TrimSpace(m.input.Value())
@@ -2793,6 +3356,57 @@ func (m *model) closeSkillsPicker() {
 	m.input.Focus()
 }
 
+func (m *model) switchSkillsPickerTab(tab string) {
+	if m.skillsPicker == nil {
+		return
+	}
+	if tab != "remote" {
+		tab = "local"
+	}
+	m.skillsPicker.ActiveTab = tab
+	m.skillsPicker.SearchMode = false
+	m.skillsCursor = 0
+}
+
+func (m *model) activeSkillsPickerItemCount() int {
+	if m.skillsPicker == nil {
+		return 0
+	}
+	if m.skillsPicker.ActiveTab == "remote" {
+		return len(m.skillsPicker.RemoteItems)
+	}
+	return len(m.skillsPicker.Items)
+}
+
+func (m *model) selectedRemoteSkill() (RemoteSkillItem, bool) {
+	if m.skillsPicker == nil || m.skillsPicker.ActiveTab != "remote" {
+		return RemoteSkillItem{}, false
+	}
+	if m.skillsCursor < 0 || m.skillsCursor >= len(m.skillsPicker.RemoteItems) {
+		return RemoteSkillItem{}, false
+	}
+	return m.skillsPicker.RemoteItems[m.skillsCursor], true
+}
+
+func buildSkillsPickerCommand(action string, slug string, query string) string {
+	parts := []string{"/skills-picker", strings.TrimSpace(action)}
+	if strings.TrimSpace(slug) != "" {
+		parts = append(parts, strings.TrimSpace(slug))
+	}
+	if strings.TrimSpace(query) != "" {
+		parts = append(parts, strings.TrimSpace(query))
+	}
+	return strings.Join(parts, " ")
+}
+
+func (m *model) closeTasksPicker() {
+	m.tasksPicker = nil
+	m.tasksCursor = 0
+	m.taskActionPicker = nil
+	m.taskActionCursor = 0
+	m.input.Focus()
+}
+
 func (m *model) closeConfigForm() {
 	m.configForm = nil
 	m.input.Focus()
@@ -2805,16 +3419,31 @@ func (m *model) closeApprovalPicker() {
 	m.input.Focus()
 }
 
+func (m *model) closeTaskActionPicker(focusTasks bool) {
+	m.taskActionPicker = nil
+	m.taskActionCursor = 0
+	m.resetOverlayScroll()
+	if !focusTasks {
+		m.input.Focus()
+	}
+}
+
 func (m *model) closeToolPanel() {
 	m.toolPanel = nil
+	m.resetOverlayScroll()
 	m.toolPanelViewport.SetContent("")
 	m.toolPanelViewport.GotoTop()
-	m.input.Focus()
+	if m.skillsPicker == nil && m.tasksPicker == nil && m.taskActionPicker == nil && m.sessionPicker == nil && m.approvalPicker == nil && m.configForm == nil && !m.showFlowPicker {
+		m.input.Focus()
+	} else {
+		m.input.Blur()
+	}
 	m.syncLayout()
 }
 
 func (m *model) openToolPanel(panel *ToolPanel) {
 	m.toolPanel = panel
+	m.resetOverlayScroll()
 	m.input.Blur()
 	m.syncToolPanelViewport()
 }
@@ -2832,6 +3461,109 @@ func (m *model) syncToolPanelViewport() {
 	m.toolPanelViewport.Height = panelHeight
 	body := hardWrapText(m.toolPanel.Body, panelWidth)
 	m.toolPanelViewport.SetContent(body)
+}
+
+func (m *model) resetOverlayScroll() {
+	m.overlayManualScroll = false
+	m.overlayScrollLine = 0
+}
+
+func (m *model) scrollOverlayBy(delta int) {
+	m.overlayManualScroll = true
+	m.overlayScrollLine += delta
+	if m.overlayScrollLine < 0 {
+		m.overlayScrollLine = 0
+	}
+}
+
+func (m *model) scrollOverlayTo(line int) {
+	m.overlayManualScroll = true
+	if line < 0 {
+		line = 0
+	}
+	m.overlayScrollLine = line
+}
+
+func (m model) overlayPageStep() int {
+	step := m.overlayVisibleLineLimit() - 2
+	if step < 1 {
+		step = 1
+	}
+	return step
+}
+
+func (m model) overlayVisibleLineLimit() int {
+	limit := m.height - overlayStyle.GetVerticalFrameSize() - 6
+	if limit < 5 {
+		limit = 5
+	}
+	return limit
+}
+
+func (m model) fitOverlayContent(content string) string {
+	content, focusLine := stripOverlayFocusMarker(content)
+	lines := strings.Split(content, "\n")
+	maxLines := m.overlayVisibleLineLimit()
+	if maxLines <= 0 || len(lines) <= maxLines {
+		return content
+	}
+	start := 0
+	if m.overlayManualScroll {
+		start = m.overlayScrollLine
+	} else if focusLine > 0 {
+		start = focusLine - maxLines/3
+	}
+	maxStart := len(lines) - maxLines
+	if maxStart < 0 {
+		maxStart = 0
+	}
+	if start < 0 {
+		start = 0
+	}
+	if start > maxStart {
+		start = maxStart
+	}
+	end := start + maxLines
+	if end > len(lines) {
+		end = len(lines)
+	}
+	visible := append([]string{}, lines[start:end]...)
+	if start > 0 {
+		if len(visible) == maxLines {
+			visible = visible[1:]
+		}
+		visible = append([]string{hintStyle.Render(fmt.Sprintf("↑ 上方还有 %d 行", start))}, visible...)
+	}
+	if end < len(lines) {
+		if len(visible) == maxLines {
+			visible = visible[:len(visible)-1]
+		}
+		visible = append(visible, hintStyle.Render(fmt.Sprintf("↓ 下方还有 %d 行", len(lines)-end)))
+	}
+	return strings.Join(visible, "\n")
+}
+
+func markOverlayFocus(line string, active bool) string {
+	if !active {
+		return line
+	}
+	return overlayFocusMarker + line
+}
+
+func stripOverlayFocusMarker(content string) (string, int) {
+	lines := strings.Split(content, "\n")
+	focusLine := 0
+	found := false
+	for index, line := range lines {
+		if strings.Contains(line, overlayFocusMarker) {
+			if !found {
+				focusLine = index
+				found = true
+			}
+			lines[index] = strings.ReplaceAll(line, overlayFocusMarker, "")
+		}
+	}
+	return strings.Join(lines, "\n"), focusLine
 }
 
 func (m *model) moveConfigFormCursor(delta int) {
@@ -2869,6 +3601,14 @@ func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
 	if m.configForm.approvalCursor >= 0 && m.configForm.approvalCursor < len(approvalChoices) {
 		submission.Values.ApprovalMode = strings.TrimSpace(approvalChoices[m.configForm.approvalCursor].Value)
 	}
+	sandboxChoices := configSandboxChoices()
+	if m.configForm.sandboxCursor >= 0 && m.configForm.sandboxCursor < len(sandboxChoices) {
+		submission.Values.SandboxEscapePolicy = strings.TrimSpace(sandboxChoices[m.configForm.sandboxCursor].Value)
+	}
+	reasoningChoices := configReasoningChoices()
+	if m.configForm.reasoningCursor >= 0 && m.configForm.reasoningCursor < len(reasoningChoices) {
+		submission.Values.ReasoningEnabled = reasoningChoices[m.configForm.reasoningCursor].Value == "on"
+	}
 	apiKey := strings.TrimSpace(submission.Values.APIKey)
 	if m.configForm.hasAPIKey && apiKey == "" {
 		submission.KeepAPIKey = true
@@ -2899,16 +3639,18 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 	}
 	flowOptions := normalizeConfigFlowChoices(state.FlowOptions, values.DefaultFlow)
 	return &configFormState{
-		title:          state.Title,
-		hint:           state.Hint,
-		path:           state.Path,
-		hasAPIKey:      state.HasAPIKey,
-		submitText:     state.SubmitText,
-		inputs:         models,
-		cursor:         0,
-		flowOptions:    flowOptions,
-		flowCursor:     configChoiceIndex(flowOptions, values.DefaultFlow),
-		approvalCursor: configChoiceIndex(configApprovalChoices(), values.ApprovalMode),
+		title:           state.Title,
+		hint:            state.Hint,
+		path:            state.Path,
+		hasAPIKey:       state.HasAPIKey,
+		submitText:      state.SubmitText,
+		inputs:          models,
+		cursor:          0,
+		flowOptions:     flowOptions,
+		flowCursor:      configChoiceIndex(flowOptions, values.DefaultFlow),
+		approvalCursor:  configChoiceIndex(configApprovalChoices(), values.ApprovalMode),
+		sandboxCursor:   configChoiceIndex(configSandboxChoices(), values.SandboxEscapePolicy),
+		reasoningCursor: configChoiceIndex(configReasoningChoices(), reasoningChoiceValue(values.ReasoningEnabled)),
 	}
 }
 
@@ -2922,9 +3664,15 @@ func configFormFieldSpecs(hasAPIKey bool) []configFieldSpec {
 		{label: "访问令牌", placeholder: "可选", description: apiDescription},
 		{label: "默认智能体", placeholder: "", description: "按 Enter 打开下拉列表，留空项表示自动选择。"},
 		{label: "命令执行模式", placeholder: "", description: "左右键或空格切换单选项。"},
+		{label: "外部资源访问策略", placeholder: "", description: "左右键或空格切换 confirm、deny、allow。"},
+		{label: "外部资源访问根目录", placeholder: "/path/a, /path/b", description: "多个目录用逗号分隔；留空表示仅允许当前工作区。"},
+		{label: "细粒度权限规则", placeholder: "tool:shell_exec=deny; shell:git status=allow", description: "使用 tool:name=动作 或 shell:prefix=动作，多个规则用分号分隔。"},
+		{label: "默认思考模式", placeholder: "", description: "左右键或空格切换是否默认启用思考模式。"},
 		{label: "工作区目录", placeholder: "留空表示当前目录", description: "默认使用当前工作目录。"},
 		{label: "请求超时（秒）", placeholder: "300", description: "大于等于 0 的整数秒，0 表示禁用流式空闲超时。"},
 		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
+		{label: "技能目录", placeholder: "留空表示默认 ~/.snz1dp/skills", description: "远程技能安装默认写入该目录；留空时使用用户级全局目录。"},
+		{label: "技能仓库地址", placeholder: "https://mirror-cn.clawhub.com", description: "远程技能搜索、详情和安装默认使用该镜像站。"},
 	}
 }
 
@@ -2942,11 +3690,23 @@ func configFormFieldValue(index int, values ConfigFormValues, hasAPIKey bool) st
 	case 3:
 		return ""
 	case 4:
-		return strings.TrimSpace(values.Workdir)
+		return ""
 	case 5:
-		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
+		return strings.TrimSpace(values.SandboxRoots)
 	case 6:
+		return strings.TrimSpace(values.PermissionRules)
+	case 7:
+		return ""
+	case 8:
+		return strings.TrimSpace(values.Workdir)
+	case 9:
+		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
+	case 10:
 		return strings.TrimSpace(values.OutputLanguage)
+	case 11:
+		return strings.TrimSpace(values.SkillsDirectory)
+	case 12:
+		return strings.TrimSpace(values.SkillsRegistryURL)
 	default:
 		return ""
 	}
@@ -2960,21 +3720,33 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 	if len(inputs) > 1 {
 		values.APIKey = strings.TrimSpace(inputs[1].Value())
 	}
-	if len(inputs) > 4 {
-		values.Workdir = strings.TrimSpace(inputs[4].Value())
-	}
 	if len(inputs) > 5 {
-		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[5].Value())
+		values.SandboxRoots = strings.TrimSpace(inputs[5].Value())
 	}
 	if len(inputs) > 6 {
-		values.OutputLanguage = strings.TrimSpace(inputs[6].Value())
+		values.PermissionRules = strings.TrimSpace(inputs[6].Value())
+	}
+	if len(inputs) > 8 {
+		values.Workdir = strings.TrimSpace(inputs[8].Value())
+	}
+	if len(inputs) > 9 {
+		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[9].Value())
+	}
+	if len(inputs) > 10 {
+		values.OutputLanguage = strings.TrimSpace(inputs[10].Value())
+	}
+	if len(inputs) > 11 {
+		values.SkillsDirectory = strings.TrimSpace(inputs[11].Value())
+	}
+	if len(inputs) > 12 {
+		values.SkillsRegistryURL = strings.TrimSpace(inputs[12].Value())
 	}
 	return values
 }
 
 func isConfigTextField(index int) bool {
 	switch index {
-	case configFieldBackendBaseURL, configFieldAPIKey, configFieldWorkdir, configFieldStreamIdleTimeout, configFieldOutputLanguage:
+	case configFieldBackendBaseURL, configFieldAPIKey, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldStreamIdleTimeout, configFieldOutputLanguage, configFieldSkillsDirectory, configFieldSkillsRegistryURL:
 		return true
 	default:
 		return false
@@ -3016,6 +3788,45 @@ func (m *model) moveConfigApprovalCursor(delta int) {
 	m.syncLayout()
 }
 
+func (m *model) moveConfigSandboxCursor(delta int) {
+	choices := configSandboxChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.sandboxCursor += delta
+	if m.configForm.sandboxCursor < 0 {
+		m.configForm.sandboxCursor = len(choices) - 1
+	} else if m.configForm.sandboxCursor >= len(choices) {
+		m.configForm.sandboxCursor = 0
+	}
+	m.syncLayout()
+}
+
+func (m *model) moveConfigReasoningCursor(delta int) {
+	choices := configReasoningChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.reasoningCursor += delta
+	if m.configForm.reasoningCursor < 0 {
+		m.configForm.reasoningCursor = len(choices) - 1
+	} else if m.configForm.reasoningCursor >= len(choices) {
+		m.configForm.reasoningCursor = 0
+	}
+	m.syncLayout()
+}
+
+func configReasoningChoices() []ConfigChoice {
+	return []ConfigChoice{{Value: "off", Label: "关闭"}, {Value: "on", Label: "开启"}}
+}
+
+func reasoningChoiceValue(enabled bool) string {
+	if enabled {
+		return "on"
+	}
+	return "off"
+}
+
 func normalizeConfigFlowChoices(options []ConfigChoice, currentValue string) []ConfigChoice {
 	choices := []ConfigChoice{{Value: "", Label: "自动选择", Description: "保存为空，启动时自动选择一个可用智能体。"}}
 	seen := map[string]struct{}{"": {}}
@@ -3048,6 +3859,14 @@ func configApprovalChoices() []ConfigChoice {
 		{Value: "confirm", Label: "每次确认", Description: "执行本地命令前逐次确认。"},
 		{Value: "auto", Label: "自动执行", Description: "自动执行本地命令。"},
 		{Value: "readonly", Label: "只读模式", Description: "禁止执行本地命令。"},
+	}
+}
+
+func configSandboxChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: "confirm", Label: "每次确认", Description: "命令访问工作区外资源时逐次确认。"},
+		{Value: "deny", Label: "禁止访问", Description: "禁止访问当前工作区之外的资源。"},
+		{Value: "allow", Label: "直接允许", Description: "允许访问工作区外资源，不再弹出确认。"},
 	}
 }
 
@@ -3152,7 +3971,7 @@ func (m *model) syncInputPlaceholder() {
 		m.input.Placeholder = "输入内容后回车发送"
 		return
 	}
-	m.input.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/skills、/help、/clear、/exit"
+	m.input.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/tasks、/skills、/reasoning、/help、/clear、/exit"
 }
 
 func (m model) scheduleBackendRetry() tea.Cmd {
@@ -3930,8 +4749,14 @@ func isExecutableSlashCommandInput(input string) bool {
 		return true
 	case strings.EqualFold(trimmed, "/session"):
 		return true
+	case strings.EqualFold(trimmed, "/reasoning"):
+		return true
+	case strings.EqualFold(trimmed, "/reasoning status"):
+		return true
 	case strings.EqualFold(trimmed, "/skills"):
 		return true
+	case strings.HasPrefix(strings.ToLower(trimmed), "/reasoning "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/reasoning ")) != ""
 	case strings.HasPrefix(strings.ToLower(trimmed), "/skills "):
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/skills ")) != ""
 	case strings.EqualFold(trimmed, "/review"):
@@ -3944,12 +4769,6 @@ func isExecutableSlashCommandInput(input string) bool {
 		return true
 	case strings.HasPrefix(strings.ToLower(trimmed), "/tasks "):
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/tasks ")) != ""
-	case strings.EqualFold(trimmed, "/permissions"):
-		return true
-	case strings.EqualFold(trimmed, "/permissions show"):
-		return true
-	case strings.HasPrefix(strings.ToLower(trimmed), "/permissions "):
-		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/permissions ")) != ""
 	case strings.EqualFold(trimmed, "/sessions"):
 		return true
 	case strings.HasPrefix(strings.ToLower(trimmed), "/sessions "):
@@ -4076,6 +4895,19 @@ func approvalModeStatus(value string, compact bool) string {
 		}
 	}
 	return approvalModeLabel(value)
+}
+
+func reasoningStatus(enabled bool, compact bool) string {
+	if compact {
+		if enabled {
+			return "思考开"
+		}
+		return "思考关"
+	}
+	if enabled {
+		return "思考模式已开启"
+	}
+	return "思考模式已关闭"
 }
 
 func sessionSandboxEscapePolicyStatus(value string, compact bool) string {

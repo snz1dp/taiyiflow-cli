@@ -22,6 +22,7 @@ type SessionState struct {
 	Workdir         string    `json:"workdir,omitempty"`
 	RequestMode     string    `json:"request_mode,omitempty"`
 	ContextDir      string    `json:"context_dir,omitempty"`
+	ReasoningOverride string  `json:"reasoning_override,omitempty"`
 	SandboxEscapePolicyOverride string `json:"sandbox_escape_policy_override,omitempty"`
 	TodoItems       []TodoItem `json:"todo_items,omitempty"`
 	UpdatedAt       time.Time `json:"updated_at"`
@@ -73,6 +74,7 @@ func (s *SessionStore) Load(flowID string, workdir string) (SessionState, error)
 	} else {
 		state.ContextDir = normalizeWorkdir(state.ContextDir)
 	}
+	state.ReasoningOverride = normalizeReasoningOverride(state.ReasoningOverride)
 	state.SandboxEscapePolicyOverride = normalizeSandboxEscapePolicyOverride(state.SandboxEscapePolicyOverride)
 	state.TodoItems = normalizeTodoItems(state.TodoItems)
 	return state, nil
@@ -91,6 +93,7 @@ func (s *SessionStore) Save(state SessionState) error {
 	} else {
 		state.ContextDir = normalizeWorkdir(state.ContextDir)
 	}
+	state.ReasoningOverride = normalizeReasoningOverride(state.ReasoningOverride)
 	state.SandboxEscapePolicyOverride = normalizeSandboxEscapePolicyOverride(state.SandboxEscapePolicyOverride)
 	state.TodoItems = normalizeTodoItems(state.TodoItems)
 	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
@@ -196,6 +199,17 @@ func normalizeSandboxEscapePolicyOverride(value string) string {
 		return ""
 	}
 	return internalconfig.NormalizeSandboxEscapePolicy(trimmed)
+}
+
+func normalizeReasoningOverride(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "on", "true", "enable", "enabled":
+		return "on"
+	case "off", "false", "disable", "disabled":
+		return "off"
+	default:
+		return ""
+	}
 }
 
 func normalizeTodoItems(items []TodoItem) []TodoItem {

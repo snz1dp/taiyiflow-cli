@@ -192,6 +192,18 @@ func enrichToolArgumentsWithContext(arguments map[string]any, payload map[string
 			cloned["run_id"] = runID
 		}
 	}
+	if strings.TrimSpace(argumentString(cloned, "workingDirectory", "working_directory")) == "" {
+		clientContextDir := strings.TrimSpace(stringValue(payload["client_context_dir"]))
+		if clientContextDir == "" {
+			clientContextDir = strings.TrimSpace(nestedString(payload, "context", "client_context_dir"))
+		}
+		if clientContextDir == "" {
+			clientContextDir = strings.TrimSpace(nestedString(payload, "context", "context_dir"))
+		}
+		if clientContextDir != "" {
+			cloned["working_directory"] = clientContextDir
+		}
+	}
 	return cloned
 }
 

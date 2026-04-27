@@ -50,6 +50,26 @@ func ResolveDirectory(config internalconfig.Config) (string, error) {
 	return directories[0], nil
 }
 
+func ResolveInstallDirectory(config internalconfig.Config) (string, error) {
+	directory := strings.TrimSpace(config.Skills.Directory)
+	if directory != "" {
+		resolved, err := filepath.Abs(directory)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Clean(resolved), nil
+	}
+	defaultDir, err := internalconfig.DefaultSkillsDir()
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.Abs(defaultDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolved), nil
+}
+
 func ResolveDirectories(config internalconfig.Config) ([]string, error) {
 	directory := strings.TrimSpace(config.Skills.Directory)
 	if directory != "" {
@@ -296,8 +316,14 @@ func LoadFile(rootDir string, path string) (Skill, error) {
 	if strings.TrimSpace(manifest.Name) == "" {
 		return Skill{}, fmt.Errorf("技能文件缺少 name 字段: %s", path)
 	}
-	if strings.TrimSpace(manifest.Description) == "" {
-		manifest.Description = firstParagraph(body)
+	description := strings.TrimSpace(manifest.Description)
+	if description == "" {
+		description = firstParagraph(body)
+		manifest.Description = description
+	}
+	summary := summarize(body)
+	if strings.TrimSpace(summary) == "" {
+		summary = description
 	}
 	relativeDir, relErr := filepath.Rel(rootDir, filepath.Dir(path))
 	if relErr != nil {
@@ -312,7 +338,7 @@ func LoadFile(rootDir string, path string) (Skill, error) {
 		RootDir:     rootDir,
 		RelativeDir: filepath.ToSlash(relativeDir),
 		Body:        strings.TrimSpace(body),
-		Summary:     summarize(body),
+		Summary:     summary,
 	}, nil
 }
 
@@ -411,6 +437,9 @@ func parseSkillDocument(content string) (Manifest, string, error) {
 
 func summarize(body string) string {
 	paragraph := firstParagraph(body)
+	if strings.TrimSpace(paragraph) == "" {
+		return ""
+	}
 	if len([]rune(paragraph)) <= 120 {
 		return paragraph
 	}
@@ -421,12 +450,61 @@ func summarize(body string) string {
 func firstParagraph(body string) string {
 	paragraphs := strings.Split(strings.TrimSpace(body), "\n\n")
 	for _, paragraph := range paragraphs {
-		cleaned := strings.TrimSpace(paragraph)
+		cleaned := cleanSkillParagraph(paragraph)
 		if cleaned != "" {
 			return cleaned
 		}
 	}
 	return ""
+}
+
+func cleanSkillParagraph(paragraph string) string {
+	lines := strings.Split(strings.ReplaceAll(paragraph, "\r\n", "\n"), "\n")
+	parts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		cleaned := cleanSkillLine(line)
+		if cleaned != "" {
+			parts = append(parts, cleaned)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+func cleanSkillLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return ""
+	}
+	if trimmed == "---" || strings.HasPrefix(trimmed, "```") {
+		return ""
+	}
+	for strings.HasPrefix(trimmed, ">") {
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, ">"))
+	}
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "#") {
+		trimmed = strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
+		if trimmed == "" {
+			return ""
+		}
+		return ""
+	}
+	for _, prefix := range []string{"- ", "* ", "+ "} {
+		if strings.HasPrefix(trimmed, prefix) {
+			trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+			break
+		}
+	}
+	for index := 1; index <= 9; index++ {
+		orderedPrefix := fmt.Sprintf("%d. ", index)
+		if strings.HasPrefix(trimmed, orderedPrefix) {
+			trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, orderedPrefix))
+			break
+		}
+	}
+	return strings.TrimSpace(trimmed)
 }
 
 func enabledSet(items []string) map[string]bool {

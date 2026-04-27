@@ -162,7 +162,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	}
 
 	reader := bufio.NewScanner(a.stdin)
-	fmt.Fprintln(a.stdout, "进入交互模式，输入 /ask、/plan、/agent 切换请求模式，输入 /review 发起代码审查，输入 /permissions 查看本地权限设置。")
+	fmt.Fprintln(a.stdout, "进入交互模式，输入 /ask、/plan、/agent 切换请求模式，输入 /reasoning 调整思考模式，输入 /review 发起代码审查。")
 
 	for {
 		fmt.Fprint(a.stdout, "> ")
@@ -207,13 +207,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			fmt.Fprintln(a.stdout, output)
 			continue
 		case line == "/permissions" || strings.HasPrefix(strings.ToLower(line), "/permissions "):
-			updatedConfig, output, _, err := a.executePermissionsCommand(line)
-			if err != nil {
-				fmt.Fprintf(a.stderr, "权限命令执行失败: %v\n", err)
-				continue
-			}
-			config = updatedConfig
-			fmt.Fprintln(a.stdout, output)
+			fmt.Fprintln(a.stdout, "/permissions 已移除，请使用 /config 管理权限与执行配置。")
 			continue
 		case line == "/skills" || strings.HasPrefix(strings.ToLower(line), "/skills "):
 			output, err := a.executeSkillsCommand(parseSlashSkillsArgs(line))
@@ -221,6 +215,15 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 				fmt.Fprintf(a.stderr, "技能命令执行失败: %v\n", err)
 				continue
 			}
+			fmt.Fprintln(a.stdout, output)
+			continue
+		case line == "/reasoning" || strings.HasPrefix(strings.ToLower(line), "/reasoning "):
+			output, updatedState, err := a.executeReasoningCommand(config, line, sessionState)
+			if err != nil {
+				fmt.Fprintf(a.stderr, "思考模式命令执行失败: %v\n", err)
+				continue
+			}
+			sessionState = updatedState
 			fmt.Fprintln(a.stdout, output)
 			continue
 		case line == "/agents":
@@ -428,6 +431,7 @@ func (a *App) streamTask(
 		OutputType:             "any",
 		SessionID:              sessionState.SessionID,
 		RequestType:            normalizeRequestMode(sessionState.RequestMode),
+		ReasoningEnabled:       resolveReasoningEnabled(config, sessionState.ReasoningOverride),
 		DeviceType:             provider.DeviceTypeCLI,
 		ClientContextDir:       resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir)),
 		CommandExecutionTarget: "client",
@@ -535,7 +539,7 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli config [show|init|path|set|unset]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli agents [list|current|use] [参数]")
-	fmt.Fprintln(a.stdout, "  taiyiflow-cli skills [list|view|enable|disable] [参数]")
+	fmt.Fprintf(a.stdout, "  %s\n", skillsCommandSynopsis())
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli version")
 	fmt.Fprintf(a.stdout, "当前版本: %s\n", buildinfo.Version)
 }
@@ -544,12 +548,12 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 	fmt.Fprintln(a.stdout, "会话内命令:")
 	fmt.Fprintln(a.stdout, "  /agent    切换为执行模式，可写成 /agent <任务>")
 	fmt.Fprintln(a.stdout, "  /agents   显示智能体切换说明")
-	fmt.Fprintln(a.stdout, "  /config   查看或更新服务端配置")
+	fmt.Fprintln(a.stdout, "  /config   查看或更新服务端与权限配置")
 	fmt.Fprintln(a.stdout, "  /config session [show|set|unset] external_resource_access_policy [值]   查看或设置会话外部资源访问策略")
 	fmt.Fprintln(a.stdout, "  /review   发起代码审查，可写成 /review [路径或范围说明]")
 	fmt.Fprintln(a.stdout, "  /tasks    查看后台任务，可写成 /tasks [list|output|capture|stop|remove] <task_id> 或 /tasks cleanup")
-	fmt.Fprintln(a.stdout, "  /permissions   查看或调整本地权限设置，可写成 /permissions [show|set|clear] ...")
-	fmt.Fprintln(a.stdout, "  /skills   列出、查看或切换本地技能")
+	fmt.Fprintln(a.stdout, "  /skills   管理本地技能与远程仓库技能，可写成 /skills [list|view|search|view-remote|install|remove|update|source|enable|disable|help]")
+	fmt.Fprintln(a.stdout, "  /reasoning   切换思考模式，可写成 /reasoning [on|off|default|status]")
 	fmt.Fprintln(a.stdout, "  /ask      切换为问答模式，可写成 /ask <问题>")
 	fmt.Fprintln(a.stdout, "  /plan     切换为计划模式，可写成 /plan <目标>")
 	fmt.Fprintln(a.stdout, "  /help     显示帮助")

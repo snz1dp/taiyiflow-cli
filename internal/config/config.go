@@ -25,6 +25,7 @@ type Config struct {
 	APIKey                   string      `yaml:"api_key,omitempty"`
 	DefaultFlow              string      `yaml:"default_flow,omitempty"`
 	ApprovalMode             string      `yaml:"approval_mode"`
+	ReasoningEnabled         bool        `yaml:"reasoning_enabled,omitempty"`
 	Workdir                  string      `yaml:"workdir,omitempty"`
 	SandboxEscapePolicy      string      `yaml:"sandbox_escape_policy,omitempty"`
 	StreamIdleTimeoutSeconds int         `yaml:"stream_idle_timeout_seconds,omitempty"`
@@ -42,9 +43,10 @@ type PermissionRule struct {
 }
 
 type SkillConfig struct {
-	Directory string   `yaml:"directory,omitempty"`
-	Enabled   []string `yaml:"enabled,omitempty"`
-	Disabled  []string `yaml:"disabled,omitempty"`
+	Directory   string   `yaml:"directory,omitempty"`
+	RegistryURL string   `yaml:"registry_url,omitempty"`
+	Enabled     []string `yaml:"enabled,omitempty"`
+	Disabled    []string `yaml:"disabled,omitempty"`
 }
 
 type Manager struct {
@@ -55,10 +57,14 @@ func Default() Config {
 	return Config{
 		BackendBaseURL:           "http://localhost:7860",
 		ApprovalMode:             "confirm",
+		ReasoningEnabled:         false,
 		SandboxEscapePolicy:      SandboxEscapePolicyConfirm,
 		StreamIdleTimeoutSeconds: DefaultStreamIdleTimeoutSeconds,
 		OutputLanguage:           "zh-CN",
 		AuditEnabled:             false,
+		Skills: SkillConfig{
+			RegistryURL: "https://mirror-cn.clawhub.com",
+		},
 	}
 }
 
@@ -187,6 +193,9 @@ func (m *Manager) Load() (Config, error) {
 	config.StreamIdleTimeoutSeconds = NormalizeStreamIdleTimeoutSeconds(config.StreamIdleTimeoutSeconds)
 	if config.OutputLanguage == "" {
 		config.OutputLanguage = Default().OutputLanguage
+	}
+	if strings.TrimSpace(config.Skills.RegistryURL) == "" {
+		config.Skills.RegistryURL = Default().Skills.RegistryURL
 	}
 	config.PermissionRules = NormalizePermissionRules(config.PermissionRules)
 	return config, nil
