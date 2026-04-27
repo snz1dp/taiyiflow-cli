@@ -68,6 +68,15 @@ func newTestAppWithSessionStore(t *testing.T) *App {
 	return &App{sessionStore: store}
 }
 
+type fakeTTYWriter struct {
+	bytes.Buffer
+	fd uintptr
+}
+
+func (w *fakeTTYWriter) Fd() uintptr {
+	return w.fd
+}
+
 func TestPrepareSessionKeepsSavedRequestModeWithoutOverride(t *testing.T) {
 	app := newTestAppWithSessionStore(t)
 	workdir := t.TempDir()
@@ -108,6 +117,56 @@ func TestPrepareSessionNewSessionDefaultsToAgentMode(t *testing.T) {
 	}
 	if loaded.RequestMode != provider.RequestTypeAgent {
 		t.Fatalf("expected new session request mode %q, got %q", provider.RequestTypeAgent, loaded.RequestMode)
+	}
+}
+
+func TestDisableCLIFocusReportingWritesSequenceToTerminalOutput(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	stdout := &fakeTTYWriter{fd: 1}
+	var stderr bytes.Buffer
+	app.stdout = stdout
+	app.stderr = &stderr
+
+	previous := isTerminalFD
+	isTerminalFD = func(fd int) bool {
+		return fd == 1
+	}
+	defer func() {
+		isTerminalFD = previous
+	}()
+
+	app.disableCLIFocusReporting()
+
+	if got := stdout.String(); got != cliDisableFocusReporting {
+		t.Fatalf("expected focus disable sequence on stdout, got %q", got)
+	}
+	if got := stderr.String(); got != "" {
+		t.Fatalf("expected stderr to stay empty, got %q", got)
+	}
+}
+
+func TestDisableCLIFocusReportingSkipsNonTerminalWriters(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+
+	previous := isTerminalFD
+	isTerminalFD = func(int) bool {
+		return false
+	}
+	defer func() {
+		isTerminalFD = previous
+	}()
+
+	app.disableCLIFocusReporting()
+
+	if got := stdout.String(); got != "" {
+		t.Fatalf("expected stdout to stay empty, got %q", got)
+	}
+	if got := stderr.String(); got != "" {
+		t.Fatalf("expected stderr to stay empty, got %q", got)
 	}
 }
 

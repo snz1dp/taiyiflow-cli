@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 
+	"golang.org/x/term"
+
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
@@ -20,9 +22,15 @@ import (
 )
 
 var (
-	cmdANSICSIRegexp = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
-	cmdANSIOSCRegexp = regexp.MustCompile(`\x1b\][^\a]*(\a|\x1b\\)`)
+	cliDisableFocusReporting = "\x1b[?1004l"
+	cmdANSICSIRegexp         = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+	cmdANSIOSCRegexp         = regexp.MustCompile(`\x1b\][^\a]*(\a|\x1b\\)`)
+	isTerminalFD             = term.IsTerminal
 )
+
+type fdWriter interface {
+	Fd() uintptr
+}
 
 type App struct {
 	configManager *internalconfig.Manager
@@ -129,6 +137,8 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 }
 
 func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
+	a.disableCLIFocusReporting()
+
 	config, err := a.configManager.Load()
 	if err != nil {
 		return err
@@ -356,6 +366,8 @@ func (a *App) clearInteractiveScreen() {
 }
 
 func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string) error {
+	a.disableCLIFocusReporting()
+
 	config, err := a.configManager.Load()
 	if err != nil {
 		return err
@@ -554,6 +566,22 @@ func sanitizeCLIStreamText(content string) string {
 	cleaned := cmdANSIOSCRegexp.ReplaceAllString(content, "")
 	cleaned = cmdANSICSIRegexp.ReplaceAllString(cleaned, "")
 	return strings.ReplaceAll(cleaned, "\x1b", "")
+}
+
+func (a *App) disableCLIFocusReporting() {
+	if writeTerminalControlSequence(a.stdout, cliDisableFocusReporting) {
+		return
+	}
+	writeTerminalControlSequence(a.stderr, cliDisableFocusReporting)
+}
+
+func writeTerminalControlSequence(writer io.Writer, sequence string) bool {
+	fdTarget, ok := writer.(fdWriter)
+	if !ok || !isTerminalFD(int(fdTarget.Fd())) {
+		return false
+	}
+	_, _ = io.WriteString(writer, sequence)
+	return true
 }
 
 func (a *App) printRootUsage() {
