@@ -412,6 +412,51 @@ func TestHandleSkillsPickerSearchInputUpdatesQueryAndRunsSearch(t *testing.T) {
 	}
 }
 
+func TestHandleSkillsPickerSearchEscClearsQueryAndRefreshesDefaultRemoteList(t *testing.T) {
+	captured := ""
+	m := model{
+		ctx:   context.Background(),
+		input: textarea.New(),
+		skillsPicker: &SkillsPickerState{
+			Title:       "技能列表",
+			ActiveTab:   "remote",
+			SearchMode:  true,
+			RemoteQuery: "remote debug",
+		},
+		localCommand: func(ctx context.Context, command string, snapshot Snapshot) (LocalCommandResult, error) {
+			captured = command
+			return LocalCommandResult{Handled: true, SkillsPicker: &SkillsPickerState{Title: "技能列表", ActiveTab: "remote"}}, nil
+		},
+	}
+
+	updatedModel, cmd := m.handleSkillsPickerSearchKey(tea.KeyMsg{Type: tea.KeyEsc})
+	updated := updatedModel.(model)
+	if updated.skillsPicker == nil {
+		t.Fatal("expected skills picker to remain open")
+	}
+	if updated.skillsPicker.SearchMode {
+		t.Fatalf("expected search mode to close, got %#v", updated.skillsPicker)
+	}
+	if updated.skillsPicker.RemoteQuery != "" {
+		t.Fatalf("expected query to be cleared, got %#v", updated.skillsPicker)
+	}
+	if cmd == nil {
+		t.Fatal("expected refresh command after clearing query")
+	}
+	msg := cmd()
+	resultMsg, ok := msg.(localCommandExecutedMsg)
+	if !ok {
+		t.Fatalf("expected localCommandExecutedMsg, got %T", msg)
+	}
+	if captured != "/skills-picker refresh" {
+		t.Fatalf("unexpected refresh command: %q", captured)
+	}
+	updated.applyLocalCommandResult(resultMsg.result)
+	if updated.skillsPicker == nil || updated.skillsPicker.RemoteQuery != "" {
+		t.Fatalf("expected default remote list state after refresh, got %#v", updated.skillsPicker)
+	}
+}
+
 func TestRenderSkillsPickerKeepsLongRemoteLinesWithinWidth(t *testing.T) {
 	m := model{
 		contentWidth: 40,
@@ -425,6 +470,8 @@ func TestRenderSkillsPickerKeepsLongRemoteLinesWithinWidth(t *testing.T) {
 				Slug:        "remote-skill-with-a-very-long-slug",
 				DisplayName: "Remote Skill With A Very Long Display Name",
 				Summary:     "这是一个很长的远程技能摘要，用来覆盖多行裁宽逻辑是否稳定。",
+				Popularity:  4.8,
+				Downloads:   12345,
 				Version:     "1.2.3",
 				Installed:   true,
 				CanUpdate:   true,
@@ -436,6 +483,30 @@ func TestRenderSkillsPickerKeepsLongRemoteLinesWithinWidth(t *testing.T) {
 	assertRenderedMaxLineWidth(t, rendered, 24)
 	if !strings.Contains(rendered, ">  Remote Skill") {
 		t.Fatalf("expected a single cursor marker on selected row, got %q", rendered)
+	}
+}
+
+func TestRenderSkillsPickerShowsPopularityAndDownloads(t *testing.T) {
+	m := model{
+		contentWidth: 120,
+		skillsPicker: &SkillsPickerState{
+			Title:         "技能列表",
+			ActiveTab:     "remote",
+			RegistryLabel: "registry.example.com",
+			RemoteItems: []RemoteSkillItem{{
+				Slug:        "remote-skill",
+				DisplayName: "Remote Skill",
+				Summary:     "远程技能摘要",
+				Popularity:  4.8,
+				Downloads:   12345,
+				Version:     "1.2.3",
+			}},
+		},
+	}
+
+	rendered := sanitizeTerminalText(m.renderSkillsPicker())
+	if !strings.Contains(rendered, "人气 4.8") || !strings.Contains(rendered, "下载 12345") {
+		t.Fatalf("expected popularity and downloads in rendered output, got %q", rendered)
 	}
 }
 

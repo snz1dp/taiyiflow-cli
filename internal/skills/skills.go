@@ -55,6 +55,13 @@ func ResolveDirectory(config internalconfig.Config) (string, error) {
 }
 
 func ResolveInstallDirectory(config internalconfig.Config) (string, error) {
+	if scope := internalconfig.NormalizeSkillInstallScope(config.Skills.InstallScope); scope == internalconfig.SkillInstallScopeWorkspace {
+		workdir := resolveSkillWorkdir(config.Workdir)
+		if strings.TrimSpace(workdir) == "" {
+			return "", fmt.Errorf("未找到可写入的技能目录")
+		}
+		return filepath.Join(workdir, ".snz1dp", "skills"), nil
+	}
 	directory := strings.TrimSpace(config.Skills.Directory)
 	if directory != "" {
 		resolved, err := filepath.Abs(directory)

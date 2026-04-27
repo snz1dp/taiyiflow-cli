@@ -14,6 +14,8 @@ const (
 	defaultRootDirName              = ".snz1dp"
 	defaultConfigRel                = "config/taiyiflow.yaml"
 	rootDirEnvName                  = "SNZ1DP_HOME"
+	SkillInstallScopeUser           = "user"
+	SkillInstallScopeWorkspace      = "workspace"
 	DefaultCommandTimeoutSeconds    = 30
 	MaxCommandTimeoutSeconds        = 300
 	DefaultStreamIdleTimeoutSeconds = 300
@@ -49,8 +51,10 @@ type PermissionRule struct {
 }
 
 type SkillConfig struct {
+	InstallScope string `yaml:"install_scope,omitempty"`
 	// Directory 指向全局技能目录；发现顺序始终是“当前工作区 .snz1dp/skills 优先，
 	// 然后再到这里配置的全局目录”，留空时回退到默认 ~/.snz1dp/skills。
+	// 该字段仅保留兼容读取历史自定义路径配置，不再作为新的用户可编辑项。
 	Directory   string `yaml:"directory,omitempty"`
 	RegistryURL string `yaml:"registry_url,omitempty"`
 	// Enabled 保留为显式放行/兼容配置。当前默认策略不是白名单启用，未列入 enabled
@@ -77,8 +81,18 @@ func Default() Config {
 		OutputLanguage:           "zh-CN",
 		AuditEnabled:             false,
 		Skills: SkillConfig{
+			InstallScope: SkillInstallScopeUser,
 			RegistryURL: "https://mirror-cn.clawhub.com",
 		},
+	}
+}
+
+func NormalizeSkillInstallScope(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case SkillInstallScopeWorkspace:
+		return SkillInstallScopeWorkspace
+	default:
+		return SkillInstallScopeUser
 	}
 }
 

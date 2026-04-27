@@ -30,6 +30,8 @@ type RemoteSearchResult struct {
 	Slug        string
 	DisplayName string
 	Summary     string
+	Popularity  float64
+	Downloads   int64
 	Version     string
 	UpdatedAt   int64
 }
@@ -84,6 +86,8 @@ type remoteSearchResponse struct {
 		Slug        string `json:"slug"`
 		DisplayName string `json:"displayName"`
 		Summary     string `json:"summary"`
+		Popularity  float64 `json:"popularity"`
+		Downloads   int64   `json:"downloads"`
 		Version     string `json:"version"`
 		UpdatedAt   int64  `json:"updatedAt"`
 	} `json:"results"`
@@ -142,6 +146,8 @@ func SearchRemote(config internalconfig.Config, query string, limit int) ([]Remo
 			Slug:        strings.TrimSpace(item.Slug),
 			DisplayName: strings.TrimSpace(item.DisplayName),
 			Summary:     normalizeRemoteSkillSummary(item.Summary),
+			Popularity:  item.Popularity,
+			Downloads:   item.Downloads,
 			Version:     strings.TrimSpace(item.Version),
 			UpdatedAt:   item.UpdatedAt,
 		})

@@ -167,6 +167,12 @@ func (a *App) executeSkillsCommand(args []string) (string, error) {
 			if strings.TrimSpace(item.Version) != "" {
 				line += fmt.Sprintf(" | 最新版本 %s", item.Version)
 			}
+			if item.Popularity > 0 {
+				line += fmt.Sprintf(" | %s", formatSkillPopularityLabel(item.Popularity))
+			}
+			if item.Downloads > 0 {
+				line += fmt.Sprintf(" | %s", formatSkillDownloadsLabel(item.Downloads))
+			}
 			if strings.TrimSpace(item.Summary) != "" {
 				line += fmt.Sprintf(" | %s", item.Summary)
 			}
@@ -374,8 +380,18 @@ func removeSkillNameAliases(items []string, aliases ...string) []string {
 	return normalizeSkillNames(filtered)
 }
 
-func (a *App) loadSkillPayload(config internalconfig.Config) ([]string, any, error) {
-	items, directory, err := skills.Discover(config)
+func (a *App) loadSkillPayload(config internalconfig.Config, contextDir string) ([]string, any, error) {
+	if a.configManager != nil {
+		if latestConfig, err := a.configManager.Load(); err == nil {
+			config = latestConfig
+		}
+	}
+	skillConfig := config
+	resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(contextDir, config.Workdir))
+	if strings.TrimSpace(resolvedContextDir) != "" {
+		skillConfig.Workdir = resolvedContextDir
+	}
+	items, directory, err := skills.Discover(skillConfig)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -517,4 +533,16 @@ func containsNormalizedSkillName(items []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func formatSkillPopularityLabel(value float64) string {
+	formatted := strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.1f", value), "0"), ".")
+	if formatted == "" {
+		return "人气"
+	}
+	return "人气 " + formatted
+}
+
+func formatSkillDownloadsLabel(value int64) string {
+	return fmt.Sprintf("下载 %d", value)
 }

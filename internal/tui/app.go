@@ -93,6 +93,8 @@ type RemoteSkillItem struct {
 	Slug             string
 	DisplayName      string
 	Summary          string
+	Popularity       float64
+	Downloads        int64
 	Version          string
 	RegistryLabel    string
 	Installed        bool
@@ -175,7 +177,7 @@ type ConfigFormValues struct {
 	AgentAutoLoopEnabled     string
 	AgentAutoLoopMaxRounds   string
 	OutputLanguage           string
-	SkillsDirectory          string
+	SkillsInstallScope       string
 	SkillsRegistryURL        string
 }
 
@@ -500,6 +502,7 @@ type configFormState struct {
 	approvalCursor  int
 	sandboxCursor   int
 	reasoningCursor int
+	skillsCursor    int
 }
 
 type configFieldSpec struct {
@@ -523,7 +526,7 @@ const (
 	configFieldAgentAutoLoopEnabled
 	configFieldAgentAutoLoopMaxRounds
 	configFieldOutputLanguage
-	configFieldSkillsDirectory
+	configFieldSkillsInstallScope
 	configFieldSkillsRegistryURL
 	configFieldCount
 )
@@ -1287,6 +1290,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveConfigReasoningCursor(-1)
 			return m, nil
 		}
+		if m.configForm.cursor == configFieldSkillsInstallScope {
+			m.moveConfigSkillsCursor(-1)
+			return m, nil
+		}
 		if m.configForm.cursor == configFieldDefaultFlow {
 			m.moveConfigFlowCursor(-1)
 			return m, nil
@@ -1302,6 +1309,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldReasoningMode {
 			m.moveConfigReasoningCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldSkillsInstallScope {
+			m.moveConfigSkillsCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldDefaultFlow {
@@ -1333,6 +1344,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldReasoningMode {
 			m.moveConfigReasoningCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldSkillsInstallScope {
+			m.moveConfigSkillsCursor(1)
 			return m, nil
 		}
 	case "ctrl+s":
@@ -1468,8 +1483,8 @@ func (m model) handleSkillsPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !ok || m.skillsPicker.ActiveTab != "remote" {
 			return m, nil
 		}
-		m.activityHint = "正在安装远程技能..."
-		return m, tea.Batch(m.transitionProgress(progressExecuting), executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand("install", selected.Slug, m.skillsPicker.RemoteQuery), m.localCommand))
+		m.activityHint = "正在准备安装远程技能..."
+		return m, tea.Batch(m.transitionProgress(progressExecuting), executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand("install-select", selected.Slug, m.skillsPicker.RemoteQuery), m.localCommand))
 	case "u":
 		selected, ok := m.selectedRemoteSkill()
 		if !ok || m.skillsPicker.ActiveTab != "remote" || !selected.Installed {
@@ -1511,7 +1526,12 @@ func (m model) handleSkillsPickerSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	}
 	switch msg.Type {
 	case tea.KeyEsc:
+		hadQuery := strings.TrimSpace(m.skillsPicker.RemoteQuery) != ""
+		m.skillsPicker.RemoteQuery = ""
 		m.skillsPicker.SearchMode = false
+		if hadQuery {
+			return m, executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand("refresh", "", ""), m.localCommand)
+		}
 		return m, nil
 	case tea.KeyEnter:
 		m.skillsPicker.SearchMode = false
@@ -2370,6 +2390,8 @@ func (m model) renderConfigForm() string {
 			lines = append(lines, m.renderConfigSandboxField())
 		case configFieldReasoningMode:
 			lines = append(lines, m.renderConfigReasoningField())
+		case configFieldSkillsInstallScope:
+			lines = append(lines, m.renderConfigSkillsInstallScopeField())
 		default:
 			lines = append(lines, m.configForm.inputs[index].View())
 		}
@@ -2494,6 +2516,29 @@ func (m model) renderConfigReasoningField() string {
 	return strings.Join(parts, "  ")
 }
 
+func (m model) renderConfigSkillsInstallScopeField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(configSkillsInstallScopeChoices()))
+	for index, option := range configSkillsInstallScopeChoices() {
+		selected := index == m.configForm.skillsCursor
+		marker := "( )"
+		if selected {
+			marker = "(*)"
+		}
+		item := marker + " " + option.Label
+		if m.configForm.cursor == configFieldSkillsInstallScope && selected {
+			parts = append(parts, selectedFlowStyle.Render(item))
+		} else if selected {
+			parts = append(parts, valueStyle.Render(item))
+		} else {
+			parts = append(parts, commandHintStyle.Render(item))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
 func (m model) renderSessionPicker() string {
 	if m.sessionPicker == nil {
 		return ""
@@ -2571,6 +2616,12 @@ func (m model) renderSkillsPicker() string {
 			if strings.TrimSpace(item.Version) != "" {
 				meta = append(meta, "最新 "+item.Version)
 			}
+			if popularityLabel := formatSkillPopularity(item.Popularity); popularityLabel != "" {
+				meta = append(meta, popularityLabel)
+			}
+			if downloadsLabel := formatSkillDownloads(item.Downloads); downloadsLabel != "" {
+				meta = append(meta, downloadsLabel)
+			}
 			if item.Installed {
 				installedLabel := "已安装"
 				if strings.TrimSpace(item.InstalledVersion) != "" {
@@ -2632,6 +2683,24 @@ func (m model) renderSkillsPicker() string {
 		lines = append(lines, markOverlayFocus(line, index == m.skillsCursor))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func formatSkillPopularity(value float64) string {
+	if value <= 0 {
+		return ""
+	}
+	formatted := strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.1f", value), "0"), ".")
+	if formatted == "" {
+		return ""
+	}
+	return "人气 " + formatted
+}
+
+func formatSkillDownloads(value int64) string {
+	if value <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("下载 %d", value)
 }
 
 func (m model) renderTasksPicker() string {
@@ -3615,6 +3684,10 @@ func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
 	if m.configForm.reasoningCursor >= 0 && m.configForm.reasoningCursor < len(reasoningChoices) {
 		submission.Values.ReasoningEnabled = reasoningChoices[m.configForm.reasoningCursor].Value == "on"
 	}
+	skillsChoices := configSkillsInstallScopeChoices()
+	if m.configForm.skillsCursor >= 0 && m.configForm.skillsCursor < len(skillsChoices) {
+		submission.Values.SkillsInstallScope = strings.TrimSpace(skillsChoices[m.configForm.skillsCursor].Value)
+	}
 	apiKey := strings.TrimSpace(submission.Values.APIKey)
 	if m.configForm.hasAPIKey && apiKey == "" {
 		submission.KeepAPIKey = true
@@ -3657,6 +3730,7 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 		approvalCursor:  configChoiceIndex(configApprovalChoices(), values.ApprovalMode),
 		sandboxCursor:   configChoiceIndex(configSandboxChoices(), values.SandboxEscapePolicy),
 		reasoningCursor: configChoiceIndex(configReasoningChoices(), reasoningChoiceValue(values.ReasoningEnabled)),
+		skillsCursor:    configChoiceIndex(configSkillsInstallScopeChoices(), values.SkillsInstallScope),
 	}
 }
 
@@ -3680,7 +3754,7 @@ func configFormFieldSpecs(hasAPIKey bool) []configFieldSpec {
 		{label: "Agent 自动续跑默认开关", placeholder: "true 或 false", description: "仅对 Agent 模式生效；填写 true 或 false，留空恢复默认。"},
 		{label: "Agent 自动续跑最大轮数", placeholder: "3", description: "仅对 Agent 模式生效；填写大于等于 1 的整数。"},
 		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
-		{label: "技能目录", placeholder: "留空表示默认 ~/.snz1dp/skills", description: "远程技能安装默认写入该目录；留空时使用用户级全局目录。"},
+		{label: "技能安装位置", placeholder: "", description: "左右键或空格切换用户目录(user)或工作区(workspace)。"},
 		{label: "技能仓库地址", placeholder: "https://mirror-cn.clawhub.com", description: "远程技能搜索、详情和安装默认使用该镜像站。"},
 	}
 }
@@ -3719,7 +3793,7 @@ func configFormFieldValue(index int, values ConfigFormValues, hasAPIKey bool) st
 	case 13:
 		return strings.TrimSpace(values.OutputLanguage)
 	case 14:
-		return strings.TrimSpace(values.SkillsDirectory)
+		return ""
 	case 15:
 		return strings.TrimSpace(values.SkillsRegistryURL)
 	default:
@@ -3759,9 +3833,6 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 	if len(inputs) > 13 {
 		values.OutputLanguage = strings.TrimSpace(inputs[13].Value())
 	}
-	if len(inputs) > 14 {
-		values.SkillsDirectory = strings.TrimSpace(inputs[14].Value())
-	}
 	if len(inputs) > 15 {
 		values.SkillsRegistryURL = strings.TrimSpace(inputs[15].Value())
 	}
@@ -3770,7 +3841,7 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 
 func isConfigTextField(index int) bool {
 	switch index {
-	case configFieldBackendBaseURL, configFieldAPIKey, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldAgentAutoLoopEnabled, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldSkillsDirectory, configFieldSkillsRegistryURL:
+	case configFieldBackendBaseURL, configFieldAPIKey, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldAgentAutoLoopEnabled, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldSkillsRegistryURL:
 		return true
 	default:
 		return false
@@ -3840,6 +3911,20 @@ func (m *model) moveConfigReasoningCursor(delta int) {
 	m.syncLayout()
 }
 
+func (m *model) moveConfigSkillsCursor(delta int) {
+	choices := configSkillsInstallScopeChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.skillsCursor += delta
+	if m.configForm.skillsCursor < 0 {
+		m.configForm.skillsCursor = len(choices) - 1
+	} else if m.configForm.skillsCursor >= len(choices) {
+		m.configForm.skillsCursor = 0
+	}
+	m.syncLayout()
+}
+
 func configReasoningChoices() []ConfigChoice {
 	return []ConfigChoice{{Value: "off", Label: "关闭"}, {Value: "on", Label: "开启"}}
 }
@@ -3891,6 +3976,13 @@ func configSandboxChoices() []ConfigChoice {
 		{Value: "confirm", Label: "每次确认", Description: "命令访问工作区外资源时逐次确认。"},
 		{Value: "deny", Label: "禁止访问", Description: "禁止访问当前工作区之外的资源。"},
 		{Value: "allow", Label: "直接允许", Description: "允许访问工作区外资源，不再弹出确认。"},
+	}
+}
+
+func configSkillsInstallScopeChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: "user", Label: "用户目录", Description: "安装到 ~/.snz1dp/skills。"},
+		{Value: "workspace", Label: "工作区", Description: "安装到当前工作区的 .snz1dp/skills。"},
 	}
 }
 

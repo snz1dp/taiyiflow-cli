@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
@@ -18,6 +20,7 @@ type stubProvider struct {
 	messages       *provider.SessionMessageList
 	runStats       *provider.RunStats
 	sessionContext *provider.SessionContextPreview
+	lastRequest    provider.StreamRequest
 }
 
 func (s stubProvider) Name() string { return "stub" }
@@ -42,7 +45,8 @@ func (s stubProvider) GetMetadata(context.Context, string) (*provider.Metadata, 
 	return nil, nil
 }
 
-func (s stubProvider) Stream(context.Context, provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
+func (s *stubProvider) Stream(_ context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
+	s.lastRequest = request
 	return s.stream, s.streamSession, s.streamErr
 }
 
@@ -242,7 +246,7 @@ func TestStreamTaskTrimsLeadingBlankLinesFromFirstChunk(t *testing.T) {
 
 	_, err := app.streamTask(
 		context.Background(),
-		stubProvider{stream: stream},
+		&stubProvider{stream: stream},
 		internalconfig.Config{},
 		"demo-flow",
 		"demo task",
@@ -274,7 +278,7 @@ func TestStreamTaskDoesNotPrefixFirstSystemNoteWithBlankLine(t *testing.T) {
 
 	_, err := app.streamTask(
 		context.Background(),
-		stubProvider{stream: stream},
+		&stubProvider{stream: stream},
 		internalconfig.Config{},
 		"demo-flow",
 		"demo task",
@@ -306,7 +310,7 @@ func TestStreamTaskSanitizesTerminalEscapeSequencesFromChunks(t *testing.T) {
 
 	_, err := app.streamTask(
 		context.Background(),
-		stubProvider{stream: stream},
+		&stubProvider{stream: stream},
 		internalconfig.Config{},
 		"demo-flow",
 		"demo task",
@@ -326,7 +330,7 @@ func TestStreamTaskSanitizesTerminalEscapeSequencesFromChunks(t *testing.T) {
 func TestLoadLatestSessionMetricsUsesLatestRunStats(t *testing.T) {
 	metrics := loadLatestSessionMetrics(
 		context.Background(),
-		stubProvider{
+		&stubProvider{
 			messages: &provider.SessionMessageList{
 				Items: []provider.SessionMessage{
 					{RunID: "run-latest"},
@@ -359,10 +363,71 @@ func TestLoadLatestSessionMetricsUsesLatestRunStats(t *testing.T) {
 	}
 }
 
+func TestStreamTaskIncludesWorkspaceSkillPackagesInRequest(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	workspaceDir := t.TempDir()
+	skillDir := filepath.Join(workspaceDir, ".snz1dp", "skills", "context-review")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir failed: %v", err)
+	}
+	content := "---\nname: Context Review\ndescription: 当前工作区技能\ncategory: engineering\n---\n\n检查上下文目录。\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill file failed: %v", err)
+	}
+
+	stream := make(chan provider.StreamEvent, 1)
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+	providerStub := &stubProvider{stream: stream}
+
+	_, err := app.streamTask(
+		context.Background(),
+		providerStub,
+		internalconfig.Config{Workdir: workspaceDir},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent, ContextDir: workspaceDir},
+		"",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+	if !containsIgnoreCase(providerStub.lastRequest.RequestedSkillNames, "Context Review") {
+		t.Fatalf("expected workspace skill in requested names, got %#v", providerStub.lastRequest.RequestedSkillNames)
+	}
+	packages, ok := providerStub.lastRequest.ClientSkillPackages.([]map[string]any)
+	if !ok || len(packages) == 0 {
+		t.Fatalf("expected client skill packages in request, got %#v", providerStub.lastRequest.ClientSkillPackages)
+	}
+	found := false
+	for _, pkg := range packages {
+		skillsValue, ok := pkg["skills"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		for _, skill := range skillsValue {
+			if skill["name"] == "Context Review" {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected workspace skill payload in request, got %#v", packages)
+	}
+}
+
 func TestLoadLatestSessionMetricsOverridesContextWindowWithSessionPreview(t *testing.T) {
 	metrics := loadLatestSessionMetrics(
 		context.Background(),
-		stubProvider{
+		&stubProvider{
 			messages: &provider.SessionMessageList{
 				Items: []provider.SessionMessage{{RunID: "run-latest"}},
 			},

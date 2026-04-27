@@ -200,11 +200,13 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("audit_enabled 仅支持 true 或 false")
 		}
 		config.AuditEnabled = normalized == "true"
-	case "skills_directory":
-		if trimmedValue == "" {
-			return fmt.Errorf("skills_directory 不能为空，如需清空请使用 taiyiflow-cli config unset skills_directory")
+	case "skills_install_scope":
+		normalizedScope := internalconfig.NormalizeSkillInstallScope(trimmedValue)
+		if strings.ToLower(trimmedValue) != normalizedScope {
+			return fmt.Errorf("skills_install_scope 仅支持 user 或 workspace")
 		}
-		config.Skills.Directory = trimmedValue
+		config.Skills.InstallScope = normalizedScope
+		config.Skills.Directory = ""
 	case "skills_registry_url":
 		normalizedURL, err := normalizeRemoteRegistryURL(trimmedValue)
 		if err != nil {
@@ -253,7 +255,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.OutputLanguage = defaults.OutputLanguage
 	case "audit_enabled":
 		config.AuditEnabled = defaults.AuditEnabled
-	case "skills_directory":
+	case "skills_install_scope":
+		config.Skills.InstallScope = defaults.Skills.InstallScope
 		config.Skills.Directory = ""
 	case "skills_registry_url":
 		config.Skills.RegistryURL = defaults.Skills.RegistryURL
@@ -280,6 +283,8 @@ func normalizeConfigKey(key string) string {
 		return "agent_auto_loop_enabled"
 	case "agent_auto_continue_max_rounds", "agent_autoloop_max_rounds", "agent_auto_loop_rounds":
 		return "agent_auto_loop_max_rounds"
+	case "skills_directory":
+		return "skills_install_scope"
 	default:
 		return normalized
 	}
@@ -317,11 +322,23 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("流式空闲超时: %d 秒", config.StreamIdleTimeoutSeconds),
 		fmt.Sprintf("输出语言: %s", fallbackConfigValue(config.OutputLanguage, internalconfig.Default().OutputLanguage)),
 		fmt.Sprintf("审计日志: %t", config.AuditEnabled),
-		fmt.Sprintf("技能目录: %s", fallbackConfigValue(config.Skills.Directory, "<默认 ~/.snz1dp/skills>")),
+		fmt.Sprintf("技能安装位置: %s", skillInstallScopeLabel(config)),
 		fmt.Sprintf("技能仓库: %s", fallbackConfigValue(config.Skills.RegistryURL, internalconfig.Default().Skills.RegistryURL)),
 		fmt.Sprintf("外部资源访问根目录: %s", fallbackConfigValue(strings.Join(config.SandboxRoots, ", "), "<仅当前工作目录>")),
 	}
 	return strings.Join(lines, "\n")
+}
+
+func skillInstallScopeLabel(config internalconfig.Config) string {
+	if strings.TrimSpace(config.Skills.Directory) != "" {
+		return fmt.Sprintf("兼容旧配置: %s", strings.TrimSpace(config.Skills.Directory))
+	}
+	switch internalconfig.NormalizeSkillInstallScope(config.Skills.InstallScope) {
+	case internalconfig.SkillInstallScopeWorkspace:
+		return "工作区 (.snz1dp/skills)"
+	default:
+		return "用户目录 (~/.snz1dp/skills)"
+	}
 }
 
 func normalizeRemoteRegistryURL(value string) (string, error) {

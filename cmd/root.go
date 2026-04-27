@@ -40,6 +40,8 @@ type App struct {
 	stderr        io.Writer
 	stdin         io.Reader
 	runtime       *clientruntime.ClientRuntime
+	skillInstallScopeSession string
+	skillInstallScopePinned  bool
 }
 
 type rootOptions struct {
@@ -443,7 +445,7 @@ func (a *App) streamTask(
 	defer a.runtime.SetStreamEventLogsEnabled(true)
 
 	runtimeConfig := applyEffectiveSandboxEscapePolicy(config, sessionState.SandboxEscapePolicyOverride, commandSandboxEscapePolicy)
-	requestedSkillNames, clientSkillPackages, err := a.loadSkillPayload(config)
+	requestedSkillNames, clientSkillPackages, err := a.loadSkillPayload(config, sessionState.ContextDir)
 	if err != nil {
 		return sessionState, err
 	}

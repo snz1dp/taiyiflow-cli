@@ -17,7 +17,7 @@ func TestBuildTUISkillsPickerIncludesRenamedBundledSkill(t *testing.T) {
 	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
 	config := internalconfig.Default()
 
-	picker, err := buildTUISkillsPicker(config, "")
+	picker, err := buildTUISkillsPicker(config, "", "")
 	if err != nil {
 		t.Fatalf("buildTUISkillsPicker failed: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestBuildTUISkillsPickerLoadsRemoteItems(t *testing.T) {
 			return
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"远程技能摘要","version":"1.2.3","updatedAt":1710000000}]}`))
+		_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"远程技能摘要","popularity":4.8,"downloads":12345,"version":"1.2.3","updatedAt":1710000000}]}`))
 	}))
 	defer registry.Close()
 
@@ -56,7 +56,7 @@ func TestBuildTUISkillsPickerLoadsRemoteItems(t *testing.T) {
 	config := internalconfig.Default()
 	config.Skills.RegistryURL = registry.URL
 
-	picker, err := buildTUISkillsPicker(config, "remote")
+	picker, err := buildTUISkillsPicker(config, "", "remote")
 	if err != nil {
 		t.Fatalf("buildTUISkillsPicker failed: %v", err)
 	}
@@ -68,6 +68,9 @@ func TestBuildTUISkillsPickerLoadsRemoteItems(t *testing.T) {
 	}
 	if picker.RemoteItems[0].Summary != "远程技能摘要" {
 		t.Fatalf("expected sanitized remote summary, got %#v", picker.RemoteItems[0])
+	}
+	if picker.RemoteItems[0].Popularity != 4.8 || picker.RemoteItems[0].Downloads != 12345 {
+		t.Fatalf("expected popularity/downloads to map, got %#v", picker.RemoteItems[0])
 	}
 	if picker.RemoteQuery != "remote" {
 		t.Fatalf("expected remote query to persist, got %#v", picker)
@@ -107,9 +110,20 @@ func TestExecuteTUISkillsPickerInstallDetailRefreshesPickerAndPanel(t *testing.T
 	}
 	app := &App{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, configManager: manager}
 
-	result, err := app.executeTUISkillsPickerCommand(config, "/skills-picker install-detail remote-skill remote")
+	promptResult, err := app.executeTUISkillsPickerCommand(config, workspaceDir, "/skills-picker install-detail-select remote-skill remote")
 	if err != nil {
 		t.Fatalf("executeTUISkillsPickerCommand failed: %v", err)
+	}
+	if promptResult.SkillsPicker == nil || len(promptResult.SkillsPicker.RemoteItems) != 1 {
+		t.Fatalf("expected refreshed remote picker, got %#v", promptResult.SkillsPicker)
+	}
+	if len(promptResult.Events) == 0 || promptResult.Events[len(promptResult.Events)-1].Panel == nil {
+		t.Fatalf("expected install target panel event, got %#v", promptResult.Events)
+	}
+	installCommand := promptResult.Events[len(promptResult.Events)-1].Panel.Actions[0].Command
+	result, err := app.executeTUISkillsPickerCommand(config, workspaceDir, installCommand)
+	if err != nil {
+		t.Fatalf("execute install-scope failed: %v", err)
 	}
 	if result.SkillsPicker == nil || len(result.SkillsPicker.RemoteItems) != 1 {
 		t.Fatalf("expected refreshed remote picker, got %#v", result.SkillsPicker)
@@ -130,6 +144,50 @@ func TestExecuteTUISkillsPickerInstallDetailRefreshesPickerAndPanel(t *testing.T
 	installedSkillPath := filepath.Join(defaultSkillsDir, "remote-skill", "SKILL.md")
 	if _, statErr := os.Stat(installedSkillPath); statErr != nil {
 		t.Fatalf("expected installed skill file, got %v", statErr)
+	}
+}
+
+func TestExecuteTUISkillsPickerInstallSelectUsesRememberedSessionScope(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	workspaceDir := t.TempDir()
+	registry := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/search":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"远程技能摘要","version":"1.2.3","updatedAt":1710000000}]}`))
+		case "/api/v1/skills/remote-skill":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"skill":{"slug":"remote-skill","displayName":"Remote Skill","summary":"远程技能摘要","updatedAt":1710000000},"latestVersion":{"version":"1.2.3"},"metadata":{"os":["macOS"],"systems":["cli"]},"owner":{"handle":"tester","displayName":"测试者"}}`))
+		case "/api/v1/download":
+			archiveBytes := buildRemoteSkillArchive(t, "1.2.3")
+			writer.Header().Set("Content-Type", "application/zip")
+			_, _ = writer.Write(archiveBytes)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer registry.Close()
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.RegistryURL = registry.URL
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	app := &App{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, configManager: manager, skillInstallScopeSession: internalconfig.SkillInstallScopeWorkspace, skillInstallScopePinned: true}
+	result, err := app.executeTUISkillsPickerCommand(config, workspaceDir, "/skills-picker install-select remote-skill remote")
+	if err != nil {
+		t.Fatalf("executeTUISkillsPickerCommand failed: %v", err)
+	}
+	if len(result.Events) == 0 || result.Events[0].Panel != nil {
+		t.Fatalf("expected direct install note without prompt, got %#v", result.Events)
+	}
+	installedSkillPath := filepath.Join(workspaceDir, ".snz1dp", "skills", "remote-skill", "SKILL.md")
+	if _, statErr := os.Stat(installedSkillPath); statErr != nil {
+		t.Fatalf("expected workspace installed skill file, got %v", statErr)
 	}
 }
 
@@ -181,7 +239,7 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 			CommandTimeoutSeconds:    "45",
 			StreamIdleTimeoutSeconds: "300",
 			OutputLanguage:           "zh-CN",
-			SkillsDirectory:          "/workspace/demo/.snz1dp/skills",
+			SkillsInstallScope:       "workspace",
 			SkillsRegistryURL:        "https://mirror-cn.clawhub.com",
 		},
 		KeepAPIKey: true,
@@ -204,8 +262,11 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	if updated.PermissionRules[1].CommandPrefix != "git status" || updated.PermissionRules[1].Action != "allow" {
 		t.Fatalf("unexpected second permission rule: %#v", updated.PermissionRules[1])
 	}
-	if updated.Skills.Directory != "/workspace/demo/.snz1dp/skills" {
-		t.Fatalf("expected skills directory saved, got %#v", updated.Skills)
+	if updated.Skills.InstallScope != "workspace" {
+		t.Fatalf("expected skills install scope saved, got %#v", updated.Skills)
+	}
+	if updated.Skills.Directory != "" {
+		t.Fatalf("expected legacy skills directory cleared, got %#v", updated.Skills)
 	}
 	if updated.CommandTimeoutSeconds != 45 {
 		t.Fatalf("expected command timeout saved, got %#v", updated.CommandTimeoutSeconds)
@@ -218,8 +279,8 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	if len(reloaded.PermissionRules) != 2 || len(reloaded.SandboxRoots) != 2 {
 		t.Fatalf("expected persisted permission fields, got %#v", reloaded)
 	}
-	if reloaded.Skills.Directory != "/workspace/demo/.snz1dp/skills" {
-		t.Fatalf("expected persisted skills directory, got %#v", reloaded.Skills)
+	if reloaded.Skills.InstallScope != "workspace" {
+		t.Fatalf("expected persisted skills install scope, got %#v", reloaded.Skills)
 	}
 	if reloaded.CommandTimeoutSeconds != 45 {
 		t.Fatalf("expected persisted command timeout, got %#v", reloaded.CommandTimeoutSeconds)

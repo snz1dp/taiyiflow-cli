@@ -33,7 +33,7 @@ func TestLoadSkillPayloadIncludesBundledEnabledSkills(t *testing.T) {
 		t.Fatalf("save config failed: %v", err)
 	}
 
-	names, packages, err := app.loadSkillPayload(config)
+	names, packages, err := app.loadSkillPayload(config, "")
 	if err != nil {
 		t.Fatalf("loadSkillPayload failed: %v", err)
 	}
@@ -56,6 +56,95 @@ func TestLoadSkillPayloadIncludesBundledEnabledSkills(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected bundled package root, got %#v", payload)
+	}
+}
+
+func TestLoadSkillPayloadUsesContextDirWorkspaceSkills(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	app := &App{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, configManager: manager}
+	workspaceDir := t.TempDir()
+	skillDir := filepath.Join(workspaceDir, ".snz1dp", "skills", "context-review")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir failed: %v", err)
+	}
+	content := "---\nname: Context Review\ndescription: 当前工作区技能\ncategory: engineering\n---\n\n检查上下文目录。\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill file failed: %v", err)
+	}
+	config := internalconfig.Default()
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	names, packages, err := app.loadSkillPayload(config, workspaceDir)
+	if err != nil {
+		t.Fatalf("loadSkillPayload failed: %v", err)
+	}
+	if !containsIgnoreCase(names, "Context Review") {
+		t.Fatalf("expected workspace skill in requested names, got %#v", names)
+	}
+	payload, ok := packages.([]map[string]any)
+	if !ok {
+		t.Fatalf("unexpected packages type: %T", packages)
+	}
+	found := false
+	for _, pkg := range payload {
+		skillsPayload, ok := pkg["skills"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		for _, item := range skillsPayload {
+			if item["name"] == "Context Review" {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected context workspace skill in payload, got %#v", payload)
+	}
+}
+
+func TestLoadSkillPayloadReflectsDisabledSkillImmediately(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	app := &App{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, configManager: manager}
+	config := internalconfig.Default()
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	names, _, err := app.loadSkillPayload(config, "")
+	if err != nil {
+		t.Fatalf("loadSkillPayload failed: %v", err)
+	}
+	if !containsIgnoreCase(names, "updateConfig") {
+		t.Fatalf("expected updateConfig enabled before disable, got %#v", names)
+	}
+	if _, err := app.executeSkillsCommand([]string{"disable", "updateConfig"}); err != nil {
+		t.Fatalf("disable skill failed: %v", err)
+	}
+	names, _, err = app.loadSkillPayload(config, "")
+	if err != nil {
+		t.Fatalf("loadSkillPayload after disable failed: %v", err)
+	}
+	if containsIgnoreCase(names, "updateConfig") {
+		t.Fatalf("expected disabled skill to disappear immediately, got %#v", names)
+	}
+	if _, err := app.executeSkillsCommand([]string{"enable", "updateConfig"}); err != nil {
+		t.Fatalf("re-enable skill failed: %v", err)
+	}
+	names, _, err = app.loadSkillPayload(config, "")
+	if err != nil {
+		t.Fatalf("loadSkillPayload after enable failed: %v", err)
+	}
+	if !containsIgnoreCase(names, "updateConfig") {
+		t.Fatalf("expected re-enabled skill to recover immediately, got %#v", names)
 	}
 }
 
@@ -124,7 +213,7 @@ func TestExecuteSkillsListGroupsBundledSkillsBySource(t *testing.T) {
 	if !strings.Contains(output, "taiyiflowApi") {
 		t.Fatalf("expected renamed bundled skill, got %q", output)
 	}
-	if !strings.Contains(output, "状态 渐进披露") {
+	if !strings.Contains(output, "渐进披露") {
 		t.Fatalf("expected status badge, got %q", output)
 	}
 }
@@ -172,7 +261,7 @@ func TestExecuteSkillsRemoteLifecycle(t *testing.T) {
 		switch {
 		case request.URL.Path == "/api/v1/search":
 			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"远程技能摘要","version":"1.0.0","updatedAt":1710000000}]}`))
+			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"远程技能摘要","popularity":4.8,"downloads":12345,"version":"1.0.0","updatedAt":1710000000}]}`))
 		case request.URL.Path == "/api/v1/skills/remote-skill":
 			versionMu.RLock()
 			current := latestVersion
@@ -213,6 +302,9 @@ func TestExecuteSkillsRemoteLifecycle(t *testing.T) {
 	}
 	if !strings.Contains(searchOutput, "远程技能摘要") || strings.Contains(searchOutput, `\n  远程技能摘要`) {
 		t.Fatalf("expected sanitized remote summary in search output, got %q", searchOutput)
+	}
+	if !strings.Contains(searchOutput, "人气 4.8") || !strings.Contains(searchOutput, "下载 12345") {
+		t.Fatalf("expected popularity/downloads in search output, got %q", searchOutput)
 	}
 
 	viewOutput, err := app.executeSkillsCommand([]string{"view-remote", "remote-skill"})

@@ -93,7 +93,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}
 		runtimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
 		quietRuntimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
-		requestedSkillNames, clientSkillPackages, err := a.loadSkillPayload(config)
+		requestedSkillNames, clientSkillPackages, err := a.loadSkillPayload(config, sessionState.ContextDir)
 		if err != nil {
 			return err
 		}
@@ -434,7 +434,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if configErr != nil {
 				return tui.LocalCommandResult{}, configErr
 			}
-			result, pickerErr := a.executeTUISkillsPickerCommand(localConfig, trimmed)
+			result, pickerErr := a.executeTUISkillsPickerCommand(localConfig, resolveTUISkillsContextDir(snapshot), trimmed)
 			if pickerErr != nil {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: pickerErr.Error()}}}, nil
 			}
@@ -444,7 +444,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if configErr != nil {
 				return tui.LocalCommandResult{}, configErr
 			}
-			picker, pickerErr := buildTUISkillsPicker(localConfig, "")
+			picker, pickerErr := buildTUISkillsPicker(localConfig, resolveTUISkillsContextDir(snapshot), "")
 			if pickerErr != nil {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: pickerErr.Error()}}}, nil
 			}
@@ -1751,7 +1751,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			AgentAutoLoopEnabled:     strconv.FormatBool(config.AgentAutoLoopEnabled),
 			AgentAutoLoopMaxRounds:   strconv.Itoa(config.AgentAutoLoopMaxRounds),
 			OutputLanguage:           strings.TrimSpace(config.OutputLanguage),
-			SkillsDirectory:          strings.TrimSpace(config.Skills.Directory),
+			SkillsInstallScope:       internalconfig.NormalizeSkillInstallScope(config.Skills.InstallScope),
 			SkillsRegistryURL:        strings.TrimSpace(config.Skills.RegistryURL),
 		},
 	}, nil
@@ -1843,11 +1843,10 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		return internalconfig.Config{}, err
 	}
 
-	if strings.TrimSpace(submission.Values.SkillsDirectory) == "" {
-		config.Skills.Directory = ""
-	} else if err := assignConfigValue(&config, "skills_directory", submission.Values.SkillsDirectory); err != nil {
+	if err := assignConfigValue(&config, "skills_install_scope", submission.Values.SkillsInstallScope); err != nil {
 		return internalconfig.Config{}, err
 	}
+	config.Skills.Directory = ""
 
 	if strings.TrimSpace(submission.Values.SkillsRegistryURL) == "" {
 		config.Skills.RegistryURL = internalconfig.Default().Skills.RegistryURL
@@ -2033,8 +2032,13 @@ func buildApprovalPicker(snapshot tui.Snapshot) *tui.ApprovalPickerState {
 	}
 }
 
-func buildTUISkillsPicker(config internalconfig.Config, query string) (*tui.SkillsPickerState, error) {
-	items, _, err := skills.Discover(config)
+func buildTUISkillsPicker(config internalconfig.Config, contextDir string, query string) (*tui.SkillsPickerState, error) {
+	skillConfig := config
+	resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(contextDir, config.Workdir))
+	if strings.TrimSpace(resolvedContextDir) != "" {
+		skillConfig.Workdir = resolvedContextDir
+	}
+	items, _, err := skills.Discover(skillConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -2066,7 +2070,7 @@ func buildTUISkillsPicker(config internalconfig.Config, query string) (*tui.Skil
 	remoteQuery := strings.TrimSpace(query)
 	remoteResults, registryURL, remoteErr := skills.SearchRemote(config, remoteQuery, 20)
 	installedMap := map[string]skills.InstalledRemoteSkill{}
-	installedItems, installedErr := skills.ListInstalledRemoteSkills(config)
+	installedItems, installedErr := skills.ListInstalledRemoteSkills(skillConfig)
 	if installedErr == nil {
 		for _, item := range installedItems {
 			installedMap[strings.ToLower(strings.TrimSpace(item.Slug))] = item
@@ -2080,6 +2084,8 @@ func buildTUISkillsPicker(config internalconfig.Config, query string) (*tui.Skil
 			Slug:             strings.TrimSpace(item.Slug),
 			DisplayName:      strings.TrimSpace(item.DisplayName),
 			Summary:          strings.TrimSpace(item.Summary),
+			Popularity:       item.Popularity,
+			Downloads:        item.Downloads,
 			Version:          strings.TrimSpace(item.Version),
 			RegistryLabel:    registryLabel,
 			Installed:        ok,
@@ -2115,10 +2121,15 @@ func buildTUISkillsPicker(config internalconfig.Config, query string) (*tui.Skil
 	}, nil
 }
 
-func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, command string) (tui.LocalCommandResult, error) {
+func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contextDir string, command string) (tui.LocalCommandResult, error) {
 	remainder := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(command), skillsPickerCommandPrefix))
 	action := "open"
 	args := []string{}
+	skillConfig := config
+	resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(contextDir, config.Workdir))
+	if strings.TrimSpace(resolvedContextDir) != "" {
+		skillConfig.Workdir = resolvedContextDir
+	}
 	if remainder != "" {
 		args = strings.Fields(remainder)
 		if len(args) > 0 {
@@ -2127,7 +2138,7 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, comman
 		}
 	}
 	buildPicker := func(query string) (tui.LocalCommandResult, error) {
-		picker, err := buildTUISkillsPicker(config, query)
+		picker, err := buildTUISkillsPicker(skillConfig, resolvedContextDir, query)
 		if err != nil {
 			return tui.LocalCommandResult{}, err
 		}
@@ -2141,7 +2152,7 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, comman
 		if err != nil {
 			return tui.LocalCommandResult{}, err
 		}
-		detail, _, detailErr := skills.FetchRemoteDetail(config, slug)
+		detail, _, detailErr := skills.FetchRemoteDetail(skillConfig, slug)
 		if detailErr != nil {
 			if note != "" {
 				result.Events = append(result.Events, tui.Event{Kind: tui.EventSystemNote, Text: note})
@@ -2149,7 +2160,7 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, comman
 			result.Events = append(result.Events, tui.Event{Kind: tui.EventErrorNote, Text: detailErr.Error()})
 			return result, nil
 		}
-		installedItems, installedErr := skills.ListInstalledRemoteSkills(config)
+		installedItems, installedErr := skills.ListInstalledRemoteSkills(skillConfig)
 		installed := skills.InstalledRemoteSkill{}
 		installedFound := false
 		if installedErr == nil {
@@ -2174,6 +2185,74 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, comman
 		}
 		return strings.TrimSpace(values[0]), strings.TrimSpace(strings.Join(values[1:], " ")), nil
 	}
+	splitInstallScopeArgs := func(values []string) (string, string, bool, bool, string, error) {
+		if len(values) < 3 {
+			return "", "", false, false, "", fmt.Errorf("缺少安装目标参数")
+		}
+		slug := strings.TrimSpace(values[0])
+		scope := internalconfig.NormalizeSkillInstallScope(values[1])
+		if slug == "" || strings.TrimSpace(values[1]) == "" {
+			return "", "", false, false, "", fmt.Errorf("缺少安装目标参数")
+		}
+		remember := strings.EqualFold(strings.TrimSpace(values[2]), "remember")
+		reopenDetail := false
+		queryStart := 3
+		if len(values) > 3 && strings.EqualFold(strings.TrimSpace(values[3]), "detail") {
+			reopenDetail = true
+			queryStart = 4
+		}
+		query := ""
+		if len(values) > queryStart {
+			query = strings.TrimSpace(strings.Join(values[queryStart:], " "))
+		}
+		return slug, scope, remember, reopenDetail, query, nil
+	}
+	executeInstall := func(slug string, scope string, remember bool, reopenDetail bool, query string) (tui.LocalCommandResult, error) {
+		installConfig := skillConfig
+		installConfig.Skills.InstallScope = internalconfig.NormalizeSkillInstallScope(scope)
+		installConfig.Skills.Directory = ""
+		resultData, installErr := skills.InstallRemote(installConfig, slug, "", false)
+		if installErr != nil {
+			result, pickerErr := buildPicker(query)
+			if pickerErr != nil {
+				return tui.LocalCommandResult{}, pickerErr
+			}
+			result.Events = []tui.Event{{Kind: tui.EventErrorNote, Text: installErr.Error()}}
+			return result, nil
+		}
+		if remember {
+			a.skillInstallScopeSession = installConfig.Skills.InstallScope
+			a.skillInstallScopePinned = true
+		}
+		lines := []string{
+			fmt.Sprintf("已安装远程技能: %s (%s)", fallbackConfigValue(resultData.Name, resultData.Slug), resultData.Slug),
+			fmt.Sprintf("版本: %s", resultData.Version),
+			fmt.Sprintf("目录: %s", resultData.TargetDir),
+			fmt.Sprintf("技能仓库: %s", resultData.RegistryURL),
+		}
+		note := strings.Join(lines, "\n")
+		if remember {
+			note = fmt.Sprintf("本会话后续安装默认写入%s。\n%s", skillInstallScopeLabelText(installConfig.Skills.InstallScope), note)
+		}
+		if reopenDetail {
+			return buildDetailResult(slug, query, note)
+		}
+		result, pickerErr := buildPicker(query)
+		if pickerErr != nil {
+			return tui.LocalCommandResult{}, pickerErr
+		}
+		result.Events = []tui.Event{{Kind: tui.EventSystemNote, Text: note}}
+		return result, nil
+	}
+	buildInstallPromptResult := func(slug string, query string, reopenDetail bool) (tui.LocalCommandResult, error) {
+		result, err := buildPicker(query)
+		if err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+		defaultScope := a.resolveSkillInstallScope(skillConfig)
+		result.Events = append(result.Events, tui.Event{Kind: tui.EventToolPanel, Panel: buildSkillInstallTargetPanel(slug, query, reopenDetail, defaultScope)})
+		return result, nil
+	}
 	switch action {
 	case "open", "refresh", "search":
 		return buildPicker(strings.TrimSpace(strings.Join(args, " ")))
@@ -2183,10 +2262,29 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, comman
 			return tui.LocalCommandResult{}, err
 		}
 		return buildDetailResult(slug, query, "")
+	case "install-select", "install-detail-select":
+		slug, query, err := splitSlugAndQuery(args)
+		if err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+		reopenDetail := strings.HasPrefix(action, "install-detail")
+		if a.skillInstallScopePinned {
+			return executeInstall(slug, a.skillInstallScopeSession, false, reopenDetail, query)
+		}
+		return buildInstallPromptResult(slug, query, reopenDetail)
+	case "install-scope":
+		slug, scope, remember, reopenDetail, query, err := splitInstallScopeArgs(args)
+		if err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+		return executeInstall(slug, scope, remember, reopenDetail, query)
 	case "install", "update", "remove":
 		slug, query, err := splitSlugAndQuery(args)
 		if err != nil {
 			return tui.LocalCommandResult{}, err
+		}
+		if action == "install" {
+			return executeInstall(slug, a.resolveSkillInstallScope(skillConfig), false, false, query)
 		}
 		output, commandErr := a.executeSkillsCommand([]string{action, slug})
 		result, pickerErr := buildPicker(query)
@@ -2205,6 +2303,9 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, comman
 			return tui.LocalCommandResult{}, err
 		}
 		baseAction := strings.TrimSuffix(action, "-detail")
+		if baseAction == "install" {
+			return executeInstall(slug, a.resolveSkillInstallScope(skillConfig), false, true, query)
+		}
 		output, commandErr := a.executeSkillsCommand([]string{baseAction, slug})
 		if commandErr != nil {
 			result, pickerErr := buildPicker(query)
@@ -2217,6 +2318,26 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, comman
 		return buildDetailResult(slug, query, output)
 	default:
 		return tui.LocalCommandResult{}, fmt.Errorf("不支持的 skills picker 动作: %s", action)
+	}
+}
+
+func resolveTUISkillsContextDir(snapshot tui.Snapshot) string {
+	return resolveLocalWorkdir(firstNonEmpty(snapshot.ContextDir, snapshot.Workdir))
+}
+
+func (a *App) resolveSkillInstallScope(config internalconfig.Config) string {
+	if a.skillInstallScopePinned {
+		return internalconfig.NormalizeSkillInstallScope(a.skillInstallScopeSession)
+	}
+	return internalconfig.NormalizeSkillInstallScope(config.Skills.InstallScope)
+}
+
+func skillInstallScopeLabelText(scope string) string {
+	switch internalconfig.NormalizeSkillInstallScope(scope) {
+	case internalconfig.SkillInstallScopeWorkspace:
+		return "工作区 (.snz1dp/skills)"
+	default:
+		return "用户目录 (~/.snz1dp/skills)"
 	}
 }
 
@@ -2261,20 +2382,48 @@ func buildRemoteSkillPanel(item tui.RemoteSkillItem, query string) *tui.ToolPane
 		Body:    buildRemoteSkillPanelBody(item),
 		Hint:    "Esc 返回上层技能列表。",
 		Actions: []tui.ToolPanelAction{
-			{Key: "i", Label: "安装", Command: buildHiddenSkillsPickerCommand("install-detail", item.Slug, query), Disabled: item.Installed},
+			{Key: "i", Label: "安装", Command: buildHiddenSkillsPickerCommand("install-detail-select", item.Slug, query), Disabled: item.Installed},
 			{Key: "u", Label: "更新", Command: buildHiddenSkillsPickerCommand("update-detail", item.Slug, query), Disabled: !item.Installed},
 			{Key: "d", Label: "删除", Command: buildHiddenSkillsPickerCommand("remove-detail", item.Slug, query), Disabled: !item.Installed},
 		},
 	}
 }
 
-func buildHiddenSkillsPickerCommand(action string, slug string, query string) string {
-	parts := []string{skillsPickerCommandPrefix, strings.TrimSpace(action)}
-	if strings.TrimSpace(slug) != "" {
-		parts = append(parts, strings.TrimSpace(slug))
+func buildSkillInstallTargetPanel(slug string, query string, reopenDetail bool, defaultScope string) *tui.ToolPanel {
+	detailFlag := ""
+	if reopenDetail {
+		detailFlag = "detail"
 	}
-	if strings.TrimSpace(query) != "" {
-		parts = append(parts, strings.TrimSpace(query))
+	return &tui.ToolPanel{
+		Title:   fmt.Sprintf("选择安装位置｜%s", strings.TrimSpace(slug)),
+		Summary: fmt.Sprintf("默认安装位置: %s", skillInstallScopeLabelText(defaultScope)),
+		Body: strings.Join([]string{
+			"请选择远程技能安装位置。",
+			fmt.Sprintf("当前默认: %s", skillInstallScopeLabelText(defaultScope)),
+			"按 1/2 仅安装本次，按 3/4 安装并记住本会话选择。",
+		}, "\n"),
+		Hint: "Esc 返回上层技能列表。",
+		Actions: []tui.ToolPanelAction{
+			{Key: "1", Label: "安装到用户目录", Command: buildSkillsPickerActionCommand("install-scope", slug, internalconfig.SkillInstallScopeUser, "once", detailFlag, query)},
+			{Key: "2", Label: "安装到工作区", Command: buildSkillsPickerActionCommand("install-scope", slug, internalconfig.SkillInstallScopeWorkspace, "once", detailFlag, query)},
+			{Key: "3", Label: "安装到用户目录并记住本会话", Command: buildSkillsPickerActionCommand("install-scope", slug, internalconfig.SkillInstallScopeUser, "remember", detailFlag, query)},
+			{Key: "4", Label: "安装到工作区并记住本会话", Command: buildSkillsPickerActionCommand("install-scope", slug, internalconfig.SkillInstallScopeWorkspace, "remember", detailFlag, query)},
+		},
+	}
+}
+
+func buildHiddenSkillsPickerCommand(action string, slug string, query string) string {
+	return buildSkillsPickerActionCommand(action, slug, query)
+}
+
+func buildSkillsPickerActionCommand(action string, values ...string) string {
+	parts := []string{skillsPickerCommandPrefix, strings.TrimSpace(action)}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		parts = append(parts, trimmed)
 	}
 	return strings.Join(parts, " ")
 }

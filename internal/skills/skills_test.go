@@ -268,6 +268,22 @@ func TestResolveInstallDirectoryDefaultsToGlobalSkillsDir(t *testing.T) {
 	}
 }
 
+func TestResolveInstallDirectoryUsesWorkspaceScope(t *testing.T) {
+	workspaceDir := t.TempDir()
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.InstallScope = internalconfig.SkillInstallScopeWorkspace
+
+	resolved, err := ResolveInstallDirectory(config)
+	if err != nil {
+		t.Fatalf("resolve install directory failed: %v", err)
+	}
+	expected := filepath.Join(workspaceDir, ".snz1dp", "skills")
+	if resolved != expected {
+		t.Fatalf("expected workspace skills dir %q, got %q", expected, resolved)
+	}
+}
+
 func TestResolveDirectoriesPreferWorkspaceThenGlobalConfig(t *testing.T) {
 	workspaceDir := t.TempDir()
 	globalDir := t.TempDir()
