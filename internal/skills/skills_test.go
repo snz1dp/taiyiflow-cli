@@ -174,7 +174,7 @@ func TestDiscoverIncludesBundledSkillsByDefault(t *testing.T) {
 		t.Fatal("expected bundled skills")
 	}
 
-	item, _, err := LoadByName(config, "updateConfig")
+	item, _, err := LoadByName(config, "update-config")
 	if err != nil {
 		t.Fatalf("load bundled skill failed: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestWorkspaceSkillOverridesBundledDefaultAndCanBeDisabled(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(tempDir, "update-config"), 0o755); err != nil {
 		t.Fatalf("mkdir failed: %v", err)
 	}
-	content := "---\nname: updateConfig\ndescription: 工作区覆盖版\ncategory: workspace\n---\n\n优先使用工作区 skill。\n"
+	content := "---\nname: update-config\ndescription: 工作区覆盖版\ncategory: workspace\n---\n\n优先使用工作区 skill。\n"
 	if err := os.WriteFile(filepath.Join(tempDir, "update-config", "SKILL.md"), []byte(content), 0o644); err != nil {
 		t.Fatalf("write skill failed: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestWorkspaceSkillOverridesBundledDefaultAndCanBeDisabled(t *testing.T) {
 	config := internalconfig.Config{}
 	config.Skills.Directory = tempDir
 
-	item, _, err := LoadByName(config, "updateConfig")
+	item, _, err := LoadByName(config, "update-config")
 	if err != nil {
 		t.Fatalf("load skill failed: %v", err)
 	}
@@ -219,8 +219,8 @@ func TestWorkspaceSkillOverridesBundledDefaultAndCanBeDisabled(t *testing.T) {
 		t.Fatal("expected overriding skill enabled because bundled default exists")
 	}
 
-	config.Skills.Disabled = []string{"updateConfig"}
-	item, _, err = LoadByName(config, "updateConfig")
+	config.Skills.Disabled = []string{"update-config"}
+	item, _, err = LoadByName(config, "update-config")
 	if err != nil {
 		t.Fatalf("load disabled skill failed: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestBundledSkillExtractsReferenceFiles(t *testing.T) {
 	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
 	config := internalconfig.Config{}
 
-	item, _, err := LoadByName(config, "taiyiflowApi")
+	item, _, err := LoadByName(config, "taiyiflow-api")
 	if err != nil {
 		t.Fatalf("load bundled skill failed: %v", err)
 	}

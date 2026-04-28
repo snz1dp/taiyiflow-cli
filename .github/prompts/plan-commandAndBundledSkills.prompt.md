@@ -16,7 +16,7 @@
 - 已完成细粒度权限规则首版：本地配置新增 `permission_rules`，支持 allow/ask/deny 三态、按工具名或命令前缀匹配、规则持久化，以及 `/permissions rule add/remove` 的 CLI/TUI 入口；runtime 已把规则接入 `shell_exec` 与客户端工具授权链。
 - 已完成 `/review` 工作流命令首版：交互式 CLI 与 TUI 都支持 `/review [路径或范围说明]`，并复用现有 agent 请求模式与会话上下文发起代码审查。
 - 已补 bundled skills 相关单元测试，覆盖默认发现、同名覆盖、禁用语义、参考文件提取和 payload 输出一致性。
-- 已把 `claudeApi`、`claudeInChrome` 重命名为 `taiyiflowApi`、`taiyiflowInChrome`，不再保留旧名。
+- 已把 `claudeApi`、`claudeInChrome` 重命名为 `taiyiflow-api`、`taiyiflow-in-chrome`，不再保留旧名。
 - 命令层、任务治理、内置技能与细粒度权限规则的首轮闭环已完成；后续重点转向规则细化、review 扩展能力与更高保真度的 claude-code-haha 行为对齐。
 
 **Steps**
@@ -34,11 +34,11 @@
 **Bundled Skills Matrix**
 | 技能 | 来源 | 类型 | 主要用途 | 关键依赖 | 复刻策略 | 首批阶段 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `updateConfig` | `claude-code-haha/src/skills/bundled/updateConfig.ts` | 默认内置 | 更新 CLI 配置 | 本地配置文件读写 | 裁剪复刻 | Phase H-I |
+| `update-config` | `claude-code-haha/src/skills/bundled/update-config.ts` | 默认内置 | 更新 CLI 配置 | 本地配置文件读写 | 裁剪复刻 | Phase H-I |
 | `keybindings` | `claude-code-haha/src/skills/bundled/keybindings.ts` | 默认内置 | 查看或讲解快捷键 | 静态键位信息 | 直接复刻 | Phase H-I |
 | `verify` | `claude-code-haha/src/skills/bundled/verify.ts` | 默认内置 | 校验输出或流程完成度 | Prompt 模板、可能依赖本地读写 | 裁剪复刻 | Phase I |
 | `debug` | `claude-code-haha/src/skills/bundled/debug.ts` | 默认内置 | 读取并分析当前会话调试日志 | 本地日志路径、Read/Grep/Glob 类能力 | 直接复刻 | Phase H-I |
-| `loremIpsum` | `claude-code-haha/src/skills/bundled/loremIpsum.ts` | 默认内置 | 示例或占位文本生成 | 纯 Prompt | 直接复刻或不启用 | Phase I |
+| `loremipsum` | `claude-code-haha/src/skills/bundled/loremipsum.ts` | 默认内置 | 示例或占位文本生成 | 纯 Prompt | 直接复刻或不启用 | Phase I |
 | `skillify` | `claude-code-haha/src/skills/bundled/skillify.ts` | 默认内置 | 把当前流程沉淀为新技能 | Session memory、AskUserQuestion、文件写入 | 裁剪复刻 | Phase I |
 | `remember` | `claude-code-haha/src/skills/bundled/remember.ts` | 默认内置 | 记忆整理与提升 | 会话记忆、项目记忆写入 | 裁剪复刻 | Phase I |
 | `simplify` | `claude-code-haha/src/skills/bundled/simplify.ts` | 默认内置 | 代码与流程简化 | 代码审查工作流、可能依赖 agent/tool 编排 | 裁剪复刻 | Phase I |
@@ -47,10 +47,10 @@
 | `dream` | `claude-code-haha/src/skills/bundled/dream.ts` | 条件内置 | 特性门控技能 | feature flag | 占位打包或后置 | 后续 |
 | `hunter` | `claude-code-haha/src/skills/bundled/hunter.ts` | 条件内置 | review artifact 相关 | review artifact feature | 占位打包或后置 | 后续 |
 | `loop` | `claude-code-haha/src/skills/bundled/loop.ts` | 条件内置 | 循环/定时触发流程 | 调度系统 | 裁剪复刻 | 后续 |
-| `scheduleRemoteAgents` | `claude-code-haha/src/skills/bundled/scheduleRemoteAgents.ts` | 条件内置 | 远程 agent 调度 | remote agent 基础设施 | 暂不复刻 | 排除 |
-| `taiyiflowApi` | `claude-code-haha/src/skills/bundled/claudeApi.ts` | 条件内置 | 太乙智启内置参考文档与 files 提取 | bundled files 提取 | 裁剪复刻为 taiyiflow 文档技能 | Phase I |
-| `taiyiflowInChrome` | `claude-code-haha/src/skills/bundled/claudeInChrome.ts` | 条件内置 | 太乙智启浏览器场景 | Chrome 集成 | 暂不复刻 | 排除 |
-| `runSkillGenerator` | `claude-code-haha/src/skills/bundled/runSkillGenerator.ts` | 条件内置 | 生成或运行技能 | skill generator 基础设施 | 占位打包后续补齐 | 后续 |
+| `schedule-remote-agents` | `claude-code-haha/src/skills/bundled/schedule-remote-agents.ts` | 条件内置 | 远程 agent 调度 | remote agent 基础设施 | 暂不复刻 | 排除 |
+| `taiyiflow-api` | `claude-code-haha/src/skills/bundled/claudeApi.ts` | 条件内置 | 太乙智启内置参考文档与 files 提取 | bundled files 提取 | 裁剪复刻为 taiyiflow 文档技能 | Phase I |
+| `taiyiflow-in-chrome` | `claude-code-haha/src/skills/bundled/claudeInChrome.ts` | 条件内置 | 太乙智启浏览器场景 | Chrome 集成 | 暂不复刻 | 排除 |
+| `run-skill-generator` | `claude-code-haha/src/skills/bundled/run-skill-generator.ts` | 条件内置 | 生成或运行技能 | skill generator 基础设施 | 占位打包后续补齐 | 后续 |
 
 **Bundled Skill Registration Breakdown**
 1. Phase H1: 注册表与嵌入层。

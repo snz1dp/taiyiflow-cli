@@ -1,5 +1,5 @@
 ---
-name: loremIpsum
+name: loremipsum
 description: 生成占位文本、示例内容或演示段落。
 category: docs
 ---

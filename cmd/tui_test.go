@@ -28,18 +28,18 @@ func TestBuildTUISkillsPickerIncludesRenamedBundledSkill(t *testing.T) {
 	}
 	found := false
 	for _, item := range picker.Items {
-		if item.Name == "taiyiflowApi" {
+		if item.Name == "taiyiflow-api" {
 			found = true
 			if item.SourceLabel != "内置技能" {
 				t.Fatalf("unexpected source label: %#v", item)
 			}
 			if len(item.ReferenceFiles) != 1 {
-				t.Fatalf("expected reference files for taiyiflowApi, got %#v", item)
+				t.Fatalf("expected reference files for taiyiflow-api, got %#v", item)
 			}
 		}
 	}
 	if !found {
-		t.Fatalf("expected taiyiflowApi in picker: %#v", picker.Items)
+		t.Fatalf("expected taiyiflow-api in picker: %#v", picker.Items)
 	}
 }
 

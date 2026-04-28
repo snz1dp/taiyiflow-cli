@@ -40,8 +40,8 @@ func TestLoadSkillPayloadIncludesBundledEnabledSkills(t *testing.T) {
 	if len(names) == 0 {
 		t.Fatal("expected enabled bundled skill names")
 	}
-	if !containsIgnoreCase(names, "updateConfig") {
-		t.Fatalf("expected updateConfig in requested names: %#v", names)
+	if !containsIgnoreCase(names, "update-config") {
+		t.Fatalf("expected update-config in requested names: %#v", names)
 	}
 	payload, ok := packages.([]map[string]any)
 	if !ok || len(payload) == 0 {
@@ -123,27 +123,27 @@ func TestLoadSkillPayloadReflectsDisabledSkillImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadSkillPayload failed: %v", err)
 	}
-	if !containsIgnoreCase(names, "updateConfig") {
-		t.Fatalf("expected updateConfig enabled before disable, got %#v", names)
+	if !containsIgnoreCase(names, "update-config") {
+		t.Fatalf("expected update-config enabled before disable, got %#v", names)
 	}
-	if _, err := app.executeSkillsCommand([]string{"disable", "updateConfig"}); err != nil {
+	if _, err := app.executeSkillsCommand([]string{"disable", "update-config"}); err != nil {
 		t.Fatalf("disable skill failed: %v", err)
 	}
 	names, _, err = app.loadSkillPayload(config, "")
 	if err != nil {
 		t.Fatalf("loadSkillPayload after disable failed: %v", err)
 	}
-	if containsIgnoreCase(names, "updateConfig") {
+	if containsIgnoreCase(names, "update-config") {
 		t.Fatalf("expected disabled skill to disappear immediately, got %#v", names)
 	}
-	if _, err := app.executeSkillsCommand([]string{"enable", "updateConfig"}); err != nil {
+	if _, err := app.executeSkillsCommand([]string{"enable", "update-config"}); err != nil {
 		t.Fatalf("re-enable skill failed: %v", err)
 	}
 	names, _, err = app.loadSkillPayload(config, "")
 	if err != nil {
 		t.Fatalf("loadSkillPayload after enable failed: %v", err)
 	}
-	if !containsIgnoreCase(names, "updateConfig") {
+	if !containsIgnoreCase(names, "update-config") {
 		t.Fatalf("expected re-enabled skill to recover immediately, got %#v", names)
 	}
 }
@@ -166,28 +166,28 @@ func TestExecuteSkillsDisableAndEnableBundledSkill(t *testing.T) {
 		t.Fatalf("save config failed: %v", err)
 	}
 
-	if _, err := app.executeSkillsCommand([]string{"disable", "updateConfig"}); err != nil {
+	if _, err := app.executeSkillsCommand([]string{"disable", "update-config"}); err != nil {
 		t.Fatalf("disable failed: %v", err)
 	}
 	updated, err := manager.Load()
 	if err != nil {
 		t.Fatalf("load config failed: %v", err)
 	}
-	if !containsIgnoreCase(updated.Skills.Disabled, "updateConfig") {
+	if !containsIgnoreCase(updated.Skills.Disabled, "update-config") {
 		t.Fatalf("expected disabled skill recorded, got %#v", updated.Skills.Disabled)
 	}
 
-	if _, err := app.executeSkillsCommand([]string{"enable", "updateConfig"}); err != nil {
+	if _, err := app.executeSkillsCommand([]string{"enable", "update-config"}); err != nil {
 		t.Fatalf("enable failed: %v", err)
 	}
 	updated, err = manager.Load()
 	if err != nil {
 		t.Fatalf("load config failed: %v", err)
 	}
-	if containsIgnoreCase(updated.Skills.Disabled, "updateConfig") {
+	if containsIgnoreCase(updated.Skills.Disabled, "update-config") {
 		t.Fatalf("expected disabled list cleared, got %#v", updated.Skills.Disabled)
 	}
-	if !containsIgnoreCase(updated.Skills.Enabled, "updateConfig") {
+	if !containsIgnoreCase(updated.Skills.Enabled, "update-config") {
 		t.Fatalf("expected enabled list updated, got %#v", updated.Skills.Enabled)
 	}
 }
@@ -210,7 +210,7 @@ func TestExecuteSkillsListGroupsBundledSkillsBySource(t *testing.T) {
 	if !strings.Contains(output, "来源分组: 内置技能") {
 		t.Fatalf("expected grouped bundled source, got %q", output)
 	}
-	if !strings.Contains(output, "taiyiflowApi") {
+	if !strings.Contains(output, "taiyiflow-api") {
 		t.Fatalf("expected renamed bundled skill, got %q", output)
 	}
 	if !strings.Contains(output, "渐进披露") {
@@ -229,7 +229,7 @@ func TestExecuteSkillsViewShowsFilesAndDisplayLabels(t *testing.T) {
 	if err := manager.Save(config); err != nil {
 		t.Fatalf("save config failed: %v", err)
 	}
-	output, err := app.executeSkillsCommand([]string{"view", "taiyiflowApi"})
+	output, err := app.executeSkillsCommand([]string{"view", "taiyiflow-api"})
 	if err != nil {
 		t.Fatalf("view failed: %v", err)
 	}

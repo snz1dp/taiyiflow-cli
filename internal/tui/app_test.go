@@ -391,7 +391,7 @@ func TestApplyLocalCommandResultOpensSkillsPicker(t *testing.T) {
 		SkillsPicker: &SkillsPickerState{
 			Title: "技能列表",
 			ActiveTab: "local",
-			Items: []SkillItem{{Name: "taiyiflowApi", Description: "接口参考"}},
+			Items: []SkillItem{{Name: "taiyiflow-api", Description: "接口参考"}},
 		},
 	}
 
@@ -412,7 +412,7 @@ func TestHandleSkillsPickerEnterOpensToolPanel(t *testing.T) {
 			Title: "技能列表",
 			ActiveTab: "local",
 			Items: []SkillItem{{
-				Name:        "taiyiflowApi",
+				Name:        "taiyiflow-api",
 				Description: "接口参考",
 				SourceLabel: "内置技能",
 				StateLabel:  "渐进披露",
@@ -431,7 +431,7 @@ func TestHandleSkillsPickerEnterOpensToolPanel(t *testing.T) {
 	if updated.toolPanel == nil {
 		t.Fatal("expected tool panel to open from selected skill")
 	}
-	if !strings.Contains(updated.toolPanel.Title, "taiyiflowApi") {
+	if !strings.Contains(updated.toolPanel.Title, "taiyiflow-api") {
 		t.Fatalf("unexpected tool panel title: %#v", updated.toolPanel)
 	}
 }

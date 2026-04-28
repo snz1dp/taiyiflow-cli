@@ -468,7 +468,7 @@ func TestBundledSkillReturnsExtractedFiles(t *testing.T) {
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	configValue := internalconfig.Config{ApprovalMode: "auto"}
 
-	result, err := runtimeClient.skill(configValue, map[string]any{"name": "taiyiflowApi"})
+	result, err := runtimeClient.skill(configValue, map[string]any{"name": "taiyiflow-api"})
 	if err != nil {
 		t.Fatalf("bundled skill failed: %v", err)
 	}

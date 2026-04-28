@@ -513,9 +513,9 @@ func skillDisplayBadges(item skills.Skill, config internalconfig.Config) []strin
 
 func skillRestrictionNote(name string) string {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "scheduleRemoteAgents", "scheduleremoteagents":
+	case "schedule-remote-agents", "scheduleremoteagents":
 		return "受限能力"
-	case "taiyiflowInChrome", "taiyiflowinchrome", "batch", "stuck", "loop", "runskillgenerator":
+	case "taiyiflow-in-chrome", "taiyiflowinchrome", "batch", "stuck", "loop", "runskillgenerator":
 		return "裁剪实现"
 	default:
 		return ""

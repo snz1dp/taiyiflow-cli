@@ -10,12 +10,12 @@ type BundledSkillDefinition struct {
 }
 
 var bundledSkillDefinitions = []BundledSkillDefinition{
-	{Name: "updateConfig", RelativeDir: "update-config", Summary: "更新 CLI 配置并说明配置项影响。", DefaultEnabled: true},
+	{Name: "update-config", RelativeDir: "update-config", Summary: "更新 CLI 配置并说明配置项影响。", DefaultEnabled: true},
 	{Name: "keybindings", RelativeDir: "keybindings", Summary: "解释当前客户端快捷键与交互方式。", DefaultEnabled: true},
 	{Name: "verify", RelativeDir: "verify", Summary: "围绕刚完成的任务做结果核对与验收。", DefaultEnabled: true},
 	{Name: "debug", RelativeDir: "debug", Summary: "读取日志与上下文，定位当前问题。", DefaultEnabled: true},
 	{Name: "developer", RelativeDir: "developer", Summary: "提供编码阶段的通用行为准则与约束。", DefaultEnabled: true},
-	{Name: "loremIpsum", RelativeDir: "loremIpsum", Summary: "生成占位文本或演示内容。", DefaultEnabled: true},
+	{Name: "loremipsum", RelativeDir: "loremipsum", Summary: "生成占位文本或演示内容。", DefaultEnabled: true},
 	{Name: "skillify", RelativeDir: "skillify", Summary: "把当前流程整理成可复用技能。", DefaultEnabled: true},
 	{Name: "remember", RelativeDir: "remember", Summary: "整理长期有效的偏好、模式与经验。", DefaultEnabled: true},
 	{Name: "simplify", RelativeDir: "simplify", Summary: "识别可删减的复杂度并提出收敛建议。", DefaultEnabled: true},
@@ -24,10 +24,10 @@ var bundledSkillDefinitions = []BundledSkillDefinition{
 	{Name: "dream", RelativeDir: "dream", Summary: "整理探索性想法与后续实验方向。", DefaultEnabled: true},
 	{Name: "hunter", RelativeDir: "hunter", Summary: "围绕 review 线索继续追踪风险与遗漏。", DefaultEnabled: true},
 	{Name: "loop", RelativeDir: "loop", Summary: "为重复性流程设计循环执行框架。", DefaultEnabled: true},
-	{Name: "scheduleRemoteAgents", RelativeDir: "schedule-remote-agents", Summary: "描述远程智能体调度方案与约束。", DefaultEnabled: true},
-	{Name: "taiyiflowApi", RelativeDir: "taiyiflow-api", Summary: "整理太乙智启接口与文档检索工作流。", DefaultEnabled: true},
-	{Name: "taiyiflowInChrome", RelativeDir: "taiyiflow-in-chrome", Summary: "描述太乙智启在浏览器场景下的辅助操作方式。", DefaultEnabled: true},
-	{Name: "runSkillGenerator", RelativeDir: "run-skill-generator", Summary: "生成或更新技能模板与说明。", DefaultEnabled: true},
+	{Name: "schedule-remote-agents", RelativeDir: "schedule-remote-agents", Summary: "描述远程智能体调度方案与约束。", DefaultEnabled: true},
+	{Name: "taiyiflow-api", RelativeDir: "taiyiflow-api", Summary: "整理太乙智启接口与文档检索工作流。", DefaultEnabled: true},
+	{Name: "taiyiflow-in-chrome", RelativeDir: "taiyiflow-in-chrome", Summary: "描述太乙智启在浏览器场景下的辅助操作方式。", DefaultEnabled: true},
+	{Name: "run-skill-generator", RelativeDir: "run-skill-generator", Summary: "生成或更新技能模板与说明。", DefaultEnabled: true},
 }
 
 func bundledSkillDefinitionByName(name string) (BundledSkillDefinition, bool) {
