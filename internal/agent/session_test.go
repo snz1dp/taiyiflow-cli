@@ -82,3 +82,28 @@ func TestSessionStoreSaveLoadTodoItems(t *testing.T) {
 		t.Fatalf("expected normalized todo status, got %#v", loaded.TodoItems[0])
 	}
 }
+
+func TestSessionStoreSaveLoadApprovedSkillNames(t *testing.T) {
+	tempDir := t.TempDir()
+	store := &SessionStore{rootDir: tempDir}
+
+	state := SessionState{
+		FlowID:             "demo-flow",
+		Workdir:            tempDir,
+		ApprovedSkillNames: []string{" Context Review ", "context review", "email-summary"},
+	}
+	if err := store.Save(state); err != nil {
+		t.Fatalf("save session failed: %v", err)
+	}
+
+	loaded, err := store.Load("demo-flow", tempDir)
+	if err != nil {
+		t.Fatalf("load session failed: %v", err)
+	}
+	if len(loaded.ApprovedSkillNames) != 2 {
+		t.Fatalf("expected normalized approved skill names, got %#v", loaded.ApprovedSkillNames)
+	}
+	if loaded.ApprovedSkillNames[0] != "Context Review" || loaded.ApprovedSkillNames[1] != "email-summary" {
+		t.Fatalf("unexpected approved skill names: %#v", loaded.ApprovedSkillNames)
+	}
+}

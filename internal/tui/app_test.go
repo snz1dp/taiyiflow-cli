@@ -170,6 +170,94 @@ func TestRenderTransientStatusShownInAllRequestModes(t *testing.T) {
 	}
 }
 
+func TestHandleConfirmKeySupportsSkillSpecificAndGlobalApproval(t *testing.T) {
+	t.Run("approve current skill", func(t *testing.T) {
+		approvedCh := make(chan bool, 1)
+		skillApproved := false
+		allApproved := false
+		appModel := model{
+			ctx: context.Background(),
+			pendingConfirm: &confirmState{
+				request: ConfirmRequest{
+					ApproveLabel:       "本次允许",
+					RejectLabel:        "本次拒绝",
+					AlwaysApproveLabel: "始终允许此技能",
+					AllowAllLabel:      "允许全部技能",
+					AlwaysApprove: func(context.Context) error {
+						skillApproved = true
+						return nil
+					},
+					AllowAll: func(context.Context) error {
+						allApproved = true
+						return nil
+					},
+				},
+				responseCh: approvedCh,
+				cursor:     2,
+			},
+		}
+		updatedModel, _ := appModel.handleConfirmKey(tea.KeyMsg{Type: tea.KeyEnter})
+		updated := updatedModel.(*model)
+		if !skillApproved || allApproved {
+			t.Fatalf("unexpected approval callbacks: skill=%v all=%v", skillApproved, allApproved)
+		}
+		select {
+		case approved := <-approvedCh:
+			if !approved {
+				t.Fatal("expected skill approval action to approve")
+			}
+		default:
+			t.Fatal("expected approval response")
+		}
+		if updated.pendingConfirm != nil {
+			t.Fatalf("expected pending confirm cleared, got %#v", updated.pendingConfirm)
+		}
+	})
+
+	t.Run("approve all skills", func(t *testing.T) {
+		approvedCh := make(chan bool, 1)
+		skillApproved := false
+		allApproved := false
+		appModel := model{
+			ctx: context.Background(),
+			pendingConfirm: &confirmState{
+				request: ConfirmRequest{
+					ApproveLabel:       "本次允许",
+					RejectLabel:        "本次拒绝",
+					AlwaysApproveLabel: "始终允许此技能",
+					AllowAllLabel:      "允许全部技能",
+					AlwaysApprove: func(context.Context) error {
+						skillApproved = true
+						return nil
+					},
+					AllowAll: func(context.Context) error {
+						allApproved = true
+						return nil
+					},
+				},
+				responseCh: approvedCh,
+				cursor:     3,
+			},
+		}
+		updatedModel, _ := appModel.handleConfirmKey(tea.KeyMsg{Type: tea.KeyEnter})
+		updated := updatedModel.(*model)
+		if skillApproved || !allApproved {
+			t.Fatalf("unexpected approval callbacks: skill=%v all=%v", skillApproved, allApproved)
+		}
+		select {
+		case approved := <-approvedCh:
+			if !approved {
+				t.Fatal("expected global approval action to approve")
+			}
+		default:
+			t.Fatal("expected approval response")
+		}
+		if updated.pendingConfirm != nil {
+			t.Fatalf("expected pending confirm cleared, got %#v", updated.pendingConfirm)
+		}
+	})
+}
+
 func TestRenderStatusBarShowsModeSegmentForAllRequestModes(t *testing.T) {
 	tests := []struct {
 		name      string

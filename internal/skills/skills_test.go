@@ -78,6 +78,32 @@ func TestDiscoverSkillsAndEnableState(t *testing.T) {
 	}
 }
 
+func TestLoadByNameMatchesRelativeDirectoryAlias(t *testing.T) {
+	tempDir := t.TempDir()
+	skillDir := filepath.Join(tempDir, "qq-email-summary")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	content := "---\nname: email-summary\ndescription: 邮件摘要\n---\n\n运行邮件摘要。\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill failed: %v", err)
+	}
+
+	config := internalconfig.Config{}
+	config.Skills.Directory = tempDir
+
+	item, _, err := LoadByName(config, "qq-email-summary")
+	if err != nil {
+		t.Fatalf("load by relative dir failed: %v", err)
+	}
+	if item.Name != "email-summary" {
+		t.Fatalf("unexpected loaded skill: %s", item.Name)
+	}
+	if item.RelativeDir != "qq-email-summary" {
+		t.Fatalf("unexpected relative dir: %s", item.RelativeDir)
+	}
+}
+
 func TestClientPackagesIncludeMarkdownAndContent(t *testing.T) {
 	tempDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(tempDir, "reviewer"), 0o755); err != nil {

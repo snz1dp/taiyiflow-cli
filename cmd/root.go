@@ -34,12 +34,12 @@ type fdWriter interface {
 }
 
 type App struct {
-	configManager *internalconfig.Manager
-	sessionStore  *agent.SessionStore
-	stdout        io.Writer
-	stderr        io.Writer
-	stdin         io.Reader
-	runtime       *clientruntime.ClientRuntime
+	configManager            *internalconfig.Manager
+	sessionStore             *agent.SessionStore
+	stdout                   io.Writer
+	stderr                   io.Writer
+	stdin                    io.Reader
+	runtime                  *clientruntime.ClientRuntime
 	skillInstallScopeSession string
 	skillInstallScopePinned  bool
 }
@@ -312,9 +312,12 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 					FlowDisplayName:                flowDisplayName,
 					Workdir:                        workdir,
 					RequestMode:                    firstNonEmpty(sessionState.RequestMode, provider.RequestTypeAgent),
+					ContextDir:                     resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir)),
 					AgentAutoLoopEnabledOverride:   sessionState.AgentAutoLoopEnabledOverride,
 					AgentAutoLoopMaxRoundsOverride: sessionState.AgentAutoLoopMaxRoundsOverride,
 					SandboxEscapePolicyOverride:    sessionState.SandboxEscapePolicyOverride,
+					SkillReviewPolicyOverride:      sessionState.SkillReviewPolicyOverride,
+					ApprovedSkillNames:             sessionState.ApprovedSkillNames,
 				}
 				fmt.Fprintf(a.stderr, "提示: 新配置尚未连通服务端: %v\n", err)
 				continue
@@ -445,6 +448,7 @@ func (a *App) streamTask(
 	defer a.runtime.SetStreamEventLogsEnabled(true)
 
 	runtimeConfig := applyEffectiveSandboxEscapePolicy(config, sessionState.SandboxEscapePolicyOverride, commandSandboxEscapePolicy)
+	runtimeConfig = applyEffectiveSkillReviewPolicy(runtimeConfig, sessionState.SkillReviewPolicyOverride)
 	requestedSkillNames, clientSkillPackages, err := a.loadSkillPayload(config, sessionState.ContextDir)
 	if err != nil {
 		return sessionState, err
@@ -546,7 +550,8 @@ func (a *App) streamTask(
 				}
 				continue
 			}
-			if err := a.runtime.HandleClientToolEvent(ctx, providerClient, runtimeConfig, event.Data); err != nil {
+			eventRuntimeConfig := applyEffectiveSkillReviewForPayload(runtimeConfig, sessionState.ContextDir, sessionState, event.Data)
+			if err := a.runtime.HandleClientToolEvent(ctx, providerClient, eventRuntimeConfig, event.Data); err != nil {
 				return sessionState, err
 			}
 		case provider.EventToolCall:
@@ -890,6 +895,17 @@ func resolveEffectiveSandboxEscapePolicy(config internalconfig.Config, sessionOv
 func applyEffectiveSandboxEscapePolicy(config internalconfig.Config, sessionOverride string, commandOverride string) internalconfig.Config {
 	updated := config
 	updated.SandboxEscapePolicy = resolveEffectiveSandboxEscapePolicy(config, sessionOverride, commandOverride)
+	return updated
+}
+
+func applyEffectiveSkillReviewPolicy(config internalconfig.Config, sessionOverride string) internalconfig.Config {
+	updated := config
+	if strings.TrimSpace(sessionOverride) != "" {
+		updated.SkillReviewPolicy = internalconfig.NormalizeSkillReviewPolicy(sessionOverride)
+	} else {
+		updated.SkillReviewPolicy = internalconfig.NormalizeSkillReviewPolicy(updated.SkillReviewPolicy)
+	}
+	updated.WriteConfirmationPolicy = internalconfig.NormalizeWriteConfirmationPolicy(updated.WriteConfirmationPolicy)
 	return updated
 }
 

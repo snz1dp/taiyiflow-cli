@@ -22,6 +22,10 @@ func (r *ClientRuntime) globFiles(config internalconfig.Config, arguments map[st
 	if pattern == "" {
 		return nil, newToolError("PARAM_ERROR", "glob_files 缺少 pattern")
 	}
+	patterns := expandGlobPatterns(config, pattern)
+	if len(patterns) == 0 {
+		patterns = []string{pattern}
+	}
 	kind := strings.ToLower(strings.TrimSpace(fallbackString(stringValue(arguments["kind"]), "all")))
 	includeHidden := argumentBool(arguments, "includeHidden", "include_hidden")
 	maxResults := argumentInt(arguments, 200, "maxResults", "max_results")
@@ -50,7 +54,7 @@ func (r *ClientRuntime) globFiles(config internalconfig.Config, arguments map[st
 			}
 			return nil
 		}
-		if !matchGlob(pattern, relPath) {
+		if !matchAnyGlob(patterns, relPath) {
 			return nil
 		}
 		entryKind := "file"

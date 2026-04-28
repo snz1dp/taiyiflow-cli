@@ -20,6 +20,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+
+	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 )
 
 type Snapshot struct {
@@ -168,6 +170,8 @@ type ConfigFormValues struct {
 	DefaultFlow              string
 	ApprovalMode             string
 	SandboxEscapePolicy      string
+	SkillReviewPolicy        string
+	WriteConfirmationPolicy  string
 	SandboxRoots             string
 	PermissionRules          string
 	ReasoningEnabled         bool
@@ -296,7 +300,12 @@ type ConfirmRequest struct {
 	PreviewTitle                string
 	PreviewBody                 string
 	Hint                        string
+	ApproveLabel                string
+	RejectLabel                 string
+	AlwaysApproveLabel          string
 	AlwaysApprove               func(context.Context) error
+	AllowAllLabel               string
+	AllowAll                    func(context.Context) error
 	DisableDefaultAlwaysApprove bool
 }
 
@@ -353,6 +362,12 @@ type confirmState struct {
 	request    ConfirmRequest
 	responseCh chan bool
 	cursor     int
+}
+
+type confirmOption struct {
+	label    string
+	approved bool
+	onSelect func() tea.Cmd
 }
 
 type streamEventMsg struct {
@@ -489,20 +504,22 @@ type model struct {
 }
 
 type configFormState struct {
-	title           string
-	hint            string
-	path            string
-	hasAPIKey       bool
-	submitText      string
-	inputs          []textinput.Model
-	cursor          int
-	flowOptions     []ConfigChoice
-	flowCursor      int
-	flowOpen        bool
-	approvalCursor  int
-	sandboxCursor   int
-	reasoningCursor int
-	skillsCursor    int
+	title                   string
+	hint                    string
+	path                    string
+	hasAPIKey               bool
+	submitText              string
+	inputs                  []textinput.Model
+	cursor                  int
+	flowOptions             []ConfigChoice
+	flowCursor              int
+	flowOpen                bool
+	approvalCursor          int
+	sandboxCursor           int
+	skillReviewCursor       int
+	writeConfirmationCursor int
+	reasoningCursor         int
+	skillsCursor            int
 }
 
 type configFieldSpec struct {
@@ -517,6 +534,8 @@ const (
 	configFieldDefaultFlow
 	configFieldApprovalMode
 	configFieldSandboxPolicy
+	configFieldSkillReviewPolicy
+	configFieldWriteConfirmationPolicy
 	configFieldSandboxRoots
 	configFieldPermissionRules
 	configFieldReasoningMode
@@ -1097,6 +1116,11 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	options := m.confirmOptions()
+	optionCount := len(options)
+	if optionCount == 0 {
+		return m, nil
+	}
 	switch msg.String() {
 	case "left", "h", "up", "k":
 		m.resetOverlayScroll()
@@ -1106,7 +1130,7 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "right", "l", "down", "j", "tab":
 		m.resetOverlayScroll()
-		if m.pendingConfirm.cursor < 2 {
+		if m.pendingConfirm.cursor < optionCount-1 {
 			m.pendingConfirm.cursor++
 		} else {
 			m.pendingConfirm.cursor = 0
@@ -1127,50 +1151,92 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y", "Y":
 		m.resetOverlayScroll()
 		m.pendingConfirm.cursor = 0
-		m.pendingConfirm.responseCh <- true
-		close(m.pendingConfirm.responseCh)
-		m.pendingConfirm = nil
-		return m, tea.Batch(m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
-	case "a", "A":
+		return m.applyConfirmSelection(options[0])
+	case "s", "S":
+		if optionCount < 4 {
+			return m, nil
+		}
 		m.resetOverlayScroll()
 		m.pendingConfirm.cursor = 2
-		alwaysApproveCmd := m.applyConfirmAlwaysApprove(m.pendingConfirm.request)
-		m.pendingConfirm.responseCh <- true
-		close(m.pendingConfirm.responseCh)
-		m.pendingConfirm = nil
-		return m, tea.Batch(alwaysApproveCmd, m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
+		return m.applyConfirmSelection(options[2])
+	case "a", "A":
+		if optionCount < 3 {
+			return m, nil
+		}
+		m.resetOverlayScroll()
+		if optionCount >= 4 {
+			m.pendingConfirm.cursor = 3
+			return m.applyConfirmSelection(options[3])
+		}
+		m.pendingConfirm.cursor = 2
+		return m.applyConfirmSelection(options[2])
 	case "enter":
 		m.resetOverlayScroll()
-		approved := m.pendingConfirm.cursor != 1
-		alwaysApprove := m.pendingConfirm.cursor == 2
-		alwaysApproveCmd := tea.Cmd(nil)
-		if approved && alwaysApprove {
-			alwaysApproveCmd = m.applyConfirmAlwaysApprove(m.pendingConfirm.request)
+		selectedIndex := m.pendingConfirm.cursor
+		if selectedIndex < 0 || selectedIndex >= optionCount {
+			selectedIndex = 0
 		}
-		m.pendingConfirm.responseCh <- approved
-		close(m.pendingConfirm.responseCh)
-		m.pendingConfirm = nil
-		if approved {
-			return m, tea.Batch(alwaysApproveCmd, m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
-		}
-		return m, tea.Batch(m.transitionProgress(progressStreaming), waitForStream(m.eventCh))
+		return m.applyConfirmSelection(options[selectedIndex])
 	case "n", "N", "q", "esc", "ctrl+c":
 		m.resetOverlayScroll()
 		m.pendingConfirm.cursor = 1
-		m.pendingConfirm.responseCh <- false
-		close(m.pendingConfirm.responseCh)
-		m.pendingConfirm = nil
-		return m, tea.Batch(m.transitionProgress(progressStreaming), waitForStream(m.eventCh))
+		return m.applyConfirmSelection(confirmOption{approved: false})
 	default:
 		return m, nil
 	}
+}
+
+func (m *model) applyConfirmSelection(option confirmOption) (tea.Model, tea.Cmd) {
+	actionCmd := tea.Cmd(nil)
+	if option.approved && option.onSelect != nil {
+		actionCmd = option.onSelect()
+	}
+	m.pendingConfirm.responseCh <- option.approved
+	close(m.pendingConfirm.responseCh)
+	m.pendingConfirm = nil
+	if option.approved {
+		return m, tea.Batch(actionCmd, m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
+	}
+	return m, tea.Batch(m.transitionProgress(progressStreaming), waitForStream(m.eventCh))
+}
+
+func (m *model) confirmOptions() []confirmOption {
+	if m.pendingConfirm == nil {
+		return nil
+	}
+	request := m.pendingConfirm.request
+	options := []confirmOption{
+		{
+			label:    fallback(strings.TrimSpace(request.ApproveLabel), "允许本次"),
+			approved: true,
+		},
+		{
+			label:    fallback(strings.TrimSpace(request.RejectLabel), "本次拒绝"),
+			approved: false,
+		},
+	}
+	if request.AlwaysApprove != nil || !request.DisableDefaultAlwaysApprove {
+		options = append(options, confirmOption{
+			label:    fallback(strings.TrimSpace(request.AlwaysApproveLabel), "以后自动同意"),
+			approved: true,
+			onSelect: func() tea.Cmd { return m.applyConfirmAlwaysApprove(request) },
+		})
+	}
+	if request.AllowAll != nil {
+		options = append(options, confirmOption{
+			label:    fallback(strings.TrimSpace(request.AllowAllLabel), "允许全部技能"),
+			approved: true,
+			onSelect: func() tea.Cmd { return m.applyConfirmAllowAll(request) },
+		})
+	}
+	return options
 }
 
 func (m *model) applyConfirmAlwaysApprove(request ConfirmRequest) tea.Cmd {
 	refreshCmd := tea.Cmd(nil)
 	if request.AlwaysApprove != nil {
 		if err := request.AlwaysApprove(m.ctx); err != nil {
-			m.entries = append(m.entries, entry{role: "system", content: fmt.Sprintf("设置“以后都同意”失败: %v", err)})
+			m.entries = append(m.entries, entry{role: "system", content: fmt.Sprintf("保存确认偏好失败: %v", err)})
 		} else {
 			refreshCmd = m.maybeRefreshSessionSnapshot()
 		}
@@ -1179,6 +1245,17 @@ func (m *model) applyConfirmAlwaysApprove(request ConfirmRequest) tea.Cmd {
 		return refreshCmd
 	}
 	return tea.Batch(refreshCmd, changeApprovalModeCmd(m.ctx, "auto", m.approvalChange))
+}
+
+func (m *model) applyConfirmAllowAll(request ConfirmRequest) tea.Cmd {
+	if request.AllowAll == nil {
+		return nil
+	}
+	if err := request.AllowAll(m.ctx); err != nil {
+		m.entries = append(m.entries, entry{role: "system", content: fmt.Sprintf("保存确认偏好失败: %v", err)})
+		return nil
+	}
+	return m.maybeRefreshSessionSnapshot()
 }
 
 func (m model) handleToolPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1286,6 +1363,14 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveConfigSandboxCursor(-1)
 			return m, nil
 		}
+		if m.configForm.cursor == configFieldSkillReviewPolicy {
+			m.moveConfigSkillReviewCursor(-1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldWriteConfirmationPolicy {
+			m.moveConfigWriteConfirmationCursor(-1)
+			return m, nil
+		}
 		if m.configForm.cursor == configFieldReasoningMode {
 			m.moveConfigReasoningCursor(-1)
 			return m, nil
@@ -1305,6 +1390,14 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldSandboxPolicy {
 			m.moveConfigSandboxCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldSkillReviewPolicy {
+			m.moveConfigSkillReviewCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldWriteConfirmationPolicy {
+			m.moveConfigWriteConfirmationCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldReasoningMode {
@@ -1340,6 +1433,14 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldSandboxPolicy {
 			m.moveConfigSandboxCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldSkillReviewPolicy {
+			m.moveConfigSkillReviewCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldWriteConfirmationPolicy {
+			m.moveConfigWriteConfirmationCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldReasoningMode {
@@ -2266,6 +2367,7 @@ func (m model) renderOverlay() string {
 
 func (m model) renderConfirmOverlay() string {
 	request := m.pendingConfirm.request
+	options := m.confirmOptions()
 	lines := []string{request.Title}
 	if strings.TrimSpace(request.Command) != "" {
 		lines = append(lines, "命令: "+request.Command)
@@ -2279,17 +2381,34 @@ func (m model) renderConfirmOverlay() string {
 	if strings.TrimSpace(request.PreviewBody) != "" {
 		lines = append(lines, hardWrapText(request.PreviewBody, maxInt(24, minInt(m.contentWidth-18, 76))))
 	}
-	options := []string{
-		m.renderOverlayOption("确认执行", m.pendingConfirm.cursor == 0),
-		m.renderOverlayOption("拒绝", m.pendingConfirm.cursor == 1),
-		m.renderOverlayOption("以后都同意", m.pendingConfirm.cursor == 2),
+	renderedOptions := make([]string, 0, len(options))
+	for index, option := range options {
+		renderedOptions = append(renderedOptions, m.renderOverlayOption(option.label, m.pendingConfirm.cursor == index))
+	}
+	optionsLine := ""
+	if len(renderedOptions) > 0 {
+		optionsLine = renderedOptions[0]
+		for _, option := range renderedOptions[1:] {
+			optionsLine = lipgloss.JoinHorizontal(lipgloss.Left, optionsLine, "  ", option)
+		}
 	}
 	hint := strings.TrimSpace(request.Hint)
 	if hint == "" {
-		hint = "使用方向键或 Tab 选择，Enter 确认；PgUp/PgDn/Home/End 可滚动长内容。"
+		hint = confirmHintForOptionCount(len(options))
 	}
-	lines = append(lines, "", markOverlayFocus(lipgloss.JoinHorizontal(lipgloss.Left, options[0], "  ", options[1], "  ", options[2]), true), hint)
+	lines = append(lines, "", markOverlayFocus(optionsLine, true), hint)
 	return strings.Join(lines, "\n\n")
+}
+
+func confirmHintForOptionCount(optionCount int) string {
+	switch optionCount {
+	case 4:
+		return "Y 允许本次，N 本次拒绝，S 始终允许此技能，A 允许全部技能；方向键或 Tab 选择，Enter 确认。"
+	case 3:
+		return "Y 允许本次，N 本次拒绝，A 以后自动同意；方向键或 Tab 选择，Enter 确认。"
+	default:
+		return "Y 允许本次，N 本次拒绝；方向键或 Tab 选择，Enter 确认。"
+	}
 }
 
 func (m model) renderToolPanel() string {
@@ -2388,6 +2507,10 @@ func (m model) renderConfigForm() string {
 			lines = append(lines, m.renderConfigApprovalField())
 		case configFieldSandboxPolicy:
 			lines = append(lines, m.renderConfigSandboxField())
+		case configFieldSkillReviewPolicy:
+			lines = append(lines, m.renderConfigSkillReviewField())
+		case configFieldWriteConfirmationPolicy:
+			lines = append(lines, m.renderConfigWriteConfirmationField())
 		case configFieldReasoningMode:
 			lines = append(lines, m.renderConfigReasoningField())
 		case configFieldSkillsInstallScope:
@@ -2483,6 +2606,52 @@ func (m model) renderConfigSandboxField() string {
 		}
 		item := marker + " " + option.Label
 		if m.configForm.cursor == configFieldSandboxPolicy && selected {
+			parts = append(parts, selectedFlowStyle.Render(item))
+		} else if selected {
+			parts = append(parts, valueStyle.Render(item))
+		} else {
+			parts = append(parts, commandHintStyle.Render(item))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m model) renderConfigSkillReviewField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(configSkillReviewChoices()))
+	for index, option := range configSkillReviewChoices() {
+		selected := index == m.configForm.skillReviewCursor
+		marker := "( )"
+		if selected {
+			marker = "(*)"
+		}
+		item := marker + " " + option.Label
+		if m.configForm.cursor == configFieldSkillReviewPolicy && selected {
+			parts = append(parts, selectedFlowStyle.Render(item))
+		} else if selected {
+			parts = append(parts, valueStyle.Render(item))
+		} else {
+			parts = append(parts, commandHintStyle.Render(item))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m model) renderConfigWriteConfirmationField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(configWriteConfirmationChoices()))
+	for index, option := range configWriteConfirmationChoices() {
+		selected := index == m.configForm.writeConfirmationCursor
+		marker := "( )"
+		if selected {
+			marker = "(*)"
+		}
+		item := marker + " " + option.Label
+		if m.configForm.cursor == configFieldWriteConfirmationPolicy && selected {
 			parts = append(parts, selectedFlowStyle.Render(item))
 		} else if selected {
 			parts = append(parts, valueStyle.Render(item))
@@ -3680,6 +3849,14 @@ func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
 	if m.configForm.sandboxCursor >= 0 && m.configForm.sandboxCursor < len(sandboxChoices) {
 		submission.Values.SandboxEscapePolicy = strings.TrimSpace(sandboxChoices[m.configForm.sandboxCursor].Value)
 	}
+	skillReviewChoices := configSkillReviewChoices()
+	if m.configForm.skillReviewCursor >= 0 && m.configForm.skillReviewCursor < len(skillReviewChoices) {
+		submission.Values.SkillReviewPolicy = strings.TrimSpace(skillReviewChoices[m.configForm.skillReviewCursor].Value)
+	}
+	writeConfirmationChoices := configWriteConfirmationChoices()
+	if m.configForm.writeConfirmationCursor >= 0 && m.configForm.writeConfirmationCursor < len(writeConfirmationChoices) {
+		submission.Values.WriteConfirmationPolicy = strings.TrimSpace(writeConfirmationChoices[m.configForm.writeConfirmationCursor].Value)
+	}
 	reasoningChoices := configReasoningChoices()
 	if m.configForm.reasoningCursor >= 0 && m.configForm.reasoningCursor < len(reasoningChoices) {
 		submission.Values.ReasoningEnabled = reasoningChoices[m.configForm.reasoningCursor].Value == "on"
@@ -3718,19 +3895,21 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 	}
 	flowOptions := normalizeConfigFlowChoices(state.FlowOptions, values.DefaultFlow)
 	return &configFormState{
-		title:           state.Title,
-		hint:            state.Hint,
-		path:            state.Path,
-		hasAPIKey:       state.HasAPIKey,
-		submitText:      state.SubmitText,
-		inputs:          models,
-		cursor:          0,
-		flowOptions:     flowOptions,
-		flowCursor:      configChoiceIndex(flowOptions, values.DefaultFlow),
-		approvalCursor:  configChoiceIndex(configApprovalChoices(), values.ApprovalMode),
-		sandboxCursor:   configChoiceIndex(configSandboxChoices(), values.SandboxEscapePolicy),
-		reasoningCursor: configChoiceIndex(configReasoningChoices(), reasoningChoiceValue(values.ReasoningEnabled)),
-		skillsCursor:    configChoiceIndex(configSkillsInstallScopeChoices(), values.SkillsInstallScope),
+		title:                   state.Title,
+		hint:                    state.Hint,
+		path:                    state.Path,
+		hasAPIKey:               state.HasAPIKey,
+		submitText:              state.SubmitText,
+		inputs:                  models,
+		cursor:                  0,
+		flowOptions:             flowOptions,
+		flowCursor:              configChoiceIndex(flowOptions, values.DefaultFlow),
+		approvalCursor:          configChoiceIndex(configApprovalChoices(), values.ApprovalMode),
+		sandboxCursor:           configChoiceIndex(configSandboxChoices(), values.SandboxEscapePolicy),
+		skillReviewCursor:       configChoiceIndex(configSkillReviewChoices(), values.SkillReviewPolicy),
+		writeConfirmationCursor: configChoiceIndex(configWriteConfirmationChoices(), values.WriteConfirmationPolicy),
+		reasoningCursor:         configChoiceIndex(configReasoningChoices(), reasoningChoiceValue(values.ReasoningEnabled)),
+		skillsCursor:            configChoiceIndex(configSkillsInstallScopeChoices(), values.SkillsInstallScope),
 	}
 }
 
@@ -3745,6 +3924,8 @@ func configFormFieldSpecs(hasAPIKey bool) []configFieldSpec {
 		{label: "默认智能体", placeholder: "", description: "按 Enter 打开下拉列表，留空项表示自动选择。"},
 		{label: "命令执行模式", placeholder: "", description: "左右键或空格切换单选项。"},
 		{label: "外部资源访问策略", placeholder: "", description: "左右键或空格切换 confirm、deny、allow。"},
+		{label: "技能包审查策略", placeholder: "", description: "左右键或空格切换 confirm、ignore。ignore 表示默认不再弹出技能审查。"},
+		{label: "写入确认策略", placeholder: "", description: "左右键或空格切换 confirm、direct。direct 表示写入工具直接执行。"},
 		{label: "外部资源访问根目录", placeholder: "/path/a, /path/b", description: "多个目录用逗号分隔；留空表示仅允许当前工作区。"},
 		{label: "细粒度权限规则", placeholder: "tool:shell_exec=deny; shell:git status=allow", description: "使用 tool:name=动作 或 shell:prefix=动作，多个规则用分号分隔。"},
 		{label: "默认思考模式", placeholder: "", description: "左右键或空格切换是否默认启用思考模式。"},
@@ -3775,26 +3956,30 @@ func configFormFieldValue(index int, values ConfigFormValues, hasAPIKey bool) st
 	case 4:
 		return ""
 	case 5:
-		return strings.TrimSpace(values.SandboxRoots)
+		return ""
 	case 6:
-		return strings.TrimSpace(values.PermissionRules)
+		return ""
 	case 7:
-		return ""
+		return strings.TrimSpace(values.SandboxRoots)
 	case 8:
-		return strings.TrimSpace(values.Workdir)
+		return strings.TrimSpace(values.PermissionRules)
 	case 9:
-		return strings.TrimSpace(values.CommandTimeoutSeconds)
-	case 10:
-		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
-	case 11:
-		return strings.TrimSpace(values.AgentAutoLoopEnabled)
-	case 12:
-		return strings.TrimSpace(values.AgentAutoLoopMaxRounds)
-	case 13:
-		return strings.TrimSpace(values.OutputLanguage)
-	case 14:
 		return ""
+	case 10:
+		return strings.TrimSpace(values.Workdir)
+	case 11:
+		return strings.TrimSpace(values.CommandTimeoutSeconds)
+	case 12:
+		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
+	case 13:
+		return strings.TrimSpace(values.AgentAutoLoopEnabled)
+	case 14:
+		return strings.TrimSpace(values.AgentAutoLoopMaxRounds)
 	case 15:
+		return strings.TrimSpace(values.OutputLanguage)
+	case 16:
+		return ""
+	case 17:
 		return strings.TrimSpace(values.SkillsRegistryURL)
 	default:
 		return ""
@@ -3809,32 +3994,32 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 	if len(inputs) > 1 {
 		values.APIKey = strings.TrimSpace(inputs[1].Value())
 	}
-	if len(inputs) > 5 {
-		values.SandboxRoots = strings.TrimSpace(inputs[5].Value())
-	}
-	if len(inputs) > 6 {
-		values.PermissionRules = strings.TrimSpace(inputs[6].Value())
+	if len(inputs) > 7 {
+		values.SandboxRoots = strings.TrimSpace(inputs[7].Value())
 	}
 	if len(inputs) > 8 {
-		values.Workdir = strings.TrimSpace(inputs[8].Value())
-	}
-	if len(inputs) > 9 {
-		values.CommandTimeoutSeconds = strings.TrimSpace(inputs[9].Value())
+		values.PermissionRules = strings.TrimSpace(inputs[8].Value())
 	}
 	if len(inputs) > 10 {
-		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[10].Value())
+		values.Workdir = strings.TrimSpace(inputs[10].Value())
 	}
 	if len(inputs) > 11 {
-		values.AgentAutoLoopEnabled = strings.TrimSpace(inputs[11].Value())
+		values.CommandTimeoutSeconds = strings.TrimSpace(inputs[11].Value())
 	}
 	if len(inputs) > 12 {
-		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[12].Value())
+		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[12].Value())
 	}
 	if len(inputs) > 13 {
-		values.OutputLanguage = strings.TrimSpace(inputs[13].Value())
+		values.AgentAutoLoopEnabled = strings.TrimSpace(inputs[13].Value())
+	}
+	if len(inputs) > 14 {
+		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[14].Value())
 	}
 	if len(inputs) > 15 {
-		values.SkillsRegistryURL = strings.TrimSpace(inputs[15].Value())
+		values.OutputLanguage = strings.TrimSpace(inputs[15].Value())
+	}
+	if len(inputs) > 17 {
+		values.SkillsRegistryURL = strings.TrimSpace(inputs[17].Value())
 	}
 	return values
 }
@@ -3893,6 +4078,34 @@ func (m *model) moveConfigSandboxCursor(delta int) {
 		m.configForm.sandboxCursor = len(choices) - 1
 	} else if m.configForm.sandboxCursor >= len(choices) {
 		m.configForm.sandboxCursor = 0
+	}
+	m.syncLayout()
+}
+
+func (m *model) moveConfigSkillReviewCursor(delta int) {
+	choices := configSkillReviewChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.skillReviewCursor += delta
+	if m.configForm.skillReviewCursor < 0 {
+		m.configForm.skillReviewCursor = len(choices) - 1
+	} else if m.configForm.skillReviewCursor >= len(choices) {
+		m.configForm.skillReviewCursor = 0
+	}
+	m.syncLayout()
+}
+
+func (m *model) moveConfigWriteConfirmationCursor(delta int) {
+	choices := configWriteConfirmationChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.writeConfirmationCursor += delta
+	if m.configForm.writeConfirmationCursor < 0 {
+		m.configForm.writeConfirmationCursor = len(choices) - 1
+	} else if m.configForm.writeConfirmationCursor >= len(choices) {
+		m.configForm.writeConfirmationCursor = 0
 	}
 	m.syncLayout()
 }
@@ -3976,6 +4189,20 @@ func configSandboxChoices() []ConfigChoice {
 		{Value: "confirm", Label: "每次确认", Description: "命令访问工作区外资源时逐次确认。"},
 		{Value: "deny", Label: "禁止访问", Description: "禁止访问当前工作区之外的资源。"},
 		{Value: "allow", Label: "直接允许", Description: "允许访问工作区外资源，不再弹出确认。"},
+	}
+}
+
+func configSkillReviewChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: internalconfig.SkillReviewPolicyConfirm, Label: "逐次审查", Description: "每次加载本地技能前都显示技能包审查弹窗。"},
+		{Value: internalconfig.SkillReviewPolicyIgnore, Label: "默认忽略", Description: "默认跳过技能包审查弹窗，直接加载本地技能。"},
+	}
+}
+
+func configWriteConfirmationChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: internalconfig.WriteConfirmationPolicyConfirm, Label: "逐次确认", Description: "执行 write_file、file_edit 前显示写入比较摘要。"},
+		{Value: internalconfig.WriteConfirmationPolicyDirect, Label: "直接写入", Description: "跳过写入比较摘要确认，直接执行写入工具。"},
 	}
 }
 

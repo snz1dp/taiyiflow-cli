@@ -23,6 +23,10 @@ const (
 	SandboxEscapePolicyConfirm      = "confirm"
 	SandboxEscapePolicyDeny         = "deny"
 	SandboxEscapePolicyAllow        = "allow"
+	SkillReviewPolicyConfirm        = "confirm"
+	SkillReviewPolicyIgnore         = "ignore"
+	WriteConfirmationPolicyConfirm  = "confirm"
+	WriteConfirmationPolicyDirect   = "direct"
 )
 
 type Config struct {
@@ -39,6 +43,8 @@ type Config struct {
 	AgentAutoLoopMaxRounds   int              `yaml:"agent_auto_loop_max_rounds,omitempty"`
 	OutputLanguage           string           `yaml:"output_language"`
 	AuditEnabled             bool             `yaml:"audit_enabled,omitempty"`
+	SkillReviewPolicy        string           `yaml:"skill_review_policy,omitempty"`
+	WriteConfirmationPolicy  string           `yaml:"write_confirmation_policy,omitempty"`
 	SandboxRoots             []string         `yaml:"sandbox_roots,omitempty"`
 	PermissionRules          []PermissionRule `yaml:"permission_rules,omitempty"`
 	Skills                   SkillConfig      `yaml:"skills,omitempty"`
@@ -80,9 +86,11 @@ func Default() Config {
 		AgentAutoLoopMaxRounds:   DefaultAgentAutoLoopMaxRounds,
 		OutputLanguage:           "zh-CN",
 		AuditEnabled:             false,
+		SkillReviewPolicy:        SkillReviewPolicyConfirm,
+		WriteConfirmationPolicy:  WriteConfirmationPolicyConfirm,
 		Skills: SkillConfig{
 			InstallScope: SkillInstallScopeUser,
-			RegistryURL: "https://mirror-cn.clawhub.com",
+			RegistryURL:  "https://mirror-cn.clawhub.com",
 		},
 	}
 }
@@ -114,6 +122,24 @@ func NormalizeSandboxEscapePolicy(value string) string {
 		return SandboxEscapePolicyAllow
 	default:
 		return SandboxEscapePolicyConfirm
+	}
+}
+
+func NormalizeSkillReviewPolicy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case SkillReviewPolicyIgnore:
+		return SkillReviewPolicyIgnore
+	default:
+		return SkillReviewPolicyConfirm
+	}
+}
+
+func NormalizeWriteConfirmationPolicy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case WriteConfirmationPolicyDirect:
+		return WriteConfirmationPolicyDirect
+	default:
+		return WriteConfirmationPolicyConfirm
 	}
 }
 
@@ -235,6 +261,8 @@ func (m *Manager) Load() (Config, error) {
 		config.ApprovalMode = Default().ApprovalMode
 	}
 	config.SandboxEscapePolicy = NormalizeSandboxEscapePolicy(config.SandboxEscapePolicy)
+	config.SkillReviewPolicy = NormalizeSkillReviewPolicy(config.SkillReviewPolicy)
+	config.WriteConfirmationPolicy = NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy)
 	config.CommandTimeoutSeconds = NormalizeCommandTimeoutSeconds(config.CommandTimeoutSeconds)
 	config.StreamIdleTimeoutSeconds = NormalizeStreamIdleTimeoutSeconds(config.StreamIdleTimeoutSeconds)
 	config.AgentAutoLoopMaxRounds = NormalizeAgentAutoLoopMaxRounds(config.AgentAutoLoopMaxRounds)

@@ -26,6 +26,8 @@ type SessionState struct {
 	AgentAutoLoopEnabledOverride   string     `json:"agent_auto_loop_enabled_override,omitempty"`
 	AgentAutoLoopMaxRoundsOverride int        `json:"agent_auto_loop_max_rounds_override,omitempty"`
 	SandboxEscapePolicyOverride    string     `json:"sandbox_escape_policy_override,omitempty"`
+	SkillReviewPolicyOverride      string     `json:"skill_review_policy_override,omitempty"`
+	ApprovedSkillNames             []string   `json:"approved_skill_names,omitempty"`
 	TodoItems                      []TodoItem `json:"todo_items,omitempty"`
 	UpdatedAt                      time.Time  `json:"updated_at"`
 }
@@ -80,6 +82,8 @@ func (s *SessionStore) Load(flowID string, workdir string) (SessionState, error)
 	state.AgentAutoLoopEnabledOverride = normalizeAgentAutoLoopEnabledOverride(state.AgentAutoLoopEnabledOverride)
 	state.AgentAutoLoopMaxRoundsOverride = normalizeAgentAutoLoopMaxRoundsOverride(state.AgentAutoLoopMaxRoundsOverride)
 	state.SandboxEscapePolicyOverride = normalizeSandboxEscapePolicyOverride(state.SandboxEscapePolicyOverride)
+	state.SkillReviewPolicyOverride = normalizeSkillReviewPolicyOverride(state.SkillReviewPolicyOverride)
+	state.ApprovedSkillNames = normalizeApprovedSkillNames(state.ApprovedSkillNames)
 	state.TodoItems = normalizeTodoItems(state.TodoItems)
 	return state, nil
 }
@@ -101,6 +105,8 @@ func (s *SessionStore) Save(state SessionState) error {
 	state.AgentAutoLoopEnabledOverride = normalizeAgentAutoLoopEnabledOverride(state.AgentAutoLoopEnabledOverride)
 	state.AgentAutoLoopMaxRoundsOverride = normalizeAgentAutoLoopMaxRoundsOverride(state.AgentAutoLoopMaxRoundsOverride)
 	state.SandboxEscapePolicyOverride = normalizeSandboxEscapePolicyOverride(state.SandboxEscapePolicyOverride)
+	state.SkillReviewPolicyOverride = normalizeSkillReviewPolicyOverride(state.SkillReviewPolicyOverride)
+	state.ApprovedSkillNames = normalizeApprovedSkillNames(state.ApprovedSkillNames)
 	state.TodoItems = normalizeTodoItems(state.TodoItems)
 	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
 		return fmt.Errorf("创建会话目录失败: %w", err)
@@ -205,6 +211,35 @@ func normalizeSandboxEscapePolicyOverride(value string) string {
 		return ""
 	}
 	return internalconfig.NormalizeSandboxEscapePolicy(trimmed)
+}
+
+func normalizeSkillReviewPolicyOverride(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	return internalconfig.NormalizeSkillReviewPolicy(trimmed)
+}
+
+func normalizeApprovedSkillNames(items []string) []string {
+	result := make([]string, 0, len(items))
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, trimmed)
+	}
+	sort.Slice(result, func(left, right int) bool {
+		return strings.ToLower(result[left]) < strings.ToLower(result[right])
+	})
+	return result
 }
 
 func normalizeReasoningOverride(value string) string {

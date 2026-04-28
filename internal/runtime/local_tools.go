@@ -385,6 +385,16 @@ func allowedClientToolSetForMode(mode string) map[string]bool {
 
 func RequiresClientToolConfirmation(config internalconfig.Config, payload map[string]any) bool {
 	toolName := canonicalClientToolName(nestedString(payload, "function", "name"))
+	arguments := nestedMap(payload, "function", "arguments")
+	if action, matched := evaluatePermissionAction(config, toolName, commandPreview(arguments)); matched {
+		return action == "ask"
+	}
+	if toolName == "skill" {
+		return internalconfig.NormalizeSkillReviewPolicy(config.SkillReviewPolicy) == internalconfig.SkillReviewPolicyConfirm
+	}
+	if isWriteConfirmationTool(toolName) {
+		return internalconfig.NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy) == internalconfig.WriteConfirmationPolicyConfirm
+	}
 	return shouldConfirmMutatingTool(config, toolName)
 }
 
@@ -415,6 +425,35 @@ func (r *ClientRuntime) authorizeClientTool(toolName string, arguments map[strin
 			}
 			return nil
 		}
+	}
+	if canonicalClientToolName(toolName) == "skill" {
+		if internalconfig.NormalizeSkillReviewPolicy(config.SkillReviewPolicy) != internalconfig.SkillReviewPolicyConfirm {
+			return nil
+		}
+		approved, err := r.confirmClientTool(toolName, arguments)
+		if err != nil {
+			return err
+		}
+		if !approved {
+			return newToolError("PERMISSION_DENIED", "用户拒绝执行 %s", canonicalClientToolName(toolName))
+		}
+		return nil
+	}
+	if isWriteConfirmationTool(toolName) {
+		if mode == "readonly" {
+			return newToolError("PERMISSION_DENIED", "当前审批模式为只读，拒绝执行 %s", canonicalClientToolName(toolName))
+		}
+		if internalconfig.NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy) != internalconfig.WriteConfirmationPolicyConfirm {
+			return nil
+		}
+		approved, err := r.confirmClientTool(toolName, arguments)
+		if err != nil {
+			return err
+		}
+		if !approved {
+			return newToolError("PERMISSION_DENIED", "用户拒绝执行 %s", canonicalClientToolName(toolName))
+		}
+		return nil
 	}
 	if !mutatingClientTool(toolName) {
 		return nil
@@ -460,6 +499,15 @@ func shouldConfirmMutatingTool(config internalconfig.Config, toolName string) bo
 func mutatingClientTool(toolName string) bool {
 	switch canonicalClientToolName(toolName) {
 	case "shell_exec", "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit", "write_file":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWriteConfirmationTool(toolName string) bool {
+	switch canonicalClientToolName(toolName) {
+	case "file_edit", "write_file":
 		return true
 	default:
 		return false
@@ -812,17 +860,164 @@ func matchesPatterns(path string, includes []string, excludes []string) bool {
 	return true
 }
 
-func matchGlob(pattern string, path string) bool {
+func expandGlobPatterns(config internalconfig.Config, pattern string) []string {
 	normalizedPattern := filepath.ToSlash(strings.TrimSpace(pattern))
-	matched, err := filepath.Match(normalizedPattern, path)
-	if err == nil && matched {
-		return true
+	if normalizedPattern == "" {
+		return nil
 	}
-	if !strings.Contains(normalizedPattern, "/") {
-		matched, err = filepath.Match(normalizedPattern, filepath.Base(path))
-		return err == nil && matched
+	items, _, err := skills.Discover(config)
+	if err != nil || len(items) == 0 {
+		return []string{normalizedPattern}
+	}
+	aliasMap := buildSkillSegmentAliasMap(items)
+	if len(aliasMap) == 0 {
+		return []string{normalizedPattern}
+	}
+	variants := []string{""}
+	for _, segment := range strings.Split(normalizedPattern, "/") {
+		options := []string{segment}
+		if !containsGlobMeta(segment) {
+			if aliases := aliasMap[strings.ToLower(segment)]; len(aliases) > 0 {
+				options = append(options, aliases...)
+			}
+		}
+		next := make([]string, 0, len(variants)*len(options))
+		seen := map[string]struct{}{}
+		for _, prefix := range variants {
+			for _, option := range options {
+				candidate := option
+				if prefix != "" {
+					candidate = prefix + "/" + option
+				}
+				if _, ok := seen[candidate]; ok {
+					continue
+				}
+				seen[candidate] = struct{}{}
+				next = append(next, candidate)
+				if len(next) >= 32 {
+					break
+				}
+			}
+			if len(next) >= 32 {
+				break
+			}
+		}
+		variants = next
+		if len(variants) == 0 {
+			return []string{normalizedPattern}
+		}
+	}
+	return variants
+}
+
+func buildSkillSegmentAliasMap(items []skills.Skill) map[string][]string {
+	aliasSets := map[string]map[string]struct{}{}
+	for _, item := range items {
+		candidates := []string{}
+		for _, candidate := range []string{
+			strings.TrimSpace(item.Name),
+			filepath.Base(strings.TrimSpace(item.RelativeDir)),
+			filepath.Base(filepath.Dir(strings.TrimSpace(item.Path))),
+		} {
+			trimmed := strings.TrimSpace(candidate)
+			if trimmed == "" || trimmed == "." || strings.Contains(trimmed, "/") || strings.Contains(trimmed, `\`) {
+				continue
+			}
+			candidates = append(candidates, trimmed)
+		}
+		if len(candidates) < 2 {
+			continue
+		}
+		uniqueCandidates := []string{}
+		seenCandidates := map[string]struct{}{}
+		for _, candidate := range candidates {
+			key := strings.ToLower(candidate)
+			if _, ok := seenCandidates[key]; ok {
+				continue
+			}
+			seenCandidates[key] = struct{}{}
+			uniqueCandidates = append(uniqueCandidates, candidate)
+		}
+		for _, candidate := range uniqueCandidates {
+			key := strings.ToLower(candidate)
+			if aliasSets[key] == nil {
+				aliasSets[key] = map[string]struct{}{}
+			}
+			for _, alias := range uniqueCandidates {
+				aliasSets[key][alias] = struct{}{}
+			}
+		}
+	}
+	result := map[string][]string{}
+	for key, candidates := range aliasSets {
+		items := make([]string, 0, len(candidates))
+		for candidate := range candidates {
+			items = append(items, candidate)
+		}
+		sort.Strings(items)
+		result[key] = items
+	}
+	return result
+}
+
+func containsGlobMeta(segment string) bool {
+	return strings.ContainsAny(segment, "*?[")
+}
+
+func matchAnyGlob(patterns []string, path string) bool {
+	for _, pattern := range patterns {
+		if matchGlob(pattern, path) {
+			return true
+		}
 	}
 	return false
+}
+
+func matchGlob(pattern string, path string) bool {
+	normalizedPattern := filepath.ToSlash(strings.TrimSpace(pattern))
+	normalizedPath := filepath.ToSlash(strings.TrimSpace(path))
+	if normalizedPattern == "" || normalizedPath == "" {
+		return false
+	}
+	if !strings.Contains(normalizedPattern, "/") {
+		matched, err := filepath.Match(normalizedPattern, filepath.Base(normalizedPath))
+		return err == nil && matched
+	}
+	return matchGlobSegments(strings.Split(normalizedPattern, "/"), strings.Split(normalizedPath, "/"))
+}
+
+func matchGlobSegments(patternSegments []string, pathSegments []string) bool {
+	for len(patternSegments) > 0 && patternSegments[0] == "" {
+		patternSegments = patternSegments[1:]
+	}
+	for len(pathSegments) > 0 && pathSegments[0] == "" {
+		pathSegments = pathSegments[1:]
+	}
+	if len(patternSegments) == 0 {
+		return len(pathSegments) == 0
+	}
+	if patternSegments[0] == "**" {
+		for len(patternSegments) > 1 && patternSegments[1] == "**" {
+			patternSegments = patternSegments[1:]
+		}
+		if len(patternSegments) == 1 {
+			return true
+		}
+		for index := 0; index <= len(pathSegments); index++ {
+			if matchGlobSegments(patternSegments[1:], pathSegments[index:]) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(pathSegments) == 0 {
+		return false
+	}
+	matched, err := filepath.Match(patternSegments[0], pathSegments[0])
+	if err != nil || !matched {
+		return false
+	}
+	return matchGlobSegments(patternSegments[1:], pathSegments[1:])
 }
 
 func normalizeSkillList(items []string) []string {

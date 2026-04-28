@@ -88,6 +88,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			sessionState.SandboxEscapePolicyOverride = internalconfig.SandboxEscapePolicyAllow
 			return a.sessionStore.Save(sessionState)
 		}
+		persistSkillReviewAllowAll := func(context.Context) error {
+			sessionState.SkillReviewPolicyOverride = internalconfig.SkillReviewPolicyIgnore
+			return a.sessionStore.Save(sessionState)
+		}
 		sandboxEscapeConfirmer := func(path string) (bool, error) {
 			return confirm(buildTUISandboxEscapeConfirmRequest(path, persistSandboxEscapeAlwaysAllow)), nil
 		}
@@ -201,9 +205,18 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					return configErr
 				}
 				localConfig = applyEffectiveSandboxEscapePolicy(localConfig, sessionState.SandboxEscapePolicyOverride, "")
+				localConfig = applyEffectiveSkillReviewForPayload(localConfig, sessionState.ContextDir, sessionState, event.Data)
 				emit(tui.Event{Kind: tui.EventClientToolCall, Text: clientruntime.PreviewClientToolCall(event.Data)})
 				if clientruntime.RequiresClientToolConfirmation(localConfig, event.Data) {
-					approved := confirm(buildTUIClientToolConfirmRequest(event.Data))
+					persistApprovedSkillReview := func(context.Context) error {
+						skillName := resolveSkillReviewApprovalName(localConfig, sessionState.ContextDir, event.Data)
+						if skillName == "" {
+							return nil
+						}
+						appendApprovedSkillName(&sessionState, skillName)
+						return a.sessionStore.Save(sessionState)
+					}
+					approved := confirm(buildTUIClientToolConfirmRequest(localConfig, sessionState.ContextDir, event.Data, persistApprovedSkillReview, persistSkillReviewAllowAll))
 					if !approved {
 						emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端工具执行。"})
 						if err := submitClientCallFailure(runCtx, providerClient, event.Data, "用户拒绝执行客户端工具"); err != nil {
@@ -319,6 +332,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			AgentAutoLoopEnabledOverride:   loadedState.AgentAutoLoopEnabledOverride,
 			AgentAutoLoopMaxRoundsOverride: loadedState.AgentAutoLoopMaxRoundsOverride,
 			SandboxEscapePolicyOverride:    loadedState.SandboxEscapePolicyOverride,
+			SkillReviewPolicyOverride:      loadedState.SkillReviewPolicyOverride,
+			ApprovedSkillNames:             loadedState.ApprovedSkillNames,
 		}); err != nil {
 			return tui.Snapshot{}, err
 		}
@@ -540,6 +555,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						AgentAutoLoopEnabledOverride:   currentSessionState.AgentAutoLoopEnabledOverride,
 						AgentAutoLoopMaxRoundsOverride: currentSessionState.AgentAutoLoopMaxRoundsOverride,
 						SandboxEscapePolicyOverride:    currentSessionState.SandboxEscapePolicyOverride,
+						SkillReviewPolicyOverride:      currentSessionState.SkillReviewPolicyOverride,
+						ApprovedSkillNames:             currentSessionState.ApprovedSkillNames,
 					}); err != nil {
 						return tui.LocalCommandResult{}, err
 					}
@@ -1095,29 +1112,110 @@ func requiresTUICommandConfirmation(config internalconfig.Config, payload map[st
 
 func buildTUIConfirmRequest(payload map[string]any) tui.ConfirmRequest {
 	request := tui.ConfirmRequest{
-		Title:   "客户端命令(client command)待确认",
-		Command: previewBuiltInCommand(payload),
-		Detail:  "该命令由服务端下发，是否允许在本地执行？",
-		Hint:    "使用方向键或 Tab 选择，Enter 确认。",
+		Title:        "客户端命令(client command)待确认",
+		Command:      previewBuiltInCommand(payload),
+		Detail:       "该命令由服务端下发，是否允许在本地执行？",
+		Hint:         "Y 执行本次命令，N 取消本次命令；方向键或 Tab 选择，Enter 确认。",
+		ApproveLabel: "执行本次命令",
+		RejectLabel:  "取消本次命令",
 	}
 	return request
 }
 
-func buildTUIClientToolConfirmRequest(payload map[string]any) tui.ConfirmRequest {
+func buildTUIClientToolConfirmRequest(
+	config internalconfig.Config,
+	contextDir string,
+	payload map[string]any,
+	approveSkill func(context.Context) error,
+	allowAllSkills func(context.Context) error,
+) tui.ConfirmRequest {
 	toolName := nestedStringValue(payload, "function", "name")
 	arguments, _ := nestedMapValue(payload, "function", "arguments")
 	request := tui.ConfirmRequest{
-		Title:   "客户端工具(client tool)待确认",
-		Command: clientruntime.PreviewClientToolCall(payload),
-		Detail:  "该工具会修改本地工作区或本地运行状态，是否允许执行？",
-		Hint:    "使用方向键或 Tab 选择，Enter 确认。",
+		Title:        "客户端工具(client tool)待确认",
+		Command:      clientruntime.PreviewClientToolCall(payload),
+		Detail:       "该工具会修改本地工作区或本地运行状态，是否允许执行？",
+		Hint:         "Y 允许本次执行，N 本次拒绝；方向键或 Tab 选择，Enter 确认。",
+		ApproveLabel: "允许本次执行",
+		RejectLabel:  "本次拒绝",
 	}
 	switch strings.TrimSpace(toolName) {
-	case "write_file":
-		request.PreviewTitle = "写入目标(write target)"
-		request.PreviewBody = fmt.Sprintf("路径: %s\n模式: %s", fallbackString(stringMapValue(arguments, "path"), "."), fallbackString(stringMapValue(arguments, "mode"), "overwrite"))
+	case "skill":
+		request.Title = "技能包审查(skill package review)"
+		request.Detail = "该技能会把本地技能包内容注入当前会话，确认后即可在当前对话中使用。"
+		request.PreviewTitle = "技能摘要(skill summary)"
+		request.PreviewBody = buildSkillReviewPreview(config, contextDir, fallbackString(stringMapValue(arguments, "name"), "<missing>"))
+		request.ApproveLabel = "本次允许"
+		request.RejectLabel = "本次拒绝"
+		request.AlwaysApproveLabel = "始终允许此技能"
+		request.AlwaysApprove = approveSkill
+		request.AllowAllLabel = "允许全部技能"
+		request.AllowAll = allowAllSkills
+		request.Hint = "Y 允许本次，N 本次拒绝，S 始终允许此技能，A 允许全部技能；方向键或 Tab 选择，Enter 确认。"
+		request.DisableDefaultAlwaysApprove = true
+	case "file_edit", "write_file":
+		request.Title = "写入比较摘要(write summary)待确认"
+		request.Detail = "该工具会修改本地文件，是否允许本次写入？"
+		request.PreviewTitle = "比较摘要(compare summary)"
+		request.PreviewBody = buildWriteConfirmationPreview(strings.TrimSpace(toolName), arguments)
+		request.ApproveLabel = "确认本次写入"
+		request.RejectLabel = "取消本次写入"
+		request.Hint = "Y 确认本次写入，N 取消本次写入；方向键或 Tab 选择，Enter 确认。"
+		request.DisableDefaultAlwaysApprove = true
 	}
 	return request
+}
+
+func buildSkillReviewPreview(config internalconfig.Config, contextDir string, name string) string {
+	previewConfig := config
+	if strings.TrimSpace(contextDir) != "" {
+		previewConfig.Workdir = contextDir
+	}
+	item, _, err := skills.LoadByName(previewConfig, name)
+	if err != nil || item == nil {
+		return fmt.Sprintf("名称: %s", fallbackString(name, "<missing>"))
+	}
+	lines := []string{fmt.Sprintf("名称: %s", item.Name)}
+	if strings.TrimSpace(item.Source) != "" {
+		lines = append(lines, fmt.Sprintf("来源: %s", item.Source))
+	}
+	if strings.TrimSpace(item.RelativeDir) != "" {
+		lines = append(lines, fmt.Sprintf("相对目录: %s", item.RelativeDir))
+	}
+	if strings.TrimSpace(item.Path) != "" {
+		lines = append(lines, fmt.Sprintf("技能文件: %s", item.Path))
+	}
+	if strings.TrimSpace(item.Summary) != "" {
+		lines = append(lines, fmt.Sprintf("摘要: %s", trimText(item.Summary, 240)))
+	} else if strings.TrimSpace(item.Description) != "" {
+		lines = append(lines, fmt.Sprintf("摘要: %s", trimText(item.Description, 240)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildWriteConfirmationPreview(toolName string, arguments map[string]any) string {
+	path := fallbackString(stringMapValue(arguments, "path"), ".")
+	mode := fallbackString(stringMapValue(arguments, "mode"), "overwrite")
+	lines := []string{fmt.Sprintf("路径: %s", path)}
+	if toolName == "write_file" {
+		lines = append(lines, fmt.Sprintf("模式: %s", mode))
+		if content := trimText(stringMapValue(arguments, "content"), 240); content != "" {
+			lines = append(lines, fmt.Sprintf("内容摘要: %s", content))
+		}
+		return strings.Join(lines, "\n")
+	}
+	oldString := trimText(stringMapValue(arguments, "old_string"), 120)
+	newString := trimText(stringMapValue(arguments, "new_string"), 120)
+	if oldString != "" {
+		lines = append(lines, fmt.Sprintf("编辑前: %s", oldString))
+	}
+	if newString != "" {
+		lines = append(lines, fmt.Sprintf("编辑后: %s", newString))
+	}
+	if expectedHash := strings.TrimSpace(stringMapValue(arguments, "expected_sha256_before")); expectedHash != "" {
+		lines = append(lines, fmt.Sprintf("编辑前摘要: %s", expectedHash))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func buildTUISandboxEscapeConfirmRequest(path string, alwaysApprove func(context.Context) error) tui.ConfirmRequest {
@@ -1127,10 +1225,67 @@ func buildTUISandboxEscapeConfirmRequest(path string, alwaysApprove func(context
 		Detail:                      "目标路径位于当前工作目录外，是否允许本次访问？",
 		PreviewTitle:                "访问目标(target path)",
 		PreviewBody:                 fmt.Sprintf("路径: %s", path),
-		Hint:                        "使用方向键或 Tab 选择，Enter 确认。",
+		Hint:                        "Y 允许本次访问，N 本次拒绝，A 允许全部外部路径；方向键或 Tab 选择，Enter 确认。",
+		ApproveLabel:                "允许本次访问",
+		RejectLabel:                 "本次拒绝",
+		AlwaysApproveLabel:          "允许全部外部路径",
 		AlwaysApprove:               alwaysApprove,
 		DisableDefaultAlwaysApprove: true,
 	}
+}
+
+func applyEffectiveSkillReviewForPayload(config internalconfig.Config, contextDir string, sessionState agent.SessionState, payload map[string]any) internalconfig.Config {
+	updated := applyEffectiveSkillReviewPolicy(config, sessionState.SkillReviewPolicyOverride)
+	if !strings.EqualFold(strings.TrimSpace(nestedStringValue(payload, "function", "name")), "skill") {
+		return updated
+	}
+	if len(sessionState.ApprovedSkillNames) == 0 {
+		return updated
+	}
+	approvedName := resolveSkillReviewApprovalName(updated, contextDir, payload)
+	if approvedName == "" {
+		return updated
+	}
+	for _, item := range sessionState.ApprovedSkillNames {
+		if strings.EqualFold(strings.TrimSpace(item), approvedName) {
+			updated.SkillReviewPolicy = internalconfig.SkillReviewPolicyIgnore
+			break
+		}
+	}
+	return updated
+}
+
+func resolveSkillReviewApprovalName(config internalconfig.Config, contextDir string, payload map[string]any) string {
+	arguments := map[string]any{}
+	if payload != nil {
+		arguments, _ = nestedMapValue(payload, "function", "arguments")
+	}
+	name := strings.TrimSpace(fallbackString(stringMapValue(arguments, "name"), ""))
+	if name == "" {
+		return ""
+	}
+	previewConfig := config
+	if strings.TrimSpace(contextDir) != "" {
+		previewConfig.Workdir = contextDir
+	}
+	item, _, err := skills.LoadByName(previewConfig, name)
+	if err == nil && item != nil && strings.TrimSpace(item.Name) != "" {
+		return strings.TrimSpace(item.Name)
+	}
+	return name
+}
+
+func appendApprovedSkillName(state *agent.SessionState, name string) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return
+	}
+	for _, item := range state.ApprovedSkillNames {
+		if strings.EqualFold(strings.TrimSpace(item), trimmed) {
+			return
+		}
+	}
+	state.ApprovedSkillNames = append(state.ApprovedSkillNames, trimmed)
 }
 
 func emitTUIClientToolResultEvents(emit func(tui.Event), toolName string, result any, toolErr error) {
@@ -1742,6 +1897,8 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			DefaultFlow:              strings.TrimSpace(config.DefaultFlow),
 			ApprovalMode:             strings.TrimSpace(config.ApprovalMode),
 			SandboxEscapePolicy:      strings.TrimSpace(config.SandboxEscapePolicy),
+			SkillReviewPolicy:        strings.TrimSpace(config.SkillReviewPolicy),
+			WriteConfirmationPolicy:  strings.TrimSpace(config.WriteConfirmationPolicy),
 			SandboxRoots:             formatSandboxRootsInline(config.SandboxRoots),
 			PermissionRules:          formatPermissionRulesInline(config.PermissionRules),
 			ReasoningEnabled:         config.ReasoningEnabled,
@@ -1793,6 +1950,18 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 	if strings.TrimSpace(submission.Values.SandboxEscapePolicy) == "" {
 		config.SandboxEscapePolicy = internalconfig.Default().SandboxEscapePolicy
 	} else if err := assignConfigValue(&config, "external_resource_access_policy", submission.Values.SandboxEscapePolicy); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if strings.TrimSpace(submission.Values.SkillReviewPolicy) == "" {
+		config.SkillReviewPolicy = internalconfig.Default().SkillReviewPolicy
+	} else if err := assignConfigValue(&config, "skill_review_policy", submission.Values.SkillReviewPolicy); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if strings.TrimSpace(submission.Values.WriteConfirmationPolicy) == "" {
+		config.WriteConfirmationPolicy = internalconfig.Default().WriteConfirmationPolicy
+	} else if err := assignConfigValue(&config, "write_confirmation_policy", submission.Values.WriteConfirmationPolicy); err != nil {
 		return internalconfig.Config{}, err
 	}
 
@@ -1962,6 +2131,8 @@ func (a *App) executeTUIReasoningCommand(command string, snapshot tui.Snapshot) 
 		AgentAutoLoopEnabledOverride:   currentState.AgentAutoLoopEnabledOverride,
 		AgentAutoLoopMaxRoundsOverride: currentState.AgentAutoLoopMaxRoundsOverride,
 		SandboxEscapePolicyOverride:    snapshot.SessionSandboxEscapePolicy,
+		SkillReviewPolicyOverride:      currentState.SkillReviewPolicyOverride,
+		ApprovedSkillNames:             currentState.ApprovedSkillNames,
 	}
 	output, updatedState, err := a.executeReasoningCommand(config, command, state)
 	if err != nil {

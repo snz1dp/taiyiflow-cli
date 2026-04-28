@@ -25,6 +25,42 @@ func TestNormalizeSandboxEscapePolicy(t *testing.T) {
 	}
 }
 
+func TestNormalizeSkillReviewPolicy(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{input: "", expected: SkillReviewPolicyConfirm},
+		{input: "confirm", expected: SkillReviewPolicyConfirm},
+		{input: "ignore", expected: SkillReviewPolicyIgnore},
+		{input: "IGNORE", expected: SkillReviewPolicyIgnore},
+		{input: "unexpected", expected: SkillReviewPolicyConfirm},
+	}
+	for _, item := range cases {
+		if got := NormalizeSkillReviewPolicy(item.input); got != item.expected {
+			t.Fatalf("NormalizeSkillReviewPolicy(%q) = %q, want %q", item.input, got, item.expected)
+		}
+	}
+}
+
+func TestNormalizeWriteConfirmationPolicy(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{input: "", expected: WriteConfirmationPolicyConfirm},
+		{input: "confirm", expected: WriteConfirmationPolicyConfirm},
+		{input: "direct", expected: WriteConfirmationPolicyDirect},
+		{input: "DIRECT", expected: WriteConfirmationPolicyDirect},
+		{input: "unexpected", expected: WriteConfirmationPolicyConfirm},
+	}
+	for _, item := range cases {
+		if got := NormalizeWriteConfirmationPolicy(item.input); got != item.expected {
+			t.Fatalf("NormalizeWriteConfirmationPolicy(%q) = %q, want %q", item.input, got, item.expected)
+		}
+	}
+}
+
 func TestNormalizeStreamIdleTimeoutSeconds(t *testing.T) {
 	cases := []struct {
 		input    int

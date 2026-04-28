@@ -207,7 +207,35 @@ func LoadByName(config internalconfig.Config, name string) (*Skill, string, erro
 			return &copyItem, directory, nil
 		}
 	}
+	for _, item := range items {
+		if matchesSkillAlias(item, trimmed) {
+			copyItem := item
+			return &copyItem, directory, nil
+		}
+	}
 	return nil, directory, fmt.Errorf("未找到技能: %s", trimmed)
+}
+
+func matchesSkillAlias(item Skill, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	if strings.EqualFold(item.RelativeDir, target) {
+		return true
+	}
+	if relativeBase := filepath.Base(strings.TrimSpace(item.RelativeDir)); relativeBase != "." && relativeBase != "" {
+		if strings.EqualFold(relativeBase, target) {
+			return true
+		}
+	}
+	if item.Path != "" {
+		pathBase := filepath.Base(filepath.Dir(item.Path))
+		if pathBase != "." && pathBase != "" && strings.EqualFold(pathBase, target) {
+			return true
+		}
+	}
+	return false
 }
 
 func Summaries(items []Skill) []map[string]any {

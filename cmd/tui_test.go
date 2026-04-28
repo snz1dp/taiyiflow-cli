@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	internaltui "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/tui"
 )
@@ -232,6 +234,8 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 			BackendBaseURL:           "http://localhost:7860",
 			ApprovalMode:             "auto",
 			SandboxEscapePolicy:      "allow",
+			SkillReviewPolicy:        "ignore",
+			WriteConfirmationPolicy:  "direct",
 			SandboxRoots:             "/tmp/a, /tmp/b",
 			PermissionRules:          "tool:shell_exec=deny; shell:git status=allow",
 			ReasoningEnabled:         true,
@@ -249,6 +253,12 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	}
 	if updated.SandboxEscapePolicy != "allow" {
 		t.Fatalf("expected allow sandbox policy, got %#v", updated)
+	}
+	if updated.SkillReviewPolicy != "ignore" {
+		t.Fatalf("expected skill review policy saved, got %#v", updated.SkillReviewPolicy)
+	}
+	if updated.WriteConfirmationPolicy != "direct" {
+		t.Fatalf("expected write confirmation policy saved, got %#v", updated.WriteConfirmationPolicy)
 	}
 	if len(updated.SandboxRoots) != 2 || updated.SandboxRoots[0] != "/tmp/a" || updated.SandboxRoots[1] != "/tmp/b" {
 		t.Fatalf("unexpected sandbox roots: %#v", updated.SandboxRoots)
@@ -290,6 +300,77 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	}
 	if got := formatSandboxRootsInline(reloaded.SandboxRoots); got != "/tmp/a, /tmp/b" {
 		t.Fatalf("unexpected formatted roots: %q", got)
+	}
+}
+
+func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T) {
+	workspaceDir := t.TempDir()
+	skillDir := filepath.Join(workspaceDir, ".snz1dp", "skills", "context-review")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: Context Review\ndescription: 审查工作区技能\n---\n\n检查工作区上下文。\n"), 0o644); err != nil {
+		t.Fatalf("write skill file failed: %v", err)
+	}
+
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	skillRequest := buildTUIClientToolConfirmRequest(config, workspaceDir, map[string]any{
+		"function": map[string]any{
+			"name":      "skill",
+			"arguments": map[string]any{"name": "Context Review"},
+		},
+	}, func(context.Context) error { return nil }, func(context.Context) error { return nil })
+	if skillRequest.Title != "技能包审查(skill package review)" {
+		t.Fatalf("unexpected skill request title: %#v", skillRequest)
+	}
+	if skillRequest.ApproveLabel != "本次允许" || skillRequest.RejectLabel != "本次拒绝" || skillRequest.AlwaysApproveLabel != "始终允许此技能" || skillRequest.AllowAllLabel != "允许全部技能" {
+		t.Fatalf("unexpected skill request labels: %#v", skillRequest)
+	}
+	if !strings.Contains(skillRequest.PreviewBody, "相对目录: context-review") {
+		t.Fatalf("expected skill preview to include relative dir, got %#v", skillRequest.PreviewBody)
+	}
+
+	writeRequest := buildTUIClientToolConfirmRequest(config, workspaceDir, map[string]any{
+		"function": map[string]any{
+			"name":      "write_file",
+			"arguments": map[string]any{"path": "notes.txt", "mode": "overwrite", "content": "hello world"},
+		},
+	}, nil, nil)
+	if writeRequest.Title != "写入比较摘要(write summary)待确认" {
+		t.Fatalf("unexpected write request title: %#v", writeRequest)
+	}
+	if writeRequest.ApproveLabel != "确认本次写入" || writeRequest.RejectLabel != "取消本次写入" {
+		t.Fatalf("unexpected write request labels: %#v", writeRequest)
+	}
+	if !writeRequest.DisableDefaultAlwaysApprove {
+		t.Fatalf("expected write request to disable always approve, got %#v", writeRequest)
+	}
+}
+
+func TestApplyEffectiveSkillReviewForPayloadUsesApprovedSkillNames(t *testing.T) {
+	workspaceDir := t.TempDir()
+	skillDir := filepath.Join(workspaceDir, ".snz1dp", "skills", "context-review")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: Context Review\ndescription: 审查工作区技能\n---\n\n检查工作区上下文。\n"), 0o644); err != nil {
+		t.Fatalf("write skill file failed: %v", err)
+	}
+
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.SkillReviewPolicy = internalconfig.SkillReviewPolicyConfirm
+	updated := applyEffectiveSkillReviewForPayload(config, workspaceDir, agent.SessionState{
+		ApprovedSkillNames: []string{"Context Review"},
+	}, map[string]any{
+		"function": map[string]any{
+			"name":      "skill",
+			"arguments": map[string]any{"name": "context-review"},
+		},
+	})
+	if updated.SkillReviewPolicy != internalconfig.SkillReviewPolicyIgnore {
+		t.Fatalf("expected approved skill to skip confirmation, got %#v", updated.SkillReviewPolicy)
 	}
 }
 

@@ -37,9 +37,7 @@ func loadBundledSkill(config internalconfig.Config, definition BundledSkillDefin
 	if err != nil {
 		return Skill{}, fmt.Errorf("解析内置技能失败 %s: %w", definition.Name, err)
 	}
-	if strings.TrimSpace(manifest.Name) == "" {
-		manifest.Name = definition.Name
-	}
+	manifest.Name = definition.Name
 	if strings.TrimSpace(manifest.Description) == "" {
 		manifest.Description = definition.Summary
 	}

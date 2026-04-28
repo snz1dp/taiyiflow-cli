@@ -47,6 +47,35 @@ func TestResolveAllowedPathRejectsEscape(t *testing.T) {
 	}
 }
 
+func TestResolveAllowedPathExpandsTildeForRequestedPathAndSandboxRoot(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("HOMEDRIVE", filepath.VolumeName(homeDir))
+	t.Setenv("HOMEPATH", strings.TrimPrefix(homeDir, filepath.VolumeName(homeDir)))
+	workdir := t.TempDir()
+	targetDir := filepath.Join(homeDir, ".snz1dp", "skills")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	config := internalconfig.Config{
+		Workdir:      workdir,
+		ApprovalMode: "auto",
+		SandboxRoots: []string{"~/.snz1dp/skills"},
+	}
+	resolved, err := resolveAllowedPath(config, "~/.snz1dp/skills/demo.txt", true)
+	if err != nil {
+		t.Fatalf("expected tilde path to resolve: %v", err)
+	}
+	expected, err := resolveWithExistingParent(filepath.Join(targetDir, "demo.txt"))
+	if err != nil {
+		t.Fatalf("resolve expected path failed: %v", err)
+	}
+	if resolved != expected {
+		t.Fatalf("unexpected resolved path: got %s want %s", resolved, expected)
+	}
+}
+
 func TestSandboxEscapePolicyDenyAllowConfirm(t *testing.T) {
 	tempDir := t.TempDir()
 	outsideDir := t.TempDir()
@@ -90,7 +119,7 @@ func TestSandboxEscapePolicyDenyAllowConfirm(t *testing.T) {
 	}
 
 	confirmNoInputRuntime := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
-	if _, err := confirmNoInputRuntime.resolveAllowedPathWithPolicy(confirmConfig, outsidePath, true); err == nil || !strings.Contains(err.Error(), "无交互输入") {
+	if _, err := confirmNoInputRuntime.resolveAllowedPathWithPolicy(confirmConfig, outsidePath, true); err == nil || !strings.Contains(err.Error(), "--allow参数允许访问") {
 		t.Fatalf("expected confirm policy without input to fail with guidance, got: %v", err)
 	}
 }
@@ -216,6 +245,24 @@ func TestSearchFiles(t *testing.T) {
 	}
 }
 
+func TestMatchGlobSupportsDoublestar(t *testing.T) {
+	testCases := []struct {
+		pattern string
+		path    string
+		matched bool
+	}{
+		{pattern: "cmd/*.go", path: "cmd/main.go", matched: true},
+		{pattern: "**/*.go", path: "cmd/nested/main.go", matched: true},
+		{pattern: "**/review/**", path: "skills/review/scripts/run.js", matched: true},
+		{pattern: "**/review/**", path: "skills/reviewer/scripts/run.js", matched: false},
+	}
+	for _, testCase := range testCases {
+		if got := matchGlob(testCase.pattern, testCase.path); got != testCase.matched {
+			t.Fatalf("matchGlob(%q, %q) = %v, want %v", testCase.pattern, testCase.path, got, testCase.matched)
+		}
+	}
+}
+
 func TestCanonicalClientToolNameUsesSnakeCaseNamesOnly(t *testing.T) {
 	if got := canonicalClientToolName("lsp_query"); got != "lsp_query" {
 		t.Fatalf("unexpected canonical lsp_query name: %s", got)
@@ -246,6 +293,45 @@ func TestCanonicalClientToolNameUsesSnakeCaseNamesOnly(t *testing.T) {
 	}
 	if got := canonicalClientToolName("Skill"); got != "Skill" {
 		t.Fatalf("legacy alias should not be normalized: %s", got)
+	}
+}
+
+func TestRequiresClientToolConfirmationRespectsSkillAndWritePolicies(t *testing.T) {
+	skillPayload := map[string]any{
+		"function": map[string]any{
+			"name":      "skill",
+			"arguments": map[string]any{"name": "demo"},
+		},
+	}
+	writePayload := map[string]any{
+		"function": map[string]any{
+			"name":      "write_file",
+			"arguments": map[string]any{"path": "notes.txt", "content": "hello"},
+		},
+	}
+
+	confirmConfig := internalconfig.Config{
+		ApprovalMode:            "auto",
+		SkillReviewPolicy:       internalconfig.SkillReviewPolicyConfirm,
+		WriteConfirmationPolicy: internalconfig.WriteConfirmationPolicyConfirm,
+	}
+	if !RequiresClientToolConfirmation(confirmConfig, skillPayload) {
+		t.Fatal("expected skill payload to require confirmation")
+	}
+	if !RequiresClientToolConfirmation(confirmConfig, writePayload) {
+		t.Fatal("expected write payload to require confirmation")
+	}
+
+	ignoreConfig := confirmConfig
+	ignoreConfig.SkillReviewPolicy = internalconfig.SkillReviewPolicyIgnore
+	if RequiresClientToolConfirmation(ignoreConfig, skillPayload) {
+		t.Fatal("expected ignored skill review policy to skip confirmation")
+	}
+
+	directConfig := confirmConfig
+	directConfig.WriteConfirmationPolicy = internalconfig.WriteConfirmationPolicyDirect
+	if RequiresClientToolConfirmation(directConfig, writePayload) {
+		t.Fatal("expected direct write policy to skip confirmation")
 	}
 }
 

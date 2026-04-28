@@ -401,6 +401,18 @@ func TestTaskCleanupRemovesCompletedTasksAndKeepsRunningTasks(t *testing.T) {
 	if _, err := runtimeClient.taskStop(configValue, map[string]any{"task_id": runningTaskID}); err != nil {
 		t.Fatalf("taskStop failed: %v", err)
 	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		output, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": runningTaskID})
+		if outputErr != nil {
+			t.Fatalf("taskOutput after stop failed: %v", outputErr)
+		}
+		if output["status"] == "cancelled" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expected cleanup test running task to become cancelled")
 }
 
 func TestSkillReturnsInvocationPayload(t *testing.T) {
@@ -530,6 +542,59 @@ func TestGlobFilesFileEditAndTodo(t *testing.T) {
 	}
 	if todoResult["count"].(int) != 1 {
 		t.Fatalf("unexpected todo result: %#v", todoResult)
+	}
+}
+
+func TestGlobFilesMatchesSkillDirectoryAlias(t *testing.T) {
+	rootDir := t.TempDir()
+	if err := os.Setenv(config.RootDirEnvName(), rootDir); err != nil {
+		t.Fatalf("set env failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Unsetenv(config.RootDirEnvName())
+	})
+	workdir := t.TempDir()
+	skillDir := filepath.Join(workdir, ".snz1dp", "skills", "qq-email-summary")
+	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: email-summary\ndescription: 邮件摘要\n---\n\n运行邮件摘要。\n"), 0o644); err != nil {
+		t.Fatalf("write skill failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "scripts", "run.js"), []byte("console.log('ok')\n"), 0o644); err != nil {
+		t.Fatalf("write script failed: %v", err)
+	}
+
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: workdir, ApprovalMode: "auto"}
+
+	globResult, err := runtimeClient.globFiles(configValue, map[string]any{
+		"path":    ".snz1dp/skills",
+		"pattern": "**/email-summary/**",
+	})
+	if err != nil {
+		t.Fatalf("globFiles failed: %v", err)
+	}
+	items, ok := globResult["items"].([]map[string]any)
+	if !ok {
+		t.Fatalf("unexpected items payload: %#v", globResult["items"])
+	}
+	if len(items) != 4 {
+		t.Fatalf("unexpected glob result: %#v", globResult)
+	}
+	matched := map[string]bool{}
+	for _, item := range items {
+		matched[stringValue(item["relative_path"])] = true
+	}
+	for _, expected := range []string{
+		"qq-email-summary",
+		"qq-email-summary/SKILL.md",
+		"qq-email-summary/scripts",
+		"qq-email-summary/scripts/run.js",
+	} {
+		if !matched[expected] {
+			t.Fatalf("missing expected glob match %q: %#v", expected, globResult)
+		}
 	}
 }
 

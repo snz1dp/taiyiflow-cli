@@ -157,7 +157,14 @@ func resolveAllowedPath(config internalconfig.Config, requested string, allowCre
 	target := strings.TrimSpace(requested)
 	if target == "" {
 		target = baseDir
-	} else if !filepath.IsAbs(target) {
+	} else {
+		expanded, err := expandTildePath(target)
+		if err != nil {
+			return "", newToolError("PARAM_ERROR", "“%s”解析路径失败: %v", target, err)
+		}
+		target = expanded
+	}
+	if !filepath.IsAbs(target) {
 		target = filepath.Join(baseDir, target)
 	}
 	resolved, err := filepath.Abs(target)
@@ -199,7 +206,10 @@ func resolveSandboxRoots(config internalconfig.Config, baseDir string) ([]string
 		if trimmed == "" {
 			continue
 		}
-		root := trimmed
+		root, err := expandTildePath(trimmed)
+		if err != nil {
+			return nil, newToolError("PARAM_ERROR", "解析外部资源访问根目录失败: %v", err)
+		}
 		if !filepath.IsAbs(root) {
 			root = filepath.Join(baseDir, root)
 		}
@@ -214,6 +224,31 @@ func resolveSandboxRoots(config internalconfig.Config, baseDir string) ([]string
 		roots = append(roots, resolved)
 	}
 	return roots, nil
+}
+
+func expandTildePath(path string) (string, error) {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" || trimmed[0] != '~' {
+		return trimmed, nil
+	}
+	if trimmed != "~" && !strings.HasPrefix(trimmed, "~/") && !strings.HasPrefix(trimmed, "~\\") {
+		return trimmed, nil
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if trimmed == "~" {
+		return homeDir, nil
+	}
+	relative := strings.TrimPrefix(strings.TrimPrefix(trimmed[1:], "/"), `\`)
+	if relative == "" {
+		return homeDir, nil
+	}
+	parts := strings.FieldsFunc(relative, func(r rune) bool {
+		return r == '/' || r == '\\'
+	})
+	return filepath.Join(append([]string{homeDir}, parts...)...), nil
 }
 
 func resolveWithExistingParent(target string) (string, error) {

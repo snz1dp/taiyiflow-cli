@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -262,13 +263,17 @@ func UpdateRemote(config internalconfig.Config, nameOrSlug string) (RemoteUpdate
 		return RemoteUpdateResult{}, fmt.Errorf("远程技能没有可更新版本: %s", installed.Slug)
 	}
 	if strings.EqualFold(strings.TrimSpace(installed.InstalledVersion), strings.TrimSpace(detail.Version)) {
+		repaired, err := repairInstalledSkillDependencies(installed.TargetDir)
+		if err != nil {
+			return RemoteUpdateResult{}, err
+		}
 		return RemoteUpdateResult{
 			Name:            installed.Name,
 			Slug:            installed.Slug,
 			PreviousVersion: installed.InstalledVersion,
 			Version:         detail.Version,
 			TargetDir:       installed.TargetDir,
-			Changed:         false,
+			Changed:         repaired,
 			RegistryURL:     installed.RegistryURL,
 		}, nil
 	}
@@ -463,6 +468,9 @@ func installArchiveToTarget(archiveBytes []byte, targetDir string, registryURL s
 	}); err != nil {
 		return "", err
 	}
+	if err := installSkillDependencies(stageDir); err != nil {
+		return "", err
+	}
 	if force {
 		if err := os.RemoveAll(targetDir); err != nil {
 			return "", fmt.Errorf("覆盖现有技能失败: %w", err)
@@ -472,6 +480,62 @@ func installArchiveToTarget(archiveBytes []byte, targetDir string, registryURL s
 		return "", fmt.Errorf("移动技能到目标目录失败: %w", err)
 	}
 	return strings.TrimSpace(skillInfo.Name), nil
+}
+
+func installSkillDependencies(skillDir string) error {
+	packageJSONPath := filepath.Join(skillDir, "package.json")
+	info, err := os.Stat(packageJSONPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("读取技能依赖描述失败: %w", err)
+	}
+	if info.IsDir() {
+		return nil
+	}
+	npmPath, err := exec.LookPath("npm")
+	if err != nil {
+		return fmt.Errorf("技能包含 package.json，但当前环境未找到 npm: %w", err)
+	}
+	args := []string{"install", "--omit=dev"}
+	packageLockPath := filepath.Join(skillDir, "package-lock.json")
+	if _, err := os.Stat(packageLockPath); err == nil {
+		args = []string{"ci", "--omit=dev"}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("读取技能锁文件失败: %w", err)
+	}
+	command := exec.Command(npmPath, args...)
+	command.Dir = skillDir
+	output, err := command.CombinedOutput()
+	if err != nil {
+		trimmedOutput := strings.TrimSpace(string(output))
+		if trimmedOutput == "" {
+			return fmt.Errorf("安装技能依赖失败: %w", err)
+		}
+		return fmt.Errorf("安装技能依赖失败: %w\n%s", err, trimmedOutput)
+	}
+	return nil
+}
+
+func repairInstalledSkillDependencies(skillDir string) (bool, error) {
+	packageJSONPath := filepath.Join(skillDir, "package.json")
+	if _, err := os.Stat(packageJSONPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("读取技能依赖描述失败: %w", err)
+	}
+	nodeModulesPath := filepath.Join(skillDir, "node_modules")
+	if _, err := os.Stat(nodeModulesPath); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, fmt.Errorf("读取技能依赖目录失败: %w", err)
+	}
+	if err := installSkillDependencies(skillDir); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func extractSkillArchive(archiveBytes []byte, destDir string) error {
