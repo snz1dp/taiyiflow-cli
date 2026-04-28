@@ -495,6 +495,14 @@ func (a *App) streamTask(
 	for event := range stream {
 		switch event.Type {
 		case provider.EventMessage:
+			if sessionTitle := firstNonEmptyTrimmedStringMapValue(event.Data, "session_name"); sessionTitle != "" {
+				sessionState.SessionTitle = sessionTitle
+				if strings.TrimSpace(sessionState.SessionID) != "" {
+					if err := a.sessionStore.Save(sessionState); err != nil {
+						return sessionState, err
+					}
+				}
+			}
 			if chunk, ok := event.Data["chunk"].(string); ok && chunk != "" {
 				chunk = sanitizeCLIStreamText(chunk)
 				if !hasVisibleOutput {

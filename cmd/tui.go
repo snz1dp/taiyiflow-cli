@@ -144,6 +144,15 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		for event := range stream {
 			switch event.Type {
 			case provider.EventMessage:
+				if sessionTitle := firstNonEmptyTrimmedStringMapValue(event.Data, "session_name"); sessionTitle != "" {
+					sessionState.SessionTitle = sessionTitle
+					if strings.TrimSpace(sessionState.SessionID) != "" {
+						if err := a.sessionStore.Save(sessionState); err != nil {
+							return err
+						}
+					}
+					emit(tui.Event{Kind: tui.EventSessionUpdate, SessionID: sessionState.SessionID, SessionTitle: sessionTitle})
+				}
 				if assistantChunkEvent, ok := buildTUIAssistantChunkEvent(event.Data); ok {
 					emit(assistantChunkEvent)
 					continue

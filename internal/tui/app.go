@@ -236,6 +236,7 @@ type Event struct {
 	Stage     string
 	EventType string
 	SessionID string
+	SessionTitle string
 	Stats     *RequestMetrics
 	Panel     *ToolPanel
 }
@@ -1896,6 +1897,8 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		m.snapshot.SessionID = strings.TrimSpace(event.SessionID)
 		if strings.TrimSpace(event.SessionID) == "" {
 			m.snapshot.SessionTitle = ""
+		} else if strings.TrimSpace(event.SessionTitle) != "" {
+			m.snapshot.SessionTitle = strings.TrimSpace(event.SessionTitle)
 		}
 	}
 	m.syncViewport()

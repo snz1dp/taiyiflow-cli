@@ -26,7 +26,7 @@ type stubProvider struct {
 func (s stubProvider) Name() string { return "stub" }
 
 func (s stubProvider) ListFlows(context.Context, string, string, int, int) (*provider.FlowList, error) {
-	return nil, nil
+	return &provider.FlowList{}, nil
 }
 
 func (s stubProvider) ListSessions(context.Context, string, int, int) (*provider.SessionList, error) {
@@ -42,7 +42,7 @@ func (s stubProvider) GetVersionInfo(context.Context) (*provider.ServiceVersion,
 }
 
 func (s stubProvider) GetMetadata(context.Context, string) (*provider.Metadata, error) {
-	return nil, nil
+	return &provider.Metadata{}, nil
 }
 
 func (s *stubProvider) Stream(_ context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
@@ -324,6 +324,46 @@ func TestStreamTaskSanitizesTerminalEscapeSequencesFromChunks(t *testing.T) {
 
 	if got := stdout.String(); got != "正式输出\n" {
 		t.Fatalf("expected sanitized stdout, got %q", got)
+	}
+}
+
+func TestStreamTaskUpdatesSessionTitleFromStream(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+	workdir := t.TempDir()
+
+	stream := make(chan provider.StreamEvent, 2)
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"session_name": "新会话标题"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	state, err := app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream, streamSession: &provider.StreamSession{SessionID: "session-1"}},
+		internalconfig.Config{Workdir: workdir},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent, Workdir: workdir},
+		"",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+	if state.SessionTitle != "新会话标题" {
+		t.Fatalf("expected session title updated from stream, got %q", state.SessionTitle)
+	}
+
+	loaded, err := app.prepareSession("demo-flow", false, workdir, provider.RequestTypeAgent)
+	if err != nil {
+		t.Fatalf("prepareSession failed: %v", err)
+	}
+	if loaded.SessionTitle != "新会话标题" {
+		t.Fatalf("expected persisted session title, got %q", loaded.SessionTitle)
 	}
 }
 
