@@ -3,6 +3,9 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,7 +23,10 @@ type stubProvider struct {
 	messages       *provider.SessionMessageList
 	runStats       *provider.RunStats
 	sessionContext *provider.SessionContextPreview
+	skillPreview   *provider.SkillResolvePreview
+	skillPreviewErr error
 	lastRequest    provider.StreamRequest
+	lastResolveRequest provider.SkillResolveRequest
 }
 
 func (s stubProvider) Name() string { return "stub" }
@@ -43,6 +49,14 @@ func (s stubProvider) GetVersionInfo(context.Context) (*provider.ServiceVersion,
 
 func (s stubProvider) GetMetadata(context.Context, string) (*provider.Metadata, error) {
 	return &provider.Metadata{}, nil
+}
+
+func (s *stubProvider) ResolveSkillPreview(_ context.Context, request provider.SkillResolveRequest) (*provider.SkillResolvePreview, error) {
+	s.lastResolveRequest = request
+	if s.skillPreview != nil || s.skillPreviewErr != nil {
+		return s.skillPreview, s.skillPreviewErr
+	}
+	return &provider.SkillResolvePreview{}, nil
 }
 
 func (s *stubProvider) Stream(_ context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
@@ -202,6 +216,18 @@ func TestDisableCLIFocusReportingWritesSequenceToTerminalOutput(t *testing.T) {
 	}
 	if got := stderr.String(); got != "" {
 		t.Fatalf("expected stderr to stay empty, got %q", got)
+	}
+}
+
+func TestRunFallsBackToTaskWhenSubcommandDoesNotMatch(t *testing.T) {
+	app := &App{stderr: io.Discard}
+	runErr := app.Run(context.Background(), []string{"--unknown-flag"})
+	taskErr := app.runTask(context.Background(), []string{"--unknown-flag"})
+	if runErr == nil || taskErr == nil {
+		t.Fatalf("expected both Run and runTask to return flag parse errors, got run=%v task=%v", runErr, taskErr)
+	}
+	if runErr.Error() != taskErr.Error() {
+		t.Fatalf("expected Run fallback error %q to match runTask error %q", runErr, taskErr)
 	}
 }
 
@@ -461,6 +487,169 @@ func TestStreamTaskIncludesWorkspaceSkillPackagesInRequest(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected workspace skill payload in request, got %#v", packages)
+	}
+}
+
+func TestStreamTaskInstallsMissingSkillBeforeRequest(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	store, err := agent.NewSessionStore()
+	if err != nil {
+		t.Fatalf("new session store failed: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := &App{stdout: &stdout, stderr: &stderr, configManager: manager, sessionStore: store}
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	workspaceDir := t.TempDir()
+	searchQueries := []string{}
+	registry := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/search":
+			searchQueries = append(searchQueries, request.URL.Query().Get("q"))
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","version":"1.0.0","updatedAt":1710000000}]}`))
+		case "/api/v1/skills/remote-skill":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"skill":{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","updatedAt":1710000000},"latestVersion":{"version":"1.0.0"}}`))
+		case "/api/v1/download":
+			archiveBytes := buildRemoteSkillArchive(t, "1.0.0")
+			_, _ = writer.Write(archiveBytes)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer registry.Close()
+
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.RegistryURL = registry.URL
+	config.Skills.InstallScope = internalconfig.SkillInstallScopeWorkspace
+	config.Skills.AutoInstallPolicy = internalconfig.SkillAutoInstallPolicyAllow
+	config.Skills.FreeTextSearchEnabled = false
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	stream := make(chan provider.StreamEvent, 1)
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+	providerStub := &stubProvider{
+		stream:       stream,
+		skillPreview: &provider.SkillResolvePreview{MissingSkillNames: []string{"Remote Skill"}},
+	}
+
+	_, err = app.streamTask(
+		context.Background(),
+		providerStub,
+		config,
+		"demo-flow",
+		"请做上下文审查",
+		agent.SessionState{FlowID: "demo-flow", RequestMode: provider.RequestTypeAgent, ContextDir: workspaceDir, Workdir: workspaceDir},
+		"",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+	if len(searchQueries) != 1 || searchQueries[0] != "Remote Skill" {
+		t.Fatalf("expected exact missing-skill search query, got %#v", searchQueries)
+	}
+	if !containsIgnoreCase(providerStub.lastRequest.RequestedSkillNames, "Remote Skill") {
+		t.Fatalf("expected installed skill in request, got %#v", providerStub.lastRequest.RequestedSkillNames)
+	}
+	installedSkillPath := filepath.Join(workspaceDir, ".snz1dp", "skills", "remote-skill", "SKILL.md")
+	if _, statErr := os.Stat(installedSkillPath); statErr != nil {
+		t.Fatalf("expected workspace installed skill file, got %v", statErr)
+	}
+	loadedState, err := app.sessionStore.Load("demo-flow", workspaceDir)
+	if err != nil {
+		t.Fatalf("load session failed: %v", err)
+	}
+	if !containsIgnoreCase(loadedState.ApprovedSkillNames, "Remote Skill") {
+		t.Fatalf("expected approved skill recorded in session, got %#v", loadedState.ApprovedSkillNames)
+	}
+	if providerStub.lastResolveRequest.RequestType != provider.RequestTypeAgent {
+		t.Fatalf("expected resolve preview request type %q, got %#v", provider.RequestTypeAgent, providerStub.lastResolveRequest)
+	}
+}
+
+func TestStreamTaskUsesFreeTextSearchForUniqueSkillCandidate(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	store, err := agent.NewSessionStore()
+	if err != nil {
+		t.Fatalf("new session store failed: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := &App{stdout: &stdout, stderr: &stderr, configManager: manager, sessionStore: store}
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	workspaceDir := t.TempDir()
+	searchQueries := []string{}
+	registry := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/search":
+			searchQueries = append(searchQueries, request.URL.Query().Get("q"))
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","version":"1.0.0","updatedAt":1710000000}]}`))
+		case "/api/v1/skills/remote-skill":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"skill":{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","updatedAt":1710000000},"latestVersion":{"version":"1.0.0"}}`))
+		case "/api/v1/download":
+			archiveBytes := buildRemoteSkillArchive(t, "1.0.0")
+			_, _ = writer.Write(archiveBytes)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer registry.Close()
+
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.RegistryURL = registry.URL
+	config.Skills.InstallScope = internalconfig.SkillInstallScopeWorkspace
+	config.Skills.AutoInstallPolicy = internalconfig.SkillAutoInstallPolicyAllow
+	config.Skills.FreeTextSearchEnabled = true
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	stream := make(chan provider.StreamEvent, 1)
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+	providerStub := &stubProvider{
+		stream:       stream,
+		skillPreview: &provider.SkillResolvePreview{},
+	}
+
+	input := "请帮我做上下文审查"
+	_, err = app.streamTask(
+		context.Background(),
+		providerStub,
+		config,
+		"demo-flow",
+		input,
+		agent.SessionState{FlowID: "demo-flow", RequestMode: provider.RequestTypeAgent, ContextDir: workspaceDir, Workdir: workspaceDir},
+		"",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+	if len(searchQueries) != 1 || searchQueries[0] != input {
+		t.Fatalf("expected free-text search query %q, got %#v", input, searchQueries)
+	}
+	if !containsIgnoreCase(providerStub.lastRequest.RequestedSkillNames, "Remote Skill") {
+		t.Fatalf("expected free-text installed skill in request, got %#v", providerStub.lastRequest.RequestedSkillNames)
 	}
 }
 

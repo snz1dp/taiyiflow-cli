@@ -218,6 +218,31 @@ func TestBuildTUIClientToolPanelShowsSuggestedReadRangeForFileEditFailure(t *tes
 	}
 }
 
+func TestBuildTUISkillAutoInstallConfirmRequest(t *testing.T) {
+	request := buildTUISkillAutoInstallConfirmRequest(skillInstallApprovalRequest{
+		Candidate: skillInstallCandidate{
+			Slug:        "context-review",
+			DisplayName: "Context Review",
+			Summary:     "上下文审查技能",
+		},
+		Scope:       internalconfig.SkillInstallScopeWorkspace,
+		InstallPath: "/tmp/work/.snz1dp/skills",
+		Reason:      "缺失技能名 Context Review 的精确匹配",
+	})
+	if !strings.Contains(request.Title, "自动安装技能") {
+		t.Fatalf("unexpected title: %#v", request)
+	}
+	if request.Command != "install context-review" {
+		t.Fatalf("expected install command preview, got %#v", request)
+	}
+	if !strings.Contains(request.PreviewBody, "/tmp/work/.snz1dp/skills") || !strings.Contains(request.PreviewBody, "上下文审查技能") {
+		t.Fatalf("unexpected preview body: %#v", request)
+	}
+	if request.ApproveLabel != "安装并继续" || request.RejectLabel != "跳过安装" {
+		t.Fatalf("unexpected labels: %#v", request)
+	}
+}
+
 func TestEmitTUIClientToolResultEventsEmitsStatusNoteBeforePanel(t *testing.T) {
 	events := []internaltui.Event{}
 	emitTUIClientToolResultEvents(func(event internaltui.Event) {
@@ -282,6 +307,8 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 			AgentAutoLoopEnabled:     "false",
 			OutputLanguage:           "zh-CN",
 			SkillsInstallScope:       "workspace",
+			SkillsAutoInstallPolicy:  "allow",
+			SkillsFreeTextSearch:     false,
 			SkillsRegistryURL:        "https://mirror-cn.clawhub.com",
 		},
 		KeepAPIKey: true,
@@ -312,6 +339,12 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	}
 	if updated.Skills.InstallScope != "workspace" {
 		t.Fatalf("expected skills install scope saved, got %#v", updated.Skills)
+	}
+	if updated.Skills.AutoInstallPolicy != internalconfig.SkillAutoInstallPolicyAllow {
+		t.Fatalf("expected skills auto install policy saved, got %#v", updated.Skills)
+	}
+	if updated.Skills.FreeTextSearchEnabled {
+		t.Fatalf("expected free text search flag saved, got %#v", updated.Skills)
 	}
 	if updated.Skills.Directory != "" {
 		t.Fatalf("expected legacy skills directory cleared, got %#v", updated.Skills)

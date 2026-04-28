@@ -211,6 +211,72 @@ func TestGetSessionContextWindowParsesResponse(t *testing.T) {
 	}
 }
 
+func TestResolveSkillPreviewPostsRequestAndParsesResponse(t *testing.T) {
+	var captured skillResolveRequestBody
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/agents/skills/resolve" {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.Method != http.MethodPost {
+			t.Fatalf("expected POST request, got %s", request.Method)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request body failed: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"skills":[{"name":"Context Review","content":"review context","source":"client","description":"检查上下文","version":"1.0.0"}],"missing_skill_names":["debug-helper"],"allowed_tools":["shell_exec","read_file"]}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	preview, err := client.ResolveSkillPreview(context.Background(), provider.SkillResolveRequest{
+		FlowID:                 "demo-flow",
+		SessionID:              "session-123",
+		RequestType:            provider.RequestTypeAgent,
+		CommandExecutionTarget: "client",
+		RequestedSkillNames:    []string{"Context Review", "debug-helper"},
+		AvailableTools:         []string{"shell_exec", "read_file"},
+		ClientSkillPackages: []map[string]any{{
+			"name": "workspace",
+			"skills": []map[string]any{{
+				"name":    "Context Review",
+				"content": "review context",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("expected resolve skill preview to succeed, got %v", err)
+	}
+	if captured.FlowID != "demo-flow" || captured.SessionID != "session-123" {
+		t.Fatalf("expected flow/session ids to be preserved, got %#v", captured)
+	}
+	if captured.RequestType != provider.RequestTypeAgent {
+		t.Fatalf("expected normalized request type %q, got %q", provider.RequestTypeAgent, captured.RequestType)
+	}
+	if captured.CommandExecutionTarget != "client" {
+		t.Fatalf("expected command target client, got %q", captured.CommandExecutionTarget)
+	}
+	if len(captured.RequestedSkillNames) != 2 || captured.RequestedSkillNames[1] != "debug-helper" {
+		t.Fatalf("expected requested skill names to be preserved, got %#v", captured.RequestedSkillNames)
+	}
+	if len(captured.AvailableTools) != 2 || captured.AvailableTools[0] != "shell_exec" {
+		t.Fatalf("expected available tools to be preserved, got %#v", captured.AvailableTools)
+	}
+	if preview == nil {
+		t.Fatal("expected resolve preview response")
+	}
+	if len(preview.Skills) != 1 || preview.Skills[0].Name != "Context Review" {
+		t.Fatalf("expected resolved skills in response, got %#v", preview.Skills)
+	}
+	if len(preview.MissingSkillNames) != 1 || preview.MissingSkillNames[0] != "debug-helper" {
+		t.Fatalf("expected missing skill names in response, got %#v", preview.MissingSkillNames)
+	}
+	if len(preview.AllowedTools) != 2 || preview.AllowedTools[1] != "read_file" {
+		t.Fatalf("expected allowed tools in response, got %#v", preview.AllowedTools)
+	}
+}
+
 func TestStreamParsesCompressionEvent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/api/v1/run/demo-flow/stream" {

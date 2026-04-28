@@ -73,6 +73,32 @@ type StreamRequest struct {
 	ClientSkillPackages    any
 }
 
+type SkillResolveRequest struct {
+	FlowID                 string
+	SessionID              string
+	OwnerUserID            string
+	RequestType            string
+	RuntimeStrategy        string
+	CommandExecutionTarget string
+	RequestedSkillNames    []string
+	AvailableTools         []string
+	ClientSkillPackages    any
+}
+
+type ResolvedSkill struct {
+	Name        string
+	Content     string
+	Source      string
+	Description string
+	Version     string
+}
+
+type SkillResolvePreview struct {
+	Skills            []ResolvedSkill
+	MissingSkillNames []string
+	AllowedTools      []string
+}
+
 type StreamSession struct {
 	SessionID string
 }
@@ -206,6 +232,7 @@ type Provider interface {
 	ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*SessionMessageList, error)
 	GetVersionInfo(ctx context.Context) (*ServiceVersion, error)
 	GetMetadata(ctx context.Context, flowID string) (*Metadata, error)
+	ResolveSkillPreview(ctx context.Context, request SkillResolveRequest) (*SkillResolvePreview, error)
 	Stream(ctx context.Context, request StreamRequest) (<-chan StreamEvent, *StreamSession, error)
 	GetRunStats(ctx context.Context, flowID string, sessionID string, runID string) (*RunStats, error)
 	GetSessionContextWindow(ctx context.Context, flowID string, sessionID string) (*SessionContextPreview, error)

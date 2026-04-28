@@ -59,6 +59,22 @@ func TestAssignConfigValueExternalResourceAccessPolicyAlias(t *testing.T) {
 	}
 }
 
+func TestAssignConfigValueSkillsAutoInstallPolicy(t *testing.T) {
+	config := internalconfig.Default()
+	if err := assignConfigValue(&config, "skills_auto_install_policy", "allow"); err != nil {
+		t.Fatalf("assignConfigValue returned error: %v", err)
+	}
+	if config.Skills.AutoInstallPolicy != internalconfig.SkillAutoInstallPolicyAllow {
+		t.Fatalf("expected skills auto install policy %q, got %q", internalconfig.SkillAutoInstallPolicyAllow, config.Skills.AutoInstallPolicy)
+	}
+	if err := assignConfigValue(&config, "skills_free_text_search", "false"); err != nil {
+		t.Fatalf("assignConfigValue returned error: %v", err)
+	}
+	if config.Skills.FreeTextSearchEnabled {
+		t.Fatal("expected free text search to be disabled")
+	}
+}
+
 func TestRenderConfigSummaryUsesExternalResourceAccessPolicyLabel(t *testing.T) {
 	config := internalconfig.Default()
 	summary := renderConfigSummary("/tmp/taiyiflow.yaml", config)
@@ -73,5 +89,8 @@ func TestRenderConfigSummaryUsesExternalResourceAccessPolicyLabel(t *testing.T) 
 	}
 	if !strings.Contains(summary, "外部资源访问根目录:") {
 		t.Fatalf("expected external resource root label, got %q", summary)
+	}
+	if !strings.Contains(summary, "技能自动补装策略:") || !strings.Contains(summary, "自由文本技能搜索:") {
+		t.Fatalf("expected skill auto install labels, got %q", summary)
 	}
 }

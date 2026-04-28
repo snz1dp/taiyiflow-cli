@@ -182,6 +182,8 @@ type ConfigFormValues struct {
 	AgentAutoLoopMaxRounds   string
 	OutputLanguage           string
 	SkillsInstallScope       string
+	SkillsAutoInstallPolicy  string
+	SkillsFreeTextSearch     bool
 	SkillsRegistryURL        string
 }
 
@@ -522,6 +524,8 @@ type configFormState struct {
 	reasoningCursor         int
 	agentAutoLoopCursor     int
 	skillsCursor            int
+	skillsAutoInstallCursor int
+	skillsFreeTextCursor    int
 }
 
 type configFieldSpec struct {
@@ -548,6 +552,8 @@ const (
 	configFieldAgentAutoLoopMaxRounds
 	configFieldOutputLanguage
 	configFieldSkillsInstallScope
+	configFieldSkillsAutoInstallPolicy
+	configFieldSkillsFreeTextSearch
 	configFieldSkillsRegistryURL
 	configFieldCount
 )
@@ -1385,6 +1391,14 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveConfigSkillsCursor(-1)
 			return m, nil
 		}
+		if m.configForm.cursor == configFieldSkillsAutoInstallPolicy {
+			m.moveConfigSkillsAutoInstallCursor(-1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldSkillsFreeTextSearch {
+			m.moveConfigSkillsFreeTextCursor(-1)
+			return m, nil
+		}
 		if m.configForm.cursor == configFieldDefaultFlow {
 			m.moveConfigFlowCursor(-1)
 			return m, nil
@@ -1416,6 +1430,14 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
 			m.moveConfigSkillsCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldSkillsAutoInstallPolicy {
+			m.moveConfigSkillsAutoInstallCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldSkillsFreeTextSearch {
+			m.moveConfigSkillsFreeTextCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldDefaultFlow {
@@ -1463,6 +1485,14 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
 			m.moveConfigSkillsCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldSkillsAutoInstallPolicy {
+			m.moveConfigSkillsAutoInstallCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldSkillsFreeTextSearch {
+			m.moveConfigSkillsFreeTextCursor(1)
 			return m, nil
 		}
 	case "ctrl+s":
@@ -2559,6 +2589,10 @@ func (m model) renderConfigForm() string {
 			lines = append(lines, m.renderConfigAgentAutoLoopField())
 		case configFieldSkillsInstallScope:
 			lines = append(lines, m.renderConfigSkillsInstallScopeField())
+		case configFieldSkillsAutoInstallPolicy:
+			lines = append(lines, m.renderConfigSkillsAutoInstallField())
+		case configFieldSkillsFreeTextSearch:
+			lines = append(lines, m.renderConfigSkillsFreeTextSearchField())
 		default:
 			lines = append(lines, m.configForm.inputs[index].View())
 		}
@@ -2765,6 +2799,52 @@ func (m model) renderConfigSkillsInstallScopeField() string {
 		}
 		item := marker + " " + option.Label
 		if m.configForm.cursor == configFieldSkillsInstallScope && selected {
+			parts = append(parts, selectedFlowStyle.Render(item))
+		} else if selected {
+			parts = append(parts, valueStyle.Render(item))
+		} else {
+			parts = append(parts, commandHintStyle.Render(item))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m model) renderConfigSkillsAutoInstallField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(configSkillsAutoInstallChoices()))
+	for index, option := range configSkillsAutoInstallChoices() {
+		selected := index == m.configForm.skillsAutoInstallCursor
+		marker := "( )"
+		if selected {
+			marker = "(*)"
+		}
+		item := marker + " " + option.Label
+		if m.configForm.cursor == configFieldSkillsAutoInstallPolicy && selected {
+			parts = append(parts, selectedFlowStyle.Render(item))
+		} else if selected {
+			parts = append(parts, valueStyle.Render(item))
+		} else {
+			parts = append(parts, commandHintStyle.Render(item))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m model) renderConfigSkillsFreeTextSearchField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(configSkillsFreeTextSearchChoices()))
+	for index, option := range configSkillsFreeTextSearchChoices() {
+		selected := index == m.configForm.skillsFreeTextCursor
+		marker := "( )"
+		if selected {
+			marker = "(*)"
+		}
+		item := marker + " " + option.Label
+		if m.configForm.cursor == configFieldSkillsFreeTextSearch && selected {
 			parts = append(parts, selectedFlowStyle.Render(item))
 		} else if selected {
 			parts = append(parts, valueStyle.Render(item))
@@ -3936,6 +4016,14 @@ func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
 	if m.configForm.skillsCursor >= 0 && m.configForm.skillsCursor < len(skillsChoices) {
 		submission.Values.SkillsInstallScope = strings.TrimSpace(skillsChoices[m.configForm.skillsCursor].Value)
 	}
+	skillsAutoInstallChoices := configSkillsAutoInstallChoices()
+	if m.configForm.skillsAutoInstallCursor >= 0 && m.configForm.skillsAutoInstallCursor < len(skillsAutoInstallChoices) {
+		submission.Values.SkillsAutoInstallPolicy = strings.TrimSpace(skillsAutoInstallChoices[m.configForm.skillsAutoInstallCursor].Value)
+	}
+	skillsFreeTextChoices := configSkillsFreeTextSearchChoices()
+	if m.configForm.skillsFreeTextCursor >= 0 && m.configForm.skillsFreeTextCursor < len(skillsFreeTextChoices) {
+		submission.Values.SkillsFreeTextSearch = strings.TrimSpace(skillsFreeTextChoices[m.configForm.skillsFreeTextCursor].Value) == "true"
+	}
 	apiKey := strings.TrimSpace(submission.Values.APIKey)
 	if m.configForm.hasAPIKey && apiKey == "" {
 		submission.KeepAPIKey = true
@@ -3982,6 +4070,8 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 		reasoningCursor:         configChoiceIndex(configReasoningChoices(), reasoningChoiceValue(values.ReasoningEnabled)),
 		agentAutoLoopCursor:     configChoiceIndex(configAgentAutoLoopChoices(), values.AgentAutoLoopEnabled),
 		skillsCursor:            configChoiceIndex(configSkillsInstallScopeChoices(), values.SkillsInstallScope),
+		skillsAutoInstallCursor: configChoiceIndex(configSkillsAutoInstallChoices(), values.SkillsAutoInstallPolicy),
+		skillsFreeTextCursor:    configChoiceIndex(configSkillsFreeTextSearchChoices(), boolChoiceValue(values.SkillsFreeTextSearch)),
 	}
 }
 
@@ -4008,6 +4098,8 @@ func configFormFieldSpecs(hasAPIKey bool) []configFieldSpec {
 		{label: "智能体自动续跑最大轮数", placeholder: "3", description: "仅对智能体模式生效；填写大于等于 1 的整数。"},
 		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
 		{label: "技能安装位置", placeholder: "", description: "左右键或空格切换用户目录(user)或工作区(workspace)。"},
+		{label: "技能自动补装策略", placeholder: "", description: "左右键或空格切换关闭(off)、确认(confirm)、自动安装(allow)。默认建议使用确认(confirm)。"},
+		{label: "自由文本技能搜索", placeholder: "", description: "左右键或空格切换是否允许按任务文本搜索远程技能候选。"},
 		{label: "技能仓库地址", placeholder: "https://mirror-cn.clawhub.com", description: "远程技能搜索、详情和安装默认使用该镜像站。"},
 	}
 }
@@ -4052,6 +4144,10 @@ func configFormFieldValue(index int, values ConfigFormValues, hasAPIKey bool) st
 	case 16:
 		return ""
 	case 17:
+		return ""
+	case 18:
+		return ""
+	case 19:
 		return strings.TrimSpace(values.SkillsRegistryURL)
 	default:
 		return ""
@@ -4087,8 +4183,8 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 	if len(inputs) > 15 {
 		values.OutputLanguage = strings.TrimSpace(inputs[15].Value())
 	}
-	if len(inputs) > 17 {
-		values.SkillsRegistryURL = strings.TrimSpace(inputs[17].Value())
+	if len(inputs) > 19 {
+		values.SkillsRegistryURL = strings.TrimSpace(inputs[19].Value())
 	}
 	return values
 }
@@ -4221,6 +4317,34 @@ func (m *model) moveConfigSkillsCursor(delta int) {
 	m.syncLayout()
 }
 
+func (m *model) moveConfigSkillsAutoInstallCursor(delta int) {
+	choices := configSkillsAutoInstallChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.skillsAutoInstallCursor += delta
+	if m.configForm.skillsAutoInstallCursor < 0 {
+		m.configForm.skillsAutoInstallCursor = len(choices) - 1
+	} else if m.configForm.skillsAutoInstallCursor >= len(choices) {
+		m.configForm.skillsAutoInstallCursor = 0
+	}
+	m.syncLayout()
+}
+
+func (m *model) moveConfigSkillsFreeTextCursor(delta int) {
+	choices := configSkillsFreeTextSearchChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.skillsFreeTextCursor += delta
+	if m.configForm.skillsFreeTextCursor < 0 {
+		m.configForm.skillsFreeTextCursor = len(choices) - 1
+	} else if m.configForm.skillsFreeTextCursor >= len(choices) {
+		m.configForm.skillsFreeTextCursor = 0
+	}
+	m.syncLayout()
+}
+
 func configReasoningChoices() []ConfigChoice {
 	return []ConfigChoice{{Value: "off", Label: "关闭"}, {Value: "on", Label: "开启"}}
 }
@@ -4238,6 +4362,13 @@ func reasoningChoiceValue(enabled bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+func boolChoiceValue(enabled bool) string {
+	if enabled {
+		return "true"
+	}
+	return "false"
 }
 
 func normalizeConfigFlowChoices(options []ConfigChoice, currentValue string) []ConfigChoice {
@@ -4301,6 +4432,21 @@ func configSkillsInstallScopeChoices() []ConfigChoice {
 	return []ConfigChoice{
 		{Value: "user", Label: "用户目录", Description: "安装到 ~/.snz1dp/skills。"},
 		{Value: "workspace", Label: "工作区", Description: "安装到当前工作区的 .snz1dp/skills。"},
+	}
+}
+
+func configSkillsAutoInstallChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: internalconfig.SkillAutoInstallPolicyOff, Label: "关闭", Description: "关闭请求前自动补装。"},
+		{Value: internalconfig.SkillAutoInstallPolicyConfirm, Label: "确认", Description: "发现候选技能时先确认，再执行安装。"},
+		{Value: internalconfig.SkillAutoInstallPolicyAllow, Label: "自动安装", Description: "发现明确候选技能时直接安装。"},
+	}
+}
+
+func configSkillsFreeTextSearchChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: "true", Label: "开启", Description: "允许按任务文本搜索远程技能候选。"},
+		{Value: "false", Label: "关闭", Description: "仅按显式缺失技能名搜索。"},
 	}
 }
 

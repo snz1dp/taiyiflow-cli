@@ -217,7 +217,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 			}
 			sessionState = updatedState
 			continue
-		case line == "/tasks" || strings.HasPrefix(strings.ToLower(line), "/tasks "):
+		case isTasksSlashCommand(line):
 			output, _, err := a.executeTasksSlashCommand(ctx, config, line)
 			if err != nil {
 				fmt.Fprintf(a.stderr, "任务命令执行失败: %v\n", err)
@@ -449,7 +449,21 @@ func (a *App) streamTask(
 
 	runtimeConfig := applyEffectiveSandboxEscapePolicy(config, sessionState.SandboxEscapePolicyOverride, commandSandboxEscapePolicy)
 	runtimeConfig = applyEffectiveSkillReviewPolicy(runtimeConfig, sessionState.SkillReviewPolicyOverride)
-	requestedSkillNames, clientSkillPackages, err := a.loadSkillPayload(config, sessionState.ContextDir)
+	requestedSkillNames, clientSkillPackages, err := a.ensureSkillSupplyBeforeStream(
+		ctx,
+		providerClient,
+		config,
+		flowID,
+		task,
+		&sessionState,
+		sessionState.RequestMode,
+		a.confirmSkillAutoInstall,
+		func(text string) {
+			if showStreamEvents && strings.TrimSpace(text) != "" {
+				fmt.Fprintf(a.stdout, "[系统提示]: %s\n", text)
+			}
+		},
+	)
 	if err != nil {
 		return sessionState, err
 	}

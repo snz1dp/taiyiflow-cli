@@ -61,6 +61,25 @@ func TestNormalizeWriteConfirmationPolicy(t *testing.T) {
 	}
 }
 
+func TestNormalizeSkillAutoInstallPolicy(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{input: "", expected: SkillAutoInstallPolicyConfirm},
+		{input: "confirm", expected: SkillAutoInstallPolicyConfirm},
+		{input: "off", expected: SkillAutoInstallPolicyOff},
+		{input: "allow", expected: SkillAutoInstallPolicyAllow},
+		{input: "ALLOW", expected: SkillAutoInstallPolicyAllow},
+		{input: "unexpected", expected: SkillAutoInstallPolicyConfirm},
+	}
+	for _, item := range cases {
+		if got := NormalizeSkillAutoInstallPolicy(item.input); got != item.expected {
+			t.Fatalf("NormalizeSkillAutoInstallPolicy(%q) = %q, want %q", item.input, got, item.expected)
+		}
+	}
+}
+
 func TestNormalizeStreamIdleTimeoutSeconds(t *testing.T) {
 	cases := []struct {
 		input    int
@@ -120,6 +139,12 @@ func TestDefaultConfigIncludesAgentAutoLoopDefaults(t *testing.T) {
 	}
 	if config.AgentAutoLoopMaxRounds != DefaultAgentAutoLoopMaxRounds {
 		t.Fatalf("expected default agent auto loop max rounds %d, got %d", DefaultAgentAutoLoopMaxRounds, config.AgentAutoLoopMaxRounds)
+	}
+	if config.Skills.AutoInstallPolicy != SkillAutoInstallPolicyConfirm {
+		t.Fatalf("expected default skill auto install policy %q, got %q", SkillAutoInstallPolicyConfirm, config.Skills.AutoInstallPolicy)
+	}
+	if !config.Skills.FreeTextSearchEnabled {
+		t.Fatal("expected default free text skill search to be enabled")
 	}
 }
 

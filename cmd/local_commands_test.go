@@ -249,6 +249,20 @@ func TestExecuteTasksSlashCommandCleanup(t *testing.T) {
 	t.Fatal("expected /tasks cleanup to remove completed tasks")
 }
 
+func TestParseTasksCommandAcceptsTasksOnly(t *testing.T) {
+	toolName, arguments, err := parseTasksCommand("/tasks output demo-task")
+	if err != nil {
+		t.Fatalf("parse /tasks output failed: %v", err)
+	}
+	if toolName != "task_output" || arguments["task_id"] != "demo-task" {
+		t.Fatalf("unexpected parse result: tool=%q args=%#v", toolName, arguments)
+	}
+
+	if _, _, err := parseTasksCommand("/task output demo-task"); err == nil {
+		t.Fatal("expected /task output to be rejected to avoid conflict with CLI task subcommand")
+	}
+}
+
 func runGitCommand(t *testing.T, workdir string, args ...string) {
 	t.Helper()
 	command := exec.Command("git", append([]string{"-C", workdir}, args...)...)

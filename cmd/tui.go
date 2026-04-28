@@ -97,7 +97,23 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}
 		runtimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
 		quietRuntimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
-		requestedSkillNames, clientSkillPackages, err := a.loadSkillPayload(config, sessionState.ContextDir)
+		requestedSkillNames, clientSkillPackages, err := a.ensureSkillSupplyBeforeStream(
+			runCtx,
+			providerClient,
+			config,
+			currentFlow,
+			request.Input,
+			&sessionState,
+			request.RequestMode,
+			func(approval skillInstallApprovalRequest) bool {
+				return confirm(buildTUISkillAutoInstallConfirmRequest(approval))
+			},
+			func(text string) {
+				if strings.TrimSpace(text) != "" {
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: text})
+				}
+			},
+		)
 		if err != nil {
 			return err
 		}
@@ -489,12 +505,12 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				result.Snapshot = updatedSnapshot
 			}
 			return result, nil
-		case strings.EqualFold(trimmed, "/tasks") || strings.EqualFold(trimmed, "/tasks list") || strings.HasPrefix(strings.ToLower(trimmed), "/tasks "):
+		case isTasksSlashCommand(trimmed):
 			localConfig, configErr := a.configManager.Load()
 			if configErr != nil {
 				return tui.LocalCommandResult{}, configErr
 			}
-			if strings.EqualFold(trimmed, "/tasks") || strings.EqualFold(trimmed, "/tasks list") {
+			if isTasksSlashListCommand(trimmed) {
 				picker, emptyMessage, pickerErr := buildTUITasksPicker(commandCtx, localConfig)
 				if pickerErr != nil {
 					return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: pickerErr.Error()}}}, nil
@@ -1247,6 +1263,27 @@ func buildTUISandboxEscapeConfirmRequest(path string, alwaysApprove func(context
 	}
 }
 
+func buildTUISkillAutoInstallConfirmRequest(request skillInstallApprovalRequest) tui.ConfirmRequest {
+	previewLines := []string{
+		fmt.Sprintf("技能: %s (%s)", candidateLabel(request.Candidate), request.Candidate.Slug),
+		fmt.Sprintf("安装位置: %s", skillInstallScopeLabelText(request.Scope)),
+		fmt.Sprintf("目标目录: %s", request.InstallPath),
+	}
+	if strings.TrimSpace(request.Candidate.Summary) != "" {
+		previewLines = append(previewLines, fmt.Sprintf("摘要: %s", request.Candidate.Summary))
+	}
+	return tui.ConfirmRequest{
+		Title:        "自动安装技能(skill auto install)待确认",
+		Command:      fmt.Sprintf("install %s", request.Candidate.Slug),
+		Detail:       fallbackString(strings.TrimSpace(request.Reason), "本轮请求命中了可补装的远程技能，确认后会先安装再继续发送请求。"),
+		PreviewTitle: "安装预览(install preview)",
+		PreviewBody:  strings.Join(previewLines, "\n"),
+		Hint:         "Y 安装并继续，N 跳过本次安装；方向键或 Tab 选择，Enter 确认。",
+		ApproveLabel: "安装并继续",
+		RejectLabel:  "跳过安装",
+	}
+}
+
 func applyEffectiveSkillReviewForPayload(config internalconfig.Config, contextDir string, sessionState agent.SessionState, payload map[string]any) internalconfig.Config {
 	updated := applyEffectiveSkillReviewPolicy(config, sessionState.SkillReviewPolicyOverride)
 	if !strings.EqualFold(strings.TrimSpace(nestedStringValue(payload, "function", "name")), "skill") {
@@ -1952,6 +1989,8 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			AgentAutoLoopMaxRounds:   strconv.Itoa(config.AgentAutoLoopMaxRounds),
 			OutputLanguage:           strings.TrimSpace(config.OutputLanguage),
 			SkillsInstallScope:       internalconfig.NormalizeSkillInstallScope(config.Skills.InstallScope),
+			SkillsAutoInstallPolicy:  internalconfig.NormalizeSkillAutoInstallPolicy(config.Skills.AutoInstallPolicy),
+			SkillsFreeTextSearch:     config.Skills.FreeTextSearchEnabled,
 			SkillsRegistryURL:        strings.TrimSpace(config.Skills.RegistryURL),
 		},
 	}, nil
@@ -2059,6 +2098,16 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		return internalconfig.Config{}, err
 	}
 	config.Skills.Directory = ""
+
+	if strings.TrimSpace(submission.Values.SkillsAutoInstallPolicy) == "" {
+		config.Skills.AutoInstallPolicy = internalconfig.Default().Skills.AutoInstallPolicy
+	} else if err := assignConfigValue(&config, "skills_auto_install_policy", submission.Values.SkillsAutoInstallPolicy); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if err := assignConfigValue(&config, "skills_free_text_search", strconv.FormatBool(submission.Values.SkillsFreeTextSearch)); err != nil {
+		return internalconfig.Config{}, err
+	}
 
 	if strings.TrimSpace(submission.Values.SkillsRegistryURL) == "" {
 		config.Skills.RegistryURL = internalconfig.Default().Skills.RegistryURL

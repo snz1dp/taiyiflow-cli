@@ -195,6 +195,32 @@ type sessionContextPreviewResponse struct {
 	Source            string                        `json:"source"`
 }
 
+type skillResolveRequestBody struct {
+	FlowID                 string   `json:"flow_id,omitempty"`
+	SessionID              string   `json:"session_id,omitempty"`
+	OwnerUserID            string   `json:"owner_user_id,omitempty"`
+	RequestType            string   `json:"request_type,omitempty"`
+	RuntimeStrategy        string   `json:"runtime_strategy,omitempty"`
+	CommandExecutionTarget string   `json:"command_execution_target,omitempty"`
+	RequestedSkillNames    []string `json:"requested_skill_names,omitempty"`
+	AvailableTools         []string `json:"available_tools,omitempty"`
+	ClientSkillPackages    any      `json:"client_skill_packages,omitempty"`
+}
+
+type resolvedSkillResponse struct {
+	Name        string `json:"name"`
+	Content     string `json:"content"`
+	Source      string `json:"source"`
+	Description string `json:"description"`
+	Version     string `json:"version"`
+}
+
+type skillResolvePreviewResponse struct {
+	Skills            []resolvedSkillResponse `json:"skills"`
+	MissingSkillNames []string                `json:"missing_skill_names"`
+	AllowedTools      []string                `json:"allowed_tools"`
+}
+
 type streamRequestBody struct {
 	InputValue             string         `json:"input_value,omitempty"`
 	InputType              string         `json:"input_type,omitempty"`
@@ -522,6 +548,63 @@ func (c *Client) GetMetadata(ctx context.Context, flowID string) (*provider.Meta
 		WelcomeMessage: payload.WelcomeMessage,
 		Enabled:        payload.Enabled,
 		IsChat:         payload.IsChat,
+	}, nil
+}
+
+func (c *Client) ResolveSkillPreview(ctx context.Context, request provider.SkillResolveRequest) (*provider.SkillResolvePreview, error) {
+	body := skillResolveRequestBody{
+		FlowID:                 strings.TrimSpace(request.FlowID),
+		SessionID:              strings.TrimSpace(request.SessionID),
+		OwnerUserID:            strings.TrimSpace(request.OwnerUserID),
+		RequestType:            provider.NormalizeRequestType(request.RequestType),
+		RuntimeStrategy:        strings.TrimSpace(request.RuntimeStrategy),
+		CommandExecutionTarget: strings.TrimSpace(request.CommandExecutionTarget),
+		RequestedSkillNames:    request.RequestedSkillNames,
+		AvailableTools:         request.AvailableTools,
+		ClientSkillPackages:    request.ClientSkillPackages,
+	}
+	content, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("序列化技能预览请求失败: %w", err)
+	}
+	endpoint := fmt.Sprintf("%s/api/v1/agents/skills/resolve", c.baseURL)
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(content))
+	if err != nil {
+		return nil, fmt.Errorf("创建技能预览请求失败: %w", err)
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	c.applyAuth(httpRequest)
+
+	resp, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("请求技能预览失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("请求技能预览失败", resp)
+	}
+
+	var payload skillResolvePreviewResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析技能预览响应失败: %w", err)
+	}
+
+	resolvedSkills := make([]provider.ResolvedSkill, 0, len(payload.Skills))
+	for _, item := range payload.Skills {
+		resolvedSkills = append(resolvedSkills, provider.ResolvedSkill{
+			Name:        strings.TrimSpace(item.Name),
+			Content:     item.Content,
+			Source:      strings.TrimSpace(item.Source),
+			Description: strings.TrimSpace(item.Description),
+			Version:     strings.TrimSpace(item.Version),
+		})
+	}
+
+	return &provider.SkillResolvePreview{
+		Skills:            resolvedSkills,
+		MissingSkillNames: payload.MissingSkillNames,
+		AllowedTools:      payload.AllowedTools,
 	}, nil
 }
 

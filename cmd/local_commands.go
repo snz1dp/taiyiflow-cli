@@ -84,8 +84,25 @@ func (a *App) executeTasksSlashCommand(ctx context.Context, config internalconfi
 	return fallbackString(stringMapValue(resultMap, "status"), "命令已完成"), nil, nil
 }
 
+func isTasksSlashCommand(command string) bool {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return lower == "/tasks" || strings.HasPrefix(lower, "/tasks ")
+}
+
+func isTasksSlashListCommand(command string) bool {
+	trimmed := strings.TrimSpace(command)
+	return strings.EqualFold(trimmed, "/tasks") || strings.EqualFold(trimmed, "/tasks list")
+}
+
 func parseTasksCommand(command string) (string, map[string]any, error) {
 	trimmed := strings.TrimSpace(command)
+	if !isTasksSlashCommand(trimmed) {
+		return "", nil, fmt.Errorf("任务面板命令统一使用 /tasks，避免与命令行 task 子命令混淆")
+	}
 	if strings.EqualFold(trimmed, "/tasks") || strings.EqualFold(trimmed, "/tasks list") {
 		return "task_list", map[string]any{}, nil
 	}

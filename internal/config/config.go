@@ -27,6 +27,9 @@ const (
 	SkillReviewPolicyIgnore         = "ignore"
 	WriteConfirmationPolicyConfirm  = "confirm"
 	WriteConfirmationPolicyDirect   = "direct"
+	SkillAutoInstallPolicyOff       = "off"
+	SkillAutoInstallPolicyConfirm   = "confirm"
+	SkillAutoInstallPolicyAllow     = "allow"
 )
 
 type Config struct {
@@ -58,6 +61,10 @@ type PermissionRule struct {
 
 type SkillConfig struct {
 	InstallScope string `yaml:"install_scope,omitempty"`
+	// AutoInstallPolicy 控制请求前自动补装策略：off 关闭，confirm 请求确认，allow 允许自动安装。
+	AutoInstallPolicy string `yaml:"auto_install_policy,omitempty"`
+	// FreeTextSearchEnabled 控制在未命中显式缺失技能时，是否按任务文本搜索远程技能候选。
+	FreeTextSearchEnabled bool `yaml:"free_text_search_enabled,omitempty"`
 	// Directory 指向全局技能目录；发现顺序始终是“当前工作区 .snz1dp/skills 优先，
 	// 然后再到这里配置的全局目录”，留空时回退到默认 ~/.snz1dp/skills。
 	// 该字段仅保留兼容读取历史自定义路径配置，不再作为新的用户可编辑项。
@@ -89,8 +96,10 @@ func Default() Config {
 		SkillReviewPolicy:        SkillReviewPolicyConfirm,
 		WriteConfirmationPolicy:  WriteConfirmationPolicyConfirm,
 		Skills: SkillConfig{
-			InstallScope: SkillInstallScopeUser,
-			RegistryURL:  "https://mirror-cn.clawhub.com",
+			InstallScope:          SkillInstallScopeUser,
+			AutoInstallPolicy:     SkillAutoInstallPolicyConfirm,
+			FreeTextSearchEnabled: true,
+			RegistryURL:           "https://mirror-cn.clawhub.com",
 		},
 	}
 }
@@ -131,6 +140,17 @@ func NormalizeSkillReviewPolicy(value string) string {
 		return SkillReviewPolicyIgnore
 	default:
 		return SkillReviewPolicyConfirm
+	}
+}
+
+func NormalizeSkillAutoInstallPolicy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case SkillAutoInstallPolicyOff:
+		return SkillAutoInstallPolicyOff
+	case SkillAutoInstallPolicyAllow:
+		return SkillAutoInstallPolicyAllow
+	default:
+		return SkillAutoInstallPolicyConfirm
 	}
 }
 
@@ -262,6 +282,7 @@ func (m *Manager) Load() (Config, error) {
 	}
 	config.SandboxEscapePolicy = NormalizeSandboxEscapePolicy(config.SandboxEscapePolicy)
 	config.SkillReviewPolicy = NormalizeSkillReviewPolicy(config.SkillReviewPolicy)
+	config.Skills.AutoInstallPolicy = NormalizeSkillAutoInstallPolicy(config.Skills.AutoInstallPolicy)
 	config.WriteConfirmationPolicy = NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy)
 	config.CommandTimeoutSeconds = NormalizeCommandTimeoutSeconds(config.CommandTimeoutSeconds)
 	config.StreamIdleTimeoutSeconds = NormalizeStreamIdleTimeoutSeconds(config.StreamIdleTimeoutSeconds)

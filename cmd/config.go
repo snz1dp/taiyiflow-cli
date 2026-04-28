@@ -223,6 +223,18 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 		}
 		config.Skills.InstallScope = normalizedScope
 		config.Skills.Directory = ""
+	case "skills_auto_install_policy":
+		normalizedPolicy := internalconfig.NormalizeSkillAutoInstallPolicy(trimmedValue)
+		if strings.ToLower(trimmedValue) != normalizedPolicy {
+			return fmt.Errorf("skills_auto_install_policy 仅支持 off、confirm、allow")
+		}
+		config.Skills.AutoInstallPolicy = normalizedPolicy
+	case "skills_free_text_search":
+		normalized := strings.ToLower(trimmedValue)
+		if normalized != "true" && normalized != "false" {
+			return fmt.Errorf("skills_free_text_search 仅支持 true 或 false")
+		}
+		config.Skills.FreeTextSearchEnabled = normalized == "true"
 	case "skills_registry_url":
 		normalizedURL, err := normalizeRemoteRegistryURL(trimmedValue)
 		if err != nil {
@@ -278,6 +290,10 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 	case "skills_install_scope":
 		config.Skills.InstallScope = defaults.Skills.InstallScope
 		config.Skills.Directory = ""
+	case "skills_auto_install_policy":
+		config.Skills.AutoInstallPolicy = defaults.Skills.AutoInstallPolicy
+	case "skills_free_text_search":
+		config.Skills.FreeTextSearchEnabled = defaults.Skills.FreeTextSearchEnabled
 	case "skills_registry_url":
 		config.Skills.RegistryURL = defaults.Skills.RegistryURL
 	case "sandbox_roots":
@@ -309,6 +325,10 @@ func normalizeConfigKey(key string) string {
 		return "agent_auto_loop_max_rounds"
 	case "skills_directory":
 		return "skills_install_scope"
+	case "skills_auto_install", "skill_auto_install_policy":
+		return "skills_auto_install_policy"
+	case "skills_free_text_search_enabled", "skills_intent_search", "skills_auto_install_free_text":
+		return "skills_free_text_search"
 	default:
 		return normalized
 	}
@@ -349,6 +369,8 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("输出语言: %s", fallbackConfigValue(config.OutputLanguage, internalconfig.Default().OutputLanguage)),
 		fmt.Sprintf("审计日志: %t", config.AuditEnabled),
 		fmt.Sprintf("技能安装位置: %s", skillInstallScopeLabel(config)),
+		fmt.Sprintf("技能自动补装策略: %s", fallbackConfigValue(config.Skills.AutoInstallPolicy, internalconfig.Default().Skills.AutoInstallPolicy)),
+		fmt.Sprintf("自由文本技能搜索: %t", config.Skills.FreeTextSearchEnabled),
 		fmt.Sprintf("技能仓库: %s", fallbackConfigValue(config.Skills.RegistryURL, internalconfig.Default().Skills.RegistryURL)),
 		fmt.Sprintf("外部资源访问根目录: %s", fallbackConfigValue(strings.Join(config.SandboxRoots, ", "), "<仅当前工作目录>")),
 	}
