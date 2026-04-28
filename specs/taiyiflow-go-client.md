@@ -147,13 +147,13 @@
 4. 写文件、细粒度编辑、Todo 更新和任务停止操作统一遵循 approval_mode；只读模式会直接拒绝执行。
 5. 命令执行会剔除常见敏感环境变量，并对高风险命令在 auto 模式下阻断。
 6. 客户端支持 ~/.snz1dp/skills 目录下的 SKILL.md 发现与透传；运行时的 skill 工具已收窄为按名称装载单个技能提示内容(prompt)的执行入口。
-7. 客户端已接入远程技能仓库搜索、详情、安装、更新、删除与 source 切换能力，默认仓库地址为 https://mirror-cn.clawhub.com。
+7. 客户端已接入远程技能仓库搜索、详情、安装、更新、删除与 source 切换能力，默认仓库地址为 `https://mirror-cn.clawhub.com`。
 8. TUI 与交互模式均提供 /skills 命令；doctor 会输出文件工具链和技能目录状态。
 9. TUI 状态栏已支持窄终端分级压缩，并将本地工具与命令执行摘要收敛到状态栏和关键里程碑消息；Todo、后台任务输出与 lsp_query 结果会进入专门的工具结果面板。
 10. shell_exec 已复用现有命令执行内核正式化为客户端工具，并补齐后台任务句柄(task handle)、输出读取、终端捕获、停止与删除能力。
 11. Todo 清单已保存到当前会话状态，后台任务 metadata 与 stdout/stderr 会持久化到 `SNZ1DP_HOME/tasks/`；CLI 重启后仍可继续查看、捕获或删除已恢复任务。
 12. lsp_query 通过本地标准输入输出(stdio)语言服务器(language server)提供定义跳转(go_to_definition)、引用查询(find_references)、实现跳转(go_to_implementation)、文档符号(document_symbol)、工作区符号(workspace_symbol)五类查询；当前不需要扩展太乙智启后台 stream 协议。
-13. 交互式 CLI 与 TUI 已接入 `/review`、`/tasks`、`/permissions`、`/skills` 等本地工作流命令，其中 `/tasks` 已支持 `list`、`output`、`capture`、`stop`、`remove`，`/skills` 已支持本地技能列表与远程仓库双标签页浏览。
+13. 交互式 CLI 与 TUI 已接入 `/review`、`/tasks`、`/permissions`、`/skills` 等本地工作流命令，其中 `/tasks` 是后台任务管理入口，已支持 `list`、`output`、`capture`、`stop`、`remove`；命令行（CLI）单次任务仍使用 `taiyiflow-cli task ...` 子命令，两者不共用名称；`/skills` 已支持本地技能列表与远程仓库双标签页浏览。
 
 ### 7.3 第二阶段增强
 
@@ -205,10 +205,12 @@ taiyiflow version
 - /permissions
 - /skills
 - /skills search <关键词>
-- /skills install <slug>
+- /skills install `slug`
 - /diff
 - /approve
 - /exit
+
+说明：`/tasks` 仅用于交互式 CLI 与 TUI 中的后台任务管理；命令行（CLI）单次执行入口继续使用 `taiyiflow-cli task [任务描述]`。
 
 ### 8.2 智能体运行时（Agent Runtime）
 
@@ -254,7 +256,7 @@ taiyiflow version
 1. 默认工作目录为基础访问根目录，支持通过 sandbox_roots 配置额外白名单路径。
 2. 写文件、补丁、技能启停等本地变更操作统一接入 approval_mode。
 3. 审计日志默认写入 ~/.snz1dp/logs/audit.log，可通过 audit_enabled 开关控制。
-4. 本地技能目录默认使用 ~/.snz1dp/skills，技能文件采用 SKILL.md（YAML frontmatter + Markdown body）；远程技能仓库默认使用 https://mirror-cn.clawhub.com，并可通过 `skills source set` 覆盖。
+4. 本地技能目录默认使用 ~/.snz1dp/skills，技能文件采用 SKILL.md（YAML frontmatter + Markdown body）；远程技能仓库默认使用 `https://mirror-cn.clawhub.com`，并可通过 `skills source set` 覆盖。
 5. 通用客户端工具通过 client_mcp_servers 透传即可被后台消费；本轮新增 shell_exec、Todo、lsp_query、file_edit、Task 工具不需要额外扩展 stream 事件或回调 schema。
 
 第二阶段可补充：

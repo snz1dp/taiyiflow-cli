@@ -57,6 +57,12 @@
 - 旧启动参数 `--sandbox-escape-policy` 仍可用，但新文档统一推荐 `--external-resource-access-policy`
 - 配置键 `external_resource_access_policy` 会映射到现有配置结构，兼容旧键 `sandbox_escape_policy`
 
+## 任务命令约定
+
+- 命令行（CLI）单次任务入口使用 `./taiyiflow-cli task "任务描述"`。
+- 交互式 CLI 与 TUI 中的后台任务管理入口使用 `/tasks`，例如 `/tasks`、`/tasks output <task_id>`、`/tasks cleanup`。
+- 交互式环境中不使用 `/task`，避免与命令行（CLI）`task` 子命令重名造成歧义。
+
 ## 文档
 
 - [规格计划](specs/taiyiflow-go-client.md)
