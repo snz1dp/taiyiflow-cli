@@ -1296,6 +1296,20 @@ func emitTUIClientToolResultEvents(emit func(tui.Event), toolName string, result
 	if toolErr != nil {
 		emit(tui.Event{Kind: tui.EventErrorNote, Text: errorText(toolErr)})
 	}
+	if strings.TrimSpace(toolName) == "skill" {
+		if toolErr == nil {
+			skillName := ""
+			if resultMap, ok := result.(map[string]any); ok {
+				skillName = strings.TrimSpace(stringMapValue(resultMap, "name"))
+			}
+			text := "技能已装载。"
+			if skillName != "" {
+				text = "技能已装载：" + skillName
+			}
+			emit(tui.Event{Kind: tui.EventSystemNote, Text: text})
+		}
+		return
+	}
 	panel := buildTUIClientToolPanel(toolName, result, toolErr)
 	if panel != nil {
 		if statusText := buildToolPanelStatusText(panel, ""); statusText != "" {
@@ -1910,7 +1924,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 		Hint:        "修改服务端地址、鉴权、思考模式和运行默认项。保存后会立即刷新连接状态。",
 		Path:        a.configManager.Path(),
 		HasAPIKey:   strings.TrimSpace(config.APIKey) != "",
-		SubmitText:  "Ctrl+S 保存配置",
+		SubmitText:  "保存配置",
 		FlowOptions: flowOptions,
 		Values: tui.ConfigFormValues{
 			BackendBaseURL:           strings.TrimSpace(config.BackendBaseURL),

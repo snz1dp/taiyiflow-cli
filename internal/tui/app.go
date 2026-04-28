@@ -519,6 +519,7 @@ type configFormState struct {
 	skillReviewCursor       int
 	writeConfirmationCursor int
 	reasoningCursor         int
+	agentAutoLoopCursor     int
 	skillsCursor            int
 }
 
@@ -1375,6 +1376,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveConfigReasoningCursor(-1)
 			return m, nil
 		}
+		if m.configForm.cursor == configFieldAgentAutoLoopEnabled {
+			m.moveConfigAgentAutoLoopCursor(-1)
+			return m, nil
+		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
 			m.moveConfigSkillsCursor(-1)
 			return m, nil
@@ -1402,6 +1407,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldReasoningMode {
 			m.moveConfigReasoningCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldAgentAutoLoopEnabled {
+			m.moveConfigAgentAutoLoopCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
@@ -1445,6 +1454,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldReasoningMode {
 			m.moveConfigReasoningCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldAgentAutoLoopEnabled {
+			m.moveConfigAgentAutoLoopCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
@@ -2539,6 +2552,8 @@ func (m model) renderConfigForm() string {
 			lines = append(lines, m.renderConfigWriteConfirmationField())
 		case configFieldReasoningMode:
 			lines = append(lines, m.renderConfigReasoningField())
+		case configFieldAgentAutoLoopEnabled:
+			lines = append(lines, m.renderConfigAgentAutoLoopField())
 		case configFieldSkillsInstallScope:
 			lines = append(lines, m.renderConfigSkillsInstallScopeField())
 		default:
@@ -2555,7 +2570,7 @@ func (m model) renderConfigForm() string {
 		submitText = "保存配置"
 	}
 	lines = append(lines,
-		commandHintStyle.Render(submitText+"，Esc 关闭，Tab 切换字段，Enter 下一项，Ctrl+S 保存。"),
+		commandHintStyle.Render(submitText+"，退出键(Esc)关闭，切换键(Tab)切换字段，回车键(Enter)下一项，保存键(Ctrl+S)保存。"),
 	)
 	return strings.Join(lines, "\n")
 }
@@ -2569,7 +2584,7 @@ func (m model) renderConfigFlowField() string {
 	if m.configForm.flowOpen {
 		line += "  [展开中]"
 	} else {
-		line += "  [Enter 选择]"
+		line += "  [回车键(Enter)选择]"
 	}
 	if m.configForm.cursor == configFieldDefaultFlow {
 		return markOverlayFocus(selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-16)), !m.configForm.flowOpen)
@@ -2581,7 +2596,7 @@ func (m model) renderConfigFlowDropdown() string {
 	if m.configForm == nil || len(m.configForm.flowOptions) == 0 {
 		return hintStyle.Render("暂无可选智能体。")
 	}
-	lines := []string{hintStyle.Render("选择默认智能体：上下键移动，Enter 确认。")}
+	lines := []string{hintStyle.Render("选择默认智能体：上下键移动，回车键(Enter)确认。")}
 	for index, option := range m.configForm.flowOptions {
 		line := fmt.Sprintf("%s  %s", flowCursor(index == m.configForm.flowCursor), option.Label)
 		if index == m.configForm.flowCursor {
@@ -2701,6 +2716,29 @@ func (m model) renderConfigReasoningField() string {
 		}
 		item := marker + " " + option.Label
 		if m.configForm.cursor == configFieldReasoningMode && selected {
+			parts = append(parts, selectedFlowStyle.Render(item))
+		} else if selected {
+			parts = append(parts, valueStyle.Render(item))
+		} else {
+			parts = append(parts, commandHintStyle.Render(item))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m model) renderConfigAgentAutoLoopField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(configAgentAutoLoopChoices()))
+	for index, option := range configAgentAutoLoopChoices() {
+		selected := index == m.configForm.agentAutoLoopCursor
+		marker := "( )"
+		if selected {
+			marker = "(*)"
+		}
+		item := marker + " " + option.Label
+		if m.configForm.cursor == configFieldAgentAutoLoopEnabled && selected {
 			parts = append(parts, selectedFlowStyle.Render(item))
 		} else if selected {
 			parts = append(parts, valueStyle.Render(item))
@@ -3887,6 +3925,10 @@ func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
 	if m.configForm.reasoningCursor >= 0 && m.configForm.reasoningCursor < len(reasoningChoices) {
 		submission.Values.ReasoningEnabled = reasoningChoices[m.configForm.reasoningCursor].Value == "on"
 	}
+	agentAutoLoopChoices := configAgentAutoLoopChoices()
+	if m.configForm.agentAutoLoopCursor >= 0 && m.configForm.agentAutoLoopCursor < len(agentAutoLoopChoices) {
+		submission.Values.AgentAutoLoopEnabled = strings.TrimSpace(agentAutoLoopChoices[m.configForm.agentAutoLoopCursor].Value)
+	}
 	skillsChoices := configSkillsInstallScopeChoices()
 	if m.configForm.skillsCursor >= 0 && m.configForm.skillsCursor < len(skillsChoices) {
 		submission.Values.SkillsInstallScope = strings.TrimSpace(skillsChoices[m.configForm.skillsCursor].Value)
@@ -3935,6 +3977,7 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 		skillReviewCursor:       configChoiceIndex(configSkillReviewChoices(), values.SkillReviewPolicy),
 		writeConfirmationCursor: configChoiceIndex(configWriteConfirmationChoices(), values.WriteConfirmationPolicy),
 		reasoningCursor:         configChoiceIndex(configReasoningChoices(), reasoningChoiceValue(values.ReasoningEnabled)),
+		agentAutoLoopCursor:     configChoiceIndex(configAgentAutoLoopChoices(), values.AgentAutoLoopEnabled),
 		skillsCursor:            configChoiceIndex(configSkillsInstallScopeChoices(), values.SkillsInstallScope),
 	}
 }
@@ -3942,23 +3985,23 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 func configFormFieldSpecs(hasAPIKey bool) []configFieldSpec {
 	apiDescription := "留空表示不修改。"
 	if hasAPIKey {
-		apiDescription = "已配置 API Key。留空表示保持不变，输入 - 表示清空并保存。"
+		apiDescription = "已配置访问令牌(API Key)。留空表示保持不变，输入 - 表示清空并保存。"
 	}
 	return []configFieldSpec{
-		{label: "服务地址", placeholder: "http://localhost:7860", description: "必须是完整的 HTTP 或 HTTPS 地址。"},
+		{label: "服务地址", placeholder: "http://localhost:7860", description: "必须是完整的 HTTP(http) 或 HTTPS(https) 地址。"},
 		{label: "访问令牌", placeholder: "可选", description: apiDescription},
-		{label: "默认智能体", placeholder: "", description: "按 Enter 打开下拉列表，留空项表示自动选择。"},
+		{label: "默认智能体", placeholder: "", description: "按回车键(Enter)打开下拉列表，留空项表示自动选择(auto)。"},
 		{label: "命令执行模式", placeholder: "", description: "左右键或空格切换单选项。"},
-		{label: "外部资源访问策略", placeholder: "", description: "左右键或空格切换 confirm、deny、allow。"},
-		{label: "技能包审查策略", placeholder: "", description: "左右键或空格切换 confirm、ignore。ignore 表示默认不再弹出技能审查。"},
-		{label: "写入确认策略", placeholder: "", description: "左右键或空格切换 confirm、direct。direct 表示写入工具直接执行。"},
+		{label: "外部资源访问策略", placeholder: "", description: "左右键或空格切换每次确认(confirm)、禁止访问(deny)、直接允许(allow)。"},
+		{label: "技能包审查策略", placeholder: "", description: "左右键或空格切换逐次审查(confirm)、默认忽略(ignore)。选择默认忽略(ignore)后不再弹出技能审查。"},
+		{label: "写入确认策略", placeholder: "", description: "左右键或空格切换逐次确认(confirm)、直接写入(direct)。选择直接写入(direct)后会直接执行写入工具。"},
 		{label: "外部资源访问根目录", placeholder: "/path/a, /path/b", description: "多个目录用逗号分隔；留空表示仅允许当前工作区。"},
-		{label: "细粒度权限规则", placeholder: "tool:shell_exec=deny; shell:git status=allow", description: "使用 tool:name=动作 或 shell:prefix=动作，多个规则用分号分隔。"},
+		{label: "细粒度权限规则", placeholder: "tool:shell_exec=deny; shell:git status=allow", description: "使用工具规则(tool:name=动作)或命令前缀规则(shell:prefix=动作)，多个规则用分号分隔。"},
 		{label: "默认思考模式", placeholder: "", description: "左右键或空格切换是否默认启用思考模式。"},
 		{label: "工作区目录", placeholder: "留空表示当前目录", description: "默认使用当前工作目录。"},
-		{label: "命令执行超时（秒）", placeholder: "30", description: "本地命令与语言服务查询在未显式传 timeout 时使用该默认值，范围 1-300 秒。"},
+		{label: "命令执行超时（秒）", placeholder: "30", description: "本地命令与语言服务查询在未显式传超时(timeout)时使用该默认值，范围 1-300 秒。"},
 		{label: "流式空闲超时（秒）", placeholder: "300", description: "大于等于 0 的整数秒，0 表示禁用流式空闲超时。"},
-		{label: "智能体自动续跑默认开关", placeholder: "true 或 false", description: "仅对智能体模式生效；填写 true 或 false，留空恢复默认。"},
+		{label: "智能体自动续跑默认开关", placeholder: "", description: "仅对智能体模式生效；左右键或空格切换恢复默认(default)、开启(true)、关闭(false)。"},
 		{label: "智能体自动续跑最大轮数", placeholder: "3", description: "仅对智能体模式生效；填写大于等于 1 的整数。"},
 		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
 		{label: "技能安装位置", placeholder: "", description: "左右键或空格切换用户目录(user)或工作区(workspace)。"},
@@ -3998,7 +4041,7 @@ func configFormFieldValue(index int, values ConfigFormValues, hasAPIKey bool) st
 	case 12:
 		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
 	case 13:
-		return strings.TrimSpace(values.AgentAutoLoopEnabled)
+		return ""
 	case 14:
 		return strings.TrimSpace(values.AgentAutoLoopMaxRounds)
 	case 15:
@@ -4035,9 +4078,6 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 	if len(inputs) > 12 {
 		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[12].Value())
 	}
-	if len(inputs) > 13 {
-		values.AgentAutoLoopEnabled = strings.TrimSpace(inputs[13].Value())
-	}
 	if len(inputs) > 14 {
 		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[14].Value())
 	}
@@ -4052,7 +4092,7 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 
 func isConfigTextField(index int) bool {
 	switch index {
-	case configFieldBackendBaseURL, configFieldAPIKey, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldAgentAutoLoopEnabled, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldSkillsRegistryURL:
+	case configFieldBackendBaseURL, configFieldAPIKey, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldSkillsRegistryURL:
 		return true
 	default:
 		return false
@@ -4150,6 +4190,20 @@ func (m *model) moveConfigReasoningCursor(delta int) {
 	m.syncLayout()
 }
 
+func (m *model) moveConfigAgentAutoLoopCursor(delta int) {
+	choices := configAgentAutoLoopChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.agentAutoLoopCursor += delta
+	if m.configForm.agentAutoLoopCursor < 0 {
+		m.configForm.agentAutoLoopCursor = len(choices) - 1
+	} else if m.configForm.agentAutoLoopCursor >= len(choices) {
+		m.configForm.agentAutoLoopCursor = 0
+	}
+	m.syncLayout()
+}
+
 func (m *model) moveConfigSkillsCursor(delta int) {
 	choices := configSkillsInstallScopeChoices()
 	if m.configForm == nil || len(choices) == 0 {
@@ -4166,6 +4220,14 @@ func (m *model) moveConfigSkillsCursor(delta int) {
 
 func configReasoningChoices() []ConfigChoice {
 	return []ConfigChoice{{Value: "off", Label: "关闭"}, {Value: "on", Label: "开启"}}
+}
+
+func configAgentAutoLoopChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: "", Label: "恢复默认", Description: "清空显式配置，恢复默认值。"},
+		{Value: "true", Label: "开启", Description: "默认开启智能体自动续跑。"},
+		{Value: "false", Label: "关闭", Description: "默认关闭智能体自动续跑。"},
+	}
 }
 
 func reasoningChoiceValue(enabled bool) string {

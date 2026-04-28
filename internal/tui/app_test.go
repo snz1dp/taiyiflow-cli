@@ -148,6 +148,50 @@ func TestFitOverlayContentKeepsFocusedConfigFieldVisible(t *testing.T) {
 	}
 }
 
+func TestRenderConfigFormUsesSelectorForAgentAutoLoopEnabled(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{
+		Title: "配置设置",
+		Values: ConfigFormValues{
+			AgentAutoLoopEnabled: "false",
+		},
+	})
+	state.cursor = configFieldAgentAutoLoopEnabled
+
+	model := model{
+		contentWidth: 80,
+		configForm:   state,
+	}
+
+	rendered := sanitizeTerminalText(model.renderConfigForm())
+	if !strings.Contains(rendered, "(*) 关闭") {
+		t.Fatalf("expected selected auto loop choice rendered, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "恢复默认(default)") || !strings.Contains(rendered, "开启(t") || !strings.Contains(rendered, "关闭") {
+		t.Fatalf("expected chinese(english) hint for auto loop field, got %q", rendered)
+	}
+	if strings.Contains(rendered, "填写 true 或 false") {
+		t.Fatalf("expected auto loop field to stop using manual true/false input hint, got %q", rendered)
+	}
+	if isConfigTextField(configFieldAgentAutoLoopEnabled) {
+		t.Fatal("expected auto loop field to use selector instead of text input")
+	}
+}
+
+func TestHandleConfigFormKeyMovesAgentAutoLoopSelector(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{
+		Values: ConfigFormValues{
+			AgentAutoLoopEnabled: "false",
+		},
+	})
+	state.cursor = configFieldAgentAutoLoopEnabled
+
+	updatedModel, _ := (model{configForm: state}).handleConfigFormKey(tea.KeyMsg{Type: tea.KeyRight})
+	updated := updatedModel.(model)
+	if updated.configForm.agentAutoLoopCursor != 0 {
+		t.Fatalf("expected selector to move to restore-default choice, got %d", updated.configForm.agentAutoLoopCursor)
+	}
+}
+
 func TestRenderTransientStatusShownInAllRequestModes(t *testing.T) {
 	model := model{
 		snapshot:     Snapshot{RequestMode: "agent"},

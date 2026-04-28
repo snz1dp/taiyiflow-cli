@@ -239,6 +239,22 @@ func TestEmitTUIClientToolResultEventsEmitsStatusNoteBeforePanel(t *testing.T) {
 	}
 }
 
+func TestEmitTUIClientToolResultEventsSkipsPanelForSkill(t *testing.T) {
+	events := []internaltui.Event{}
+	emitTUIClientToolResultEvents(func(event internaltui.Event) {
+		events = append(events, event)
+	}, "skill", map[string]any{
+		"name":   "Context Review",
+		"prompt": "技能主体内容",
+	}, nil)
+	if len(events) != 1 {
+		t.Fatalf("expected only one note for skill load, got %#v", events)
+	}
+	if events[0].Kind != internaltui.EventSystemNote || !strings.Contains(events[0].Text, "技能已装载：Context Review") {
+		t.Fatalf("expected skill load note without panel, got %#v", events)
+	}
+}
+
 func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
 	manager, err := internalconfig.NewManager()
@@ -263,6 +279,7 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 			Workdir:                  "/workspace/demo",
 			CommandTimeoutSeconds:    "45",
 			StreamIdleTimeoutSeconds: "300",
+			AgentAutoLoopEnabled:     "false",
 			OutputLanguage:           "zh-CN",
 			SkillsInstallScope:       "workspace",
 			SkillsRegistryURL:        "https://mirror-cn.clawhub.com",
@@ -302,6 +319,9 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	if updated.CommandTimeoutSeconds != 45 {
 		t.Fatalf("expected command timeout saved, got %#v", updated.CommandTimeoutSeconds)
 	}
+	if updated.AgentAutoLoopEnabled {
+		t.Fatalf("expected agent auto loop switch saved as false, got %#v", updated.AgentAutoLoopEnabled)
+	}
 
 	reloaded, err := manager.Load()
 	if err != nil {
@@ -315,6 +335,9 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	}
 	if reloaded.CommandTimeoutSeconds != 45 {
 		t.Fatalf("expected persisted command timeout, got %#v", reloaded.CommandTimeoutSeconds)
+	}
+	if reloaded.AgentAutoLoopEnabled {
+		t.Fatalf("expected persisted auto loop switch false, got %#v", reloaded.AgentAutoLoopEnabled)
 	}
 	if got := formatPermissionRulesInline(reloaded.PermissionRules); got != "tool:shell_exec=deny; shell:git status=allow" {
 		t.Fatalf("unexpected formatted rules: %q", got)
