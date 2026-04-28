@@ -386,6 +386,9 @@ func allowedClientToolSetForMode(mode string) map[string]bool {
 func RequiresClientToolConfirmation(config internalconfig.Config, payload map[string]any) bool {
 	toolName := canonicalClientToolName(nestedString(payload, "function", "name"))
 	arguments := nestedMap(payload, "function", "arguments")
+	if strings.TrimSpace(config.ApprovalMode) == "readonly" && mutatingClientTool(toolName) {
+		return false
+	}
 	if action, matched := evaluatePermissionAction(config, toolName, commandPreview(arguments)); matched {
 		return action == "ask"
 	}
@@ -416,6 +419,9 @@ func (r *ClientRuntime) authorizeClientTool(toolName string, arguments map[strin
 			}
 			return nil
 		case "ask":
+			if mode == "auto" {
+				return nil
+			}
 			approved, err := r.confirmClientTool(toolName, arguments)
 			if err != nil {
 				return err
@@ -428,6 +434,9 @@ func (r *ClientRuntime) authorizeClientTool(toolName string, arguments map[strin
 	}
 	if canonicalClientToolName(toolName) == "skill" {
 		if internalconfig.NormalizeSkillReviewPolicy(config.SkillReviewPolicy) != internalconfig.SkillReviewPolicyConfirm {
+			return nil
+		}
+		if mode == "auto" {
 			return nil
 		}
 		approved, err := r.confirmClientTool(toolName, arguments)
@@ -444,6 +453,9 @@ func (r *ClientRuntime) authorizeClientTool(toolName string, arguments map[strin
 			return newToolError("PERMISSION_DENIED", "当前审批模式为只读，拒绝执行 %s", canonicalClientToolName(toolName))
 		}
 		if internalconfig.NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy) != internalconfig.WriteConfirmationPolicyConfirm {
+			return nil
+		}
+		if mode == "auto" {
 			return nil
 		}
 		approved, err := r.confirmClientTool(toolName, arguments)

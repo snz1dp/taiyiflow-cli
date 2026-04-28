@@ -40,7 +40,7 @@ claude-code-haha的源码在「/Users/neeker/工作/技术开发平台/人工智
 
 **Decisions**
 
-- 包含范围：仅比较 CLI 本地工具层，重点看代码任务闭环，不把对标仓库的桌面端、Computer Use、Channel、远程触发、Web 搜索、远端 MCP 资源、多 Agent 团队协作纳入首轮对标要求。
+- 包含范围：仅比较 CLI 本地工具层，重点看代码任务闭环，不把对标仓库的桌面端、Computer Use、Channel、远程触发、Web 搜索、远端 MCP 资源、多智能体团队协作纳入首轮对标要求。
 - 后台同步原则：如果 CLI 新工具落地依赖太乙智启后台扩展 stream 协议、请求 schema、事件模型、会话字段或客户端回调协议，则 CLI 与后台必须同批次设计、实现和联调，不接受单边兼容绕行。
 - 当前最核心的缺口已从基础本地工具补齐，转向命令工作流层、权限治理层和任务持久化层：优先看 /review 类工作流命令、/permissions 或等价权限管理入口、会话级任务治理与持久化能力。
 - 次优先缺口：terminal_capture、notebook_edit、结构化 ask_user_question，以及更完整的 Task CRUD 与任务面板联动。

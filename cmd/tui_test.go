@@ -218,6 +218,27 @@ func TestBuildTUIClientToolPanelShowsSuggestedReadRangeForFileEditFailure(t *tes
 	}
 }
 
+func TestEmitTUIClientToolResultEventsEmitsStatusNoteBeforePanel(t *testing.T) {
+	events := []internaltui.Event{}
+	emitTUIClientToolResultEvents(func(event internaltui.Event) {
+		events = append(events, event)
+	}, "lsp_query", map[string]any{
+		"operation": "find_references",
+		"items": []any{
+			map[string]any{"name": "symbol", "path": "internal/tui/app.go"},
+		},
+	}, nil)
+	if len(events) != 2 {
+		t.Fatalf("expected status note and panel, got %#v", events)
+	}
+	if events[0].Kind != internaltui.EventSystemNote || !strings.Contains(events[0].Text, "结果已生成") {
+		t.Fatalf("expected system note before panel, got %#v", events)
+	}
+	if events[1].Kind != internaltui.EventToolPanel || events[1].Panel == nil {
+		t.Fatalf("expected tool panel after note, got %#v", events)
+	}
+}
+
 func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
 	manager, err := internalconfig.NewManager()

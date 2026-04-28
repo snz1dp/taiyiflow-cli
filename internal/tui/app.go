@@ -1846,11 +1846,25 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 	case EventToolCall:
 		m.requestStats.ToolCallCount++
 		m.currentToolLabel = currentToolLabel(event.Text, "服务端工具调用")
+		if note := buildEventTimelineNote("服务端工具调用", event.Text); note != "" {
+			m.entries = append(m.entries, entry{role: "system", content: note})
+		}
 		m.activityHint = "执行 " + m.currentToolLabel
 		m.splitNextAssistant = true
-	case EventBuiltInCall, EventClientToolCall:
+	case EventBuiltInCall:
+		m.requestStats.CommandCount++
+		m.currentToolLabel = currentToolLabel(event.Text, "本地命令执行")
+		if note := buildEventTimelineNote("本地命令执行", event.Text); note != "" {
+			m.entries = append(m.entries, entry{role: "system", content: note})
+		}
+		m.activityHint = "执行 " + m.currentToolLabel
+		m.splitNextAssistant = true
+	case EventClientToolCall:
 		m.requestStats.CommandCount++
 		m.currentToolLabel = currentToolLabel(event.Text, "本地工具调用")
+		if note := buildEventTimelineNote("本地工具调用", event.Text); note != "" {
+			m.entries = append(m.entries, entry{role: "system", content: note})
+		}
 		m.activityHint = "执行 " + m.currentToolLabel
 		m.splitNextAssistant = true
 	case EventStatsUpdate:
@@ -1873,6 +1887,18 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 	}
 	m.syncViewport()
 	return cmd
+}
+
+func buildEventTimelineNote(kind string, detail string) string {
+	kind = strings.TrimSpace(kind)
+	detail = strings.TrimSpace(detail)
+	if kind == "" {
+		return detail
+	}
+	if detail == "" {
+		return "正在执行" + kind + "。"
+	}
+	return "正在执行" + kind + "：" + detail
 }
 
 func RenderSessionStatusText(snapshot Snapshot, prefix string) string {
@@ -3932,8 +3958,8 @@ func configFormFieldSpecs(hasAPIKey bool) []configFieldSpec {
 		{label: "工作区目录", placeholder: "留空表示当前目录", description: "默认使用当前工作目录。"},
 		{label: "命令执行超时（秒）", placeholder: "30", description: "本地命令与语言服务查询在未显式传 timeout 时使用该默认值，范围 1-300 秒。"},
 		{label: "流式空闲超时（秒）", placeholder: "300", description: "大于等于 0 的整数秒，0 表示禁用流式空闲超时。"},
-		{label: "Agent 自动续跑默认开关", placeholder: "true 或 false", description: "仅对 Agent 模式生效；填写 true 或 false，留空恢复默认。"},
-		{label: "Agent 自动续跑最大轮数", placeholder: "3", description: "仅对 Agent 模式生效；填写大于等于 1 的整数。"},
+		{label: "智能体自动续跑默认开关", placeholder: "true 或 false", description: "仅对智能体模式生效；填写 true 或 false，留空恢复默认。"},
+		{label: "智能体自动续跑最大轮数", placeholder: "3", description: "仅对智能体模式生效；填写大于等于 1 的整数。"},
 		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
 		{label: "技能安装位置", placeholder: "", description: "左右键或空格切换用户目录(user)或工作区(workspace)。"},
 		{label: "技能仓库地址", placeholder: "https://mirror-cn.clawhub.com", description: "远程技能搜索、详情和安装默认使用该镜像站。"},

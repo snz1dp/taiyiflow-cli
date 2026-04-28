@@ -913,10 +913,16 @@ func TestAssistantChunkSplitAfterToolCall(t *testing.T) {
 	model.applyEvent(Event{Kind: EventToolCall, Text: "读取文件"})
 	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "第二段", MessageID: "msg-1"})
 
-	if len(model.entries) != 2 {
+	assistantEntries := []entry{}
+	for _, item := range model.entries {
+		if item.role == "assistant" {
+			assistantEntries = append(assistantEntries, item)
+		}
+	}
+	if len(assistantEntries) != 2 {
 		t.Fatalf("expected two assistant entries after tool call split, got %#v", model.entries)
 	}
-	if model.entries[0].content != "第一段" || model.entries[1].content != "第二段" {
+	if assistantEntries[0].content != "第一段" || assistantEntries[1].content != "第二段" {
 		t.Fatalf("unexpected split assistant content: %#v", model.entries)
 	}
 }
@@ -1062,5 +1068,26 @@ func TestUpdateSessionChangedResetsAssistantSplitState(t *testing.T) {
 	}
 	if typed.lastAssistantMessageID != "" {
 		t.Fatalf("expected message id reset after session changed, got %q", typed.lastAssistantMessageID)
+	}
+}
+
+func TestApplyEventWritesToolCallPromptIntoTimeline(t *testing.T) {
+	m := model{}
+
+	m.applyEvent(Event{Kind: EventToolCall, Text: "读取文件"})
+	m.applyEvent(Event{Kind: EventBuiltInCall, Text: "git status"})
+	m.applyEvent(Event{Kind: EventClientToolCall, Text: "read_file notes.txt"})
+
+	if len(m.entries) != 3 {
+		t.Fatalf("expected three timeline prompt entries, got %#v", m.entries)
+	}
+	if !strings.Contains(m.entries[0].content, "正在执行服务端工具调用：读取文件") {
+		t.Fatalf("unexpected service tool note: %#v", m.entries[0])
+	}
+	if !strings.Contains(m.entries[1].content, "正在执行本地命令执行：git status") {
+		t.Fatalf("unexpected built-in note: %#v", m.entries[1])
+	}
+	if !strings.Contains(m.entries[2].content, "正在执行本地工具调用：read_file notes.txt") {
+		t.Fatalf("unexpected client tool note: %#v", m.entries[2])
 	}
 }

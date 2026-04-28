@@ -755,13 +755,13 @@ func (a *App) runInteractiveSessionConfigCommand(command string, state *agent.Se
 			if value == "" {
 				value = "<继承全局配置>"
 			}
-			return fmt.Sprintf("会话 Agent 自动续跑开关: %s", value), nil
+			return fmt.Sprintf("会话智能体自动续跑开关: %s", value), nil
 		}
 		if key == "agent_auto_loop_max_rounds" {
 			if state.AgentAutoLoopMaxRoundsOverride < 1 {
-				return "会话 Agent 自动续跑最大轮数: <继承全局配置>", nil
+				return "会话智能体自动续跑最大轮数: <继承全局配置>", nil
 			}
-			return fmt.Sprintf("会话 Agent 自动续跑最大轮数: %d", state.AgentAutoLoopMaxRoundsOverride), nil
+			return fmt.Sprintf("会话智能体自动续跑最大轮数: %d", state.AgentAutoLoopMaxRoundsOverride), nil
 		}
 		policy := strings.TrimSpace(state.SandboxEscapePolicyOverride)
 		if policy == "" {
@@ -775,7 +775,7 @@ func (a *App) runInteractiveSessionConfigCommand(command string, state *agent.Se
 		if state.AgentAutoLoopMaxRoundsOverride > 0 {
 			maxRounds = strconv.Itoa(state.AgentAutoLoopMaxRoundsOverride)
 		}
-		return fmt.Sprintf("会话外部资源访问策略: %s\n会话 Agent 自动续跑开关: %s\n会话 Agent 自动续跑最大轮数: %s", policy, autoLoop, maxRounds), nil
+		return fmt.Sprintf("会话外部资源访问策略: %s\n会话智能体自动续跑开关: %s\n会话智能体自动续跑最大轮数: %s", policy, autoLoop, maxRounds), nil
 	case "set":
 		if len(args) < 4 {
 			return "", fmt.Errorf("用法: /config session set <external_resource_access_policy|agent_auto_loop_enabled|agent_auto_loop_max_rounds> <value>")
@@ -809,9 +809,9 @@ func (a *App) runInteractiveSessionConfigCommand(command string, state *agent.Se
 		case "external_resource_access_policy":
 			return fmt.Sprintf("已设置会话外部资源访问策略: %s", state.SandboxEscapePolicyOverride), nil
 		case "agent_auto_loop_enabled":
-			return fmt.Sprintf("已设置会话 Agent 自动续跑开关: %s", state.AgentAutoLoopEnabledOverride), nil
+			return fmt.Sprintf("已设置会话智能体自动续跑开关: %s", state.AgentAutoLoopEnabledOverride), nil
 		default:
-			return fmt.Sprintf("已设置会话 Agent 自动续跑最大轮数: %d", state.AgentAutoLoopMaxRoundsOverride), nil
+			return fmt.Sprintf("已设置会话智能体自动续跑最大轮数: %d", state.AgentAutoLoopMaxRoundsOverride), nil
 		}
 	case "unset", "clear":
 		switch key {
@@ -831,9 +831,9 @@ func (a *App) runInteractiveSessionConfigCommand(command string, state *agent.Se
 		case "external_resource_access_policy":
 			return "已清空会话外部资源访问策略，恢复继承全局配置", nil
 		case "agent_auto_loop_enabled":
-			return "已清空会话 Agent 自动续跑开关，恢复继承全局配置", nil
+			return "已清空会话智能体自动续跑开关，恢复继承全局配置", nil
 		default:
-			return "已清空会话 Agent 自动续跑最大轮数，恢复继承全局配置", nil
+			return "已清空会话智能体自动续跑最大轮数，恢复继承全局配置", nil
 		}
 	default:
 		return "", fmt.Errorf("会话配置操作仅支持 show、set、unset")

@@ -435,3 +435,90 @@ func TestPermissionRuleAskAndAllowShellExec(t *testing.T) {
 		t.Fatalf("unexpected allow rule stdout: %#v", result)
 	}
 }
+
+func TestExecuteClientToolPayloadAutoModeBypassesAskRuleForFileEdit(t *testing.T) {
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "notes.txt")
+	if err := os.WriteFile(filePath, []byte("before\n"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader("n\n"), io.Discard, io.Discard)
+	config := internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		PermissionRules: []internalconfig.PermissionRule{{
+			Action:   "ask",
+			ToolName: "file_edit",
+		}},
+	}
+	_, _, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": "file_edit",
+			"arguments": map[string]any{
+				"path":       "notes.txt",
+				"old_string": "before",
+				"new_string": "after",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected auto mode to bypass ask rule, got %v", err)
+	}
+	content, readErr := os.ReadFile(filePath)
+	if readErr != nil {
+		t.Fatalf("read file failed: %v", readErr)
+	}
+	if !strings.Contains(string(content), "after") {
+		t.Fatalf("expected file_edit to be applied, got %q", string(content))
+	}
+}
+
+func TestExecuteClientToolPayloadAutoModeBypassesSkillReview(t *testing.T) {
+	tempDir := t.TempDir()
+	skillDir := filepath.Join(tempDir, ".snz1dp", "skills", "context-review")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: Context Review\ndescription: 审查工作区技能\n---\n\n检查工作区上下文。\n"), 0o644); err != nil {
+		t.Fatalf("write skill file failed: %v", err)
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader("n\n"), io.Discard, io.Discard)
+	config := internalconfig.Config{
+		Workdir:           tempDir,
+		ApprovalMode:      "auto",
+		SkillReviewPolicy: internalconfig.SkillReviewPolicyConfirm,
+	}
+	_, result, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": "skill",
+			"arguments": map[string]any{
+				"name": "Context Review",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected auto mode to bypass skill review confirmation, got %v", err)
+	}
+	resultMap, ok := result.(map[string]any)
+	if !ok || strings.TrimSpace(stringValue(resultMap["name"])) != "Context Review" {
+		t.Fatalf("unexpected skill result: %#v", result)
+	}
+}
+
+func TestRequiresClientToolConfirmationSkipsReadonlyMutatingTools(t *testing.T) {
+	writePayload := map[string]any{
+		"function": map[string]any{
+			"name":      "write_file",
+			"arguments": map[string]any{"path": "notes.txt", "content": "hello"},
+		},
+	}
+	config := internalconfig.Config{
+		ApprovalMode:            "readonly",
+		WriteConfirmationPolicy: internalconfig.WriteConfirmationPolicyConfirm,
+	}
+	if RequiresClientToolConfirmation(config, writePayload) {
+		t.Fatal("expected readonly mutating tool to be denied directly without extra confirmation")
+	}
+}

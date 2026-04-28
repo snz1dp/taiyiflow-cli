@@ -182,7 +182,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						continue
 					}
 					execConfig := localConfig
-					execConfig.ApprovalMode = "auto"
+					if strings.TrimSpace(execConfig.ApprovalMode) != "readonly" {
+						execConfig.ApprovalMode = "auto"
+					}
 					if err := quietRuntimeClient.HandleBuiltInEvent(runCtx, providerClient, execConfig, event.Data); err != nil {
 						return err
 					}
@@ -225,7 +227,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						continue
 					}
 					execConfig := localConfig
-					execConfig.ApprovalMode = "auto"
+					if strings.TrimSpace(execConfig.ApprovalMode) != "readonly" {
+						execConfig.ApprovalMode = "auto"
+					}
 					toolName, result, toolErr := runtimeClient.ExecuteClientToolPayload(runCtx, execConfig, event.Data)
 					emitTUIClientToolResultEvents(emit, toolName, result, toolErr)
 					if err := runtimeClient.SubmitClientToolCallback(runCtx, providerClient, event.Data, result, toolErr); err != nil {
@@ -1294,8 +1298,24 @@ func emitTUIClientToolResultEvents(emit func(tui.Event), toolName string, result
 	}
 	panel := buildTUIClientToolPanel(toolName, result, toolErr)
 	if panel != nil {
+		if statusText := buildToolPanelStatusText(panel, ""); statusText != "" {
+			emit(tui.Event{Kind: tui.EventSystemNote, Text: statusText})
+		}
 		emit(tui.Event{Kind: tui.EventToolPanel, Panel: panel})
 	}
+}
+
+func buildToolPanelStatusText(panel *tui.ToolPanel, fallback string) string {
+	if panel == nil {
+		return strings.TrimSpace(fallback)
+	}
+	if summary := strings.TrimSpace(panel.Summary); summary != "" {
+		return "结果已生成：" + summary
+	}
+	if title := strings.TrimSpace(panel.Title); title != "" {
+		return "结果已生成：" + title
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.ToolPanel {

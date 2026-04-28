@@ -53,7 +53,9 @@ func runLocalReadTool(ctx context.Context, config internalconfig.Config, toolNam
 func runLocalUserTool(ctx context.Context, config internalconfig.Config, toolName string, arguments map[string]any) (string, any, error) {
 	runtimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), io.Discard, io.Discard)
 	execConfig := config
-	execConfig.ApprovalMode = "auto"
+	if strings.TrimSpace(execConfig.ApprovalMode) != "readonly" {
+		execConfig.ApprovalMode = "auto"
+	}
 	tool, result, err := runtimeClient.ExecuteClientToolPayload(ctx, execConfig, buildLocalToolPayload(toolName, arguments))
 	return tool, result, err
 }
