@@ -279,6 +279,7 @@ func TestStreamTaskTrimsLeadingBlankLinesFromFirstChunk(t *testing.T) {
 		agent.SessionState{RequestMode: provider.RequestTypeAgent},
 		"",
 		false,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("streamTask failed: %v", err)
@@ -311,6 +312,7 @@ func TestStreamTaskDoesNotPrefixFirstSystemNoteWithBlankLine(t *testing.T) {
 		agent.SessionState{RequestMode: provider.RequestTypeAgent},
 		"",
 		true,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("streamTask failed: %v", err)
@@ -342,6 +344,7 @@ func TestStreamTaskSanitizesTerminalEscapeSequencesFromChunks(t *testing.T) {
 		"demo task",
 		agent.SessionState{RequestMode: provider.RequestTypeAgent},
 		"",
+		false,
 		false,
 	)
 	if err != nil {
@@ -375,6 +378,7 @@ func TestStreamTaskUpdatesSessionTitleFromStream(t *testing.T) {
 		"demo task",
 		agent.SessionState{RequestMode: provider.RequestTypeAgent, Workdir: workdir},
 		"",
+		false,
 		false,
 	)
 	if err != nil {
@@ -429,6 +433,165 @@ func TestLoadLatestSessionMetricsUsesLatestRunStats(t *testing.T) {
 	}
 }
 
+func TestStreamTaskHidesThinkTagsByDefault(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	stream := make(chan provider.StreamEvent, 3)
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "开始<think>内部推理"}}
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "继续推理</think>结论"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err := app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+
+	if got := stdout.String(); got != "开始结论\n" {
+		t.Fatalf("expected think content hidden by default, got %q", got)
+	}
+}
+
+func TestStreamTaskShowsThinkTagsWhenEnabled(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	stream := make(chan provider.StreamEvent, 2)
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "开始<think>内部推理</think>结论"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err := app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		false,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+
+	if got := stdout.String(); got != "开始<think>内部推理</think>结论\n" {
+		t.Fatalf("expected think content shown when enabled, got %q", got)
+	}
+}
+
+func TestStreamTaskShowsToolCallOnlyWhenStreamEventsEnabled(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	stream := make(chan provider.StreamEvent, 2)
+	stream <- provider.StreamEvent{Type: provider.EventToolCall, Data: map[string]any{"text": "read_file"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err := app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+
+	if got := stdout.String(); got != "\n" {
+		t.Fatalf("expected tool call hidden by default, got %q", got)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	stream = make(chan provider.StreamEvent, 2)
+	stream <- provider.StreamEvent{Type: provider.EventToolCall, Data: map[string]any{"text": "read_file"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err = app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		true,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+
+	if got := stdout.String(); got != "[工具调用]: read_file\n\n" {
+		t.Fatalf("expected tool call shown when stream events enabled, got %q", got)
+	}
+}
+
+func TestStreamTaskDropsTrailingThinkTagFragmentByDefault(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	stream := make(chan provider.StreamEvent, 2)
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "结果<think"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err := app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+
+	if got := stdout.String(); got != "结果\n" {
+		t.Fatalf("expected trailing think fragment hidden by default, got %q", got)
+	}
+}
+
 func TestStreamTaskIncludesWorkspaceSkillPackagesInRequest(t *testing.T) {
 	app := newTestAppWithSessionStore(t)
 	var stdout bytes.Buffer
@@ -460,6 +623,7 @@ func TestStreamTaskIncludesWorkspaceSkillPackagesInRequest(t *testing.T) {
 		"demo task",
 		agent.SessionState{RequestMode: provider.RequestTypeAgent, ContextDir: workspaceDir},
 		"",
+		false,
 		false,
 	)
 	if err != nil {
@@ -552,6 +716,7 @@ func TestStreamTaskInstallsMissingSkillBeforeRequest(t *testing.T) {
 		agent.SessionState{FlowID: "demo-flow", RequestMode: provider.RequestTypeAgent, ContextDir: workspaceDir, Workdir: workspaceDir},
 		"",
 		false,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("streamTask failed: %v", err)
@@ -640,6 +805,7 @@ func TestStreamTaskUsesFreeTextSearchForUniqueSkillCandidate(t *testing.T) {
 		input,
 		agent.SessionState{FlowID: "demo-flow", RequestMode: provider.RequestTypeAgent, ContextDir: workspaceDir, Workdir: workspaceDir},
 		"",
+		false,
 		false,
 	)
 	if err != nil {

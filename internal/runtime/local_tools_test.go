@@ -349,14 +349,18 @@ func TestSetStreamEventLogsEnabledSuppressesBracketLogs(t *testing.T) {
 	if _, err := runtimeClient.readFile(config, map[string]any{"path": "notes.txt", "start_line": 1, "end_line": 1}); err != nil {
 		t.Fatalf("read file failed: %v", err)
 	}
-	if _, err := runtimeClient.runCommand(context.Background(), config, map[string]any{"raw_command": "echo ok"}); err != nil {
+	result, err := runtimeClient.runCommand(context.Background(), config, map[string]any{"raw_command": "echo ok"})
+	if err != nil {
 		t.Fatalf("run command failed: %v", err)
 	}
 	if output := stdout.String(); strings.Contains(output, "[本地工具]") || strings.Contains(output, "[本地命令]") || strings.Contains(output, "[执行客户端命令]") {
 		t.Fatalf("expected bracket logs to be suppressed, got %q", output)
 	}
-	if !strings.Contains(stdout.String(), "ok") {
-		t.Fatalf("expected command stdout to remain visible, got %q", stdout.String())
+	if strings.Contains(stdout.String(), "ok") {
+		t.Fatalf("expected command stdout to stay hidden when stream logs disabled, got %q", stdout.String())
+	}
+	if stringValue(result["stdout"]) != "ok\n" {
+		t.Fatalf("expected command stdout retained in result, got %#v", result["stdout"])
 	}
 
 	stdout.Reset()

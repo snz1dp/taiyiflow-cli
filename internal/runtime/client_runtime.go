@@ -337,15 +337,21 @@ func (r *ClientRuntime) runCommand(
 
 	var stdoutBuffer bytes.Buffer
 	var stderrBuffer bytes.Buffer
+	stdoutTarget := io.Writer(&stdoutBuffer)
+	stderrTarget := io.Writer(&stderrBuffer)
+	if r.streamEventLogsEnabled {
+		stdoutTarget = io.MultiWriter(&stdoutBuffer, r.stdout)
+		stderrTarget = io.MultiWriter(&stderrBuffer, r.stderr)
+	}
 	var copyGroup sync.WaitGroup
 	copyGroup.Add(2)
 	go func() {
 		defer copyGroup.Done()
-		_, _ = io.Copy(io.MultiWriter(&stdoutBuffer, r.stdout), stdoutPipe)
+		_, _ = io.Copy(stdoutTarget, stdoutPipe)
 	}()
 	go func() {
 		defer copyGroup.Done()
-		_, _ = io.Copy(io.MultiWriter(&stderrBuffer, r.stderr), stderrPipe)
+		_, _ = io.Copy(stderrTarget, stderrPipe)
 	}()
 
 	waitErr := command.Wait()
@@ -390,10 +396,10 @@ func (r *ClientRuntime) runCommand(
 		result["json"] = decoded
 	}
 
-	if stdout != "" && !strings.HasSuffix(stdout, "\n") {
+	if r.streamEventLogsEnabled && stdout != "" && !strings.HasSuffix(stdout, "\n") {
 		fmt.Fprintln(r.stdout)
 	}
-	if stderr != "" && !strings.HasSuffix(stderr, "\n") {
+	if r.streamEventLogsEnabled && stderr != "" && !strings.HasSuffix(stderr, "\n") {
 		fmt.Fprintln(r.stderr)
 	}
 	_ = appendAuditLog(config, "run_command_succeeded", map[string]any{
@@ -424,87 +430,6 @@ func (r *ClientRuntime) searchFiles(
 	arguments map[string]any,
 ) (map[string]any, error) {
 	return r.searchFilesLocal(ctx, config, arguments)
-}
-
-func detectSearchEngine() (string, error) {
-	if _, err := exec.LookPath("rg"); err == nil {
-		return "rg", nil
-	}
-	if _, err := exec.LookPath("grep"); err == nil {
-		return "grep", nil
-	}
-	return "", fmt.Errorf("文件搜索需要可用的搜索工具：系统未找到 rg 或 grep")
-}
-
-func runRipgrep(
-	ctx context.Context,
-	query string,
-	baseDir string,
-	glob string,
-	maxResults int,
-) ([]byte, error) {
-	commandArgs := []string{"-n", "--no-heading", "--color", "never", "--max-count", strconv.Itoa(maxResults), query}
-	if glob != "" {
-		commandArgs = append(commandArgs, "-g", glob)
-	}
-	commandArgs = append(commandArgs, baseDir)
-
-	command := exec.CommandContext(ctx, "rg", commandArgs...)
-	output, err := command.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("执行 rg 搜索失败: %w", err)
-	}
-	return output, nil
-}
-
-func runGrep(ctx context.Context, query string, baseDir string) ([]byte, error) {
-	commandArgs := []string{"-R", "-n", "-E", query, baseDir}
-	command := exec.CommandContext(ctx, "grep", commandArgs...)
-	output, err := command.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("执行 grep 搜索失败: %w", err)
-	}
-	return output, nil
-}
-
-func parseSearchMatches(output []byte, baseDir string, glob string, maxResults int) []map[string]any {
-	trimmed := strings.TrimSpace(string(output))
-	if trimmed == "" {
-		return []map[string]any{}
-	}
-
-	lines := strings.Split(trimmed, "\n")
-	matches := make([]map[string]any, 0, len(lines))
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 3)
-		if len(parts) < 3 {
-			continue
-		}
-		if !matchesSearchGlob(parts[0], baseDir, glob) {
-			continue
-		}
-		lineNumber, _ := strconv.Atoi(parts[1])
-		matches = append(matches, map[string]any{
-			"path": parts[0],
-			"line": lineNumber,
-			"text": parts[2],
-		})
-		if len(matches) >= maxResults {
-			break
-		}
-	}
-	return matches
 }
 
 func matchesSearchGlob(path string, baseDir string, glob string) bool {
