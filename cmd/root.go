@@ -130,7 +130,7 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	flagSet.BoolVar(&options.NewSession, "new", false, "忽略已有会话并新建会话")
 	flagSet.BoolVar(&options.Continue, "continue", false, "继续当前会话")
 	flagSet.BoolVar(&options.ShowStreamEvents, "show-stream-events", false, "显示系统提示与工具调用等流式调试信息")
-	flagSet.BoolVar(&options.ShowThinking, "show-thinking", false, "显示 <think></think> 标签及其中的思考内容")
+	flagSet.BoolVar(&options.ShowThinking, "show-thinking", false, "显示思考内容（不输出 <think></think> 标签）")
 	flagSet.StringVar(&options.SandboxEscapePolicy, "external-resource-access-policy", "", "外部资源访问策略（confirm|deny|allow），仅影响当前命令")
 	flagSet.StringVar(&options.SandboxEscapePolicy, "sandbox-escape-policy", "", "兼容旧参数：外部资源访问策略（confirm|deny|allow），仅影响当前命令")
 
@@ -624,7 +624,7 @@ func (a *App) streamTask(
 }
 
 func (s *cliStreamRenderState) renderChunk(chunk string, showThinking bool) string {
-	if showThinking || chunk == "" {
+	if chunk == "" {
 		return chunk
 	}
 
@@ -636,8 +636,15 @@ func (s *cliStreamRenderState) renderChunk(chunk string, showThinking bool) stri
 		if s.insideThink {
 			closeIndex := strings.Index(input, "</think>")
 			if closeIndex < 0 {
-				s.pending = trailingThinkTagFragment(input, "</think>")
+				fragment := trailingThinkTagFragment(input, "</think>")
+				if showThinking {
+					builder.WriteString(input[:len(input)-len(fragment)])
+				}
+				s.pending = fragment
 				return builder.String()
+			}
+			if showThinking {
+				builder.WriteString(input[:closeIndex])
 			}
 			input = input[closeIndex+len("</think>"):]
 			s.insideThink = false
@@ -645,8 +652,14 @@ func (s *cliStreamRenderState) renderChunk(chunk string, showThinking bool) stri
 		}
 
 		openIndex := strings.Index(input, "<think>")
+		closeIndex := strings.Index(input, "</think>")
+		if closeIndex >= 0 && (openIndex < 0 || closeIndex < openIndex) {
+			builder.WriteString(input[:closeIndex])
+			input = input[closeIndex+len("</think>"):]
+			continue
+		}
 		if openIndex < 0 {
-			fragment := trailingThinkTagFragment(input, "<think>")
+			fragment := trailingThinkTagFragment(input, "<think>", "</think>")
 			builder.WriteString(input[:len(input)-len(fragment)])
 			s.pending = fragment
 			return builder.String()
@@ -669,21 +682,27 @@ func (s *cliStreamRenderState) flush(showThinking bool) string {
 	return ""
 }
 
-func trailingThinkTagFragment(content string, tag string) string {
-	maxLength := len(tag) - 1
-	if maxLength <= 0 || content == "" {
-		return ""
-	}
-	if len(content) < maxLength {
-		maxLength = len(content)
-	}
-	for length := maxLength; length > 0; length-- {
-		suffix := content[len(content)-length:]
-		if strings.HasPrefix(tag, suffix) {
-			return suffix
+func trailingThinkTagFragment(content string, tags ...string) string {
+	longest := ""
+	for _, tag := range tags {
+		maxLength := len(tag) - 1
+		if maxLength <= 0 || content == "" {
+			continue
+		}
+		if len(content) < maxLength {
+			maxLength = len(content)
+		}
+		for length := maxLength; length > 0; length-- {
+			suffix := content[len(content)-length:]
+			if strings.HasPrefix(tag, suffix) {
+				if len(suffix) > len(longest) {
+					longest = suffix
+				}
+				break
+			}
 		}
 	}
-	return ""
+	return longest
 }
 
 func sanitizeCLIStreamText(content string) string {
@@ -741,7 +760,7 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 	fmt.Fprintln(a.stdout, "  /new      清屏并重置当前智能体的本地会话")
 	fmt.Fprintln(a.stdout, "  /clear    清屏")
 	fmt.Fprintln(a.stdout, "  /exit     退出")
-	fmt.Fprintln(a.stdout, "  启动参数: --show-stream-events 可显示系统提示与工具调用日志；--show-thinking 可显示 <think></think> 思考内容")
+	fmt.Fprintln(a.stdout, "  启动参数: --show-stream-events 可显示系统提示与工具调用日志；--show-thinking 可显示思考内容（不输出 <think></think> 标签）")
 	fmt.Fprintln(a.stdout, "  提示: 交互模式下请使用 `taiyiflow-cli agents` 管理默认智能体。")
 	a.printSessionStatus(ctx, providerClient, flowDisplayName, flowID, sessionState)
 }

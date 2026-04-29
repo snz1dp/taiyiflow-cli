@@ -384,24 +384,37 @@ func removeSkillNameAliases(items []string, aliases ...string) []string {
 	return normalizeSkillNames(filtered)
 }
 
-func (a *App) loadSkillPayload(config internalconfig.Config, contextDir string) ([]string, any, error) {
+func (a *App) resolveEffectiveSkillConfig(config internalconfig.Config, contextDir string) internalconfig.Config {
+	resolved := config
 	if a.configManager != nil {
 		if latestConfig, err := a.configManager.Load(); err == nil {
-			config = latestConfig
+			resolved = latestConfig
 		}
 	}
-	skillConfig := config
-	resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(contextDir, config.Workdir))
-	if strings.TrimSpace(resolvedContextDir) != "" {
-		skillConfig.Workdir = resolvedContextDir
+	if a.skillInstallScopePinned {
+		resolved.Skills.InstallScope = internalconfig.NormalizeSkillInstallScope(a.skillInstallScopeSession)
+	} else {
+		resolved.Skills.InstallScope = internalconfig.NormalizeSkillInstallScope(resolved.Skills.InstallScope)
 	}
-	items, directory, err := skills.Discover(skillConfig)
+	resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(contextDir, resolved.Workdir))
+	if strings.TrimSpace(resolvedContextDir) != "" {
+		resolved.Workdir = resolvedContextDir
+	}
+	return resolved
+}
+
+func loadSkillPayloadWithConfig(config internalconfig.Config) ([]string, any, error) {
+	items, directory, err := skills.Discover(config)
 	if err != nil {
 		return nil, nil, err
 	}
 	requestedSkillNames := skills.EnabledSkillNames(items)
 	clientSkillPackages := skills.ClientPackages(items, directory)
 	return requestedSkillNames, clientSkillPackages, nil
+}
+
+func (a *App) loadSkillPayload(config internalconfig.Config, contextDir string) ([]string, any, error) {
+	return loadSkillPayloadWithConfig(a.resolveEffectiveSkillConfig(config, contextDir))
 }
 
 func normalizeSkillNames(items []string) []string {

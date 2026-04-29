@@ -97,8 +97,8 @@ func Default() Config {
 		WriteConfirmationPolicy:  WriteConfirmationPolicyConfirm,
 		Skills: SkillConfig{
 			InstallScope:          SkillInstallScopeUser,
-			AutoInstallPolicy:     SkillAutoInstallPolicyConfirm,
-			FreeTextSearchEnabled: true,
+			AutoInstallPolicy:     SkillAutoInstallPolicyOff,
+			FreeTextSearchEnabled: false,
 			RegistryURL:           "https://mirror-cn.clawhub.com",
 		},
 	}
@@ -145,12 +145,12 @@ func NormalizeSkillReviewPolicy(value string) string {
 
 func NormalizeSkillAutoInstallPolicy(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case SkillAutoInstallPolicyOff:
-		return SkillAutoInstallPolicyOff
 	case SkillAutoInstallPolicyAllow:
 		return SkillAutoInstallPolicyAllow
-	default:
+	case SkillAutoInstallPolicyConfirm:
 		return SkillAutoInstallPolicyConfirm
+	default:
+		return SkillAutoInstallPolicyOff
 	}
 }
 

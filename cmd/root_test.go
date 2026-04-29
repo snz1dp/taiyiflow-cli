@@ -467,7 +467,7 @@ func TestStreamTaskHidesThinkTagsByDefault(t *testing.T) {
 	}
 }
 
-func TestStreamTaskShowsThinkTagsWhenEnabled(t *testing.T) {
+func TestStreamTaskShowsThinkContentWithoutTagsWhenEnabled(t *testing.T) {
 	app := newTestAppWithSessionStore(t)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -495,8 +495,42 @@ func TestStreamTaskShowsThinkTagsWhenEnabled(t *testing.T) {
 		t.Fatalf("streamTask failed: %v", err)
 	}
 
-	if got := stdout.String(); got != "开始<think>内部推理</think>结论\n" {
-		t.Fatalf("expected think content shown when enabled, got %q", got)
+	if got := stdout.String(); got != "开始内部推理结论\n" {
+		t.Fatalf("expected think content shown without tags when enabled, got %q", got)
+	}
+}
+
+func TestStreamTaskDropsSplitClosingThinkTagWhenEnabled(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	stream := make(chan provider.StreamEvent, 3)
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "开始<think>内部推理</thi"}}
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "nk>结论"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err := app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		false,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+
+	if got := stdout.String(); got != "开始内部推理结论\n" {
+		t.Fatalf("expected split closing tag hidden when showThinking enabled, got %q", got)
 	}
 }
 
@@ -816,6 +850,174 @@ func TestStreamTaskUsesFreeTextSearchForUniqueSkillCandidate(t *testing.T) {
 	}
 	if !containsIgnoreCase(providerStub.lastRequest.RequestedSkillNames, "Remote Skill") {
 		t.Fatalf("expected free-text installed skill in request, got %#v", providerStub.lastRequest.RequestedSkillNames)
+	}
+}
+
+func TestStreamTaskInstallsMissingSkillIntoLegacyGlobalDirectoryAndReloadsRequest(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	store, err := agent.NewSessionStore()
+	if err != nil {
+		t.Fatalf("new session store failed: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := &App{stdout: &stdout, stderr: &stderr, configManager: manager, sessionStore: store}
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	workspaceDir := t.TempDir()
+	legacySkillDir := filepath.Join(t.TempDir(), "legacy-skills")
+	searchQueries := []string{}
+	registry := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/search":
+			searchQueries = append(searchQueries, request.URL.Query().Get("q"))
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","version":"1.0.0","updatedAt":1710000000}]}`))
+		case "/api/v1/skills/remote-skill":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"skill":{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","updatedAt":1710000000},"latestVersion":{"version":"1.0.0"}}`))
+		case "/api/v1/download":
+			archiveBytes := buildRemoteSkillArchive(t, "1.0.0")
+			_, _ = writer.Write(archiveBytes)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer registry.Close()
+
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.Directory = legacySkillDir
+	config.Skills.RegistryURL = registry.URL
+	config.Skills.InstallScope = internalconfig.SkillInstallScopeUser
+	config.Skills.AutoInstallPolicy = internalconfig.SkillAutoInstallPolicyAllow
+	config.Skills.FreeTextSearchEnabled = false
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	stream := make(chan provider.StreamEvent, 1)
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+	providerStub := &stubProvider{
+		stream:       stream,
+		skillPreview: &provider.SkillResolvePreview{MissingSkillNames: []string{"Remote Skill"}},
+	}
+
+	_, err = app.streamTask(
+		context.Background(),
+		providerStub,
+		config,
+		"demo-flow",
+		"请做上下文审查",
+		agent.SessionState{FlowID: "demo-flow", RequestMode: provider.RequestTypeAgent, ContextDir: workspaceDir, Workdir: workspaceDir},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+	if len(searchQueries) != 1 || searchQueries[0] != "Remote Skill" {
+		t.Fatalf("expected exact missing-skill search query, got %#v", searchQueries)
+	}
+	if !containsIgnoreCase(providerStub.lastRequest.RequestedSkillNames, "Remote Skill") {
+		t.Fatalf("expected installed skill in request after reload, got %#v", providerStub.lastRequest.RequestedSkillNames)
+	}
+	installedSkillPath := filepath.Join(legacySkillDir, "remote-skill", "SKILL.md")
+	if _, statErr := os.Stat(installedSkillPath); statErr != nil {
+		t.Fatalf("expected legacy custom global installed skill file, got %v", statErr)
+	}
+}
+
+func TestStreamTaskAutoInstallUsesPinnedSessionInstallScope(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	store, err := agent.NewSessionStore()
+	if err != nil {
+		t.Fatalf("new session store failed: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := &App{
+		stdout:                   &stdout,
+		stderr:                   &stderr,
+		configManager:            manager,
+		sessionStore:             store,
+		skillInstallScopeSession: internalconfig.SkillInstallScopeWorkspace,
+		skillInstallScopePinned:  true,
+	}
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	workspaceDir := t.TempDir()
+	legacySkillDir := filepath.Join(t.TempDir(), "legacy-skills")
+	registry := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/search":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","version":"1.0.0","updatedAt":1710000000}]}`))
+		case "/api/v1/skills/remote-skill":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"skill":{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","updatedAt":1710000000},"latestVersion":{"version":"1.0.0"}}`))
+		case "/api/v1/download":
+			archiveBytes := buildRemoteSkillArchive(t, "1.0.0")
+			_, _ = writer.Write(archiveBytes)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer registry.Close()
+
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.Directory = legacySkillDir
+	config.Skills.InstallScope = internalconfig.SkillInstallScopeUser
+	config.Skills.RegistryURL = registry.URL
+	config.Skills.AutoInstallPolicy = internalconfig.SkillAutoInstallPolicyAllow
+	config.Skills.FreeTextSearchEnabled = false
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	stream := make(chan provider.StreamEvent, 1)
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+	providerStub := &stubProvider{
+		stream:       stream,
+		skillPreview: &provider.SkillResolvePreview{MissingSkillNames: []string{"Remote Skill"}},
+	}
+
+	_, err = app.streamTask(
+		context.Background(),
+		providerStub,
+		config,
+		"demo-flow",
+		"请做上下文审查",
+		agent.SessionState{FlowID: "demo-flow", RequestMode: provider.RequestTypeAgent, ContextDir: workspaceDir, Workdir: workspaceDir},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+	workspaceInstalledSkillPath := filepath.Join(workspaceDir, ".snz1dp", "skills", "remote-skill", "SKILL.md")
+	if _, statErr := os.Stat(workspaceInstalledSkillPath); statErr != nil {
+		t.Fatalf("expected pinned session scope to install into workspace, got %v", statErr)
+	}
+	legacyInstalledSkillPath := filepath.Join(legacySkillDir, "remote-skill", "SKILL.md")
+	if _, statErr := os.Stat(legacyInstalledSkillPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected pinned session scope to avoid legacy user directory, got %v", statErr)
+	}
+	if !containsIgnoreCase(providerStub.lastRequest.RequestedSkillNames, "Remote Skill") {
+		t.Fatalf("expected installed skill in request after pinned-scope install, got %#v", providerStub.lastRequest.RequestedSkillNames)
 	}
 }
 

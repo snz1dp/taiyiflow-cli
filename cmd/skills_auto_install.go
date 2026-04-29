@@ -43,7 +43,8 @@ func (a *App) ensureSkillSupplyBeforeStream(
 		note = func(string) {}
 	}
 	resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(sessionContextDir(sessionState), config.Workdir))
-	requestedSkillNames, clientSkillPackages, err := a.loadSkillPayload(config, resolvedContextDir)
+	skillConfig := a.resolveEffectiveSkillConfig(config, resolvedContextDir)
+	requestedSkillNames, clientSkillPackages, err := loadSkillPayloadWithConfig(skillConfig)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -66,11 +67,7 @@ func (a *App) ensureSkillSupplyBeforeStream(
 		return requestedSkillNames, clientSkillPackages, nil
 	}
 
-	installConfig := config
-	if strings.TrimSpace(resolvedContextDir) != "" {
-		installConfig.Workdir = resolvedContextDir
-	}
-	installConfig.Skills.Directory = ""
+	installConfig := skillConfig
 	candidates, err := collectSkillInstallCandidates(installConfig, input, requestedSkillNames, preview.MissingSkillNames, note)
 	if err != nil {
 		return requestedSkillNames, clientSkillPackages, err
@@ -134,7 +131,7 @@ func (a *App) ensureSkillSupplyBeforeStream(
 		}
 	}
 	note("技能自动补装完成，已刷新本轮请求的技能载荷。")
-	return a.loadSkillPayload(config, resolvedContextDir)
+	return loadSkillPayloadWithConfig(a.resolveEffectiveSkillConfig(installConfig, resolvedContextDir))
 }
 
 func collectSkillInstallCandidates(

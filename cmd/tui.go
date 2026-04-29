@@ -2473,7 +2473,6 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 	executeInstall := func(slug string, scope string, remember bool, reopenDetail bool, query string) (tui.LocalCommandResult, error) {
 		installConfig := skillConfig
 		installConfig.Skills.InstallScope = internalconfig.NormalizeSkillInstallScope(scope)
-		installConfig.Skills.Directory = ""
 		resultData, installErr := skills.InstallRemote(installConfig, slug, "", false)
 		if installErr != nil {
 			result, pickerErr := buildPicker(query)
