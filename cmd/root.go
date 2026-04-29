@@ -46,6 +46,7 @@ type App struct {
 
 type rootOptions struct {
 	Flow                string
+	RequestMode         string
 	NewSession          bool
 	Continue            bool
 	ShowStreamEvents    bool
@@ -127,6 +128,8 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	var options rootOptions
 	flagSet.StringVar(&options.Flow, "agent", "", "指定要运行的智能体 ID 或名称")
 	flagSet.StringVar(&options.Flow, "flow", "", "兼容旧参数：指定要运行的智能体 ID 或名称")
+	flagSet.StringVar(&options.RequestMode, "mode", "", "task 请求模式（agent|ask|plan），默认 agent")
+	flagSet.StringVar(&options.RequestMode, "request-mode", "", "兼容别名：task 请求模式（agent|ask|plan），默认 agent")
 	flagSet.BoolVar(&options.NewSession, "new", false, "忽略已有会话并新建会话")
 	flagSet.BoolVar(&options.Continue, "continue", false, "继续当前会话")
 	flagSet.BoolVar(&options.ShowStreamEvents, "show-stream-events", false, "显示系统提示与工具调用等流式调试信息")
@@ -137,6 +140,11 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	if err := flagSet.Parse(args); err != nil {
 		return err
 	}
+	requestMode, err := resolveTaskRequestMode(options.RequestMode)
+	if err != nil {
+		return err
+	}
+	options.RequestMode = requestMode
 
 	task := strings.TrimSpace(strings.Join(flagSet.Args(), " "))
 	if task == "" && !options.Continue {
@@ -168,7 +176,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	}
 	workdir := resolveLocalWorkdir(config.Workdir)
 
-	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir, "")
+	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir, options.RequestMode)
 	if err != nil {
 		return err
 	}
@@ -404,7 +412,7 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	}
 	workdir := resolveLocalWorkdir(config.Workdir)
 
-	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir, "")
+	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir, options.RequestMode)
 	if err != nil {
 		return err
 	}
@@ -733,7 +741,7 @@ func writeTerminalControlSequence(writer io.Writer, sequence string) bool {
 func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "用法:")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli")
-	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--new] [--continue] [--show-stream-events] [--show-thinking] [--external-resource-access-policy POLICY] [任务描述]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--mode MODE] [--new] [--continue] [--show-stream-events] [--show-thinking] [--external-resource-access-policy POLICY] [任务描述]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli config [show|init|path|set|unset]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli agents [list|current|use] [参数]")

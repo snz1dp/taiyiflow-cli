@@ -112,6 +112,23 @@ func TestPrepareSessionKeepsSavedRequestModeWithoutOverride(t *testing.T) {
 	}
 }
 
+func TestPrepareSessionOverridesSavedRequestModeWhenRequested(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	workdir := t.TempDir()
+	state := agent.SessionState{FlowID: "demo-flow", Workdir: workdir, RequestMode: provider.RequestTypePlan}
+	if err := app.sessionStore.Save(state); err != nil {
+		t.Fatalf("save session failed: %v", err)
+	}
+
+	loaded, err := app.prepareSession("demo-flow", false, workdir, provider.RequestTypeAgent)
+	if err != nil {
+		t.Fatalf("prepareSession failed: %v", err)
+	}
+	if loaded.RequestMode != provider.RequestTypeAgent {
+		t.Fatalf("expected override request mode %q, got %q", provider.RequestTypeAgent, loaded.RequestMode)
+	}
+}
+
 func TestPrepareSessionDefaultsMissingSessionToAgentMode(t *testing.T) {
 	app := newTestAppWithSessionStore(t)
 	workdir := t.TempDir()
@@ -135,6 +152,22 @@ func TestPrepareSessionNewSessionDefaultsToAgentMode(t *testing.T) {
 	}
 	if loaded.RequestMode != provider.RequestTypeAgent {
 		t.Fatalf("expected new session request mode %q, got %q", provider.RequestTypeAgent, loaded.RequestMode)
+	}
+}
+
+func TestResolveTaskRequestModeDefaultsToAgent(t *testing.T) {
+	mode, err := resolveTaskRequestMode("")
+	if err != nil {
+		t.Fatalf("resolveTaskRequestMode returned error: %v", err)
+	}
+	if mode != provider.RequestTypeAgent {
+		t.Fatalf("expected default task request mode %q, got %q", provider.RequestTypeAgent, mode)
+	}
+}
+
+func TestResolveTaskRequestModeRejectsInvalidValue(t *testing.T) {
+	if _, err := resolveTaskRequestMode("invalid"); err == nil {
+		t.Fatal("expected invalid task request mode to return error")
 	}
 }
 

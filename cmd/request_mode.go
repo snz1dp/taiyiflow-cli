@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"strings"
@@ -43,6 +44,23 @@ func parseModeSlashCommand(command string) (string, string, bool) {
 		}
 	}
 	return "", "", false
+}
+
+func resolveTaskRequestMode(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return provider.RequestTypeAgent, nil
+	}
+	switch strings.ToLower(trimmed) {
+	case provider.RequestTypeAgent:
+		return provider.RequestTypeAgent, nil
+	case provider.RequestTypeAsk:
+		return provider.RequestTypeAsk, nil
+	case provider.RequestTypePlan:
+		return provider.RequestTypePlan, nil
+	default:
+		return "", errors.New("请求模式仅支持 agent、ask 或 plan")
+	}
 }
 
 func buildCLIUserAgent() string {
