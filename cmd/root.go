@@ -609,7 +609,7 @@ func (a *App) streamTask(
 			if !showStreamEvents {
 				continue
 			}
-			text := sanitizeCLIStreamText(strings.TrimSpace(stringMapValue(event.Data, "text")))
+			text := sanitizeCLIStreamText(buildCompressionProgressText(event.Data))
 			if text == "" {
 				continue
 			}

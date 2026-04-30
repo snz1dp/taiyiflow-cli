@@ -208,18 +208,18 @@ func resolveSandboxRoots(config internalconfig.Config, baseDir string) ([]string
 		}
 		root, err := expandTildePath(trimmed)
 		if err != nil {
-			return nil, newToolError("PARAM_ERROR", "解析外部资源访问根目录失败: %v", err)
+			return nil, newToolError("PARAM_ERROR", "解析可访问外部资源目录失败: %v", err)
 		}
 		if !filepath.IsAbs(root) {
 			root = filepath.Join(baseDir, root)
 		}
 		resolved, err := filepath.Abs(root)
 		if err != nil {
-			return nil, newToolError("PARAM_ERROR", "解析外部资源访问根目录失败: %v", err)
+			return nil, newToolError("PARAM_ERROR", "解析可访问外部资源目录失败: %v", err)
 		}
 		resolved, err = resolveWithExistingParent(resolved)
 		if err != nil {
-			return nil, newToolError("PARAM_ERROR", "解析外部资源访问根目录路径失败: %v", err)
+			return nil, newToolError("PARAM_ERROR", "解析可访问外部资源目录路径失败: %v", err)
 		}
 		roots = append(roots, resolved)
 	}

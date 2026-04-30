@@ -1881,7 +1881,7 @@ func buildTUICompressionMetrics(payload map[string]any) *tui.RequestMetrics {
 }
 
 func buildTUICompressionProgressText(payload map[string]any) string {
-	return strings.TrimSpace(stringMapValue(payload, "text"))
+	return strings.TrimSpace(buildCompressionProgressText(payload))
 }
 
 func payloadIntValue(payload map[string]any, key string) int {

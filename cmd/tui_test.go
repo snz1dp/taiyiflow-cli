@@ -265,8 +265,12 @@ func TestEmitTUIClientToolResultEventsEmitsStatusNoteBeforePanel(t *testing.T) {
 }
 
 func TestBuildTUICompressionProgressTextReturnsPayloadText(t *testing.T) {
-	text := buildTUICompressionProgressText(map[string]any{"text": "上下文压缩完成：320 -> 160"})
-	if text != "上下文压缩完成：320 -> 160" {
+	text := buildTUICompressionProgressText(map[string]any{
+		"text":          "上下文压缩完成：320 -> 160",
+		"before_tokens": 320,
+		"after_tokens":  160,
+	})
+	if text != "上下文压缩完成：0.3K -> 0.2K" {
 		t.Fatalf("unexpected compression progress text: %q", text)
 	}
 }

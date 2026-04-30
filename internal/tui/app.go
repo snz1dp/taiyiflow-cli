@@ -232,15 +232,15 @@ const (
 )
 
 type Event struct {
-	Kind      EventKind
-	Text      string
-	MessageID string
-	Stage     string
-	EventType string
-	SessionID string
+	Kind         EventKind
+	Text         string
+	MessageID    string
+	Stage        string
+	EventType    string
+	SessionID    string
 	SessionTitle string
-	Stats     *RequestMetrics
-	Panel     *ToolPanel
+	Stats        *RequestMetrics
+	Panel        *ToolPanel
 }
 
 type Request struct {
@@ -4097,9 +4097,9 @@ func configFormFieldSpecs(hasAPIKey bool) []configFieldSpec {
 		{label: "默认智能体", placeholder: "", description: "按回车键(Enter)打开下拉列表，留空项表示自动选择(auto)。"},
 		{label: "命令执行模式", placeholder: "", description: "左右键或空格切换单选项。"},
 		{label: "外部资源访问策略", placeholder: "", description: "左右键或空格切换每次确认(confirm)、禁止访问(deny)、直接允许(allow)。"},
-		{label: "技能包审查策略", placeholder: "", description: "左右键或空格切换逐次审查(confirm)、默认忽略(ignore)。选择默认忽略(ignore)后不再弹出技能审查。"},
+		{label: "技能包审查策略", placeholder: "", description: "左右键或空格切换逐次审查(confirm)、忽略审查(ignore)。选择忽略审查(ignore)后不再弹出技能审查窗口。"},
 		{label: "写入确认策略", placeholder: "", description: "左右键或空格切换逐次确认(confirm)、直接写入(direct)。选择直接写入(direct)后会直接执行写入工具。"},
-		{label: "外部资源访问根目录", placeholder: "/path/a, /path/b", description: "多个目录用逗号分隔；留空表示仅允许当前工作区。"},
+		{label: "可访问外部资源目录", placeholder: "/path/a, /path/b", description: "多个目录用逗号分隔；留空表示仅允许当前工作区。"},
 		{label: "细粒度权限规则", placeholder: "tool:shell_exec=deny; shell:git status=allow", description: "使用工具规则(tool:name=动作)或命令前缀规则(shell:prefix=动作)，多个规则用分号分隔。"},
 		{label: "默认思考模式", placeholder: "", description: "左右键或空格切换是否默认启用思考模式。"},
 		{label: "工作区目录", placeholder: "留空表示当前目录", description: "默认使用当前工作目录。"},
@@ -4428,7 +4428,7 @@ func configSandboxChoices() []ConfigChoice {
 func configSkillReviewChoices() []ConfigChoice {
 	return []ConfigChoice{
 		{Value: internalconfig.SkillReviewPolicyConfirm, Label: "逐次审查", Description: "每次加载本地技能前都显示技能包审查弹窗。"},
-		{Value: internalconfig.SkillReviewPolicyIgnore, Label: "默认忽略", Description: "默认跳过技能包审查弹窗，直接加载本地技能。"},
+		{Value: internalconfig.SkillReviewPolicyIgnore, Label: "忽略审查", Description: "默认跳过技能包审查弹窗，直接加载本地技能。"},
 	}
 }
 

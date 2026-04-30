@@ -243,7 +243,7 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 		config.Skills.RegistryURL = normalizedURL
 	case "sandbox_roots":
 		if trimmedValue == "" {
-			return fmt.Errorf("sandbox_roots（外部资源访问根目录）不能为空，如需清空请使用 taiyiflow-cli config unset sandbox_roots")
+			return fmt.Errorf("sandbox_roots（可访问外部资源目录）不能为空，如需清空请使用 taiyiflow-cli config unset sandbox_roots")
 		}
 		config.SandboxRoots = splitConfigCSV(trimmedValue)
 	default:
@@ -372,7 +372,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("技能自动补装策略: %s", fallbackConfigValue(config.Skills.AutoInstallPolicy, internalconfig.Default().Skills.AutoInstallPolicy)),
 		fmt.Sprintf("自由文本技能搜索: %t", config.Skills.FreeTextSearchEnabled),
 		fmt.Sprintf("技能仓库: %s", fallbackConfigValue(config.Skills.RegistryURL, internalconfig.Default().Skills.RegistryURL)),
-		fmt.Sprintf("外部资源访问根目录: %s", fallbackConfigValue(strings.Join(config.SandboxRoots, ", "), "<仅当前工作目录>")),
+		fmt.Sprintf("可访问外部资源目录: %s", fallbackConfigValue(strings.Join(config.SandboxRoots, ", "), "<仅当前工作目录>")),
 	}
 	return strings.Join(lines, "\n")
 }

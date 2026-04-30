@@ -142,7 +142,7 @@
 截至当前仓库实现，客户端已经具备以下能力基线：
 
 1. 本地客户端工具注册已覆盖 search_files、glob_files、read_file、write_file、file_edit、shell_exec、task_list、task_output、task_stop、task_delete、terminal_capture、todo_write、lsp_query、skill。
-2. 文件工具默认受工作目录访问边界限制，可附加 sandbox_roots 扩展额外外部资源访问根目录。
+2. 文件工具默认受工作目录访问边界限制，可附加 sandbox_roots 扩展额外可访问外部资源目录。
 3. 敏感目录（如 ~/.ssh、~/.gnupg、~/.aws、macOS Keychains）默认拒绝访问。
 4. 写文件、细粒度编辑、Todo 更新和任务停止操作统一遵循 approval_mode；只读模式会直接拒绝执行。
 5. 命令执行会剔除常见敏感环境变量，并对高风险命令在 auto 模式下阻断。

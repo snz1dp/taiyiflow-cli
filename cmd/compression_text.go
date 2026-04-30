@@ -1,0 +1,52 @@
+package cmd
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+func buildCompressionProgressText(payload map[string]any) string {
+	text := strings.TrimSpace(stringMapValue(payload, "text"))
+	stage := strings.TrimSpace(stringMapValue(payload, "stage"))
+	beforeTokens := compressionPayloadIntValue(payload, "before_tokens")
+	afterTokens := compressionPayloadIntValue(payload, "after_tokens")
+	if beforeTokens <= 0 && afterTokens <= 0 {
+		return text
+	}
+	if stage == "start" || strings.Contains(text, "开始进行上下文压缩") {
+		return text
+	}
+	return fmt.Sprintf("上下文压缩完成：%s -> %s", formatCompressionTokenK(beforeTokens), formatCompressionTokenK(afterTokens))
+}
+
+func compressionPayloadIntValue(payload map[string]any, key string) int {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int32:
+		return int(typed)
+	case int64:
+		return int(typed)
+	case float32:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func formatCompressionTokenK(value int) string {
+	formatted := strconv.FormatFloat(float64(value)/1000, 'f', 1, 64)
+	formatted = strings.TrimSuffix(formatted, ".0")
+	return formatted + "K"
+}

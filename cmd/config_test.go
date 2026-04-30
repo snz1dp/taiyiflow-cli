@@ -87,7 +87,7 @@ func TestRenderConfigSummaryUsesExternalResourceAccessPolicyLabel(t *testing.T) 
 	if strings.Contains(summary, "沙箱根目录:") {
 		t.Fatalf("expected sandbox root wording to be removed, got %q", summary)
 	}
-	if !strings.Contains(summary, "外部资源访问根目录:") {
+	if !strings.Contains(summary, "可访问外部资源目录:") {
 		t.Fatalf("expected external resource root label, got %q", summary)
 	}
 	if !strings.Contains(summary, "技能自动补装策略:") || !strings.Contains(summary, "自由文本技能搜索:") {
