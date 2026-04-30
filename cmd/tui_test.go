@@ -264,6 +264,30 @@ func TestEmitTUIClientToolResultEventsEmitsStatusNoteBeforePanel(t *testing.T) {
 	}
 }
 
+func TestBuildTUICompressionProgressTextReturnsPayloadText(t *testing.T) {
+	text := buildTUICompressionProgressText(map[string]any{"text": "上下文压缩完成：320 -> 160"})
+	if text != "上下文压缩完成：320 -> 160" {
+		t.Fatalf("unexpected compression progress text: %q", text)
+	}
+}
+
+func TestBuildTUICompressionMetricsAcceptsCompressionEndPayload(t *testing.T) {
+	metrics := buildTUICompressionMetrics(map[string]any{
+		"count":             1,
+		"before_tokens":     9200,
+		"after_tokens":      6000,
+		"remaining_tokens":  2192,
+		"compression_ratio": 0.65,
+		"target_type":       "history_messages",
+	})
+	if metrics == nil || metrics.Compression == nil {
+		t.Fatalf("expected compression metrics, got %#v", metrics)
+	}
+	if metrics.Compression.AfterTokens != 6000 || metrics.Compression.TargetType != "history_messages" {
+		t.Fatalf("unexpected compression metrics: %#v", metrics.Compression)
+	}
+}
+
 func TestEmitTUIClientToolResultEventsSkipsPanelForSkill(t *testing.T) {
 	events := []internaltui.Event{}
 	emitTUIClientToolResultEvents(func(event internaltui.Event) {

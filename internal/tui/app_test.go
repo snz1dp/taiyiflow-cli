@@ -214,6 +214,25 @@ func TestRenderTransientStatusShownInAllRequestModes(t *testing.T) {
 	}
 }
 
+func TestCompressionProgressNoteRendersInFooterInsteadOfTransientStatus(t *testing.T) {
+	model := model{
+		snapshot:     Snapshot{BackendAvailable: true, RequestMode: "agent", ApprovalMode: "confirm"},
+		state:        newProgressState(progressStreaming),
+		viewport:     viewport.Model{Width: 80},
+		width:        120,
+		contentWidth: 120,
+	}
+
+	model.applyEvent(Event{Kind: EventProgressNote, Text: "上下文压缩完成：320 -> 160", EventType: "compression_progress"})
+
+	if got := sanitizeTerminalText(model.renderTransientStatus()); strings.Contains(got, "上下文压缩完成") {
+		t.Fatalf("expected compression progress to stay out of transient status, got %q", got)
+	}
+	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "上下文压缩完成：320 -> 160") {
+		t.Fatalf("expected compression progress in footer status bar, got %q", got)
+	}
+}
+
 func TestHandleConfirmKeySupportsSkillSpecificAndGlobalApproval(t *testing.T) {
 	t.Run("approve current skill", func(t *testing.T) {
 		approvedCh := make(chan bool, 1)
@@ -897,6 +916,17 @@ func TestRenderStatusBarShowsContextGrid(t *testing.T) {
 	}
 	if !strings.Contains(got, "2/6K") {
 		t.Fatalf("expected compact context hint on the right side of status bar, got %q", got)
+	}
+}
+
+func TestAssistantChunkClearsCompressionFooterHint(t *testing.T) {
+	model := model{width: 120, contentWidth: 120}
+
+	model.applyEvent(Event{Kind: EventProgressNote, Text: "开始进行上下文压缩", EventType: "compression_progress"})
+	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "已恢复输出", MessageID: "msg-1"})
+
+	if strings.TrimSpace(model.footerHint) != "" {
+		t.Fatalf("expected assistant chunk to clear footer compression hint, got %q", model.footerHint)
 	}
 }
 

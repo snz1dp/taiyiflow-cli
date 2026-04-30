@@ -605,6 +605,16 @@ func (a *App) streamTask(
 					hasVisibleOutput = true
 				}
 			}
+		case provider.EventCompressionStart, provider.EventCompressionEnd:
+			if !showStreamEvents {
+				continue
+			}
+			text := sanitizeCLIStreamText(strings.TrimSpace(stringMapValue(event.Data, "text")))
+			if text == "" {
+				continue
+			}
+			fmt.Fprintf(a.stdout, "[上下文压缩]: %s\n", text)
+			hasVisibleOutput = true
 		case provider.EventClose:
 			if pending := renderState.flush(showThinking); pending != "" {
 				if !hasVisibleOutput {

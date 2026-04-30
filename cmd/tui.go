@@ -180,6 +180,17 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				if metrics := buildTUICompressionMetrics(event.Data); metrics != nil {
 					emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
 				}
+			case provider.EventCompressionStart:
+				if text := buildTUICompressionProgressText(event.Data); text != "" {
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: text, EventType: "compression_progress"})
+				}
+			case provider.EventCompressionEnd:
+				if text := buildTUICompressionProgressText(event.Data); text != "" {
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: text, EventType: "compression_progress"})
+				}
+				if metrics := buildTUICompressionMetrics(event.Data); metrics != nil {
+					emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
+				}
 			case provider.EventToolCall:
 				emit(tui.Event{Kind: tui.EventToolCall, Text: strings.TrimSpace(stringMapValue(event.Data, "text"))})
 			case provider.EventBuiltIn:
@@ -1867,6 +1878,10 @@ func buildTUICompressionMetrics(payload map[string]any) *tui.RequestMetrics {
 			TargetType:       targetType,
 		},
 	}
+}
+
+func buildTUICompressionProgressText(payload map[string]any) string {
+	return strings.TrimSpace(stringMapValue(payload, "text"))
 }
 
 func payloadIntValue(payload map[string]any, key string) int {

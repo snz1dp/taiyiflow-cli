@@ -471,6 +471,7 @@ type model struct {
 	markdown               *glamour.TermRenderer
 	state                  progressState
 	activityHint           string
+	footerHint             string
 	currentToolLabel       string
 	latestToolSummary      string
 	latestToolAt           time.Time
@@ -1811,6 +1812,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 	var cmd tea.Cmd
 	switch event.Kind {
 	case EventAssistantChunk:
+		m.footerHint = ""
 		chunk := event.Text
 		messageID := strings.TrimSpace(event.MessageID)
 		stage := strings.TrimSpace(strings.ToLower(event.Stage))
@@ -1847,6 +1849,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 			m.entries = append(m.entries, entry{role: "assistant", content: chunk})
 		} else {
 			m.entries[len(m.entries)-1].content += chunk
+			m.footerHint = ""
 		}
 		m.splitNextAssistant = false
 		if messageID != "" {
@@ -1857,7 +1860,12 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		}
 	case EventProgressNote:
 		if strings.TrimSpace(event.Text) != "" {
+			if event.EventType == "compression_progress" {
+				m.footerHint = strings.TrimSpace(event.Text)
+				break
+			}
 			m.activityHint = strings.TrimSpace(event.Text)
+			m.footerHint = ""
 		}
 	case EventToolSummary:
 		summary := strings.TrimSpace(event.Text)
@@ -2338,6 +2346,9 @@ func (m model) renderStatusBar() string {
 		bodyWidth = 12
 	}
 	rightParts := []string{}
+	if footerHint := strings.TrimSpace(m.footerHint); footerHint != "" {
+		rightParts = append(rightParts, statusBarDimStyle.Render(trimForWidth(footerHint, maxInt(18, renderWidth/3))))
+	}
 	if contextGrid := m.contextUsageGrid(); contextGrid != "" {
 		rightParts = append(rightParts, contextGrid)
 	}

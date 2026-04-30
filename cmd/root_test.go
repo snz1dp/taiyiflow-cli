@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
@@ -623,6 +624,69 @@ func TestStreamTaskShowsToolCallOnlyWhenStreamEventsEnabled(t *testing.T) {
 
 	if got := stdout.String(); got != "[工具调用]: read_file\n\n" {
 		t.Fatalf("expected tool call shown when stream events enabled, got %q", got)
+	}
+}
+
+func TestStreamTaskShowsCompressionLifecycleOnlyWhenStreamEventsEnabled(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	stream := make(chan provider.StreamEvent, 3)
+	stream <- provider.StreamEvent{Type: provider.EventCompressionStart, Data: map[string]any{"text": "开始进行上下文压缩：history_trim / history_message_limit"}}
+	stream <- provider.StreamEvent{Type: provider.EventCompressionEnd, Data: map[string]any{"text": "上下文压缩完成：320 -> 160"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err := app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+	if got := stdout.String(); got != "\n" {
+		t.Fatalf("expected compression lifecycle hidden by default, got %q", got)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	stream = make(chan provider.StreamEvent, 3)
+	stream <- provider.StreamEvent{Type: provider.EventCompressionStart, Data: map[string]any{"text": "开始进行上下文压缩：history_trim / history_message_limit"}}
+	stream <- provider.StreamEvent{Type: provider.EventCompressionEnd, Data: map[string]any{"text": "上下文压缩完成：320 -> 160"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err = app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		true,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "[上下文压缩]: 开始进行上下文压缩：history_trim / history_message_limit") {
+		t.Fatalf("expected compression start event in output, got %q", output)
+	}
+	if !strings.Contains(output, "[上下文压缩]: 上下文压缩完成：320 -> 160") {
+		t.Fatalf("expected compression end event in output, got %q", output)
 	}
 }
 
