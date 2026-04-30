@@ -564,18 +564,6 @@ var (
 	ansiOSCRegexp      = regexp.MustCompile(`\x1b\][^\a]*(\a|\x1b\\)`)
 	overlayFocusMarker = "<<overlay-focus>>"
 
-	titleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#F1F8E9")).
-			Background(lipgloss.Color("#2E7D32")).
-			Padding(0, 1)
-
-	panelStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#2E7D32")).
-			Background(lipgloss.Color("#102418")).
-			Padding(1, 2)
-
 	overlayStyle = lipgloss.NewStyle().
 			Border(lipgloss.ThickBorder()).
 			BorderForeground(lipgloss.Color("#4CAF50")).
@@ -623,10 +611,6 @@ var (
 	selectedFlowStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#F1F8E9")).
 				Background(lipgloss.Color("#2E7D32")).
-				Bold(true)
-
-	progressLabelStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#81C784")).
 				Bold(true)
 
 	headerBarStyle = lipgloss.NewStyle().
@@ -3347,7 +3331,7 @@ func renderEntry(item entry, width int, height int, renderer *glamour.TermRender
 	case "user":
 		return userMessageStyle.Render(wrapped)
 	case "assistant":
-		rendered := renderMarkdown(hardWrapText(content, textWidth), textWidth, renderer)
+		rendered := renderMarkdown(hardWrapText(content, textWidth), renderer)
 		return assistantMessageStyle.Render(rendered)
 	case "error":
 		return errorMessageStyle.Render(wrapped)
@@ -4980,26 +4964,6 @@ func estimateTextTokens(text string) int {
 	return count
 }
 
-func (m model) tokenUsageSegment(compact bool) string {
-	usage := m.requestStats.TokenUsage
-	if usage == nil {
-		return ""
-	}
-	if usage.TotalTokens > 0 {
-		if compact {
-			return fmt.Sprintf("Tk %s/%s/%s", formatCompactInt(usage.InputTokens), formatCompactInt(usage.OutputTokens), formatCompactInt(usage.TotalTokens))
-		}
-		return fmt.Sprintf("Token %s/%s/%s", formatCompactInt(usage.InputTokens), formatCompactInt(usage.OutputTokens), formatCompactInt(usage.TotalTokens))
-	}
-	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
-		if compact {
-			return fmt.Sprintf("Tk %s/%s", formatCompactInt(usage.InputTokens), formatCompactInt(usage.OutputTokens))
-		}
-		return fmt.Sprintf("Token %s/%s", formatCompactInt(usage.InputTokens), formatCompactInt(usage.OutputTokens))
-	}
-	return ""
-}
-
 func (m model) requestStatsSegment(compact bool) string {
 	if m.requestStats.StartedAt.IsZero() {
 		return ""
@@ -5028,63 +4992,6 @@ func (m model) requestStatsSegment(compact bool) string {
 	return strings.Join(parts, " · ")
 }
 
-func (m model) compressionSegment(compact bool) string {
-	compression := m.requestStats.Compression
-	if compression == nil || compression.Count == 0 {
-		return ""
-	}
-	if compact {
-		line := fmt.Sprintf("压缩 %d次", compression.Count)
-		if compression.CompressionRatio > 0 {
-			line += fmt.Sprintf(" %.0f%%", compression.CompressionRatio*100)
-		}
-		return line
-	}
-	line := fmt.Sprintf("压缩 %d 次", compression.Count)
-	if compression.BeforeTokens > 0 || compression.AfterTokens > 0 {
-		line += fmt.Sprintf(" %s→%s", formatCompactInt(compression.BeforeTokens), formatCompactInt(compression.AfterTokens))
-	}
-	if compression.RemainingTokens > 0 {
-		line += fmt.Sprintf(" 剩%s", formatCompactInt(compression.RemainingTokens))
-	}
-	if compression.CompressionRatio > 0 {
-		line += fmt.Sprintf(" %.0f%%", compression.CompressionRatio*100)
-	}
-	return line
-}
-
-func compressionUpdateSummary(previous, current *CompressionStats) string {
-	if current == nil || current.Count == 0 || sameCompressionStats(previous, current) {
-		return ""
-	}
-	parts := []string{fmt.Sprintf("上下文压缩 %d 次", current.Count)}
-	if current.BeforeTokens > 0 || current.AfterTokens > 0 {
-		parts[0] = parts[0] + "(" + fmt.Sprintf("%s→%s",
-			formatCompactInt(current.BeforeTokens),
-			formatCompactInt(current.AfterTokens),
-		) + ")"
-	}
-	if current.RemainingTokens > 0 {
-		parts = append(parts, fmt.Sprintf("剩余 %s", formatCompactInt(current.RemainingTokens)))
-	}
-	if current.CompressionRatio > 0 {
-		parts = append(parts, fmt.Sprintf("压缩率 %.0f%%", current.CompressionRatio*100))
-	}
-	return strings.Join(parts, "，")
-}
-
-func sameCompressionStats(left, right *CompressionStats) bool {
-	if left == nil || right == nil {
-		return left == right
-	}
-	return left.Count == right.Count &&
-		left.BeforeTokens == right.BeforeTokens &&
-		left.AfterTokens == right.AfterTokens &&
-		left.RemainingTokens == right.RemainingTokens &&
-		left.CompressionRatio == right.CompressionRatio &&
-		left.TargetType == right.TargetType
-}
-
 func currentFlowIndex(flows []FlowItem, current string) int {
 	for index, item := range flows {
 		if item.ID == current || item.Name == current {
@@ -5092,28 +4999,6 @@ func currentFlowIndex(flows []FlowItem, current string) int {
 		}
 	}
 	return 0
-}
-
-func compactSessionID(value string) string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return "新会话"
-	}
-	if len(trimmed) <= 10 {
-		return trimmed
-	}
-	return trimmed[:4] + "…" + trimmed[len(trimmed)-4:]
-}
-
-func sessionStatusSegment(value string, compact bool) string {
-	trimmed := compactSessionID(value)
-	if strings.TrimSpace(trimmed) == "" {
-		return ""
-	}
-	if compact {
-		return trimmed
-	}
-	return "会话 " + trimmed
 }
 
 func joinStatusSegments(parts []string, separator string) string {
@@ -5127,7 +5012,7 @@ func joinStatusSegments(parts []string, separator string) string {
 	return strings.Join(filtered, separator)
 }
 
-func renderMarkdown(content string, width int, renderer *glamour.TermRenderer) string {
+func renderMarkdown(content string, renderer *glamour.TermRenderer) string {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
 		return ""
@@ -5408,39 +5293,6 @@ func currentToolLabel(text string, fallbackValue string) string {
 	return trimText(trimmed, 48)
 }
 
-func centerText(text string, width int) string {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" || width <= 0 {
-		return trimmed
-	}
-	return lipgloss.Place(width, 1, lipgloss.Center, lipgloss.Top, trimmed)
-}
-
-func buildWelcomeBanner(width int) string {
-	primaryStyle := valueStyle.Copy().Bold(true)
-	secondaryStyle := hintStyle.Copy()
-	if width < 24 {
-		return primaryStyle.Render("TAIYIFLOW")
-	}
-
-	boxWidth := minInt(width, 38)
-	if boxWidth < 26 {
-		boxWidth = width
-	}
-	innerWidth := boxWidth - 2
-	if innerWidth < 18 {
-		return primaryStyle.Render("TAIYIFLOW")
-	}
-
-	centered := lipgloss.NewStyle().Width(innerWidth).Align(lipgloss.Center)
-	top := hintStyle.Render("╭" + strings.Repeat("─", innerWidth) + "╮")
-	middleTop := hintStyle.Render("│") + primaryStyle.Render(centered.Render("TaiyiFlow")) + hintStyle.Render("│")
-	middleBottom := hintStyle.Render("│") + secondaryStyle.Render(centered.Render("太乙智启 CLI")) + hintStyle.Render("│")
-	bottom := hintStyle.Render("╰" + strings.Repeat("─", innerWidth) + "╯")
-
-	return strings.Join([]string{top, middleTop, middleBottom, bottom}, "\n")
-}
-
 func minInt(left int, right int) int {
 	if left < right {
 		return left
@@ -5453,10 +5305,6 @@ func maxInt(left int, right int) int {
 		return left
 	}
 	return right
-}
-
-func row(label string, value string) string {
-	return fmt.Sprintf("%s %s", labelStyle.Render(label+":"), valueStyle.Render(value))
 }
 
 func approvalModeLabel(value string) string {

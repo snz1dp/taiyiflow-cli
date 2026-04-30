@@ -1609,15 +1609,6 @@ func previewBuiltInCommand(payload map[string]any) string {
 	return strings.Join(parts, " ")
 }
 
-func submitTUIClientCallFailure(
-	ctx context.Context,
-	providerClient provider.Provider,
-	payload map[string]any,
-	errorMessage string,
-) error {
-	return submitClientCallFailure(ctx, providerClient, payload, errorMessage)
-}
-
 func buildTUIAssistantChunkEvent(payload map[string]any) (tui.Event, bool) {
 	chunk := firstNonEmptyRawStringMapValue(payload, "chunk", "text")
 	if chunk == "" {
@@ -1656,21 +1647,6 @@ func stringMapValue(payload map[string]any, key string) string {
 		return ""
 	}
 	return fmt.Sprintf("%v", value)
-}
-
-func boolMapValue(payload map[string]any, key string) bool {
-	value, ok := payload[key]
-	if !ok || value == nil {
-		return false
-	}
-	switch typed := value.(type) {
-	case bool:
-		return typed
-	case string:
-		return strings.EqualFold(strings.TrimSpace(typed), "true")
-	default:
-		return false
-	}
 }
 
 func intMapValue(payload map[string]any, key string) int {
@@ -2258,16 +2234,6 @@ func totalPages(total int, pageSize int) int {
 	return (total + pageSize - 1) / pageSize
 }
 
-func nextSessionsPage(current int, pages int) int {
-	if current < pages {
-		return current + 1
-	}
-	if pages > 1 {
-		return pages - 1
-	}
-	return 1
-}
-
 func formatRelativeTimeChinese(value time.Time) string {
 	if value.IsZero() {
 		return "刚刚"
@@ -2292,22 +2258,6 @@ func formatRelativeTimeChinese(value time.Time) string {
 		return fmt.Sprintf("%d 个月前", int(delta/(30*24*time.Hour)))
 	}
 	return fmt.Sprintf("%d 年前", int(delta/(365*24*time.Hour)))
-}
-
-func buildApprovalPicker(snapshot tui.Snapshot) *tui.ApprovalPickerState {
-	current := strings.TrimSpace(snapshot.ApprovalMode)
-	if current == "" {
-		current = "confirm"
-	}
-	return &tui.ApprovalPickerState{
-		Title: "命令执行模式(command execution mode)",
-		Hint:  "选择客户端命令的执行模式。",
-		Options: []tui.ApprovalOption{
-			{Value: "confirm", Label: "每次确认", Description: "执行客户端命令前逐次确认。", IsCurrent: current == "confirm"},
-			{Value: "auto", Label: "自动执行", Description: "以后都同意，客户端命令默认自动执行。", IsCurrent: current == "auto"},
-			{Value: "readonly", Label: "只读模式", Description: "禁止执行本地命令。", IsCurrent: current == "readonly"},
-		},
-	}
 }
 
 func buildTUISkillsPicker(config internalconfig.Config, contextDir string, query string) (*tui.SkillsPickerState, error) {
