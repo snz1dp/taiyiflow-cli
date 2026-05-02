@@ -243,6 +243,29 @@ func TestBuildTUISkillAutoInstallConfirmRequest(t *testing.T) {
 	}
 }
 
+func TestApplyMetadataContextWindowBudgetInitializesSnapshotMetrics(t *testing.T) {
+	snapshot := internaltui.Snapshot{}
+
+	applyMetadataContextWindowBudget(&snapshot, 200000)
+
+	if snapshot.RequestStats == nil || snapshot.RequestStats.TokenUsage == nil || snapshot.RequestStats.TokenUsage.ContextWindow == nil {
+		t.Fatalf("expected context window metrics to be initialized, got %#v", snapshot.RequestStats)
+	}
+	if snapshot.RequestStats.TokenUsage.ContextWindow.MaxInputTokens != 200000 {
+		t.Fatalf("expected max input tokens to be applied, got %#v", snapshot.RequestStats.TokenUsage.ContextWindow)
+	}
+}
+
+func TestApplyMetadataContextWindowBudgetIgnoresInvalidBudget(t *testing.T) {
+	snapshot := internaltui.Snapshot{}
+
+	applyMetadataContextWindowBudget(&snapshot, 0)
+
+	if snapshot.RequestStats != nil {
+		t.Fatalf("expected request stats unchanged for invalid budget, got %#v", snapshot.RequestStats)
+	}
+}
+
 func TestEmitTUIClientToolResultEventsEmitsStatusNoteBeforePanel(t *testing.T) {
 	events := []internaltui.Event{}
 	emitTUIClientToolResultEvents(func(event internaltui.Event) {

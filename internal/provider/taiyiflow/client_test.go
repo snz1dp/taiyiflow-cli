@@ -211,6 +211,30 @@ func TestGetSessionContextWindowParsesResponse(t *testing.T) {
 	}
 }
 
+func TestGetMetadataParsesMaxInputTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/run/demo-flow/metadata" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"id":"demo-flow","name":"Demo Flow","description":"测试流程","welcome_message":"hi","max_input_tokens":200000,"enabled":true,"is_chat":true}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	metadata, err := client.GetMetadata(context.Background(), "demo-flow")
+	if err != nil {
+		t.Fatalf("expected GetMetadata to succeed, got %v", err)
+	}
+	if metadata == nil {
+		t.Fatal("expected metadata response")
+	}
+	if metadata.MaxInputTokens != 200000 {
+		t.Fatalf("expected max_input_tokens=200000, got %#v", metadata)
+	}
+}
+
 func TestResolveSkillPreviewPostsRequestAndParsesResponse(t *testing.T) {
 	var captured skillResolveRequestBody
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -360,5 +384,52 @@ func TestStreamIncludesAgentAutoLoopRequestFields(t *testing.T) {
 	}
 	if captured.AgentAutoLoopMaxRounds != 5 {
 		t.Fatalf("expected agent_auto_loop_max_rounds 5, got %d", captured.AgentAutoLoopMaxRounds)
+	}
+}
+
+func TestStreamRequestUsesInputValueWithoutPromptText(t *testing.T) {
+	var (
+		captured       streamRequestBody
+		capturedRawMap map[string]any
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/run/demo-flow/stream" {
+			http.NotFound(writer, request)
+			return
+		}
+		if err := json.NewDecoder(request.Body).Decode(&capturedRawMap); err != nil {
+			t.Fatalf("decode raw request body failed: %v", err)
+		}
+		payload, err := json.Marshal(capturedRawMap)
+		if err != nil {
+			t.Fatalf("marshal captured map failed: %v", err)
+		}
+		if err := json.Unmarshal(payload, &captured); err != nil {
+			t.Fatalf("decode typed request body failed: %v", err)
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.Header().Set(SessionHeader, "session-input-only")
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	stream, session, err := client.Stream(context.Background(), provider.StreamRequest{
+		FlowID: "demo-flow",
+		Input:  "仅发送用户输入文本",
+	})
+	if err != nil {
+		t.Fatalf("expected stream request to succeed, got %v", err)
+	}
+	if session == nil || session.SessionID != "session-input-only" {
+		t.Fatalf("expected session header to be preserved, got %#v", session)
+	}
+	for range stream {
+	}
+
+	if captured.InputValue != "仅发送用户输入文本" {
+		t.Fatalf("expected input_value to keep user text, got %q", captured.InputValue)
+	}
+	if _, exists := capturedRawMap["prompt_text"]; exists {
+		t.Fatalf("expected request body not to include prompt_text, got %#v", capturedRawMap)
 	}
 }

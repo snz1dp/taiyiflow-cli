@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -831,11 +832,10 @@ func TestStreamTaskInstallsMissingSkillBeforeRequest(t *testing.T) {
 	}
 
 	stream := make(chan provider.StreamEvent, 1)
-	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "未找到技能: Remote Skill"}}
 	close(stream)
 	providerStub := &stubProvider{
-		stream:       stream,
-		skillPreview: &provider.SkillResolvePreview{MissingSkillNames: []string{"Remote Skill"}},
+		stream: stream,
 	}
 
 	_, err = app.streamTask(
@@ -869,8 +869,101 @@ func TestStreamTaskInstallsMissingSkillBeforeRequest(t *testing.T) {
 	if !containsIgnoreCase(loadedState.ApprovedSkillNames, "Remote Skill") {
 		t.Fatalf("expected approved skill recorded in session, got %#v", loadedState.ApprovedSkillNames)
 	}
-	if providerStub.lastResolveRequest.RequestType != provider.RequestTypeAgent {
-		t.Fatalf("expected resolve preview request type %q, got %#v", provider.RequestTypeAgent, providerStub.lastResolveRequest)
+}
+
+func TestDetectMissingSkillNamesPrefersStructuredPayload(t *testing.T) {
+	eventData := map[string]any{
+		"error":      "generic failure",
+		"error_code": "MISSING_SKILLS",
+		"details": map[string]any{
+			"missing_skill_names": []any{"Remote Skill", "Debug Helper"},
+		},
+	}
+
+	names := detectMissingSkillNames(eventData, fmt.Errorf("后端返回错误: generic failure"))
+	if len(names) != 2 {
+		t.Fatalf("expected 2 missing skill names, got %#v", names)
+	}
+	if !containsIgnoreCase(names, "Remote Skill") || !containsIgnoreCase(names, "Debug Helper") {
+		t.Fatalf("expected structured missing skills parsed, got %#v", names)
+	}
+}
+
+func TestStreamTaskInstallsMissingSkillWithStructuredErrorPayload(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	store, err := agent.NewSessionStore()
+	if err != nil {
+		t.Fatalf("new session store failed: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := &App{stdout: &stdout, stderr: &stderr, configManager: manager, sessionStore: store}
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	workspaceDir := t.TempDir()
+	searchQueries := []string{}
+	registry := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/search":
+			searchQueries = append(searchQueries, request.URL.Query().Get("q"))
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","version":"1.0.0","updatedAt":1710000000}]}`))
+		case "/api/v1/skills/remote-skill":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"skill":{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","updatedAt":1710000000},"latestVersion":{"version":"1.0.0"}}`))
+		case "/api/v1/download":
+			archiveBytes := buildRemoteSkillArchive(t, "1.0.0")
+			_, _ = writer.Write(archiveBytes)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer registry.Close()
+
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.RegistryURL = registry.URL
+	config.Skills.InstallScope = internalconfig.SkillInstallScopeWorkspace
+	config.Skills.AutoInstallPolicy = internalconfig.SkillAutoInstallPolicyAllow
+	config.Skills.FreeTextSearchEnabled = false
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	stream := make(chan provider.StreamEvent, 1)
+	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{
+		"error":      "generic failure",
+		"error_code": "MISSING_SKILLS",
+		"details": map[string]any{
+			"missing_skill_names": []any{"Remote Skill"},
+		},
+	}}
+	close(stream)
+	providerStub := &stubProvider{stream: stream}
+
+	_, err = app.streamTask(
+		context.Background(),
+		providerStub,
+		config,
+		"demo-flow",
+		"请做上下文审查",
+		agent.SessionState{FlowID: "demo-flow", RequestMode: provider.RequestTypeAgent, ContextDir: workspaceDir, Workdir: workspaceDir},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+	if len(searchQueries) != 1 || searchQueries[0] != "Remote Skill" {
+		t.Fatalf("expected structured missing-skill search query, got %#v", searchQueries)
+	}
+	if !containsIgnoreCase(providerStub.lastRequest.RequestedSkillNames, "Remote Skill") {
+		t.Fatalf("expected installed skill in request, got %#v", providerStub.lastRequest.RequestedSkillNames)
 	}
 }
 
@@ -920,11 +1013,10 @@ func TestStreamTaskUsesFreeTextSearchForUniqueSkillCandidate(t *testing.T) {
 	}
 
 	stream := make(chan provider.StreamEvent, 1)
-	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "未找到技能: Unknown Skill"}}
 	close(stream)
 	providerStub := &stubProvider{
-		stream:       stream,
-		skillPreview: &provider.SkillResolvePreview{},
+		stream: stream,
 	}
 
 	input := "请帮我做上下文审查"
@@ -942,8 +1034,8 @@ func TestStreamTaskUsesFreeTextSearchForUniqueSkillCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("streamTask failed: %v", err)
 	}
-	if len(searchQueries) != 1 || searchQueries[0] != input {
-		t.Fatalf("expected free-text search query %q, got %#v", input, searchQueries)
+	if len(searchQueries) != 2 || searchQueries[0] != "Unknown Skill" || searchQueries[1] != input {
+		t.Fatalf("expected exact+free-text search queries [Unknown Skill, %q], got %#v", input, searchQueries)
 	}
 	if !containsIgnoreCase(providerStub.lastRequest.RequestedSkillNames, "Remote Skill") {
 		t.Fatalf("expected free-text installed skill in request, got %#v", providerStub.lastRequest.RequestedSkillNames)
@@ -998,11 +1090,10 @@ func TestStreamTaskInstallsMissingSkillIntoLegacyGlobalDirectoryAndReloadsReques
 	}
 
 	stream := make(chan provider.StreamEvent, 1)
-	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "未找到技能: Remote Skill"}}
 	close(stream)
 	providerStub := &stubProvider{
-		stream:       stream,
-		skillPreview: &provider.SkillResolvePreview{MissingSkillNames: []string{"Remote Skill"}},
+		stream: stream,
 	}
 
 	_, err = app.streamTask(
@@ -1084,11 +1175,10 @@ func TestStreamTaskAutoInstallUsesPinnedSessionInstallScope(t *testing.T) {
 	}
 
 	stream := make(chan provider.StreamEvent, 1)
-	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "未找到技能: Remote Skill"}}
 	close(stream)
 	providerStub := &stubProvider{
-		stream:       stream,
-		skillPreview: &provider.SkillResolvePreview{MissingSkillNames: []string{"Remote Skill"}},
+		stream: stream,
 	}
 
 	_, err = app.streamTask(

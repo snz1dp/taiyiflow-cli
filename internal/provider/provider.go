@@ -110,6 +110,7 @@ type Metadata struct {
 	Name           string
 	Description    string
 	WelcomeMessage string
+	MaxInputTokens int
 	Enabled        bool
 	IsChat         bool
 }

@@ -460,26 +460,40 @@ func (a *App) streamTask(
 	showStreamEvents bool,
 	showThinking bool,
 ) (agent.SessionState, error) {
-	a.runtime.SetStreamEventLogsEnabled(showStreamEvents)
-	defer a.runtime.SetStreamEventLogsEnabled(true)
-
-	runtimeConfig := applyEffectiveSandboxEscapePolicy(config, sessionState.SandboxEscapePolicyOverride, commandSandboxEscapePolicy)
-	runtimeConfig = applyEffectiveSkillReviewPolicy(runtimeConfig, sessionState.SkillReviewPolicyOverride)
-	requestedSkillNames, clientSkillPackages, err := a.ensureSkillSupplyBeforeStream(
+	return a.streamTaskWithSkillRetry(
 		ctx,
 		providerClient,
 		config,
 		flowID,
 		task,
-		&sessionState,
-		sessionState.RequestMode,
-		a.confirmSkillAutoInstall,
-		func(text string) {
-			if showStreamEvents && strings.TrimSpace(text) != "" {
-				fmt.Fprintf(a.stdout, "[系统提示]: %s\n", text)
-			}
-		},
+		sessionState,
+		commandSandboxEscapePolicy,
+		showStreamEvents,
+		showThinking,
+		0,
 	)
+}
+
+func (a *App) streamTaskWithSkillRetry(
+	ctx context.Context,
+	providerClient provider.Provider,
+	config internalconfig.Config,
+	flowID string,
+	task string,
+	sessionState agent.SessionState,
+	commandSandboxEscapePolicy string,
+	showStreamEvents bool,
+	showThinking bool,
+	retryCount int,
+) (agent.SessionState, error) {
+	a.runtime.SetStreamEventLogsEnabled(showStreamEvents)
+	defer a.runtime.SetStreamEventLogsEnabled(true)
+
+	runtimeConfig := applyEffectiveSandboxEscapePolicy(config, sessionState.SandboxEscapePolicyOverride, commandSandboxEscapePolicy)
+	runtimeConfig = applyEffectiveSkillReviewPolicy(runtimeConfig, sessionState.SkillReviewPolicyOverride)
+	resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir))
+	skillConfig := a.resolveEffectiveSkillConfig(config, resolvedContextDir)
+	requestedSkillNames, clientSkillPackages, err := loadSkillPayloadWithConfig(skillConfig)
 	if err != nil {
 		return sessionState, err
 	}
@@ -562,10 +576,66 @@ func (a *App) streamTask(
 				}
 			}
 		case provider.EventError:
+			normalizedErr := normalizeStreamEventError(event.Data["error"])
+			if retryCount < 1 {
+				missingSkillNames := detectMissingSkillNames(event.Data, normalizedErr)
+				if len(missingSkillNames) > 0 {
+					installedAny, installErr := a.autoInstallCandidates(
+						skillConfig,
+						&sessionState,
+						task,
+						requestedSkillNames,
+						missingSkillNames,
+						a.confirmSkillAutoInstall,
+						func(text string) {
+							if showStreamEvents && strings.TrimSpace(text) != "" {
+								fmt.Fprintf(a.stdout, "[系统提示]: %s\n", text)
+							}
+						},
+					)
+					if installErr != nil {
+						return sessionState, installErr
+					}
+					if installedAny {
+						if strings.TrimSpace(sessionState.FlowID) == "" {
+							sessionState.FlowID = strings.TrimSpace(flowID)
+						}
+						if strings.TrimSpace(sessionState.Workdir) == "" {
+							sessionState.Workdir = resolvedContextDir
+						}
+						if strings.TrimSpace(sessionState.ContextDir) == "" {
+							sessionState.ContextDir = resolvedContextDir
+						}
+						if a.sessionStore != nil {
+							if saveErr := a.sessionStore.Save(sessionState); saveErr != nil {
+								return sessionState, saveErr
+							}
+						}
+						if hasVisibleOutput {
+							fmt.Fprintln(a.stdout)
+						}
+						if showStreamEvents {
+							fmt.Fprintf(a.stdout, "[系统提示]: 检测到缺失技能 %s，已尝试自动补装并重试当前请求。\n", strings.Join(missingSkillNames, ", "))
+						}
+						return a.streamTaskWithSkillRetry(
+							ctx,
+							providerClient,
+							config,
+							flowID,
+							task,
+							sessionState,
+							commandSandboxEscapePolicy,
+							showStreamEvents,
+							showThinking,
+							retryCount+1,
+						)
+					}
+				}
+			}
 			if hasVisibleOutput {
 				fmt.Fprintln(a.stderr)
 			}
-			return sessionState, normalizeStreamEventError(event.Data["error"])
+			return sessionState, normalizedErr
 		case provider.EventBuiltIn:
 			if !modeAllowsBuiltIn(sessionState.RequestMode) {
 				if err := submitClientCallFailure(ctx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(sessionState.RequestMode))); err != nil {

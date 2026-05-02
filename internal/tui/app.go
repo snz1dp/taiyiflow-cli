@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/progress"
@@ -4822,25 +4821,9 @@ func (m model) inputContextUsageHint() string {
 	contextWindow := usage.ContextWindow
 	parts := []string{}
 	maxTokens := contextWindow.MaxInputTokens
-	currentTokens := contextWindow.CurrentRoundInputTokens
 	available := resolveContextAvailableTokens(contextWindow)
-	if draftTokens := estimateTextTokens(m.input.Value()); draftTokens > 0 {
-		parts = append(parts, fmt.Sprintf("%s", formatCompactInt(draftTokens)))
-	}
-	if maxTokens > 0 {
-		if currentTokens < 0 {
-			currentTokens = 0
-		}
-		if currentTokens > maxTokens {
-			currentTokens = maxTokens
-		}
-		parts = append(parts, fmt.Sprintf("%.0f", float64(currentTokens)/1000.0))
-	}
 	if nextRoundAvailabilityRate := formatContextAvailabilityRate(available, maxTokens); nextRoundAvailabilityRate != "" {
-		parts[len(parts)-1] = fmt.Sprintf("%s/%s", parts[len(parts)-1], nextRoundAvailabilityRate)
-	}
-	if contextWindow.HistoryMessageCount > 0 {
-		parts = append(parts, fmt.Sprintf("共%d条消息", contextWindow.HistoryMessageCount))
+		parts = append(parts, nextRoundAvailabilityRate)
 	}
 	if watermarkWarning := formatContextWatermarkWarning(contextWindow); watermarkWarning != "" {
 		parts = append(parts, watermarkWarning)
@@ -4865,8 +4848,7 @@ func formatContextAvailabilityRate(available int, maxTokens int) string {
 	if available > maxTokens {
 		available = maxTokens
 	}
-	rate := float64(available) / 1000.0
-	return fmt.Sprintf("%.0fK", rate)
+	return fmt.Sprintf("共%s剩%s可用", formatCompactInt(maxTokens), formatCompactInt(available))
 }
 
 func resolveContextAvailableTokens(contextWindow *ContextWindow) int {
@@ -4923,45 +4905,6 @@ func cloneRequestMetrics(source *RequestMetrics) RequestMetrics {
 		cloned.Compression = &compression
 	}
 	return cloned
-}
-
-func estimateTextTokens(text string) int {
-	if strings.TrimSpace(text) == "" {
-		return 0
-	}
-	count := 0
-	asciiRunes := 0
-	flushASCII := func() {
-		if asciiRunes == 0 {
-			return
-		}
-		count += maxInt(1, (asciiRunes+3)/4)
-		asciiRunes = 0
-	}
-	for _, runeValue := range text {
-		switch {
-		case runeValue <= unicode.MaxASCII:
-			switch {
-			case unicode.IsSpace(runeValue):
-				flushASCII()
-			case unicode.IsLetter(runeValue) || unicode.IsDigit(runeValue):
-				asciiRunes++
-			default:
-				flushASCII()
-				count++
-			}
-		case unicode.Is(unicode.Han, runeValue), unicode.In(runeValue, unicode.Hiragana, unicode.Katakana, unicode.Hangul):
-			flushASCII()
-			count++
-		case unicode.IsSpace(runeValue):
-			flushASCII()
-		default:
-			flushASCII()
-			count++
-		}
-	}
-	flushASCII()
-	return count
 }
 
 func (m model) requestStatsSegment(compact bool) string {
@@ -5069,10 +5012,10 @@ func formatCompactInt(value int) string {
 	if value < 1000 {
 		return fmt.Sprintf("%d", value)
 	}
-	if value < 10000 {
-		return fmt.Sprintf("%.1fk", float64(value)/1000)
+	if value < 1000000 {
+		return fmt.Sprintf("%dK", int(math.Round(float64(value)/1000.0)))
 	}
-	return fmt.Sprintf("%dk", value/1000)
+	return fmt.Sprintf("%dM", int(math.Round(float64(value)/1000000.0)))
 }
 
 func formatDuration(duration time.Duration) string {

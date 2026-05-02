@@ -103,6 +103,7 @@ type metadataResponse struct {
 	Name           string `json:"name"`
 	Description    string `json:"description"`
 	WelcomeMessage string `json:"welcome_message"`
+	MaxInputTokens int    `json:"max_input_tokens"`
 	Enabled        bool   `json:"enabled"`
 	IsChat         bool   `json:"is_chat"`
 }
@@ -546,6 +547,7 @@ func (c *Client) GetMetadata(ctx context.Context, flowID string) (*provider.Meta
 		Name:           payload.Name,
 		Description:    payload.Description,
 		WelcomeMessage: payload.WelcomeMessage,
+		MaxInputTokens: payload.MaxInputTokens,
 		Enabled:        payload.Enabled,
 		IsChat:         payload.IsChat,
 	}, nil

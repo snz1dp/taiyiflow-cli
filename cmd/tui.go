@@ -97,68 +97,58 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}
 		runtimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
 		quietRuntimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
-		requestedSkillNames, clientSkillPackages, err := a.ensureSkillSupplyBeforeStream(
-			runCtx,
-			providerClient,
-			config,
-			currentFlow,
-			request.Input,
-			&sessionState,
-			request.RequestMode,
-			func(approval skillInstallApprovalRequest) bool {
-				return confirm(buildTUISkillAutoInstallConfirmRequest(approval))
-			},
-			func(text string) {
-				if strings.TrimSpace(text) != "" {
-					emit(tui.Event{Kind: tui.EventProgressNote, Text: text})
+		retryCount := 0
+		for {
+			resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
+			skillConfig := a.resolveEffectiveSkillConfig(config, resolvedContextDir)
+			requestedSkillNames, clientSkillPackages, skillErr := loadSkillPayloadWithConfig(skillConfig)
+			if skillErr != nil {
+				return skillErr
+			}
+			stream, streamSession, streamErr := providerClient.Stream(runCtx, provider.StreamRequest{
+				FlowID:                 currentFlow,
+				Input:                  request.Input,
+				InputType:              "any",
+				OutputType:             "any",
+				SessionID:              sessionState.SessionID,
+				RunID:                  request.RunID,
+				RequestType:            normalizeRequestMode(request.RequestMode),
+				ReasoningEnabled:       request.ReasoningEnabled,
+				AgentAutoLoopEnabled:   resolveAgentAutoLoopEnabled(config, sessionState, request.RequestMode),
+				AgentAutoLoopMaxRounds: resolveAgentAutoLoopMaxRounds(config, sessionState, request.RequestMode),
+				DeviceType:             provider.DeviceTypeCLI,
+				ClientContextDir:       resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir)),
+				CommandExecutionTarget: "client",
+				UserAgent:              buildCLIUserAgent(),
+				RequestedSkillNames:    requestedSkillNames,
+				ClientMCPServers:       quietRuntimeClient.ClientMCPServersForMode(request.RequestMode),
+				ClientSkillPackages:    clientSkillPackages,
+			})
+			if streamErr != nil {
+				return fmt.Errorf("%s", explainBackendFailure(streamErr))
+			}
+
+			if streamSession != nil && strings.TrimSpace(streamSession.SessionID) != "" {
+				sessionState.SessionID = streamSession.SessionID
+				sessionState.FlowID = currentFlow
+				sessionState.FlowDisplayName = strings.TrimSpace(a.resolveFlowDisplayName(runCtx, providerClient, currentFlow))
+				title, titleErr := lookupSessionTitle(runCtx, providerClient, currentFlow, streamSession.SessionID)
+				if titleErr == nil {
+					sessionState.SessionTitle = strings.TrimSpace(title)
 				}
-			},
-		)
-		if err != nil {
-			return err
-		}
-		stream, streamSession, err := providerClient.Stream(runCtx, provider.StreamRequest{
-			FlowID:                 currentFlow,
-			Input:                  request.Input,
-			InputType:              "any",
-			OutputType:             "any",
-			SessionID:              sessionState.SessionID,
-			RunID:                  request.RunID,
-			RequestType:            normalizeRequestMode(request.RequestMode),
-			ReasoningEnabled:       request.ReasoningEnabled,
-			AgentAutoLoopEnabled:   resolveAgentAutoLoopEnabled(config, sessionState, request.RequestMode),
-			AgentAutoLoopMaxRounds: resolveAgentAutoLoopMaxRounds(config, sessionState, request.RequestMode),
-			DeviceType:             provider.DeviceTypeCLI,
-			ClientContextDir:       resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir)),
-			CommandExecutionTarget: "client",
-			UserAgent:              buildCLIUserAgent(),
-			RequestedSkillNames:    requestedSkillNames,
-			ClientMCPServers:       quietRuntimeClient.ClientMCPServersForMode(request.RequestMode),
-			ClientSkillPackages:    clientSkillPackages,
-		})
-		if err != nil {
-			return fmt.Errorf("%s", explainBackendFailure(err))
-		}
-
-		if streamSession != nil && strings.TrimSpace(streamSession.SessionID) != "" {
-			sessionState.SessionID = streamSession.SessionID
-			sessionState.FlowID = currentFlow
-			sessionState.FlowDisplayName = strings.TrimSpace(a.resolveFlowDisplayName(runCtx, providerClient, currentFlow))
-			title, titleErr := lookupSessionTitle(runCtx, providerClient, currentFlow, streamSession.SessionID)
-			if titleErr == nil {
-				sessionState.SessionTitle = strings.TrimSpace(title)
+				sessionState.Workdir = workdir
+				sessionState.RequestMode = normalizeRequestMode(request.RequestMode)
+				sessionState.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
+				if err := a.sessionStore.Save(sessionState); err != nil {
+					return err
+				}
+				emit(tui.Event{Kind: tui.EventSessionUpdate, SessionID: streamSession.SessionID})
 			}
-			sessionState.Workdir = workdir
-			sessionState.RequestMode = normalizeRequestMode(request.RequestMode)
-			sessionState.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
-			if err := a.sessionStore.Save(sessionState); err != nil {
-				return err
-			}
-			emit(tui.Event{Kind: tui.EventSessionUpdate, SessionID: streamSession.SessionID})
-		}
 
-		for event := range stream {
-			switch event.Type {
+			retryRequested := false
+		eventLoop:
+			for event := range stream {
+				switch event.Type {
 			case provider.EventMessage:
 				if sessionTitle := firstNonEmptyTrimmedStringMapValue(event.Data, "session_name"); sessionTitle != "" {
 					sessionState.SessionTitle = sessionTitle
@@ -279,10 +269,45 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					return err
 				}
 			case provider.EventError:
-				return normalizeStreamEventError(event.Data["error"])
+				normalizedErr := normalizeStreamEventError(event.Data["error"])
+				if retryCount < 1 {
+					missingSkillNames := detectMissingSkillNames(event.Data, normalizedErr)
+					if len(missingSkillNames) > 0 {
+						installedAny, installErr := a.autoInstallCandidates(
+							skillConfig,
+							&sessionState,
+							request.Input,
+							requestedSkillNames,
+							missingSkillNames,
+							func(approval skillInstallApprovalRequest) bool {
+								return confirm(buildTUISkillAutoInstallConfirmRequest(approval))
+							},
+							func(text string) {
+								if strings.TrimSpace(text) != "" {
+									emit(tui.Event{Kind: tui.EventProgressNote, Text: text})
+								}
+							},
+						)
+						if installErr != nil {
+							return installErr
+						}
+						if installedAny {
+							retryCount++
+							retryRequested = true
+							emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("检测到缺失技能 %s，已完成补装，正在自动重试。", strings.Join(missingSkillNames, ", "))})
+							break eventLoop
+						}
+					}
+				}
+				return normalizedErr
 			case provider.EventClose:
-				return nil
+				break eventLoop
 			}
+		}
+			if retryRequested {
+				continue
+			}
+			break
 		}
 
 		if request.RunID != "" && strings.TrimSpace(sessionState.SessionID) != "" {
@@ -814,6 +839,7 @@ func (a *App) buildTUISnapshot(
 	metadata, err := providerClient.GetMetadata(ctx, flowID)
 	if err == nil {
 		snapshot.WelcomeMessage = metadata.WelcomeMessage
+		applyMetadataContextWindowBudget(&snapshot, metadata.MaxInputTokens)
 		if strings.TrimSpace(metadata.Name) != "" {
 			snapshot.DefaultFlowLabel = metadata.Name
 			sessionState.FlowDisplayName = strings.TrimSpace(metadata.Name)
@@ -1054,6 +1080,22 @@ func mergeSessionMetrics(runMetrics *tui.RequestMetrics, sessionMetrics *tui.Req
 		merged.Compression = &compression
 	}
 	return merged
+}
+
+func applyMetadataContextWindowBudget(snapshot *tui.Snapshot, maxInputTokens int) {
+	if snapshot == nil || maxInputTokens <= 0 {
+		return
+	}
+	if snapshot.RequestStats == nil {
+		snapshot.RequestStats = &tui.RequestMetrics{}
+	}
+	if snapshot.RequestStats.TokenUsage == nil {
+		snapshot.RequestStats.TokenUsage = &tui.TokenUsage{}
+	}
+	if snapshot.RequestStats.TokenUsage.ContextWindow == nil {
+		snapshot.RequestStats.TokenUsage.ContextWindow = &tui.ContextWindow{}
+	}
+	snapshot.RequestStats.TokenUsage.ContextWindow.MaxInputTokens = maxInputTokens
 }
 
 func mapMessageRole(item provider.SessionMessage) string {

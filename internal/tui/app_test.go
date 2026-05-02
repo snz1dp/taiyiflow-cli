@@ -703,13 +703,13 @@ func TestContextUsageSegmentShowsCurrentRoundUsage(t *testing.T) {
 	}
 
 	got := model.contextUsageSegment(false)
-	if !strings.Contains(got, "当前上下文 2.0k/8.2k 25%") {
+	if !strings.Contains(got, "当前上下文 2K/8K 25%") {
 		t.Fatalf("expected current round usage in context segment, got %q", got)
 	}
-	if !strings.Contains(got, "可用 6.1k") {
+	if !strings.Contains(got, "可用 6K") {
 		t.Fatalf("expected available context tokens in context segment, got %q", got)
 	}
-	if !strings.Contains(got, "历史 3.1k") {
+	if !strings.Contains(got, "历史 3K") {
 		t.Fatalf("expected short-term history in context segment, got %q", got)
 	}
 }
@@ -733,7 +733,7 @@ func TestContextUsageSegmentShowsWatermarkWarning(t *testing.T) {
 	if !strings.Contains(got, "已过高水位") {
 		t.Fatalf("expected watermark warning in context segment, got %q", got)
 	}
-	if !strings.Contains(got, "4.9k") {
+	if !strings.Contains(got, "5K") {
 		t.Fatalf("expected compression target hint in context segment, got %q", got)
 	}
 }
@@ -755,14 +755,11 @@ func TestInputContextUsageHintShowsCurrentUsageDetails(t *testing.T) {
 	}
 
 	got := model.inputContextUsageHint()
-	if !strings.Contains(got, "2/6K") {
-		t.Fatalf("expected compact current usage summary in input hint, got %q", got)
+	if !strings.Contains(got, "共8K剩6K可用") {
+		t.Fatalf("expected compact availability summary in input hint, got %q", got)
 	}
-	if !strings.Contains(got, "共12条消息") {
-		t.Fatalf("expected next-round availability rate in input hint, got %q", got)
-	}
-	if !strings.Contains(got, "2/6K") {
-		t.Fatalf("expected history message count in input hint, got %q", got)
+	if strings.Contains(got, "共12条消息") {
+		t.Fatalf("expected history message count hidden to save width, got %q", got)
 	}
 }
 
@@ -784,14 +781,32 @@ func TestInputContextUsageHintShowsProjectedUsageWhileTyping(t *testing.T) {
 	}
 
 	got := model.inputContextUsageHint()
-	if !strings.Contains(got, "7") {
-		t.Fatalf("expected draft token estimate in input hint, got %q", got)
+	if strings.Contains(got, "7 ·") {
+		t.Fatalf("expected draft token estimate removed to save width, got %q", got)
 	}
-	if !strings.Contains(got, "2/6K") {
-		t.Fatalf("expected compact current usage summary in input hint, got %q", got)
+	if !strings.Contains(got, "共8K剩6K可用") {
+		t.Fatalf("expected compact availability summary in input hint, got %q", got)
 	}
-	if !strings.Contains(got, "7 · 2/6K") {
+	if got != "共8K剩6K可用" {
 		t.Fatalf("expected next-round availability rate in input hint, got %q", got)
+	}
+}
+
+func TestFormatCompactIntSupportsMUnits(t *testing.T) {
+	if got := formatCompactInt(999); got != "999" {
+		t.Fatalf("expected plain format for <1000, got %q", got)
+	}
+	if got := formatCompactInt(1200); got != "1K" {
+		t.Fatalf("expected K format, got %q", got)
+	}
+	if got := formatCompactInt(12500); got != "13K" {
+		t.Fatalf("expected integer K format, got %q", got)
+	}
+	if got := formatCompactInt(1300000); got != "1M" {
+		t.Fatalf("expected decimal M format, got %q", got)
+	}
+	if got := formatCompactInt(12000000); got != "12M" {
+		t.Fatalf("expected integer M format, got %q", got)
 	}
 }
 
@@ -914,7 +929,7 @@ func TestRenderStatusBarShowsContextGrid(t *testing.T) {
 	if !strings.Contains(got, "■■□□□□□□ 25%") {
 		t.Fatalf("expected context usage grid in status bar, got %q", got)
 	}
-	if !strings.Contains(got, "2/6K") {
+	if !strings.Contains(got, "共8K剩6K可用") {
 		t.Fatalf("expected compact context hint on the right side of status bar, got %q", got)
 	}
 }
