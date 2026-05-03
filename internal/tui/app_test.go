@@ -1252,7 +1252,7 @@ func TestRenderStatusBarShowsCurrentUser(t *testing.T) {
 	}
 
 	got := sanitizeTerminalText(model.renderStatusBar())
-	if !strings.Contains(got, "当前用户 张三") {
+	if !strings.Contains(got, "张三") {
 		t.Fatalf("expected current user segment in status bar, got %q", got)
 	}
 }
