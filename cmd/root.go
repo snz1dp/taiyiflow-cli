@@ -60,7 +60,8 @@ type cliStreamRenderState struct {
 }
 
 func buildProviderClient(config internalconfig.Config) *providerclient.Client {
-	client := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+	client := providerclient.NewClient(config.BackendBaseURL, config.AccessToken)
+	client.SetAPIPrefix(config.BackendAPIPrefix)
 	client.SetStreamIdleTimeoutSeconds(config.StreamIdleTimeoutSeconds)
 	return client
 }
@@ -94,6 +95,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	switch args[0] {
 	case "task":
 		return a.runTask(ctx, args[1:])
+	case "login":
+		return a.runLogin(ctx, args[1:])
 	case "skills":
 		return a.runSkills(args[1:])
 	case "cli":
@@ -822,6 +825,7 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "用法:")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--mode MODE] [--new] [--continue] [--show-stream-events] [--show-thinking] [--external-resource-access-policy POLICY] [任务描述]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli login [help|status|logout|password|qr]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli config [show|init|path|set|unset]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli agents [list|current|use] [参数]")

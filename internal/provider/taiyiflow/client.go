@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
+	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
 
@@ -90,6 +91,7 @@ func (r *idleTimeoutReadCloser) closeUnderlying() error {
 
 type Client struct {
 	baseURL                 string
+	apiPrefix               string
 	apiKey                  string
 	httpClient              *http.Client
 	streamHTTPClient        *http.Client
@@ -112,6 +114,13 @@ type versionInfoResponse struct {
 	Package     string `json:"package"`
 	Version     string `json:"version"`
 	MainVersion string `json:"main_version"`
+}
+
+type currentUserInfoResponse struct {
+	Name      string `json:"name"`
+	UserID    string `json:"user_id"`
+	UserName  string `json:"user_name"`
+	UserScope string `json:"user_scope"`
 }
 
 type flowItemResponse struct {
@@ -265,6 +274,7 @@ type clientCallResultBody struct {
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		baseURL:                 strings.TrimRight(baseURL, "/"),
+		apiPrefix:               internalconfig.DefaultBackendAPIPrefix,
 		apiKey:                  apiKey,
 		httpClient:              &http.Client{Timeout: 60 * time.Second},
 		streamHTTPClient:        &http.Client{},
@@ -272,6 +282,25 @@ func NewClient(baseURL, apiKey string) *Client {
 		compressionPollDelay:    defaultCompressionPollDelay,
 		compressionPollAttempts: defaultCompressionPollAttempts,
 	}
+}
+
+func (c *Client) SetAPIPrefix(prefix string) {
+	c.apiPrefix = internalconfig.NormalizeBackendAPIPrefix(prefix)
+}
+
+func (c *Client) SetAPIKey(apiKey string) {
+	c.apiKey = strings.TrimSpace(apiKey)
+}
+
+func (c *Client) apiURL(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return c.baseURL + c.apiPrefix
+	}
+	if !strings.HasPrefix(trimmed, "/") {
+		trimmed = "/" + trimmed
+	}
+	return c.baseURL + c.apiPrefix + trimmed
 }
 
 func (c *Client) SetStreamIdleTimeoutSeconds(seconds int) {
@@ -290,8 +319,8 @@ func (c *Client) Name() string {
 }
 
 func (c *Client) ListFlows(ctx context.Context, filter string, agentType string, offset, limit int) (*provider.FlowList, error) {
-	// 这里显式走用户侧智能体接口，不走 /api/v1/flows 这类管理接口。
-	endpoint, err := url.Parse(fmt.Sprintf("%s/api/v1/agents/flows", c.baseURL))
+	// 这里显式走用户侧智能体接口，不走 /flows 这类管理接口。
+	endpoint, err := url.Parse(c.apiURL("/agents/flows"))
 	if err != nil {
 		return nil, fmt.Errorf("构造 flows 请求地址失败: %w", err)
 	}
@@ -355,7 +384,7 @@ func (c *Client) ListSessions(ctx context.Context, flowID string, offset, limit 
 		return nil, fmt.Errorf("获取服务端会话列表失败: 智能体不能为空")
 	}
 
-	endpoint, err := url.Parse(fmt.Sprintf("%s/api/v1/agents/flows/%s/sessions", c.baseURL, url.PathEscape(flowID)))
+	endpoint, err := url.Parse(c.apiURL(fmt.Sprintf("/agents/flows/%s/sessions", url.PathEscape(flowID))))
 	if err != nil {
 		return nil, fmt.Errorf("构造 sessions 请求地址失败: %w", err)
 	}
@@ -427,7 +456,7 @@ func (c *Client) ListSessionMessages(ctx context.Context, flowID string, session
 		return &provider.SessionMessageList{}, nil
 	}
 
-	endpoint, err := url.Parse(fmt.Sprintf("%s/api/v1/agents/flows/%s/sessions/%s/messages", c.baseURL, url.PathEscape(flowID), url.PathEscape(sessionID)))
+	endpoint, err := url.Parse(c.apiURL(fmt.Sprintf("/agents/flows/%s/sessions/%s/messages", url.PathEscape(flowID), url.PathEscape(sessionID))))
 	if err != nil {
 		return nil, fmt.Errorf("构造 messages 请求地址失败: %w", err)
 	}
@@ -490,7 +519,7 @@ func (c *Client) ListSessionMessages(ctx context.Context, flowID string, session
 }
 
 func (c *Client) GetVersionInfo(ctx context.Context) (*provider.ServiceVersion, error) {
-	endpoint := fmt.Sprintf("%s/api/v1/version", c.baseURL)
+	endpoint := c.apiURL("/version")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
@@ -519,8 +548,39 @@ func (c *Client) GetVersionInfo(ctx context.Context) (*provider.ServiceVersion, 
 	}, nil
 }
 
+func (c *Client) GetCurrentUserInfo(ctx context.Context) (*provider.CurrentUser, error) {
+	endpoint := c.apiURL("/users/whoami/userinfo")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求当前用户信息失败: %w", err)
+	}
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求当前用户信息失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("获取当前用户信息失败", resp)
+	}
+
+	var payload currentUserInfoResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析当前用户信息响应失败: %w", err)
+	}
+
+	return &provider.CurrentUser{
+		Name:      strings.TrimSpace(payload.Name),
+		UserID:    strings.TrimSpace(payload.UserID),
+		UserName:  strings.TrimSpace(payload.UserName),
+		UserScope: strings.TrimSpace(payload.UserScope),
+	}, nil
+}
+
 func (c *Client) GetMetadata(ctx context.Context, flowID string) (*provider.Metadata, error) {
-	endpoint := fmt.Sprintf("%s/api/v1/run/%s/metadata", c.baseURL, url.PathEscape(flowID))
+	endpoint := c.apiURL(fmt.Sprintf("/run/%s/metadata", url.PathEscape(flowID)))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
@@ -569,7 +629,7 @@ func (c *Client) ResolveSkillPreview(ctx context.Context, request provider.Skill
 	if err != nil {
 		return nil, fmt.Errorf("序列化技能预览请求失败: %w", err)
 	}
-	endpoint := fmt.Sprintf("%s/api/v1/agents/skills/resolve", c.baseURL)
+	endpoint := c.apiURL("/agents/skills/resolve")
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(content))
 	if err != nil {
 		return nil, fmt.Errorf("创建技能预览请求失败: %w", err)
@@ -611,7 +671,7 @@ func (c *Client) ResolveSkillPreview(ctx context.Context, request provider.Skill
 }
 
 func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
-	endpoint := fmt.Sprintf("%s/api/v1/run/%s/stream", c.baseURL, url.PathEscape(request.FlowID))
+	endpoint := c.apiURL(fmt.Sprintf("/run/%s/stream", url.PathEscape(request.FlowID)))
 	body := streamRequestBody{
 		InputValue:             request.Input,
 		InputType:              firstNonEmpty(request.InputType, "any"),
@@ -689,12 +749,11 @@ func (c *Client) GetRunStats(ctx context.Context, flowID string, sessionID strin
 	stats := &provider.RunStats{RunID: runID}
 
 	if strings.TrimSpace(flowID) != "" && strings.TrimSpace(sessionID) != "" {
-		messageEndpoint := fmt.Sprintf(
-			"%s/api/v1/agents/flows/%s/sessions/%s/messages?orderby=timestamp&offset=0&limit=100",
-			c.baseURL,
+		messageEndpoint := c.apiURL(fmt.Sprintf(
+			"/agents/flows/%s/sessions/%s/messages?orderby=timestamp&offset=0&limit=100",
 			url.PathEscape(flowID),
 			url.PathEscape(sessionID),
-		)
+		))
 		messageRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, messageEndpoint, nil)
 		if err != nil {
 			return nil, fmt.Errorf("创建消息统计请求失败: %w", err)
@@ -776,13 +835,12 @@ func (c *Client) GetSessionContextWindow(ctx context.Context, flowID string, ses
 		return &provider.SessionContextPreview{}, nil
 	}
 
-	endpoint := fmt.Sprintf(
-		"%s/api/v1/agents/flows/%s/sessions/%s/context-window",
-		c.baseURL,
+	contextEndpoint := c.apiURL(fmt.Sprintf(
+		"/agents/flows/%s/sessions/%s/context-window",
 		url.PathEscape(flowID),
 		url.PathEscape(sessionID),
-	)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	))
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, contextEndpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建会话上下文请求失败: %w", err)
 	}
@@ -834,11 +892,10 @@ func (c *Client) GetSessionContextWindow(ctx context.Context, flowID string, ses
 }
 
 func (c *Client) fetchCompressionPayload(ctx context.Context, runID string) ([]compressionRecordResponse, error) {
-	compressionEndpoint := fmt.Sprintf(
-		"%s/api/v1/agents/dialogue/%s/compressions",
-		c.baseURL,
+	compressionEndpoint := c.apiURL(fmt.Sprintf(
+		"/agents/dialogue/%s/compressions",
 		url.PathEscape(runID),
-	)
+	))
 	compressionRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, compressionEndpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建上下文压缩统计请求失败: %w", err)
@@ -898,7 +955,7 @@ func (c *Client) SubmitClientCallResult(ctx context.Context, result provider.Cli
 		return fmt.Errorf("序列化客户端回调结果失败: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/api/v1/agents/client/call/result", c.baseURL)
+	endpoint := c.apiURL("/agents/client/call/result")
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(content))
 	if err != nil {
 		return fmt.Errorf("创建客户端回调请求失败: %w", err)

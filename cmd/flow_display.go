@@ -2,13 +2,10 @@ package cmd
 
 import (
 	"context"
-	"regexp"
 	"strings"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
-
-var likelyUUIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 
 func sanitizeFlowDisplay(value string) string {
 	trimmed := strings.TrimSpace(value)

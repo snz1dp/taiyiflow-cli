@@ -14,6 +14,7 @@ const (
 	defaultRootDirName              = ".snz1dp"
 	defaultConfigRel                = "config/taiyiflow.yaml"
 	rootDirEnvName                  = "SNZ1DP_HOME"
+	DefaultBackendAPIPrefix         = "/taiyi/composer/api/v1"
 	SkillInstallScopeUser           = "user"
 	SkillInstallScopeWorkspace      = "workspace"
 	DefaultCommandTimeoutSeconds    = 30
@@ -34,7 +35,11 @@ const (
 
 type Config struct {
 	BackendBaseURL           string           `yaml:"backend_base_url"`
-	APIKey                   string           `yaml:"api_key,omitempty"`
+	BackendAPIPrefix         string           `yaml:"backend_api_prefix,omitempty"`
+	AccessToken              string           `yaml:"access_token,omitempty"`
+	PersistentToken          string           `yaml:"persistent_token,omitempty"`
+	DeviceID                 string           `yaml:"device_id,omitempty"`
+	AuthUpdatedAt            string           `yaml:"auth_updated_at,omitempty"`
 	DefaultFlow              string           `yaml:"default_flow,omitempty"`
 	ApprovalMode             string           `yaml:"approval_mode"`
 	ReasoningEnabled         bool             `yaml:"reasoning_enabled,omitempty"`
@@ -83,7 +88,8 @@ type Manager struct {
 
 func Default() Config {
 	return Config{
-		BackendBaseURL:           "http://localhost:7860",
+		BackendBaseURL:           "https://snz1.cn",
+		BackendAPIPrefix:         DefaultBackendAPIPrefix,
 		ApprovalMode:             "confirm",
 		ReasoningEnabled:         false,
 		SandboxEscapePolicy:      SandboxEscapePolicyConfirm,
@@ -111,6 +117,24 @@ func NormalizeSkillInstallScope(value string) string {
 	default:
 		return SkillInstallScopeUser
 	}
+}
+
+func NormalizeBackendAPIPrefix(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return DefaultBackendAPIPrefix
+	}
+	if !strings.HasPrefix(trimmed, "/") {
+		trimmed = "/" + trimmed
+	}
+	trimmed = strings.TrimRight(trimmed, "/")
+	if trimmed == "/api/v1" {
+		return DefaultBackendAPIPrefix
+	}
+	if trimmed == "" {
+		return DefaultBackendAPIPrefix
+	}
+	return trimmed
 }
 
 func NormalizeCommandTimeoutSeconds(value int) int {
@@ -277,6 +301,11 @@ func (m *Manager) Load() (Config, error) {
 	if config.BackendBaseURL == "" {
 		config.BackendBaseURL = Default().BackendBaseURL
 	}
+	config.BackendAPIPrefix = NormalizeBackendAPIPrefix(config.BackendAPIPrefix)
+	config.AccessToken = strings.TrimSpace(config.AccessToken)
+	config.PersistentToken = strings.TrimSpace(config.PersistentToken)
+	config.DeviceID = strings.TrimSpace(config.DeviceID)
+	config.AuthUpdatedAt = strings.TrimSpace(config.AuthUpdatedAt)
 	if config.ApprovalMode == "" {
 		config.ApprovalMode = Default().ApprovalMode
 	}

@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	internaltui "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/tui"
 )
 
@@ -266,6 +268,71 @@ func TestApplyMetadataContextWindowBudgetIgnoresInvalidBudget(t *testing.T) {
 	}
 }
 
+func TestBuildTUISnapshotIncludesCurrentUserName(t *testing.T) {
+	app := &App{}
+	snapshot, err := app.buildTUISnapshot(context.Background(), &stubProvider{}, internalconfig.Default(), "", backendStatus{Available: true})
+	if err != nil {
+		t.Fatalf("buildTUISnapshot failed: %v", err)
+	}
+	if snapshot.CurrentUserName != "" {
+		t.Fatalf("expected empty current user with default stub provider, got %#v", snapshot)
+	}
+
+	providerWithUser := &stubSnapshotProvider{stubProvider: &stubProvider{}, currentUser: &provider.CurrentUser{Name: "张三"}}
+	snapshot, err = app.buildTUISnapshot(context.Background(), providerWithUser, internalconfig.Default(), "", backendStatus{Available: true})
+	if err != nil {
+		t.Fatalf("buildTUISnapshot failed: %v", err)
+	}
+	if snapshot.CurrentUserName != "张三" {
+		t.Fatalf("expected current user name to be mapped, got %#v", snapshot)
+	}
+}
+
+type stubSnapshotProvider struct {
+	*stubProvider
+	currentUser    *provider.CurrentUser
+	currentUserErr error
+}
+
+func (s stubSnapshotProvider) GetCurrentUserInfo(context.Context) (*provider.CurrentUser, error) {
+	return s.currentUser, s.currentUserErr
+}
+
+func TestBuildTUISnapshotMarksAuthRequired(t *testing.T) {
+	app := &App{}
+	providerWithAuthError := &stubSnapshotProvider{stubProvider: &stubProvider{}, currentUserErr: fmt.Errorf("HTTP 401 unauthorized")}
+	snapshot, err := app.buildTUISnapshot(context.Background(), providerWithAuthError, internalconfig.Default(), "", backendStatus{Available: true})
+	if err != nil {
+		t.Fatalf("buildTUISnapshot failed: %v", err)
+	}
+	if !snapshot.AuthRequired {
+		t.Fatalf("expected auth required snapshot, got %#v", snapshot)
+	}
+	if !strings.Contains(snapshot.AuthStatusReason, "/login") {
+		t.Fatalf("expected auth status reason to include /login hint, got %#v", snapshot)
+	}
+}
+
+func TestBuildTUIHelpLinesUsesLoginOverlayWording(t *testing.T) {
+	lines := buildTUIHelpLines(internaltui.Snapshot{BackendAvailable: true})
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "/login 打开登录表单") {
+		t.Fatalf("expected help text to describe /login as overlay entry, got %q", joined)
+	}
+	if strings.Contains(joined, "/login [status|qr|password|logout]") {
+		t.Fatalf("expected help text to drop legacy login command catalog, got %q", joined)
+	}
+
+	readonlyLines := buildTUIHelpLines(internaltui.Snapshot{BackendAvailable: false, BackendStatusReason: "服务端不可用"})
+	readonlyJoined := strings.Join(readonlyLines, "\n")
+	if !strings.Contains(readonlyJoined, "/login 打开登录表单") {
+		t.Fatalf("expected readonly help text to direct to /login overlay, got %q", readonlyJoined)
+	}
+	if strings.Contains(readonlyJoined, "查看登录状态") {
+		t.Fatalf("expected readonly help text to stop using legacy status wording, got %q", readonlyJoined)
+	}
+}
+
 func TestEmitTUIClientToolResultEventsEmitsStatusNoteBeforePanel(t *testing.T) {
 	events := []internaltui.Event{}
 	emitTUIClientToolResultEvents(func(event internaltui.Event) {
@@ -362,7 +429,6 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 			SkillsFreeTextSearch:     false,
 			SkillsRegistryURL:        "https://mirror-cn.clawhub.com",
 		},
-		KeepAPIKey: true,
 	})
 	if err != nil {
 		t.Fatalf("applyConfigFormSubmission failed: %v", err)

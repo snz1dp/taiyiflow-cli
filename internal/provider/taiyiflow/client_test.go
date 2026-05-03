@@ -39,9 +39,25 @@ func TestSetStreamIdleTimeoutSeconds(t *testing.T) {
 	}
 }
 
+func TestSetAPIPrefix(t *testing.T) {
+	client := NewClient("http://example.com", "")
+	client.SetAPIPrefix("taiyi/composer/api/v1/")
+	if got := client.apiURL("/version"); got != "http://example.com/taiyi/composer/api/v1/version" {
+		t.Fatalf("expected normalized api url, got %q", got)
+	}
+	client.SetAPIPrefix("")
+	if got := client.apiURL("/version"); got != "http://example.com/taiyi/composer/api/v1/version" {
+		t.Fatalf("expected empty prefix to fall back to default api prefix, got %q", got)
+	}
+	client.SetAPIPrefix("/api/v1")
+	if got := client.apiURL("/version"); got != "http://example.com/taiyi/composer/api/v1/version" {
+		t.Fatalf("expected legacy api prefix to normalize to default api prefix, got %q", got)
+	}
+}
+
 func TestStreamIgnoresStandardClientTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/v1/run/demo-flow/stream" {
+		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
 			http.NotFound(writer, request)
 			return
 		}
@@ -93,7 +109,7 @@ func TestStreamIgnoresStandardClientTimeout(t *testing.T) {
 
 func TestStreamEmitsBackendIdleTimeoutWhenNoSSEActivity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/v1/run/demo-flow/stream" {
+		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
 			http.NotFound(writer, request)
 			return
 		}
@@ -136,10 +152,10 @@ func TestGetRunStatsPollsCompressionRecordsUntilAvailable(t *testing.T) {
 	compressionRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/api/v1/agents/flows/demo-flow/sessions/session-123/messages":
+		case "/taiyi/composer/api/v1/agents/flows/demo-flow/sessions/session-123/messages":
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"total":1,"offset":0,"data":[{"id":"message-1","run_id":"run-123","token_usage":{"input_tokens":120,"output_tokens":40,"total_tokens":160}}]}`)
-		case "/api/v1/agents/dialogue/run-123/compressions":
+		case "/taiyi/composer/api/v1/agents/dialogue/run-123/compressions":
 			compressionRequests++
 			writer.Header().Set("Content-Type", "application/json")
 			if compressionRequests == 1 {
@@ -177,7 +193,7 @@ func TestGetRunStatsPollsCompressionRecordsUntilAvailable(t *testing.T) {
 
 func TestGetSessionContextWindowParsesResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/v1/agents/flows/demo-flow/sessions/session-123/context-window" {
+		if request.URL.Path != "/taiyi/composer/api/v1/agents/flows/demo-flow/sessions/session-123/context-window" {
 			http.NotFound(writer, request)
 			return
 		}
@@ -213,7 +229,7 @@ func TestGetSessionContextWindowParsesResponse(t *testing.T) {
 
 func TestGetMetadataParsesMaxInputTokens(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/v1/run/demo-flow/metadata" {
+		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/metadata" {
 			http.NotFound(writer, request)
 			return
 		}
@@ -235,10 +251,34 @@ func TestGetMetadataParsesMaxInputTokens(t *testing.T) {
 	}
 }
 
+func TestGetCurrentUserInfoParsesResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/taiyi/composer/api/v1/users/whoami/userinfo" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"name":"张三","user_id":"u-123","user_name":"zhangsan","user_scope":"private"}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	currentUser, err := client.GetCurrentUserInfo(context.Background())
+	if err != nil {
+		t.Fatalf("expected GetCurrentUserInfo to succeed, got %v", err)
+	}
+	if currentUser == nil {
+		t.Fatal("expected current user response")
+	}
+	if currentUser.Name != "张三" || currentUser.UserName != "zhangsan" || currentUser.UserID != "u-123" {
+		t.Fatalf("unexpected current user payload: %#v", currentUser)
+	}
+}
+
 func TestResolveSkillPreviewPostsRequestAndParsesResponse(t *testing.T) {
 	var captured skillResolveRequestBody
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/v1/agents/skills/resolve" {
+		if request.URL.Path != "/taiyi/composer/api/v1/agents/skills/resolve" {
 			http.NotFound(writer, request)
 			return
 		}
@@ -303,7 +343,7 @@ func TestResolveSkillPreviewPostsRequestAndParsesResponse(t *testing.T) {
 
 func TestStreamParsesCompressionEvent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/v1/run/demo-flow/stream" {
+		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
 			http.NotFound(writer, request)
 			return
 		}
@@ -348,7 +388,7 @@ func TestStreamParsesCompressionEvent(t *testing.T) {
 func TestStreamIncludesAgentAutoLoopRequestFields(t *testing.T) {
 	var captured streamRequestBody
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/v1/run/demo-flow/stream" {
+		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
 			http.NotFound(writer, request)
 			return
 		}
@@ -393,7 +433,7 @@ func TestStreamRequestUsesInputValueWithoutPromptText(t *testing.T) {
 		capturedRawMap map[string]any
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/v1/run/demo-flow/stream" {
+		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
 			http.NotFound(writer, request)
 			return
 		}

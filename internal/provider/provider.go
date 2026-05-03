@@ -121,6 +121,13 @@ type ServiceVersion struct {
 	MainVersion string
 }
 
+type CurrentUser struct {
+	Name      string
+	UserID    string
+	UserName  string
+	UserScope string
+}
+
 type ContextWindowUsage struct {
 	MaxInputTokens              int
 	ShortTermContextTokens      int
@@ -234,6 +241,7 @@ type Provider interface {
 	ListSessions(ctx context.Context, flowID string, offset, limit int) (*SessionList, error)
 	ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*SessionMessageList, error)
 	GetVersionInfo(ctx context.Context) (*ServiceVersion, error)
+	GetCurrentUserInfo(ctx context.Context) (*CurrentUser, error)
 	GetMetadata(ctx context.Context, flowID string) (*Metadata, error)
 	ResolveSkillPreview(ctx context.Context, request SkillResolveRequest) (*SkillResolvePreview, error)
 	Stream(ctx context.Context, request StreamRequest) (<-chan StreamEvent, *StreamSession, error)

@@ -49,6 +49,10 @@ func (s stubProvider) GetVersionInfo(context.Context) (*provider.ServiceVersion,
 	return nil, nil
 }
 
+func (s stubProvider) GetCurrentUserInfo(context.Context) (*provider.CurrentUser, error) {
+	return nil, nil
+}
+
 func (s stubProvider) GetMetadata(context.Context, string) (*provider.Metadata, error) {
 	return &provider.Metadata{}, nil
 }

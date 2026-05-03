@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"io"
 	"regexp"
@@ -12,7 +11,6 @@ import (
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
-	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
 )
 
@@ -33,79 +31,6 @@ type skillInstallApprovalRequest struct {
 	Scope       string
 	InstallPath string
 	Reason      string
-}
-
-func (a *App) ensureSkillSupplyBeforeStream(
-	ctx context.Context,
-	providerClient provider.Provider,
-	config internalconfig.Config,
-	flowID string,
-	input string,
-	sessionState *agent.SessionState,
-	requestType string,
-	approve func(skillInstallApprovalRequest) bool,
-	note func(string),
-) ([]string, any, error) {
-	if note == nil {
-		note = func(string) {}
-	}
-	resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(sessionContextDir(sessionState), config.Workdir))
-	skillConfig := a.resolveEffectiveSkillConfig(config, resolvedContextDir)
-	requestedSkillNames, clientSkillPackages, err := loadSkillPayloadWithConfig(skillConfig)
-	if err != nil {
-		return nil, nil, err
-	}
-	preview, err := providerClient.ResolveSkillPreview(ctx, provider.SkillResolveRequest{
-		FlowID:                 strings.TrimSpace(flowID),
-		SessionID:              strings.TrimSpace(sessionID(sessionState)),
-		RequestType:            normalizeRequestMode(requestType),
-		CommandExecutionTarget: "client",
-		RequestedSkillNames:    requestedSkillNames,
-		ClientSkillPackages:    clientSkillPackages,
-	})
-	if err != nil {
-		note(fmt.Sprintf("技能 resolve 预览失败，继续使用当前本地技能: %v", err))
-		return requestedSkillNames, clientSkillPackages, nil
-	}
-	if len(preview.MissingSkillNames) > 0 {
-		note(fmt.Sprintf("技能 resolve 预览完成：已解析 %d 个技能，缺失 %d 个。", len(preview.Skills), len(preview.MissingSkillNames)))
-	}
-	if internalconfig.NormalizeSkillAutoInstallPolicy(config.Skills.AutoInstallPolicy) == internalconfig.SkillAutoInstallPolicyOff {
-		return requestedSkillNames, clientSkillPackages, nil
-	}
-
-	installConfig := skillConfig
-	installedAny, err := a.autoInstallCandidates(
-		installConfig,
-		sessionState,
-		input,
-		requestedSkillNames,
-		preview.MissingSkillNames,
-		approve,
-		note,
-	)
-	if err != nil {
-		return requestedSkillNames, clientSkillPackages, err
-	}
-	if !installedAny {
-		return requestedSkillNames, clientSkillPackages, nil
-	}
-	if sessionState != nil && a.sessionStore != nil {
-		if strings.TrimSpace(sessionState.FlowID) == "" {
-			sessionState.FlowID = strings.TrimSpace(flowID)
-		}
-		if strings.TrimSpace(sessionState.Workdir) == "" {
-			sessionState.Workdir = resolvedContextDir
-		}
-		if strings.TrimSpace(sessionState.ContextDir) == "" {
-			sessionState.ContextDir = resolvedContextDir
-		}
-		if err := a.sessionStore.Save(*sessionState); err != nil {
-			return nil, nil, err
-		}
-	}
-	note("技能自动补装完成，已刷新本轮请求的技能载荷。")
-	return loadSkillPayloadWithConfig(a.resolveEffectiveSkillConfig(installConfig, resolvedContextDir))
 }
 
 func detectMissingSkillNamesFromError(err error) []string {
@@ -569,20 +494,6 @@ func candidateLabel(candidate skillInstallCandidate) string {
 		return candidate.DisplayName
 	}
 	return candidate.Slug
-}
-
-func sessionContextDir(state *agent.SessionState) string {
-	if state == nil {
-		return ""
-	}
-	return strings.TrimSpace(state.ContextDir)
-}
-
-func sessionID(state *agent.SessionState) string {
-	if state == nil {
-		return ""
-	}
-	return strings.TrimSpace(state.SessionID)
 }
 
 func (a *App) confirmSkillAutoInstall(request skillInstallApprovalRequest) bool {

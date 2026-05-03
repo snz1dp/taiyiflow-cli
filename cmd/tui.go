@@ -39,32 +39,13 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 
 	providerClient := buildProviderClient(config)
 	backend := a.inspectBackendStatus(ctx, providerClient, config.BackendBaseURL)
-	if backend.Available {
-		config, err = a.ensureDefaultFlow(ctx, providerClient, config)
-		if err != nil {
-			return err
-		}
-	}
 	workdir := resolveLocalWorkdir(config.Workdir)
-	snapshot, err := a.buildTUISnapshot(ctx, providerClient, config, strings.TrimSpace(config.DefaultFlow), backend)
+	snapshot, err := a.buildInitialTUISnapshot(config, strings.TrimSpace(config.DefaultFlow), backend)
 	if err != nil {
 		return err
 	}
 
 	flowItems := []tui.FlowItem{}
-	if backend.Available {
-		flows, flowErr := providerClient.ListFlows(ctx, "", "chat", 0, 100)
-		if flowErr == nil {
-			for _, item := range flows.Items {
-				flowItems = append(flowItems, tui.FlowItem{
-					ID:          item.ID,
-					Name:        item.Name,
-					Description: item.Description,
-					Type:        item.Type,
-				})
-			}
-		}
-	}
 
 	runner := func(runCtx context.Context, request tui.Request, emit func(tui.Event), confirm func(tui.ConfirmRequest) bool) error {
 		currentFlow := strings.TrimSpace(request.FlowID)
@@ -149,161 +130,161 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		eventLoop:
 			for event := range stream {
 				switch event.Type {
-			case provider.EventMessage:
-				if sessionTitle := firstNonEmptyTrimmedStringMapValue(event.Data, "session_name"); sessionTitle != "" {
-					sessionState.SessionTitle = sessionTitle
-					if strings.TrimSpace(sessionState.SessionID) != "" {
-						if err := a.sessionStore.Save(sessionState); err != nil {
-							return err
+				case provider.EventMessage:
+					if sessionTitle := firstNonEmptyTrimmedStringMapValue(event.Data, "session_name"); sessionTitle != "" {
+						sessionState.SessionTitle = sessionTitle
+						if strings.TrimSpace(sessionState.SessionID) != "" {
+							if err := a.sessionStore.Save(sessionState); err != nil {
+								return err
+							}
 						}
+						emit(tui.Event{Kind: tui.EventSessionUpdate, SessionID: sessionState.SessionID, SessionTitle: sessionTitle})
 					}
-					emit(tui.Event{Kind: tui.EventSessionUpdate, SessionID: sessionState.SessionID, SessionTitle: sessionTitle})
-				}
-				if assistantChunkEvent, ok := buildTUIAssistantChunkEvent(event.Data); ok {
-					emit(assistantChunkEvent)
-					continue
-				}
-				if message, ok := event.Data["message"].(string); ok && strings.TrimSpace(message) != "" {
-					emit(tui.Event{Kind: tui.EventProgressNote, Text: message})
-				}
-			case provider.EventCompression:
-				if metrics := buildTUICompressionMetrics(event.Data); metrics != nil {
-					emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
-				}
-			case provider.EventCompressionStart:
-				if text := buildTUICompressionProgressText(event.Data); text != "" {
-					emit(tui.Event{Kind: tui.EventProgressNote, Text: text, EventType: "compression_progress"})
-				}
-			case provider.EventCompressionEnd:
-				if text := buildTUICompressionProgressText(event.Data); text != "" {
-					emit(tui.Event{Kind: tui.EventProgressNote, Text: text, EventType: "compression_progress"})
-				}
-				if metrics := buildTUICompressionMetrics(event.Data); metrics != nil {
-					emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
-				}
-			case provider.EventToolCall:
-				emit(tui.Event{Kind: tui.EventToolCall, Text: strings.TrimSpace(stringMapValue(event.Data, "text"))})
-			case provider.EventBuiltIn:
-				if !modeAllowsBuiltIn(request.RequestMode) {
-					emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝本地命令执行：当前为%s。", requestModeLabel(request.RequestMode))})
-					if err := submitClientCallFailure(runCtx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(request.RequestMode))); err != nil {
-						return err
+					if assistantChunkEvent, ok := buildTUIAssistantChunkEvent(event.Data); ok {
+						emit(assistantChunkEvent)
+						continue
 					}
-					continue
-				}
-				localConfig, configErr := a.configManager.Load()
-				if configErr != nil {
-					return configErr
-				}
-				localConfig = applyEffectiveSandboxEscapePolicy(localConfig, sessionState.SandboxEscapePolicyOverride, "")
-				emit(tui.Event{Kind: tui.EventBuiltInCall, Text: previewBuiltInCommand(event.Data)})
-				emit(tui.Event{Kind: tui.EventProgressNote, Text: "正在执行本地命令..."})
-				if requiresTUICommandConfirmation(localConfig, event.Data) {
-					approved := confirm(buildTUIConfirmRequest(event.Data))
-					if !approved {
-						emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端命令执行。"})
-						if err := submitClientCallFailure(runCtx, providerClient, event.Data, "用户拒绝执行客户端命令"); err != nil {
+					if message, ok := event.Data["message"].(string); ok && strings.TrimSpace(message) != "" {
+						emit(tui.Event{Kind: tui.EventProgressNote, Text: message})
+					}
+				case provider.EventCompression:
+					if metrics := buildTUICompressionMetrics(event.Data); metrics != nil {
+						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
+					}
+				case provider.EventCompressionStart:
+					if text := buildTUICompressionProgressText(event.Data); text != "" {
+						emit(tui.Event{Kind: tui.EventProgressNote, Text: text, EventType: "compression_progress"})
+					}
+				case provider.EventCompressionEnd:
+					if text := buildTUICompressionProgressText(event.Data); text != "" {
+						emit(tui.Event{Kind: tui.EventProgressNote, Text: text, EventType: "compression_progress"})
+					}
+					if metrics := buildTUICompressionMetrics(event.Data); metrics != nil {
+						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
+					}
+				case provider.EventToolCall:
+					emit(tui.Event{Kind: tui.EventToolCall, Text: strings.TrimSpace(stringMapValue(event.Data, "text"))})
+				case provider.EventBuiltIn:
+					if !modeAllowsBuiltIn(request.RequestMode) {
+						emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝本地命令执行：当前为%s。", requestModeLabel(request.RequestMode))})
+						if err := submitClientCallFailure(runCtx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(request.RequestMode))); err != nil {
 							return err
 						}
 						continue
 					}
-					execConfig := localConfig
-					if strings.TrimSpace(execConfig.ApprovalMode) != "readonly" {
-						execConfig.ApprovalMode = "auto"
+					localConfig, configErr := a.configManager.Load()
+					if configErr != nil {
+						return configErr
 					}
-					if err := quietRuntimeClient.HandleBuiltInEvent(runCtx, providerClient, execConfig, event.Data); err != nil {
-						return err
-					}
-					continue
-				}
-				if err := quietRuntimeClient.HandleBuiltInEvent(runCtx, providerClient, localConfig, event.Data); err != nil {
-					return err
-				}
-			case provider.EventClientTool:
-				toolName := nestedStringValue(event.Data, "function", "name")
-				if !modeAllowsClientTool(request.RequestMode, toolName) {
-					emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝客户端工具 %s：当前为%s。", toolName, requestModeLabel(request.RequestMode))})
-					if err := submitClientCallFailure(runCtx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(request.RequestMode), toolName)); err != nil {
-						return err
-					}
-					continue
-				}
-				localConfig, configErr := a.configManager.Load()
-				if configErr != nil {
-					return configErr
-				}
-				localConfig = applyEffectiveSandboxEscapePolicy(localConfig, sessionState.SandboxEscapePolicyOverride, "")
-				localConfig = applyEffectiveSkillReviewForPayload(localConfig, sessionState.ContextDir, sessionState, event.Data)
-				emit(tui.Event{Kind: tui.EventClientToolCall, Text: clientruntime.PreviewClientToolCall(event.Data)})
-				if clientruntime.RequiresClientToolConfirmation(localConfig, event.Data) {
-					persistApprovedSkillReview := func(context.Context) error {
-						skillName := resolveSkillReviewApprovalName(localConfig, sessionState.ContextDir, event.Data)
-						if skillName == "" {
-							return nil
+					localConfig = applyEffectiveSandboxEscapePolicy(localConfig, sessionState.SandboxEscapePolicyOverride, "")
+					emit(tui.Event{Kind: tui.EventBuiltInCall, Text: previewBuiltInCommand(event.Data)})
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: "正在执行本地命令..."})
+					if requiresTUICommandConfirmation(localConfig, event.Data) {
+						approved := confirm(buildTUIConfirmRequest(event.Data))
+						if !approved {
+							emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端命令执行。"})
+							if err := submitClientCallFailure(runCtx, providerClient, event.Data, "用户拒绝执行客户端命令"); err != nil {
+								return err
+							}
+							continue
 						}
-						appendApprovedSkillName(&sessionState, skillName)
-						return a.sessionStore.Save(sessionState)
-					}
-					approved := confirm(buildTUIClientToolConfirmRequest(localConfig, sessionState.ContextDir, event.Data, persistApprovedSkillReview, persistSkillReviewAllowAll))
-					if !approved {
-						emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端工具执行。"})
-						if err := submitClientCallFailure(runCtx, providerClient, event.Data, "用户拒绝执行客户端工具"); err != nil {
+						execConfig := localConfig
+						if strings.TrimSpace(execConfig.ApprovalMode) != "readonly" {
+							execConfig.ApprovalMode = "auto"
+						}
+						if err := quietRuntimeClient.HandleBuiltInEvent(runCtx, providerClient, execConfig, event.Data); err != nil {
 							return err
 						}
 						continue
 					}
-					execConfig := localConfig
-					if strings.TrimSpace(execConfig.ApprovalMode) != "readonly" {
-						execConfig.ApprovalMode = "auto"
+					if err := quietRuntimeClient.HandleBuiltInEvent(runCtx, providerClient, localConfig, event.Data); err != nil {
+						return err
 					}
-					toolName, result, toolErr := runtimeClient.ExecuteClientToolPayload(runCtx, execConfig, event.Data)
+				case provider.EventClientTool:
+					toolName := nestedStringValue(event.Data, "function", "name")
+					if !modeAllowsClientTool(request.RequestMode, toolName) {
+						emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝客户端工具 %s：当前为%s。", toolName, requestModeLabel(request.RequestMode))})
+						if err := submitClientCallFailure(runCtx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(request.RequestMode), toolName)); err != nil {
+							return err
+						}
+						continue
+					}
+					localConfig, configErr := a.configManager.Load()
+					if configErr != nil {
+						return configErr
+					}
+					localConfig = applyEffectiveSandboxEscapePolicy(localConfig, sessionState.SandboxEscapePolicyOverride, "")
+					localConfig = applyEffectiveSkillReviewForPayload(localConfig, sessionState.ContextDir, sessionState, event.Data)
+					emit(tui.Event{Kind: tui.EventClientToolCall, Text: clientruntime.PreviewClientToolCall(event.Data)})
+					if clientruntime.RequiresClientToolConfirmation(localConfig, event.Data) {
+						persistApprovedSkillReview := func(context.Context) error {
+							skillName := resolveSkillReviewApprovalName(localConfig, sessionState.ContextDir, event.Data)
+							if skillName == "" {
+								return nil
+							}
+							appendApprovedSkillName(&sessionState, skillName)
+							return a.sessionStore.Save(sessionState)
+						}
+						approved := confirm(buildTUIClientToolConfirmRequest(localConfig, sessionState.ContextDir, event.Data, persistApprovedSkillReview, persistSkillReviewAllowAll))
+						if !approved {
+							emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端工具执行。"})
+							if err := submitClientCallFailure(runCtx, providerClient, event.Data, "用户拒绝执行客户端工具"); err != nil {
+								return err
+							}
+							continue
+						}
+						execConfig := localConfig
+						if strings.TrimSpace(execConfig.ApprovalMode) != "readonly" {
+							execConfig.ApprovalMode = "auto"
+						}
+						toolName, result, toolErr := runtimeClient.ExecuteClientToolPayload(runCtx, execConfig, event.Data)
+						emitTUIClientToolResultEvents(emit, toolName, result, toolErr)
+						if err := runtimeClient.SubmitClientToolCallback(runCtx, providerClient, event.Data, result, toolErr); err != nil {
+							return err
+						}
+						continue
+					}
+					toolName, result, toolErr := runtimeClient.ExecuteClientToolPayload(runCtx, localConfig, event.Data)
 					emitTUIClientToolResultEvents(emit, toolName, result, toolErr)
 					if err := runtimeClient.SubmitClientToolCallback(runCtx, providerClient, event.Data, result, toolErr); err != nil {
 						return err
 					}
-					continue
-				}
-				toolName, result, toolErr := runtimeClient.ExecuteClientToolPayload(runCtx, localConfig, event.Data)
-				emitTUIClientToolResultEvents(emit, toolName, result, toolErr)
-				if err := runtimeClient.SubmitClientToolCallback(runCtx, providerClient, event.Data, result, toolErr); err != nil {
-					return err
-				}
-			case provider.EventError:
-				normalizedErr := normalizeStreamEventError(event.Data["error"])
-				if retryCount < 1 {
-					missingSkillNames := detectMissingSkillNames(event.Data, normalizedErr)
-					if len(missingSkillNames) > 0 {
-						installedAny, installErr := a.autoInstallCandidates(
-							skillConfig,
-							&sessionState,
-							request.Input,
-							requestedSkillNames,
-							missingSkillNames,
-							func(approval skillInstallApprovalRequest) bool {
-								return confirm(buildTUISkillAutoInstallConfirmRequest(approval))
-							},
-							func(text string) {
-								if strings.TrimSpace(text) != "" {
-									emit(tui.Event{Kind: tui.EventProgressNote, Text: text})
-								}
-							},
-						)
-						if installErr != nil {
-							return installErr
-						}
-						if installedAny {
-							retryCount++
-							retryRequested = true
-							emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("检测到缺失技能 %s，已完成补装，正在自动重试。", strings.Join(missingSkillNames, ", "))})
-							break eventLoop
+				case provider.EventError:
+					normalizedErr := normalizeStreamEventError(event.Data["error"])
+					if retryCount < 1 {
+						missingSkillNames := detectMissingSkillNames(event.Data, normalizedErr)
+						if len(missingSkillNames) > 0 {
+							installedAny, installErr := a.autoInstallCandidates(
+								skillConfig,
+								&sessionState,
+								request.Input,
+								requestedSkillNames,
+								missingSkillNames,
+								func(approval skillInstallApprovalRequest) bool {
+									return confirm(buildTUISkillAutoInstallConfirmRequest(approval))
+								},
+								func(text string) {
+									if strings.TrimSpace(text) != "" {
+										emit(tui.Event{Kind: tui.EventProgressNote, Text: text})
+									}
+								},
+							)
+							if installErr != nil {
+								return installErr
+							}
+							if installedAny {
+								retryCount++
+								retryRequested = true
+								emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("检测到缺失技能 %s，已完成补装，正在自动重试。", strings.Join(missingSkillNames, ", "))})
+								break eventLoop
+							}
 						}
 					}
+					return normalizedErr
+				case provider.EventClose:
+					break eventLoop
 				}
-				return normalizedErr
-			case provider.EventClose:
-				break eventLoop
 			}
-		}
 			if retryRequested {
 				continue
 			}
@@ -332,6 +313,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		refreshedClient := buildProviderClient(updatedConfig)
 		backend := a.inspectBackendStatus(refreshCtx, refreshedClient, updatedConfig.BackendBaseURL)
 		if backend.Available {
+			updatedConfig, _, err = a.ensureProviderAuthenticated(refreshCtx, refreshedClient, updatedConfig)
+			if err != nil {
+				return tui.Snapshot{}, nil, err
+			}
 			updatedConfig, err = a.ensureDefaultFlow(refreshCtx, refreshedClient, updatedConfig)
 			if err != nil {
 				return tui.Snapshot{}, nil, err
@@ -441,49 +426,17 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}, nil
 	}
 
+	loginFormSubmit := func(changeCtx context.Context, snapshot tui.Snapshot, submission tui.LoginFormSubmission) (tui.LocalCommandResult, error) {
+		return a.submitTUILoginForm(changeCtx, providerClient, snapshot, submission, refreshSnapshot)
+	}
+
 	localCommand := func(commandCtx context.Context, command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
 		trimmed := strings.TrimSpace(command)
 		switch {
 		case trimmed == "/help":
-			helpLines := []string{
-				"可用命令:",
-				"/new 重置当前智能体的本地会话",
-				"/clear 清空当前界面消息",
-				"/review [路径] 发起当前工作区或指定路径的代码审查",
-				"/agent 或 /agent <任务> 切换执行模式",
-				"/ask 或 /ask <问题> 切换问答模式",
-				"/plan 或 /plan <目标> 切换计划模式",
-				"/reasoning [on|off|default|status] 切换当前会话思考模式",
-				"/session 查看当前会话",
-				"/sessions [页码] 查看当前智能体的服务端会话列表",
-				"/config 打开全局与权限配置弹窗",
-				"!<shell 命令> 在当前目录执行本地命令",
-				"/agents 或 /agents <名称> 选择智能体",
-				"/tasks [list|output|capture|stop|remove] 管理本地后台任务",
-				"/skills [list|view|search|view-remote|install|remove|update|source|enable|disable|help] 管理本地技能与远程仓库技能",
-				"/exit 退出",
-			}
-			if !snapshot.BackendAvailable {
-				reason := strings.TrimSpace(snapshot.BackendStatusReason)
-				if reason == "" {
-					reason = "服务端不可用"
-				}
-				helpLines = []string{
-					"当前处于只读模式。",
-					"原因: " + reason,
-					"可用命令:",
-					"/clear 清空当前界面消息",
-					"/config 打开当前配置弹窗",
-					"/tasks 查看本地后台任务",
-					"/skills 查看本地技能与远程仓库技能",
-					"/reasoning 查看思考模式",
-					"/help 查看当前提示",
-					"/exit 退出",
-				}
-			}
 			return tui.LocalCommandResult{
 				Handled: true,
-				Events:  []tui.Event{{Kind: tui.EventSystemNote, Text: strings.Join(helpLines, "\n")}},
+				Events:  []tui.Event{{Kind: tui.EventSystemNote, Text: strings.Join(buildTUIHelpLines(snapshot), "\n")}},
 			}, nil
 		case trimmed == "/config" || strings.EqualFold(trimmed, "/config show"):
 			formState, err := a.buildTUIConfigFormState(commandCtx, providerClient, snapshot)
@@ -491,6 +444,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				return tui.LocalCommandResult{}, err
 			}
 			return tui.LocalCommandResult{Handled: true, ConfigForm: formState}, nil
+		case strings.EqualFold(trimmed, "/login") || strings.HasPrefix(strings.ToLower(trimmed), "/login "):
+			return a.executeTUILoginCommand(commandCtx, providerClient, snapshot, trimmed, refreshSnapshot)
 		case strings.HasPrefix(strings.ToLower(trimmed), "/config session "):
 			flowID := strings.TrimSpace(snapshot.DefaultFlow)
 			if flowID == "" {
@@ -765,7 +720,85 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}
 	}
 
-	return tui.Run(ctx, snapshot, flowItems, runner, refreshSnapshot, flowChange, sessionChange, approvalChange, configFormSubmit, localCommand, startupCommand)
+	return tui.Run(ctx, snapshot, flowItems, runner, refreshSnapshot, flowChange, sessionChange, approvalChange, configFormSubmit, loginFormSubmit, localCommand, startupCommand)
+}
+
+func (a *App) buildInitialTUISnapshot(
+	config internalconfig.Config,
+	flowID string,
+	backend backendStatus,
+) (tui.Snapshot, error) {
+	snapshot := tui.Snapshot{
+		Version:             buildinfo.Version,
+		BackendURL:          config.BackendBaseURL,
+		BackendAvailable:    backend.Available,
+		BackendStatusReason: strings.TrimSpace(backend.Reason),
+		DefaultFlow:         flowID,
+		DefaultFlowLabel:    strings.TrimSpace(flowID),
+		Workdir:             resolveLocalWorkdir(config.Workdir),
+		ContextDir:          resolveLocalWorkdir(config.Workdir),
+		RequestMode:         provider.RequestTypeAgent,
+		ApprovalMode:        config.ApprovalMode,
+		ReasoningEnabled:    config.ReasoningEnabled,
+	}
+	if strings.TrimSpace(flowID) == "" {
+		return snapshot, nil
+	}
+
+	sessionState, err := a.prepareSession(flowID, false, snapshot.Workdir, "")
+	if err != nil {
+		return tui.Snapshot{}, err
+	}
+	snapshot.SessionID = sessionState.SessionID
+	snapshot.SessionTitle = resolveSessionTitle(sessionState)
+	snapshot.RequestMode = normalizeRequestMode(sessionState.RequestMode)
+	snapshot.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, snapshot.Workdir))
+	snapshot.ReasoningOverride = strings.TrimSpace(sessionState.ReasoningOverride)
+	snapshot.ReasoningEnabled = resolveReasoningEnabled(config, sessionState.ReasoningOverride)
+	snapshot.SessionSandboxEscapePolicy = strings.TrimSpace(sessionState.SandboxEscapePolicyOverride)
+	snapshot.DefaultFlowLabel = resolveFlowLabel(flowID, snapshot.DefaultFlowLabel, sessionState.FlowDisplayName)
+	return snapshot, nil
+}
+
+func buildTUIHelpLines(snapshot tui.Snapshot) []string {
+	if !snapshot.BackendAvailable {
+		reason := strings.TrimSpace(snapshot.BackendStatusReason)
+		if reason == "" {
+			reason = "服务端不可用"
+		}
+		return []string{
+			"当前处于只读模式。",
+			"原因: " + reason,
+			"可用命令:",
+			"/login 打开登录表单",
+			"/clear 清空当前界面消息",
+			"/config 打开当前配置弹窗",
+			"/tasks 查看本地后台任务",
+			"/skills 查看本地技能与远程仓库技能",
+			"/reasoning 查看思考模式",
+			"/help 查看当前提示",
+			"/exit 退出",
+		}
+	}
+	return []string{
+		"可用命令:",
+		"/new 重置当前智能体的本地会话",
+		"/clear 清空当前界面消息",
+		"/review [路径] 发起当前工作区或指定路径的代码审查",
+		"/agent 或 /agent <任务> 切换执行模式",
+		"/ask 或 /ask <问题> 切换问答模式",
+		"/plan 或 /plan <目标> 切换计划模式",
+		"/reasoning [on|off|default|status] 切换当前会话思考模式",
+		"/session 查看当前会话",
+		"/sessions [页码] 查看当前智能体的服务端会话列表",
+		"/login 打开登录表单；/login status 和 /login logout 查看或清理当前登录态",
+		"/config 打开全局与权限配置弹窗",
+		"!<shell 命令> 在当前目录执行本地命令",
+		"/agents 或 /agents <名称> 选择智能体",
+		"/tasks [list|output|capture|stop|remove] 管理本地后台任务",
+		"/skills [list|view|search|view-remote|install|remove|update|source|enable|disable|help] 管理本地技能与远程仓库技能",
+		"/exit 退出",
+	}
 }
 
 func (a *App) buildTUISnapshot(
@@ -810,6 +843,15 @@ func (a *App) buildTUISnapshot(
 	if versionInfo, err := providerClient.GetVersionInfo(ctx); err == nil && versionInfo != nil {
 		snapshot.ServerPackage = strings.TrimSpace(versionInfo.Package)
 		snapshot.ServerVersion = firstNonEmpty(strings.TrimSpace(versionInfo.MainVersion), strings.TrimSpace(versionInfo.Version))
+	}
+	if currentUser, err := providerClient.GetCurrentUserInfo(ctx); err == nil && currentUser != nil {
+		snapshot.CurrentUserName = firstNonEmpty(
+			strings.TrimSpace(currentUser.Name),
+			firstNonEmpty(strings.TrimSpace(currentUser.UserName), strings.TrimSpace(currentUser.UserID)),
+		)
+	} else if err != nil && isAuthenticationError(err) {
+		snapshot.AuthRequired = true
+		snapshot.AuthStatusReason = "服务端已连接，但当前登录态无效或缺失。登录表单已自动打开，也可手动执行 /login。"
 	}
 	if strings.TrimSpace(flowID) == "" {
 		return snapshot, nil
@@ -2000,9 +2042,8 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 
 	return &tui.ConfigFormState{
 		Title:       "服务端连接配置(server connection)",
-		Hint:        "修改服务端地址、鉴权、思考模式和运行默认项。保存后会立即刷新连接状态。",
+		Hint:        "修改服务端地址、思考模式和运行默认项。保存后会立即刷新连接状态。",
 		Path:        a.configManager.Path(),
-		HasAPIKey:   strings.TrimSpace(config.APIKey) != "",
 		SubmitText:  "保存配置",
 		FlowOptions: flowOptions,
 		Values: tui.ConfigFormValues{
@@ -2037,17 +2078,6 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 
 	if err := assignConfigValue(&config, "backend_base_url", submission.Values.BackendBaseURL); err != nil {
 		return internalconfig.Config{}, err
-	}
-
-	if submission.ClearAPIKey {
-		config.APIKey = ""
-	} else if !submission.KeepAPIKey {
-		trimmedAPIKey := strings.TrimSpace(submission.Values.APIKey)
-		if trimmedAPIKey != "" {
-			if err := assignConfigValue(&config, "api_key", trimmedAPIKey); err != nil {
-				return internalconfig.Config{}, err
-			}
-		}
 	}
 
 	if strings.TrimSpace(submission.Values.DefaultFlow) == "" {

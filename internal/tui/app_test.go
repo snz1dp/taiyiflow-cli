@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -112,11 +113,63 @@ func TestVisibleSlashCommandsOmitsPermissionsCommand(t *testing.T) {
 	}
 }
 
+func TestVisibleSlashCommandsKeepsLoginInReadOnlyMode(t *testing.T) {
+	input := textarea.New()
+	input.SetValue("/l")
+
+	model := model{
+		snapshot: Snapshot{BackendAvailable: false},
+		input:    input,
+	}
+
+	commands := model.visibleSlashCommands()
+	for _, command := range commands {
+		if command.Trigger == "/login" {
+			return
+		}
+	}
+	t.Fatalf("expected /login to stay visible in read-only mode, got %#v", commands)
+}
+
+func TestEnterExecutesLoginSlashCommandImmediately(t *testing.T) {
+	input := textarea.New()
+	input.SetValue("/login")
+
+	captured := ""
+	appModel := model{
+		ctx:      context.Background(),
+		snapshot: Snapshot{BackendAvailable: true},
+		input:    input,
+		localCommand: func(ctx context.Context, command string, snapshot Snapshot) (LocalCommandResult, error) {
+			captured = command
+			return LocalCommandResult{
+				Handled: true,
+				LoginForm: &LoginFormState{
+					Title: "登录(login)",
+					Mode:  "password",
+				},
+			}, nil
+		},
+	}
+
+	updatedModel, _ := appModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := updatedModel.(model)
+
+	if captured != "/login" {
+		t.Fatalf("expected enter to execute /login immediately, got %q", captured)
+	}
+	if updated.loginForm == nil {
+		t.Fatal("expected /login to open login overlay")
+	}
+	if got := strings.TrimSpace(updated.input.Value()); got != "" {
+		t.Fatalf("expected input to clear after executing /login, got %q", got)
+	}
+}
+
 func TestFitOverlayContentKeepsFocusedConfigFieldVisible(t *testing.T) {
 	state := newConfigFormState(ConfigFormState{
-		Title:     "配置设置",
-		Hint:      "测试超长弹窗",
-		HasAPIKey: true,
+		Title: "配置设置",
+		Hint:  "测试超长弹窗",
 		Values: ConfigFormValues{
 			BackendBaseURL:           "http://localhost:7860",
 			SandboxRoots:             "/tmp/a, /tmp/b",
@@ -145,6 +198,25 @@ func TestFitOverlayContentKeepsFocusedConfigFieldVisible(t *testing.T) {
 	}
 	if strings.Contains(rendered, overlayFocusMarker) {
 		t.Fatalf("expected overlay marker to be stripped, got %q", rendered)
+	}
+}
+
+func TestRenderConfigFormHidesAccessTokenField(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{
+		Title: "配置设置",
+		Values: ConfigFormValues{
+			BackendBaseURL: "http://localhost:7860",
+		},
+	})
+
+	model := model{
+		contentWidth: 80,
+		configForm:   state,
+	}
+
+	rendered := sanitizeTerminalText(model.renderConfigForm())
+	if strings.Contains(rendered, "访问令牌") || strings.Contains(rendered, "API Key") {
+		t.Fatalf("expected config form to hide access token field, got %q", rendered)
 	}
 }
 
@@ -189,6 +261,268 @@ func TestHandleConfigFormKeyMovesAgentAutoLoopSelector(t *testing.T) {
 	updated := updatedModel.(model)
 	if updated.configForm.agentAutoLoopCursor != 0 {
 		t.Fatalf("expected selector to move to restore-default choice, got %d", updated.configForm.agentAutoLoopCursor)
+	}
+}
+
+func TestRenderLoginFormShowsQRCodeState(t *testing.T) {
+	state := newLoginFormState(LoginFormState{
+		Title:      "登录(login)",
+		Mode:       "qr",
+		Remember:   true,
+		QRTicket:   "ticket-1",
+		QRLoginURL: "https://example.com/login/scan",
+		QRScanHint: "请使用企业微信扫码确认",
+	})
+	state.cursor = loginFieldSubmit
+
+	model := model{
+		contentWidth: 80,
+		loginForm:    state,
+	}
+
+	rendered := sanitizeTerminalText(model.renderLoginForm())
+	if !strings.Contains(rendered, "扫码地址(qr_url)") || !strings.Contains(rendered, "ticket-1") {
+		t.Fatalf("expected qr login details in login overlay, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "等待扫码结果") {
+		t.Fatalf("expected qr wait action in login overlay, got %q", rendered)
+	}
+}
+
+func TestHandleLoginFormKeyQuitsWhenLoginIsRequired(t *testing.T) {
+	state := newLoginFormState(LoginFormState{
+		Title:    "登录(login)",
+		Mode:     "password",
+		Remember: true,
+	})
+	appModel := model{
+		loginForm: state,
+		snapshot: Snapshot{
+			BackendAvailable: true,
+			AuthRequired:     true,
+		},
+	}
+
+	updatedModel, cmd := appModel.handleLoginFormKey(tea.KeyMsg{Type: tea.KeyEsc})
+	updated := updatedModel.(model)
+	if !updated.quitting {
+		t.Fatalf("expected login overlay close to quit when auth is required, got %#v", updated)
+	}
+	if cmd == nil {
+		t.Fatal("expected quit command when auth is required")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg, got %T", cmd())
+	}
+}
+
+func TestRenderLoginFormShowsTaiyiHeaderAndHidesRemember(t *testing.T) {
+	state := newLoginFormState(LoginFormState{
+		Title:    "登录(login)",
+		Mode:     "password",
+		Username: "zhangsan",
+		Password: "secret-123",
+		Remember: true,
+	})
+
+	appModel := model{
+		contentWidth: 80,
+		loginForm:    state,
+	}
+
+	rendered := sanitizeTerminalText(appModel.renderLoginForm())
+	if !strings.Contains(rendered, "太乙智启") {
+		t.Fatalf("expected taiyiflow header in login overlay, got %q", rendered)
+	}
+	if strings.Contains(rendered, "记住登录(remember)") {
+		t.Fatalf("expected remember toggle to be hidden, got %q", rendered)
+	}
+	if strings.Contains(rendered, "验证码票据(captcha_ticket)") {
+		t.Fatalf("expected captcha ticket field to stay hidden before captcha step, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "用户名(username)") || !strings.Contains(rendered, "密码(password)") {
+		t.Fatalf("expected username/password fields in default password mode, got %q", rendered)
+	}
+}
+
+func TestRenderLoginFormShowsCaptchaStepWhenTicketPresent(t *testing.T) {
+	state := newLoginFormState(LoginFormState{
+		Title:         "登录(login)",
+		Mode:          "password",
+		Username:      "zhangsan",
+		Password:      "secret-123",
+		Remember:      true,
+		KaptchaTicket: "captcha-ticket-1",
+	})
+
+	appModel := model{
+		contentWidth: 80,
+		loginForm:    state,
+	}
+
+	rendered := sanitizeTerminalText(appModel.renderLoginForm())
+	if !strings.Contains(rendered, "登录账号(username)") {
+		t.Fatalf("expected username summary in captcha step, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "验证码(captcha_code)") {
+		t.Fatalf("expected captcha input in captcha step, got %q", rendered)
+	}
+	if strings.Contains(rendered, "验证码票据(captcha_ticket)") || strings.Contains(rendered, "密码(password)") {
+		t.Fatalf("expected captcha step to hide ticket and password fields, got %q", rendered)
+	}
+}
+
+func TestRenderLoginFormHighlightsErrorStatus(t *testing.T) {
+	state := newLoginFormState(LoginFormState{
+		Title:         "登录(login)",
+		Mode:          "password",
+		StatusText:    "登录失败: 用户名密码错误，您还有2次尝试机会！",
+		StatusIsError: true,
+	})
+
+	appModel := model{
+		contentWidth: 80,
+		loginForm:    state,
+	}
+
+	rendered := sanitizeTerminalText(appModel.renderLoginForm())
+	if !strings.Contains(rendered, "登录提示(status)") {
+		t.Fatalf("expected highlighted login error label, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "用户名密码错误，您还有2次尝试机会！") {
+		t.Fatalf("expected highlighted login error message, got %q", rendered)
+	}
+}
+
+func TestNewLoginFormStateRespectsFocusField(t *testing.T) {
+	state := newLoginFormState(LoginFormState{
+		Title:      "登录(login)",
+		Mode:       "password",
+		Username:   "zhangsan",
+		Password:   "secret-123",
+		StatusText: "提示: 用户名或密码错误",
+		FocusField: loginFieldPassword,
+	})
+	if state.cursor != loginFieldPassword {
+		t.Fatalf("expected focused password field, got %#v", state)
+	}
+	if !state.inputs[1].Focused() {
+		t.Fatalf("expected password input focused, got %#v", state.inputs[1])
+	}
+}
+
+func TestResolveInitialStartupCommandOpensLoginWhenAuthRequired(t *testing.T) {
+	if got := resolveInitialStartupCommand(Snapshot{BackendAvailable: true, AuthRequired: true}, ""); got != "/login" {
+		t.Fatalf("expected auth-required snapshot to auto-open /login, got %q", got)
+	}
+	if got := resolveInitialStartupCommand(Snapshot{BackendAvailable: true, AuthRequired: true}, "/help"); got != "/help" {
+		t.Fatalf("expected explicit startup command to win, got %q", got)
+	}
+	if got := resolveInitialStartupCommand(Snapshot{BackendAvailable: true, AuthRequired: false}, ""); got != "" {
+		t.Fatalf("expected no startup command when auth not required, got %q", got)
+	}
+}
+
+func TestShouldAutoOpenLoginOverlayOnAuthTransition(t *testing.T) {
+	snapshot := Snapshot{BackendAvailable: true, AuthRequired: true}
+	if !shouldAutoOpenLoginOverlay(snapshot, true, false, true, false) {
+		t.Fatal("expected login overlay to open when auth just became required")
+	}
+	if !shouldAutoOpenLoginOverlay(snapshot, false, false, true, false) {
+		t.Fatal("expected login overlay to open when backend just recovered into auth-required state")
+	}
+	if shouldAutoOpenLoginOverlay(snapshot, true, true, true, false) {
+		t.Fatal("expected no auto-open when auth was already required")
+	}
+	if shouldAutoOpenLoginOverlay(snapshot, true, false, false, false) {
+		t.Fatal("expected no auto-open without local command handler")
+	}
+	if shouldAutoOpenLoginOverlay(snapshot, true, false, true, true) {
+		t.Fatal("expected no auto-open while login overlay already open")
+	}
+}
+
+func TestInitRequestsSnapshotRefreshWhenHandlerPresent(t *testing.T) {
+	refreshed := false
+	cmd := model{
+		ctx:      context.Background(),
+		snapshot: Snapshot{BackendAvailable: true},
+		input:    textarea.New(),
+		progress: progress.New(progress.WithDefaultGradient()),
+		state:    newProgressState(progressIdle),
+		refreshSnapshot: func(ctx context.Context, snapshot Snapshot) (Snapshot, []FlowItem, error) {
+			refreshed = true
+			updated := snapshot
+			updated.CurrentUserName = "张三"
+			return updated, nil, nil
+		},
+	}.Init()
+	if cmd == nil {
+		t.Fatal("expected init command")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", cmd())
+	}
+	foundRefresh := false
+	for _, item := range batch {
+		if item == nil {
+			continue
+		}
+		msg := item()
+		if refreshedMsg, ok := msg.(snapshotRefreshedMsg); ok {
+			foundRefresh = true
+			if refreshedMsg.snapshot.CurrentUserName != "张三" {
+				t.Fatalf("expected refreshed snapshot to propagate, got %#v", refreshedMsg.snapshot)
+			}
+		}
+	}
+	if !foundRefresh {
+		t.Fatal("expected init to enqueue snapshot refresh")
+	}
+	if !refreshed {
+		t.Fatal("expected refresh handler to run")
+	}
+}
+
+func TestSnapshotRefreshRebuildsInitialEntriesAndContextBudget(t *testing.T) {
+	initial := Snapshot{
+		BackendAvailable: true,
+		SessionID:        "session-123",
+		WelcomeMessage:   "欢迎",
+	}
+	updated := initial
+	updated.History = []HistoryEntry{{Role: "user", Content: "历史问题"}, {Role: "assistant", Content: "历史回答"}}
+	updated.RequestStats = &RequestMetrics{
+		TokenUsage: &TokenUsage{
+			ContextWindow: &ContextWindow{
+				MaxInputTokens:           4000,
+				NextRoundAvailableTokens: 3200,
+			},
+		},
+	}
+
+	appModel := model{
+		snapshot: initial,
+		entries:  buildInitialEntries(initial),
+		input:    textarea.New(),
+		viewport: viewport.New(0, 0),
+	}
+
+	updatedModel, _ := appModel.Update(snapshotRefreshedMsg{snapshot: updated})
+	result := updatedModel.(model)
+
+	if len(result.entries) != 3 {
+		t.Fatalf("expected refreshed entries to include welcome and history, got %#v", result.entries)
+	}
+	if result.entries[1].content != "历史问题" || result.entries[2].content != "历史回答" {
+		t.Fatalf("expected refreshed history entries, got %#v", result.entries)
+	}
+	if result.requestStats.TokenUsage == nil || result.requestStats.TokenUsage.ContextWindow == nil {
+		t.Fatalf("expected refreshed context window metrics, got %#v", result.requestStats)
+	}
+	if got := result.inputContextUsageHint(); got == "上下文窗口100%可用" || got == "" {
+		t.Fatalf("expected concrete context hint after refresh, got %q", got)
 	}
 }
 
@@ -408,9 +742,9 @@ func TestApplyLocalCommandResultOpensSkillsPicker(t *testing.T) {
 	result := LocalCommandResult{
 		Handled: true,
 		SkillsPicker: &SkillsPickerState{
-			Title: "技能列表",
+			Title:     "技能列表",
 			ActiveTab: "local",
-			Items: []SkillItem{{Name: "taiyiflow-api", Description: "接口参考"}},
+			Items:     []SkillItem{{Name: "taiyiflow-api", Description: "接口参考"}},
 		},
 	}
 
@@ -428,7 +762,7 @@ func TestHandleSkillsPickerEnterOpensToolPanel(t *testing.T) {
 		contentWidth: 80,
 		input:        textarea.New(),
 		skillsPicker: &SkillsPickerState{
-			Title: "技能列表",
+			Title:     "技能列表",
 			ActiveTab: "local",
 			Items: []SkillItem{{
 				Name:        "taiyiflow-api",
@@ -458,9 +792,9 @@ func TestHandleSkillsPickerEnterOpensToolPanel(t *testing.T) {
 func TestHandleSkillsPickerTabSwitchesToRemote(t *testing.T) {
 	m := model{
 		skillsPicker: &SkillsPickerState{
-			Title:      "技能列表",
-			ActiveTab:  "local",
-			Items:      []SkillItem{{Name: "local"}},
+			Title:       "技能列表",
+			ActiveTab:   "local",
+			Items:       []SkillItem{{Name: "local"}},
 			RemoteItems: []RemoteSkillItem{{Slug: "remote-skill", DisplayName: "Remote Skill"}},
 		},
 	}
@@ -477,8 +811,8 @@ func TestHandleSkillsPickerEnterOnRemoteOpensRemoteToolPanel(t *testing.T) {
 		contentWidth: 80,
 		input:        textarea.New(),
 		skillsPicker: &SkillsPickerState{
-			Title:      "技能列表",
-			ActiveTab:  "remote",
+			Title:     "技能列表",
+			ActiveTab: "remote",
 			RemoteItems: []RemoteSkillItem{{
 				Slug:          "remote-skill",
 				DisplayName:   "Remote Skill",
@@ -901,6 +1235,99 @@ func TestStatusBarSegmentsDoNotShowCompressionCount(t *testing.T) {
 	}
 	if strings.Contains(joined, "Tk ") || strings.Contains(joined, "Token ") {
 		t.Fatalf("expected token usage segment to be dropped before context segment, got %q", joined)
+	}
+}
+
+func TestRenderStatusBarShowsCurrentUser(t *testing.T) {
+	model := model{
+		snapshot: Snapshot{
+			BackendAvailable: true,
+			RequestMode:      "agent",
+			ApprovalMode:     "confirm",
+			CurrentUserName:  "张三",
+		},
+		state:        newProgressState(progressIdle),
+		width:        120,
+		contentWidth: 120,
+	}
+
+	got := sanitizeTerminalText(model.renderStatusBar())
+	if !strings.Contains(got, "当前用户 张三") {
+		t.Fatalf("expected current user segment in status bar, got %q", got)
+	}
+}
+
+func TestRenderStatusBarShowsAuthRequired(t *testing.T) {
+	model := model{
+		snapshot: Snapshot{
+			BackendAvailable: true,
+			AuthRequired:     true,
+			RequestMode:      "agent",
+			ApprovalMode:     "confirm",
+		},
+		state:        newProgressState(progressIdle),
+		width:        120,
+		contentWidth: 120,
+	}
+
+	got := sanitizeTerminalText(model.renderStatusBar())
+	if !strings.Contains(got, "当前未登录") {
+		t.Fatalf("expected auth required segment in status bar, got %q", got)
+	}
+}
+
+func TestBuildBackendStatusEntriesUsesLoginOverlayHint(t *testing.T) {
+	entries := buildBackendStatusEntries(Snapshot{
+		BackendAvailable: true,
+		AuthRequired:     true,
+		AuthStatusReason: "服务端已连接，但当前登录态无效或缺失。登录表单已自动打开，也可手动执行 /login。",
+	})
+	if len(entries) != 1 {
+		t.Fatalf("expected one backend status entry, got %#v", entries)
+	}
+	if !strings.Contains(entries[0].content, "登录表单已自动打开") {
+		t.Fatalf("expected login overlay hint in backend status entry, got %q", entries[0].content)
+	}
+	if strings.Count(entries[0].content, "/login") != 1 {
+		t.Fatalf("expected backend status entry to mention /login once, got %q", entries[0].content)
+	}
+	if strings.Contains(entries[0].content, "/login qr") || strings.Contains(entries[0].content, "/login password") {
+		t.Fatalf("expected backend status entry to stop repeating legacy login commands, got %q", entries[0].content)
+	}
+}
+
+func TestSyncInputPlaceholderUsesLoginOverlayHint(t *testing.T) {
+	input := textarea.New()
+	appModel := model{
+		snapshot: Snapshot{BackendAvailable: true, AuthRequired: true},
+		input:    input,
+	}
+	appModel.syncInputPlaceholder()
+	if got := appModel.input.Placeholder; !strings.Contains(got, "登录表单已自动打开") {
+		t.Fatalf("expected auth-required placeholder to reference login overlay, got %q", got)
+	}
+	if strings.Contains(appModel.input.Placeholder, "/login qr") || strings.Contains(appModel.input.Placeholder, "/login password") {
+		t.Fatalf("expected auth-required placeholder to stop repeating legacy login commands, got %q", appModel.input.Placeholder)
+	}
+}
+
+func TestRenderStatusBarShowsFooterHint(t *testing.T) {
+	model := model{
+		snapshot: Snapshot{
+			BackendAvailable: true,
+			RequestMode:      "agent",
+			ApprovalMode:     "confirm",
+			CurrentUserName:  "张三",
+		},
+		state:        newProgressState(progressIdle),
+		width:        120,
+		contentWidth: 120,
+		footerHint:   "张三(已登录)",
+	}
+
+	got := sanitizeTerminalText(model.renderStatusBar())
+	if !strings.Contains(got, "张三(已登录)") {
+		t.Fatalf("expected footer hint in status bar, got %q", got)
 	}
 }
 

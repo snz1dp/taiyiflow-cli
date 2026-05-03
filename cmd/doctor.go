@@ -6,8 +6,6 @@ import (
 	"os"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
-
-	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 )
 
 func (a *App) runDoctor(args []string) error {
@@ -23,7 +21,7 @@ func (a *App) runDoctor(args []string) error {
 
 	flowDisplay := sanitizeFlowDisplay(config.DefaultFlow)
 	if config.BackendBaseURL != "" {
-		client := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+		client := buildProviderClient(config)
 		config, err = a.ensureDefaultFlow(context.Background(), client, config)
 		if err != nil {
 			return err
@@ -42,6 +40,7 @@ func (a *App) runDoctor(args []string) error {
 	fmt.Fprintf(a.stdout, "- 当前工作目录: %s\n", cwd)
 	fmt.Fprintf(a.stdout, "- 配置文件路径: %s（%s）\n", a.configManager.Path(), fileExistedLabel)
 	fmt.Fprintf(a.stdout, "- 后台服务地址: %s\n", config.BackendBaseURL)
+	fmt.Fprintf(a.stdout, "- 后台服务前缀: %s\n", config.BackendAPIPrefix)
 	fmt.Fprintf(a.stdout, "- 默认智能体: %s\n", flowDisplay)
 	fmt.Fprintf(a.stdout, "- 文件工具链: %s\n", detectLocalFileToolStatus())
 	if skillItems, directory, skillErr := skills.Discover(config); skillErr == nil {

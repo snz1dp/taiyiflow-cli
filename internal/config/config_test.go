@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -134,6 +135,12 @@ func TestNormalizeAgentAutoLoopMaxRounds(t *testing.T) {
 
 func TestDefaultConfigIncludesAgentAutoLoopDefaults(t *testing.T) {
 	config := Default()
+	if config.BackendBaseURL != "http://localhost:4005" {
+		t.Fatalf("expected default backend base url http://localhost:4005, got %q", config.BackendBaseURL)
+	}
+	if config.BackendAPIPrefix != DefaultBackendAPIPrefix {
+		t.Fatalf("expected default backend api prefix %q, got %q", DefaultBackendAPIPrefix, config.BackendAPIPrefix)
+	}
 	if config.AgentAutoLoopEnabled {
 		t.Fatal("expected agent auto loop to default to disabled")
 	}
@@ -145,6 +152,70 @@ func TestDefaultConfigIncludesAgentAutoLoopDefaults(t *testing.T) {
 	}
 	if config.Skills.FreeTextSearchEnabled {
 		t.Fatal("expected default free text skill search to be disabled")
+	}
+}
+
+func TestNormalizeBackendAPIPrefix(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{input: "", expected: DefaultBackendAPIPrefix},
+		{input: "/api/v1", expected: DefaultBackendAPIPrefix},
+		{input: "api/v1/", expected: DefaultBackendAPIPrefix},
+		{input: "/taiyi/composer/api/v1/", expected: DefaultBackendAPIPrefix},
+	}
+	for _, item := range cases {
+		if got := NormalizeBackendAPIPrefix(item.input); got != item.expected {
+			t.Fatalf("NormalizeBackendAPIPrefix(%q) = %q, want %q", item.input, got, item.expected)
+		}
+	}
+}
+
+func TestManagerLoadTrimsAuthState(t *testing.T) {
+	tempDir := t.TempDir()
+	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
+
+	content := []byte("backend_base_url: http://localhost:4005\npersistent_token: '  keep-me  '\ndevice_id: '  device-1  '\nauth_updated_at: '  2026-05-01T08:00:00Z  '\naccess_token: '  access-token  '\n")
+	if err := os.WriteFile(manager.path, content, 0o644); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	if loaded.PersistentToken != "keep-me" {
+		t.Fatalf("expected trimmed persistent token, got %q", loaded.PersistentToken)
+	}
+	if loaded.DeviceID != "device-1" {
+		t.Fatalf("expected trimmed device id, got %q", loaded.DeviceID)
+	}
+	if loaded.AuthUpdatedAt != "2026-05-01T08:00:00Z" {
+		t.Fatalf("expected trimmed auth timestamp, got %q", loaded.AuthUpdatedAt)
+	}
+	if loaded.AccessToken != "access-token" {
+		t.Fatalf("expected trimmed access token, got %q", loaded.AccessToken)
+	}
+}
+
+func TestManagerSaveWritesAccessTokenField(t *testing.T) {
+	tempDir := t.TempDir()
+	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
+
+	config := Default()
+	config.AccessToken = "access-token"
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	content, err := os.ReadFile(manager.path)
+	if err != nil {
+		t.Fatalf("read config failed: %v", err)
+	}
+	serialized := string(content)
+	if !strings.Contains(serialized, "access_token:") {
+		t.Fatalf("expected serialized config to use access_token, got %q", serialized)
 	}
 }
 

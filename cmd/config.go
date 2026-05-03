@@ -45,6 +45,7 @@ func (a *App) showConfig() error {
 	if err != nil {
 		return err
 	}
+	config.AccessToken = ""
 	content, err := yaml.Marshal(config)
 	if err != nil {
 		return err
@@ -128,11 +129,8 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return err
 		}
 		config.BackendBaseURL = normalizedURL
-	case "api_key":
-		if trimmedValue == "" {
-			return fmt.Errorf("api_key 不能为空，如需清空请使用 taiyiflow-cli config unset api_key")
-		}
-		config.APIKey = trimmedValue
+	case "backend_api_prefix":
+		config.BackendAPIPrefix = internalconfig.NormalizeBackendAPIPrefix(trimmedValue)
 	case "default_flow":
 		if trimmedValue == "" {
 			return fmt.Errorf("default_flow 不能为空，如需清空请使用 taiyiflow-cli config unset default_flow")
@@ -259,8 +257,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 	switch normalizeConfigKey(key) {
 	case "backend_base_url":
 		config.BackendBaseURL = defaults.BackendBaseURL
-	case "api_key":
-		config.APIKey = ""
+	case "backend_api_prefix":
+		config.BackendAPIPrefix = defaults.BackendAPIPrefix
 	case "default_flow":
 		config.DefaultFlow = ""
 	case "approval_mode":
@@ -309,6 +307,8 @@ func normalizeConfigKey(key string) string {
 	normalized := strings.ToLower(strings.TrimSpace(key))
 	normalized = strings.ReplaceAll(normalized, "-", "_")
 	switch normalized {
+	case "backend_prefix", "api_prefix", "backend_prefix_path":
+		return "backend_api_prefix"
 	case "sandbox_escape_policy", "external_resource_policy":
 		return "external_resource_access_policy"
 	case "skill_package_review_policy", "skills_review_policy":
@@ -342,7 +342,7 @@ func normalizeBackendBaseURL(value string) (string, error) {
 
 	parsed, err := url.Parse(trimmed)
 	if err != nil || strings.TrimSpace(parsed.Scheme) == "" || strings.TrimSpace(parsed.Host) == "" {
-		return "", fmt.Errorf("backend_base_url 必须是完整的 HTTP 地址，例如 http://localhost:7860")
+		return "", fmt.Errorf("backend_base_url 必须是完整的 HTTP 地址，例如 http://localhost:4005")
 	}
 
 	scheme := strings.ToLower(parsed.Scheme)
@@ -357,6 +357,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 	lines := []string{
 		fmt.Sprintf("配置路径: %s", path),
 		fmt.Sprintf("服务端地址: %s", fallbackConfigValue(config.BackendBaseURL, internalconfig.Default().BackendBaseURL)),
+		fmt.Sprintf("服务端前缀: %s", fallbackConfigValue(config.BackendAPIPrefix, internalconfig.Default().BackendAPIPrefix)),
 		fmt.Sprintf("默认智能体: %s", fallbackConfigValue(config.DefaultFlow, "<未配置>")),
 		fmt.Sprintf("命令执行模式: %s", fallbackConfigValue(config.ApprovalMode, internalconfig.Default().ApprovalMode)),
 		fmt.Sprintf("默认思考模式: %t", config.ReasoningEnabled),

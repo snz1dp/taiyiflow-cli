@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"text/tabwriter"
-
-	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 )
 
 func (a *App) runAgents(ctx context.Context, args []string) error {
@@ -33,7 +31,7 @@ func (a *App) runAgents(ctx context.Context, args []string) error {
 		return err
 	}
 
-	client := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+	client := buildProviderClient(config)
 	config, err = a.ensureDefaultFlow(ctx, client, config)
 	if err != nil {
 		return err
@@ -71,7 +69,7 @@ func (a *App) showCurrentAgent(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	client := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+	client := buildProviderClient(config)
 	config, err = a.ensureDefaultFlow(ctx, client, config)
 	if err != nil {
 		return err
@@ -100,7 +98,7 @@ func (a *App) useAgent(ctx context.Context, args []string) error {
 		return err
 	}
 
-	client := providerclient.NewClient(config.BackendBaseURL, config.APIKey)
+	client := buildProviderClient(config)
 	fmt.Fprintf(a.stdout, "已设置默认智能体: %s\n", a.resolveFlowDisplayName(ctx, client, config.DefaultFlow))
 	return nil
 }

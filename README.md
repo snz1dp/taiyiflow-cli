@@ -29,6 +29,17 @@
 - 命令行构建产物：go build -o taiyiflow-cli .
 - 运行：./taiyiflow-cli
 
+## 登录
+
+- 顶层登录入口：`./taiyiflow-cli login`，默认直接进入 TUI 登录表单。
+- 查看当前登录态：`./taiyiflow-cli login status`
+- 用户名密码登录：`./taiyiflow-cli login password <username> <password>`
+- 扫码登录：`./taiyiflow-cli login qr`，命令会输出 `ticket`、扫码地址和下一步等待命令。
+- 等待扫码完成：`./taiyiflow-cli login qr wait <ticket>`
+- 退出登录：`./taiyiflow-cli login logout`
+
+说明：命令行（CLI）登录与 TUI `/login` 共用同一套认证实现，默认使用配置中的 `backend_base_url`，并在成功登录后更新 `api_key`、`persistent_token`、`device_id` 与认证时间。
+
 ## 配置示例
 
 命令行（CLI）支持通过启动参数临时覆盖当前任务的外部资源访问策略，也支持通过配置文件持久化默认策略。

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
@@ -92,5 +93,35 @@ func TestRenderConfigSummaryUsesExternalResourceAccessPolicyLabel(t *testing.T) 
 	}
 	if !strings.Contains(summary, "技能自动补装策略:") || !strings.Contains(summary, "自由文本技能搜索:") {
 		t.Fatalf("expected skill auto install labels, got %q", summary)
+	}
+}
+
+func TestAssignConfigValueRejectsUnsupportedAccessTokenConfig(t *testing.T) {
+	config := internalconfig.Default()
+	err := assignConfigValue(&config, "access_token", "token-1")
+	if err == nil || !strings.Contains(err.Error(), "不支持的配置项: access_token") {
+		t.Fatalf("expected unsupported access_token error, got %v", err)
+	}
+}
+
+func TestShowConfigOmitsAccessToken(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.AccessToken = "access-token"
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	stdout := &bytes.Buffer{}
+	app := &App{configManager: manager, stdout: stdout}
+	if err := app.showConfig(); err != nil {
+		t.Fatalf("showConfig failed: %v", err)
+	}
+	if strings.Contains(stdout.String(), "access_token") || strings.Contains(stdout.String(), "access-token") {
+		t.Fatalf("expected showConfig to omit access_token, got %q", stdout.String())
 	}
 }

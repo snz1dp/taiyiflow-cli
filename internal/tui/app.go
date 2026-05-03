@@ -30,6 +30,9 @@ type Snapshot struct {
 	BackendStatusReason        string
 	ServerPackage              string
 	ServerVersion              string
+	AuthRequired               bool
+	AuthStatusReason           string
+	CurrentUserName            string
 	DefaultFlow                string
 	DefaultFlowLabel           string
 	Workdir                    string
@@ -165,7 +168,6 @@ type ApprovalPickerState struct {
 
 type ConfigFormValues struct {
 	BackendBaseURL           string
-	APIKey                   string
 	DefaultFlow              string
 	ApprovalMode             string
 	SandboxEscapePolicy      string
@@ -197,15 +199,42 @@ type ConfigFormState struct {
 	Hint        string
 	Path        string
 	Values      ConfigFormValues
-	HasAPIKey   bool
 	SubmitText  string
 	FlowOptions []ConfigChoice
 }
 
 type ConfigFormSubmission struct {
-	Values      ConfigFormValues
-	KeepAPIKey  bool
-	ClearAPIKey bool
+	Values ConfigFormValues
+}
+
+type LoginFormState struct {
+	Title         string
+	Hint          string
+	StatusText    string
+	StatusIsError bool
+	FocusField    int
+	Mode          string
+	Username      string
+	Password      string
+	Remember      bool
+	KaptchaTicket string
+	KaptchaCode   string
+	QRTicket      string
+	QRLoginURL    string
+	QRScanHint    string
+}
+
+type LoginFormSubmission struct {
+	Action        string
+	Mode          string
+	Username      string
+	Password      string
+	Remember      bool
+	KaptchaTicket string
+	KaptchaCode   string
+	QRTicket      string
+	QRLoginURL    string
+	QRScanHint    string
 }
 
 type slashCommand struct {
@@ -330,6 +359,8 @@ type LocalCommandResult struct {
 	Handled        bool
 	ClearHistory   bool
 	Events         []Event
+	FooterHint     string
+	LoginForm      *LoginFormState
 	SessionPicker  *SessionPickerState
 	SkillsPicker   *SkillsPickerState
 	TasksPicker    *TasksPickerState
@@ -350,6 +381,8 @@ type SessionChangeHandler func(ctx context.Context, snapshot Snapshot, sessionID
 type ApprovalChangeHandler func(ctx context.Context, mode string) (Snapshot, error)
 
 type ConfigFormSubmitHandler func(ctx context.Context, snapshot Snapshot, submission ConfigFormSubmission) (LocalCommandResult, error)
+
+type LoginFormSubmitHandler func(ctx context.Context, snapshot Snapshot, submission LoginFormSubmission) (LocalCommandResult, error)
 
 type LocalCommandHandler func(ctx context.Context, command string, snapshot Snapshot) (LocalCommandResult, error)
 
@@ -415,6 +448,11 @@ type configFormSavedMsg struct {
 	err    error
 }
 
+type loginFormSavedMsg struct {
+	result LocalCommandResult
+	err    error
+}
+
 type localCommandExecutedMsg struct {
 	result LocalCommandResult
 	err    error
@@ -459,6 +497,7 @@ type model struct {
 	sessionChange          SessionChangeHandler
 	approvalChange         ApprovalChangeHandler
 	configFormSubmit       ConfigFormSubmitHandler
+	loginFormSubmit        LoginFormSubmitHandler
 	localCommand           LocalCommandHandler
 	eventCh                chan tea.Msg
 	entries                []entry
@@ -487,6 +526,7 @@ type model struct {
 	taskActionPicker       *TaskActionPickerState
 	approvalPicker         *ApprovalPickerState
 	configForm             *configFormState
+	loginForm              *loginFormState
 	flowCursor             int
 	sessionCursor          int
 	skillsCursor           int
@@ -510,7 +550,6 @@ type configFormState struct {
 	title                   string
 	hint                    string
 	path                    string
-	hasAPIKey               bool
 	submitText              string
 	inputs                  []textinput.Model
 	cursor                  int
@@ -528,6 +567,20 @@ type configFormState struct {
 	skillsFreeTextCursor    int
 }
 
+type loginFormState struct {
+	title         string
+	hint          string
+	statusText    string
+	statusIsError bool
+	mode          string
+	remember      bool
+	inputs        []textinput.Model
+	cursor        int
+	qrTicket      string
+	qrLoginURL    string
+	qrScanHint    string
+}
+
 type configFieldSpec struct {
 	label       string
 	placeholder string
@@ -536,7 +589,6 @@ type configFieldSpec struct {
 
 const (
 	configFieldBackendBaseURL = iota
-	configFieldAPIKey
 	configFieldDefaultFlow
 	configFieldApprovalMode
 	configFieldSandboxPolicy
@@ -556,6 +608,22 @@ const (
 	configFieldSkillsFreeTextSearch
 	configFieldSkillsRegistryURL
 	configFieldCount
+)
+
+const (
+	loginFormModePassword = "password"
+	loginFormModeQR       = "qr"
+)
+
+const (
+	loginFieldMode = iota
+	loginFieldUsername
+	loginFieldPassword
+	loginFieldRemember
+	loginFieldCaptchaTicket
+	loginFieldCaptchaCode
+	loginFieldSubmit
+	loginFieldCount
 )
 
 var (
@@ -675,12 +743,13 @@ var slashCommands = []slashCommand{
 	{Trigger: "/tasks", Completion: "/tasks ", Description: "查看、捕获、停止或清理本地后台任务"},
 	{Trigger: "/skills", Completion: "/skills ", Description: "列出本地技能，浏览远程仓库技能，并执行搜索、安装、更新或删除"},
 	{Trigger: "/sessions", Completion: "/sessions ", Description: "列出当前智能体的服务端会话，可附页码"},
+	{Trigger: "/login", Completion: "/login ", Description: "查看、登录或退出当前账号状态"},
 	{Trigger: "/help", Completion: "/help", Description: "显示可用命令帮助"},
 	{Trigger: "/config", Completion: "/config ", Description: "查看或更新系统全局配置"},
 	{Trigger: "/exit", Completion: "/exit", Description: "退出当前智能对话"},
 }
 
-func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, refreshSnapshot SnapshotRefreshHandler, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, configFormSubmit ConfigFormSubmitHandler, localCommand LocalCommandHandler, startupCommand string) error {
+func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, refreshSnapshot SnapshotRefreshHandler, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, configFormSubmit ConfigFormSubmitHandler, loginFormSubmit LoginFormSubmitHandler, localCommand LocalCommandHandler, startupCommand string) error {
 	inputModel := textarea.New()
 	if snapshot.BackendAvailable {
 		inputModel.Placeholder = "输入内容后回车发送"
@@ -720,6 +789,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 		sessionChange:     sessionChange,
 		approvalChange:    approvalChange,
 		configFormSubmit:  configFormSubmit,
+		loginFormSubmit:   loginFormSubmit,
 		localCommand:      localCommand,
 		eventCh:           make(chan tea.Msg),
 		entries:           initialEntries,
@@ -731,7 +801,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 		state:             newProgressState(progressIdle),
 		requestStats:      initialRequestStats,
 		flowCursor:        currentFlowIndex(flows, snapshot.DefaultFlow),
-		startupCommand:    strings.TrimSpace(startupCommand),
+		startupCommand:    resolveInitialStartupCommand(snapshot, startupCommand),
 	}, tea.WithAltScreen())
 	finalModel, err := program.Run()
 	if err == nil {
@@ -744,6 +814,9 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 
 func (m model) Init() tea.Cmd {
 	cmds := []tea.Cmd{textinput.Blink, m.input.Focus(), m.progress.SetPercent(m.state.percent), m.scheduleBackendRetry()}
+	if m.refreshSnapshot != nil {
+		cmds = append(cmds, refreshSnapshotCmd(m.ctx, m.snapshot, m.refreshSnapshot))
+	}
 	if strings.TrimSpace(m.startupCommand) != "" {
 		cmds = append(cmds, executeLocalCommandCmd(m.ctx, m.snapshot, m.startupCommand, m.localCommand))
 	}
@@ -779,11 +852,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		replaceInitialEntries := shouldReplaceEntriesOnSnapshotRefresh(m.entries, m.snapshot)
 		previouslyAvailable := m.snapshot.BackendAvailable
+		previouslyAuthRequired := m.snapshot.AuthRequired
 		previousReason := strings.TrimSpace(m.snapshot.BackendStatusReason)
 		m.snapshot = typed.snapshot
 		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
 		m.flows = typed.flows
+		if replaceInitialEntries {
+			m.entries = buildInitialEntries(m.snapshot)
+		}
 		m.syncInputPlaceholder()
 		if !m.snapshot.BackendAvailable {
 			m.showFlowPicker = false
@@ -803,6 +881,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.entries = append(m.entries, entry{role: "system", content: "服务端连接已恢复，已退出只读模式。"})
 		}
 		m.syncLayout()
+		if shouldAutoOpenLoginOverlay(m.snapshot, previouslyAvailable, previouslyAuthRequired, m.localCommand != nil, m.loginForm != nil) {
+			return m, executeLocalCommandCmd(m.ctx, m.snapshot, "/login", m.localCommand)
+		}
 		return m, nil
 	case streamEventMsg:
 		cmd := m.applyEvent(typed.event)
@@ -936,6 +1017,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmd, textinput.Blink)
 		}
 		return m, tea.Batch(m.transitionProgress(progressIdle), textinput.Blink)
+	case loginFormSavedMsg:
+		if typed.err != nil {
+			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
+			m.syncViewport()
+			return m, tea.Batch(m.transitionProgress(progressFailed), textinput.Blink)
+		}
+		if typed.result.LoginForm == nil {
+			m.closeLoginForm()
+		}
+		if cmd := m.applyLocalCommandResult(typed.result); cmd != nil {
+			return m, tea.Batch(cmd, textinput.Blink)
+		}
+		return m, tea.Batch(m.transitionProgress(progressIdle), textinput.Blink)
 	case localCommandExecutedMsg:
 		if typed.err != nil {
 			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
@@ -952,6 +1046,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.toolPanel != nil {
 			return m.handleToolPanelKey(typed)
+		}
+		if m.loginForm != nil {
+			return m.handleLoginFormKey(typed)
 		}
 		if m.configForm != nil {
 			return m.handleConfigFormKey(typed)
@@ -1491,6 +1588,72 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+func (m model) handleLoginFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.loginForm == nil {
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc", "q", "ctrl+c":
+		if m.mustCompleteLogin() {
+			m.quitting = true
+			return m, tea.Quit
+		}
+		m.closeLoginForm()
+		return m, nil
+	case "shift+tab", "up":
+		m.moveLoginFormCursor(-1)
+		return m, nil
+	case "tab", "down":
+		m.moveLoginFormCursor(1)
+		return m, nil
+	case "g":
+		if m.loginForm.mode == loginFormModeQR {
+			return m.submitLoginForm("refresh_qr")
+		}
+	case "w":
+		if m.loginForm.mode == loginFormModeQR && strings.TrimSpace(m.loginForm.qrTicket) != "" {
+			return m.submitLoginForm("wait_qr")
+		}
+	case "ctrl+l":
+		return m.submitLoginForm("logout")
+	case "left", "h":
+		switch m.loginForm.cursor {
+		case loginFieldMode:
+			m.setLoginFormMode(loginFormModePassword)
+			return m, nil
+		}
+	case "right", "l":
+		switch m.loginForm.cursor {
+		case loginFieldMode:
+			m.setLoginFormMode(loginFormModeQR)
+			return m, nil
+		}
+	case " ":
+		if m.loginForm.cursor == loginFieldMode {
+			m.toggleLoginFormMode()
+			return m, nil
+		}
+	case "enter":
+		switch m.loginForm.cursor {
+		case loginFieldMode:
+			m.toggleLoginFormMode()
+			return m, nil
+		default:
+			return m.submitLoginForm("")
+		}
+	}
+	if !isLoginTextField(m.loginForm.cursor) || m.loginForm.mode != loginFormModePassword {
+		return m, nil
+	}
+	inputIndex := loginInputIndex(m.loginForm.cursor)
+	if inputIndex < 0 || inputIndex >= len(m.loginForm.inputs) {
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.loginForm.inputs[inputIndex], cmd = m.loginForm.inputs[inputIndex].Update(msg)
+	return m, cmd
 }
 
 func (m model) handleConfigFlowDropdownKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -2061,6 +2224,15 @@ func (m *model) syncLayout() {
 			m.configForm.inputs[index].Width = formWidth
 		}
 	}
+	if m.loginForm != nil {
+		formWidth := minInt(contentWidth-16, 72)
+		if formWidth < 24 {
+			formWidth = 24
+		}
+		for index := range m.loginForm.inputs {
+			m.loginForm.inputs[index].Width = formWidth
+		}
+	}
 	m.progress.Width = contentWidth - 18
 	if m.progress.Width < 12 {
 		m.progress.Width = 12
@@ -2400,6 +2572,9 @@ func (m model) renderOverlay() string {
 	} else if m.toolPanel != nil {
 		width = minInt(m.contentWidth-6, 96)
 		content = m.renderToolPanel()
+	} else if m.loginForm != nil {
+		width = minInt(m.contentWidth-6, 92)
+		content = m.renderLoginForm()
 	} else if m.configForm != nil {
 		width = minInt(m.contentWidth-6, 92)
 		content = m.renderConfigForm()
@@ -2538,6 +2713,130 @@ func (m model) renderApprovalPicker() string {
 	return strings.Join(lines, "\n")
 }
 
+func (m model) renderLoginForm() string {
+	if m.loginForm == nil {
+		return ""
+	}
+	hasCaptcha := hasLoginCaptchaTicket(m.loginForm)
+	lines := []string{headerBarStyle.Render("太乙智启"), fallback(strings.TrimSpace(m.loginForm.title), "登录(login)")}
+	if strings.TrimSpace(m.loginForm.hint) != "" {
+		lines = append(lines, strings.TrimSpace(m.loginForm.hint))
+	}
+	if strings.TrimSpace(m.loginForm.statusText) != "" {
+		statusLabel := labelStyle.Render("当前状态(status)")
+		statusBody := hintStyle.Render(hardWrapText(strings.TrimSpace(m.loginForm.statusText), maxInt(24, m.contentWidth-16)))
+		if m.loginForm.statusIsError {
+			statusLabel = errorMessageStyle.Render("登录提示(status)")
+			statusBody = errorMessageStyle.Render(hardWrapText(strings.TrimSpace(m.loginForm.statusText), maxInt(24, m.contentWidth-16)))
+		}
+		lines = append(lines, "", statusLabel, statusBody)
+	}
+	lines = append(lines, "")
+
+	modeLabel := "密码登录(password)"
+	modeAlt := "扫码登录(qr)"
+	if m.loginForm.mode == loginFormModeQR {
+		modeLabel = "扫码登录(qr)"
+		modeAlt = "密码登录(password)"
+	}
+	modeLine := fmt.Sprintf("当前方式: %s  切换到 %s", modeLabel, modeAlt)
+	if m.loginForm.cursor == loginFieldMode {
+		modeLine = markOverlayFocus(selectedFlowStyle.Render(trimForWidth(modeLine, m.contentWidth-16)), true)
+	} else {
+		modeLine = commandHintStyle.Render(trimForWidth(modeLine, m.contentWidth-16))
+	}
+	lines = append(lines, labelStyle.Render("登录方式(login_mode)"), modeLine, "")
+
+	if m.loginForm.mode == loginFormModePassword {
+		if hasCaptcha {
+			if username := strings.TrimSpace(m.loginForm.inputs[0].Value()); username != "" {
+				lines = append(lines, labelStyle.Render("登录账号(username)"), valueStyle.Render(trimForWidth(username, m.contentWidth-16)), "")
+			}
+			lines = append(lines, m.renderLoginFormTextField(loginFieldCaptchaCode, "验证码(captcha_code)", "检测到需要验证码，请输入验证码后继续登录。"))
+		} else {
+			lines = append(lines,
+				m.renderLoginFormTextField(loginFieldUsername, "用户名(username)", "请输入用户名"),
+				m.renderLoginFormTextField(loginFieldPassword, "密码(password)", "请输入密码"),
+			)
+		}
+	} else {
+		if strings.TrimSpace(m.loginForm.qrLoginURL) != "" {
+			lines = append(lines, labelStyle.Render("扫码地址(qr_url)"), hardWrapText(strings.TrimSpace(m.loginForm.qrLoginURL), maxInt(24, m.contentWidth-16)))
+		}
+		if strings.TrimSpace(m.loginForm.qrScanHint) != "" {
+			lines = append(lines, labelStyle.Render("扫码提示(qr_hint)"), hintStyle.Render(hardWrapText(strings.TrimSpace(m.loginForm.qrScanHint), maxInt(24, m.contentWidth-16))))
+		}
+		if strings.TrimSpace(m.loginForm.qrTicket) != "" {
+			lines = append(lines, labelStyle.Render("扫码票据(ticket)"), valueStyle.Render(trimForWidth(strings.TrimSpace(m.loginForm.qrTicket), m.contentWidth-16)))
+		}
+		lines = append(lines, "")
+	}
+
+	lines = append(lines, m.renderLoginSubmitField(), "")
+	if m.loginForm.mode == loginFormModeQR {
+		lines = append(lines, commandHintStyle.Render("Tab 切换字段，左右键切换登录方式，Enter 提交，g 重新生成二维码，w 等待扫码，Ctrl+L 退出登录，Esc 关闭。"))
+	} else {
+		lines = append(lines, commandHintStyle.Render("Tab 切换字段，左右键切换登录方式，Enter 提交，Ctrl+L 退出登录，Esc 关闭。"))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m model) renderLoginFormTextField(field int, label string, description string) string {
+	if m.loginForm == nil {
+		return ""
+	}
+	inputIndex := loginInputIndex(field)
+	if inputIndex < 0 || inputIndex >= len(m.loginForm.inputs) {
+		return ""
+	}
+	renderedLabel := labelStyle.Render(label)
+	if m.loginForm.cursor == field {
+		renderedLabel = markOverlayFocus(selectedFlowStyle.Render(trimForWidth(label, m.contentWidth-16)), true)
+	}
+	parts := []string{renderedLabel, m.loginForm.inputs[inputIndex].View()}
+	if strings.TrimSpace(description) != "" {
+		parts = append(parts, hintStyle.Render(trimForWidth(description, m.contentWidth-16)))
+	}
+	parts = append(parts, "")
+	return strings.Join(parts, "\n")
+}
+
+func (m model) renderLoginRememberField() string {
+	if m.loginForm == nil {
+		return ""
+	}
+	marker := "( ) 关闭(off)"
+	if m.loginForm.remember {
+		marker = "(*) 开启(on)"
+	}
+	line := marker + "  保存 persistent_token，便于下次自动登录"
+	if m.loginForm.cursor == loginFieldRemember {
+		line = markOverlayFocus(selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-16)), true)
+	} else {
+		line = commandHintStyle.Render(trimForWidth(line, m.contentWidth-16))
+	}
+	return strings.Join([]string{labelStyle.Render("记住登录(remember)"), line, ""}, "\n")
+}
+
+func (m model) renderLoginSubmitField() string {
+	if m.loginForm == nil {
+		return ""
+	}
+	label := "提交登录"
+	if m.loginForm.mode == loginFormModeQR {
+		if strings.TrimSpace(m.loginForm.qrTicket) == "" {
+			label = "生成扫码地址"
+		} else {
+			label = "等待扫码结果"
+		}
+	}
+	line := fmt.Sprintf("[%s] Enter", label)
+	if m.loginForm.cursor == loginFieldSubmit {
+		return markOverlayFocus(selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-16)), true)
+	}
+	return commandHintStyle.Render(trimForWidth(line, m.contentWidth-16))
+}
+
 func (m model) renderConfigForm() string {
 	if m.configForm == nil {
 		return ""
@@ -2552,7 +2851,7 @@ func (m model) renderConfigForm() string {
 	}
 	lines = append(lines, "")
 
-	for index, spec := range configFormFieldSpecs(m.configForm.hasAPIKey) {
+	for index, spec := range configFormFieldSpecs() {
 		label := spec.label
 		if index == m.configForm.cursor {
 			label = selectedFlowStyle.Render(trimForWidth(label, m.contentWidth-16))
@@ -3190,9 +3489,15 @@ func (m model) statusBarSegments(maxWidth int) []string {
 	if !m.snapshot.BackendAvailable {
 		segments = append(segments, statusSegment{text: backendStatusLabel(m.snapshot), priority: 0})
 	}
+	if authSegment := authStatusLabel(m.snapshot, compact); authSegment != "" {
+		segments = append(segments, statusSegment{text: authSegment, priority: 0})
+	}
 	segments = append(segments, statusSegment{text: requestModeStatus(m.snapshot.RequestMode, compact), priority: 1})
 	segments = append(segments, statusSegment{text: approvalModeStatus(m.snapshot.ApprovalMode, compact), priority: 1})
 	segments = append(segments, statusSegment{text: reasoningStatus(m.snapshot.ReasoningEnabled, compact), priority: 1})
+	if userSegment := currentUserStatus(m.snapshot.CurrentUserName, compact); userSegment != "" {
+		segments = append(segments, statusSegment{text: userSegment, priority: 4})
+	}
 	if sandboxSegment := sessionSandboxEscapePolicyStatus(m.snapshot.SessionSandboxEscapePolicy, compact); sandboxSegment != "" {
 		segments = append(segments, statusSegment{text: sandboxSegment, priority: 1})
 	}
@@ -3247,6 +3552,17 @@ func statusSegmentTexts(segments []statusSegment) []string {
 }
 
 func buildBackendStatusEntries(snapshot Snapshot) []entry {
+	if snapshot.BackendAvailable && snapshot.AuthRequired {
+		reason := strings.TrimSpace(snapshot.AuthStatusReason)
+		if reason == "" {
+			reason = "服务端已连接，但当前尚未登录。登录表单已自动打开，也可手动执行 /login。"
+		}
+		message := reason
+		if !strings.Contains(reason, "/login") {
+			message += "\n可用命令: /login"
+		}
+		return []entry{{role: "error", content: message}}
+	}
 	if snapshot.BackendAvailable {
 		return nil
 	}
@@ -3266,6 +3582,24 @@ func backendStatusLabel(snapshot Snapshot) string {
 	return "服务端未连接: " + reason
 }
 
+func currentUserStatus(name string, compact bool) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return ""
+	}
+	return trimmed
+}
+
+func authStatusLabel(snapshot Snapshot, compact bool) string {
+	if !snapshot.AuthRequired || strings.TrimSpace(snapshot.CurrentUserName) != "" {
+		return ""
+	}
+	if compact {
+		return "未登录"
+	}
+	return "当前未登录"
+}
+
 func (m model) backendUnavailableMessage() string {
 	message := "当前无法连接服务端，已进入只读模式。"
 	message += " 可用命令: /config /tasks /skills /reasoning /help /clear /exit"
@@ -3275,14 +3609,16 @@ func (m model) backendUnavailableMessage() string {
 func welcomeCommandsLabel(snapshot Snapshot) []string {
 	labelValue := "可用命令: "
 	if snapshot.BackendAvailable {
-		return []string{labelValue + "/agents /config /tasks /skills /reasoning /session /new /exit"}
+		return []string{labelValue + "/agents /login /config /tasks /skills /reasoning /session /new /exit"}
 	}
-	return []string{labelValue + "/config /tasks /skills /reasoning /help /clear /exit"}
+	return []string{labelValue + "/login /config /tasks /skills /reasoning /help /clear /exit"}
 }
 
 func isAvailableInReadOnlyMode(input string) bool {
 	trimmed := strings.TrimSpace(strings.ToLower(input))
 	switch {
+	case trimmed == "/login", strings.HasPrefix(trimmed, "/login "):
+		return true
 	case trimmed == "/help", trimmed == "/clear", trimmed == "/exit":
 		return true
 	case trimmed == "/skills", strings.HasPrefix(trimmed, "/skills "):
@@ -3505,6 +3841,24 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 			result.Snapshot.History = nil
 		}
 	}
+	if footerHint := strings.TrimSpace(result.FooterHint); footerHint != "" {
+		m.footerHint = footerHint
+	}
+	if result.LoginForm != nil {
+		m.resetOverlayScroll()
+		m.loginForm = newLoginFormState(*result.LoginForm)
+		m.toolPanel = nil
+		m.configForm = nil
+		m.approvalPicker = nil
+		m.sessionPicker = nil
+		m.skillsPicker = nil
+		m.tasksPicker = nil
+		m.taskActionPicker = nil
+		m.showFlowPicker = false
+		m.flowFilter.Blur()
+		m.input.Blur()
+		m.syncLayout()
+	}
 	if result.ConfigForm != nil {
 		m.resetOverlayScroll()
 		m.configForm = newConfigFormState(*result.ConfigForm)
@@ -3594,11 +3948,14 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		}
 	}
 	m.refreshLayoutAfterStateChange()
+	if m.mustCompleteLogin() && m.loginForm == nil && m.localCommand != nil {
+		return executeLocalCommandCmd(m.ctx, m.snapshot, "/login", m.localCommand)
+	}
 	return nil
 }
 
 func (m model) showSlashCommandHints() bool {
-	if m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.skillsPicker != nil || m.tasksPicker != nil || m.taskActionPicker != nil || m.approvalPicker != nil || m.isBusy() {
+	if m.pendingConfirm != nil || m.toolPanel != nil || m.loginForm != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.skillsPicker != nil || m.tasksPicker != nil || m.taskActionPicker != nil || m.approvalPicker != nil || m.isBusy() {
 		return false
 	}
 	trimmed := strings.TrimSpace(m.input.Value())
@@ -3622,6 +3979,30 @@ func (m model) visibleSlashCommands() []slashCommand {
 		}
 	}
 	return visible
+}
+
+func resolveInitialStartupCommand(snapshot Snapshot, startupCommand string) string {
+	trimmed := strings.TrimSpace(startupCommand)
+	if trimmed != "" {
+		return trimmed
+	}
+	if snapshot.BackendAvailable && snapshot.AuthRequired {
+		return "/login"
+	}
+	return ""
+}
+
+func shouldAutoOpenLoginOverlay(snapshot Snapshot, previouslyAvailable bool, previouslyAuthRequired bool, hasLocalCommand bool, loginFormOpen bool) bool {
+	if !hasLocalCommand || loginFormOpen {
+		return false
+	}
+	if !snapshot.BackendAvailable || !snapshot.AuthRequired {
+		return false
+	}
+	if !previouslyAvailable {
+		return true
+	}
+	return !previouslyAuthRequired
 }
 
 func (m *model) moveSlashCommandCursor(delta int) {
@@ -3712,6 +4093,16 @@ func submitConfigFormCmd(ctx context.Context, snapshot Snapshot, submission Conf
 	}
 }
 
+func submitLoginFormCmd(ctx context.Context, snapshot Snapshot, submission LoginFormSubmission, handler LoginFormSubmitHandler) tea.Cmd {
+	if handler == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		result, err := handler(ctx, snapshot, submission)
+		return loginFormSavedMsg{result: result, err: err}
+	}
+}
+
 func executeLocalCommandCmd(ctx context.Context, snapshot Snapshot, command string, handler LocalCommandHandler) tea.Cmd {
 	if handler == nil {
 		return nil
@@ -3798,6 +4189,12 @@ func (m *model) closeConfigForm() {
 	m.syncLayout()
 }
 
+func (m *model) closeLoginForm() {
+	m.loginForm = nil
+	m.input.Focus()
+	m.syncLayout()
+}
+
 func (m *model) closeApprovalPicker() {
 	m.approvalPicker = nil
 	m.approvalCursor = 0
@@ -3818,7 +4215,7 @@ func (m *model) closeToolPanel() {
 	m.resetOverlayScroll()
 	m.toolPanelViewport.SetContent("")
 	m.toolPanelViewport.GotoTop()
-	if m.skillsPicker == nil && m.tasksPicker == nil && m.taskActionPicker == nil && m.sessionPicker == nil && m.approvalPicker == nil && m.configForm == nil && !m.showFlowPicker {
+	if m.skillsPicker == nil && m.tasksPicker == nil && m.taskActionPicker == nil && m.sessionPicker == nil && m.approvalPicker == nil && m.loginForm == nil && m.configForm == nil && !m.showFlowPicker {
 		m.input.Focus()
 	} else {
 		m.input.Blur()
@@ -3831,6 +4228,90 @@ func (m *model) openToolPanel(panel *ToolPanel) {
 	m.resetOverlayScroll()
 	m.input.Blur()
 	m.syncToolPanelViewport()
+}
+
+func (m *model) moveLoginFormCursor(delta int) {
+	if m.loginForm == nil {
+		return
+	}
+	visible := visibleLoginFields(m.loginForm.mode, hasLoginCaptchaTicket(m.loginForm))
+	if len(visible) == 0 {
+		return
+	}
+	currentIndex := 0
+	for index, field := range visible {
+		if field == m.loginForm.cursor {
+			currentIndex = index
+			break
+		}
+	}
+	if isLoginTextField(m.loginForm.cursor) {
+		m.blurLoginFormField(m.loginForm.cursor)
+	}
+	currentIndex += delta
+	if currentIndex < 0 {
+		currentIndex = len(visible) - 1
+	} else if currentIndex >= len(visible) {
+		currentIndex = 0
+	}
+	m.loginForm.cursor = visible[currentIndex]
+	m.focusLoginFormField(m.loginForm.cursor)
+	m.syncLayout()
+}
+
+func (m *model) setLoginFormMode(mode string) {
+	if m.loginForm == nil {
+		return
+	}
+	mode = normalizeLoginFormMode(mode)
+	if mode == m.loginForm.mode {
+		return
+	}
+	if isLoginTextField(m.loginForm.cursor) {
+		m.blurLoginFormField(m.loginForm.cursor)
+	}
+	m.loginForm.mode = mode
+	if !loginFieldVisible(mode, m.loginForm.cursor, hasLoginCaptchaTicket(m.loginForm)) {
+		visible := visibleLoginFields(mode, hasLoginCaptchaTicket(m.loginForm))
+		if len(visible) > 0 {
+			m.loginForm.cursor = visible[0]
+		}
+	}
+	m.focusLoginFormField(m.loginForm.cursor)
+	m.syncLayout()
+}
+
+func (m *model) toggleLoginFormMode() {
+	if m.loginForm == nil {
+		return
+	}
+	if m.loginForm.mode == loginFormModeQR {
+		m.setLoginFormMode(loginFormModePassword)
+		return
+	}
+	m.setLoginFormMode(loginFormModeQR)
+}
+
+func (m *model) focusLoginFormField(field int) {
+	if m.loginForm == nil || !isLoginTextField(field) || m.loginForm.mode != loginFormModePassword {
+		return
+	}
+	inputIndex := loginInputIndex(field)
+	if inputIndex < 0 || inputIndex >= len(m.loginForm.inputs) {
+		return
+	}
+	m.loginForm.inputs[inputIndex].Focus()
+}
+
+func (m *model) blurLoginFormField(field int) {
+	if m.loginForm == nil || !isLoginTextField(field) {
+		return
+	}
+	inputIndex := loginInputIndex(field)
+	if inputIndex < 0 || inputIndex >= len(m.loginForm.inputs) {
+		return
+	}
+	m.loginForm.inputs[inputIndex].Blur()
 }
 
 func (m *model) syncToolPanelViewport() {
@@ -4018,27 +4499,50 @@ func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
 	if m.configForm.skillsFreeTextCursor >= 0 && m.configForm.skillsFreeTextCursor < len(skillsFreeTextChoices) {
 		submission.Values.SkillsFreeTextSearch = strings.TrimSpace(skillsFreeTextChoices[m.configForm.skillsFreeTextCursor].Value) == "true"
 	}
-	apiKey := strings.TrimSpace(submission.Values.APIKey)
-	if m.configForm.hasAPIKey && apiKey == "" {
-		submission.KeepAPIKey = true
-	}
-	if apiKey == "-" {
-		submission.Values.APIKey = ""
-		submission.ClearAPIKey = true
-		submission.KeepAPIKey = false
-	}
 	return m, tea.Batch(m.transitionProgress(progressExecuting), submitConfigFormCmd(m.ctx, m.snapshot, submission, m.configFormSubmit))
+}
+
+func (m model) submitLoginForm(action string) (tea.Model, tea.Cmd) {
+	if m.loginForm == nil {
+		return m, nil
+	}
+	action = strings.TrimSpace(action)
+	if action == "" {
+		switch m.loginForm.mode {
+		case loginFormModeQR:
+			if strings.TrimSpace(m.loginForm.qrTicket) == "" {
+				action = "start_qr"
+			} else {
+				action = "wait_qr"
+			}
+		default:
+			action = "password_login"
+		}
+	}
+	submission := LoginFormSubmission{
+		Action:        action,
+		Mode:          m.loginForm.mode,
+		Username:      strings.TrimSpace(m.loginForm.inputs[0].Value()),
+		Password:      m.loginForm.inputs[1].Value(),
+		Remember:      m.loginForm.remember,
+		KaptchaTicket: strings.TrimSpace(m.loginForm.inputs[2].Value()),
+		KaptchaCode:   strings.TrimSpace(m.loginForm.inputs[3].Value()),
+		QRTicket:      strings.TrimSpace(m.loginForm.qrTicket),
+		QRLoginURL:    strings.TrimSpace(m.loginForm.qrLoginURL),
+		QRScanHint:    strings.TrimSpace(m.loginForm.qrScanHint),
+	}
+	return m, tea.Batch(m.transitionProgress(progressExecuting), submitLoginFormCmd(m.ctx, m.snapshot, submission, m.loginFormSubmit))
 }
 
 func newConfigFormState(state ConfigFormState) *configFormState {
 	values := state.Values
-	models := make([]textinput.Model, 0, len(configFormFieldSpecs(state.HasAPIKey)))
-	for index, spec := range configFormFieldSpecs(state.HasAPIKey) {
+	models := make([]textinput.Model, 0, len(configFormFieldSpecs()))
+	for index, spec := range configFormFieldSpecs() {
 		input := textinput.New()
 		input.Prompt = ""
 		input.Placeholder = spec.placeholder
 		input.CharLimit = 512
-		input.SetValue(configFormFieldValue(index, values, state.HasAPIKey))
+		input.SetValue(configFormFieldValue(index, values))
 		if index == 0 {
 			input.Focus()
 		} else {
@@ -4051,7 +4555,6 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 		title:                   state.Title,
 		hint:                    state.Hint,
 		path:                    state.Path,
-		hasAPIKey:               state.HasAPIKey,
 		submitText:              state.SubmitText,
 		inputs:                  models,
 		cursor:                  0,
@@ -4069,14 +4572,133 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 	}
 }
 
-func configFormFieldSpecs(hasAPIKey bool) []configFieldSpec {
-	apiDescription := "留空表示不修改。"
-	if hasAPIKey {
-		apiDescription = "已配置访问令牌(API Key)。留空表示保持不变，输入 - 表示清空并保存。"
+func newLoginFormState(state LoginFormState) *loginFormState {
+	placeholders := []string{"请输入用户名", "请输入密码", "无验证码可留空", "无验证码可留空"}
+	values := []string{state.Username, state.Password, state.KaptchaTicket, state.KaptchaCode}
+	models := make([]textinput.Model, 0, len(placeholders))
+	for index, placeholder := range placeholders {
+		input := textinput.New()
+		input.Prompt = ""
+		input.Placeholder = placeholder
+		input.CharLimit = 512
+		input.SetValue(values[index])
+		input.Blur()
+		if index == 1 {
+			input.EchoMode = textinput.EchoPassword
+			input.EchoCharacter = '•'
+		}
+		models = append(models, input)
 	}
+	mode := normalizeLoginFormMode(state.Mode)
+	loginState := &loginFormState{
+		title:         state.Title,
+		hint:          state.Hint,
+		statusText:    state.StatusText,
+		statusIsError: state.StatusIsError,
+		mode:          mode,
+		remember:      state.Remember,
+		inputs:        models,
+		cursor:        loginFieldMode,
+		qrTicket:      strings.TrimSpace(state.QRTicket),
+		qrLoginURL:    strings.TrimSpace(state.QRLoginURL),
+		qrScanHint:    strings.TrimSpace(state.QRScanHint),
+	}
+	if state.FocusField >= 0 && loginFieldVisible(mode, state.FocusField, hasLoginCaptchaTicket(loginState)) {
+		loginState.cursor = state.FocusField
+		loginState.focusLoginFieldCursor()
+		return loginState
+	}
+	if mode == loginFormModePassword {
+		if hasLoginCaptchaTicket(loginState) {
+			loginState.cursor = loginFieldCaptchaCode
+			loginState.focusLoginFieldCursor()
+		} else {
+			loginState.cursor = loginFieldUsername
+			loginState.focusLoginFieldCursor()
+		}
+	}
+	return loginState
+}
+
+func (s *loginFormState) focusLoginFieldCursor() {
+	if s == nil || !isLoginTextField(s.cursor) {
+		return
+	}
+	inputIndex := loginInputIndex(s.cursor)
+	if inputIndex < 0 || inputIndex >= len(s.inputs) {
+		return
+	}
+	s.inputs[inputIndex].Focus()
+}
+
+func normalizeLoginFormMode(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), loginFormModeQR) {
+		return loginFormModeQR
+	}
+	return loginFormModePassword
+}
+
+func loginFieldVisible(mode string, field int, hasCaptcha bool) bool {
+	if field == loginFieldMode || field == loginFieldSubmit {
+		return true
+	}
+	if normalizeLoginFormMode(mode) != loginFormModePassword {
+		return false
+	}
+	if hasCaptcha {
+		return field == loginFieldCaptchaCode
+	}
+	return field == loginFieldUsername || field == loginFieldPassword
+}
+
+func visibleLoginFields(mode string, hasCaptcha bool) []int {
+	fields := make([]int, 0, loginFieldCount)
+	for field := 0; field < loginFieldCount; field++ {
+		if loginFieldVisible(mode, field, hasCaptcha) {
+			fields = append(fields, field)
+		}
+	}
+	return fields
+}
+
+func hasLoginCaptchaTicket(state *loginFormState) bool {
+	if state == nil || len(state.inputs) <= 2 {
+		return false
+	}
+	return strings.TrimSpace(state.inputs[2].Value()) != ""
+}
+
+func (m model) mustCompleteLogin() bool {
+	return m.snapshot.BackendAvailable && m.snapshot.AuthRequired && strings.TrimSpace(m.snapshot.CurrentUserName) == ""
+}
+
+func isLoginTextField(field int) bool {
+	switch field {
+	case loginFieldUsername, loginFieldPassword, loginFieldCaptchaTicket, loginFieldCaptchaCode:
+		return true
+	default:
+		return false
+	}
+}
+
+func loginInputIndex(field int) int {
+	switch field {
+	case loginFieldUsername:
+		return 0
+	case loginFieldPassword:
+		return 1
+	case loginFieldCaptchaTicket:
+		return 2
+	case loginFieldCaptchaCode:
+		return 3
+	default:
+		return -1
+	}
+}
+
+func configFormFieldSpecs() []configFieldSpec {
 	return []configFieldSpec{
-		{label: "服务地址", placeholder: "http://localhost:7860", description: "必须是完整的 HTTP(http) 或 HTTPS(https) 地址。"},
-		{label: "访问令牌", placeholder: "可选", description: apiDescription},
+		{label: "服务地址", placeholder: "https://snz1.cn", description: "必须是完整的 HTTP(http) 或 HTTPS(https) 地址。"},
 		{label: "默认智能体", placeholder: "", description: "按回车键(Enter)打开下拉列表，留空项表示自动选择(auto)。"},
 		{label: "命令执行模式", placeholder: "", description: "左右键或空格切换单选项。"},
 		{label: "外部资源访问策略", placeholder: "", description: "左右键或空格切换每次确认(confirm)、禁止访问(deny)、直接允许(allow)。"},
@@ -4098,15 +4720,12 @@ func configFormFieldSpecs(hasAPIKey bool) []configFieldSpec {
 	}
 }
 
-func configFormFieldValue(index int, values ConfigFormValues, hasAPIKey bool) string {
+func configFormFieldValue(index int, values ConfigFormValues) string {
 	switch index {
 	case 0:
 		return strings.TrimSpace(values.BackendBaseURL)
 	case 1:
-		if hasAPIKey {
-			return ""
-		}
-		return strings.TrimSpace(values.APIKey)
+		return ""
 	case 2:
 		return ""
 	case 3:
@@ -4116,32 +4735,30 @@ func configFormFieldValue(index int, values ConfigFormValues, hasAPIKey bool) st
 	case 5:
 		return ""
 	case 6:
-		return ""
-	case 7:
 		return strings.TrimSpace(values.SandboxRoots)
-	case 8:
+	case 7:
 		return strings.TrimSpace(values.PermissionRules)
+	case 8:
+		return ""
 	case 9:
-		return ""
-	case 10:
 		return strings.TrimSpace(values.Workdir)
-	case 11:
+	case 10:
 		return strings.TrimSpace(values.CommandTimeoutSeconds)
-	case 12:
+	case 11:
 		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
-	case 13:
+	case 12:
 		return ""
-	case 14:
+	case 13:
 		return strings.TrimSpace(values.AgentAutoLoopMaxRounds)
-	case 15:
+	case 14:
 		return strings.TrimSpace(values.OutputLanguage)
+	case 15:
+		return ""
 	case 16:
 		return ""
 	case 17:
 		return ""
 	case 18:
-		return ""
-	case 19:
 		return strings.TrimSpace(values.SkillsRegistryURL)
 	default:
 		return ""
@@ -4154,38 +4771,38 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 		values.BackendBaseURL = strings.TrimSpace(inputs[0].Value())
 	}
 	if len(inputs) > 1 {
-		values.APIKey = strings.TrimSpace(inputs[1].Value())
+		values.DefaultFlow = strings.TrimSpace(inputs[1].Value())
+	}
+	if len(inputs) > 6 {
+		values.SandboxRoots = strings.TrimSpace(inputs[6].Value())
 	}
 	if len(inputs) > 7 {
-		values.SandboxRoots = strings.TrimSpace(inputs[7].Value())
+		values.PermissionRules = strings.TrimSpace(inputs[7].Value())
 	}
-	if len(inputs) > 8 {
-		values.PermissionRules = strings.TrimSpace(inputs[8].Value())
+	if len(inputs) > 9 {
+		values.Workdir = strings.TrimSpace(inputs[9].Value())
 	}
 	if len(inputs) > 10 {
-		values.Workdir = strings.TrimSpace(inputs[10].Value())
+		values.CommandTimeoutSeconds = strings.TrimSpace(inputs[10].Value())
 	}
 	if len(inputs) > 11 {
-		values.CommandTimeoutSeconds = strings.TrimSpace(inputs[11].Value())
+		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[11].Value())
 	}
-	if len(inputs) > 12 {
-		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[12].Value())
+	if len(inputs) > 13 {
+		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[13].Value())
 	}
 	if len(inputs) > 14 {
-		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[14].Value())
+		values.OutputLanguage = strings.TrimSpace(inputs[14].Value())
 	}
-	if len(inputs) > 15 {
-		values.OutputLanguage = strings.TrimSpace(inputs[15].Value())
-	}
-	if len(inputs) > 19 {
-		values.SkillsRegistryURL = strings.TrimSpace(inputs[19].Value())
+	if len(inputs) > 18 {
+		values.SkillsRegistryURL = strings.TrimSpace(inputs[18].Value())
 	}
 	return values
 }
 
 func isConfigTextField(index int) bool {
 	switch index {
-	case configFieldBackendBaseURL, configFieldAPIKey, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldSkillsRegistryURL:
+	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldSkillsRegistryURL:
 		return true
 	default:
 		return false
@@ -4490,6 +5107,22 @@ func buildInitialEntries(snapshot Snapshot) []entry {
 	return entries
 }
 
+func shouldReplaceEntriesOnSnapshotRefresh(current []entry, snapshot Snapshot) bool {
+	expected := buildInitialEntries(snapshot)
+	if len(current) != len(expected) {
+		return false
+	}
+	for index := range current {
+		if current[index].role != expected[index].role {
+			return false
+		}
+		if strings.TrimSpace(current[index].content) != strings.TrimSpace(expected[index].content) {
+			return false
+		}
+	}
+	return true
+}
+
 func buildWelcomeEntries(snapshot Snapshot) []entry {
 	entries := []entry{}
 	if strings.TrimSpace(snapshot.WelcomeMessage) != "" {
@@ -4542,6 +5175,10 @@ func (m *model) transitionProgress(phase progressPhase) tea.Cmd {
 
 func (m *model) syncInputPlaceholder() {
 	if m.snapshot.BackendAvailable {
+		if m.snapshot.AuthRequired {
+			m.input.Placeholder = "服务端已连接但未登录，登录表单已自动打开；也可手动执行 /login"
+			return
+		}
 		m.input.Placeholder = "输入内容后回车发送"
 		return
 	}
@@ -5164,6 +5801,18 @@ func isExecutableSlashCommandInput(input string) bool {
 		return true
 	case strings.EqualFold(trimmed, "/config show"):
 		return true
+	case strings.EqualFold(trimmed, "/login"):
+		return true
+	case strings.EqualFold(trimmed, "/login help"):
+		return true
+	case strings.EqualFold(trimmed, "/login status"):
+		return true
+	case strings.EqualFold(trimmed, "/login logout"):
+		return true
+	case strings.EqualFold(trimmed, "/login qr"):
+		return true
+	case strings.EqualFold(trimmed, "/login qr start"):
+		return true
 	case strings.EqualFold(trimmed, "/new"):
 		return true
 	case strings.EqualFold(trimmed, "/session"):
@@ -5178,6 +5827,10 @@ func isExecutableSlashCommandInput(input string) bool {
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/reasoning ")) != ""
 	case strings.HasPrefix(strings.ToLower(trimmed), "/skills "):
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/skills ")) != ""
+	case strings.HasPrefix(strings.ToLower(trimmed), "/login qr wait "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/login qr wait ")) != ""
+	case strings.HasPrefix(strings.ToLower(trimmed), "/login password "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/login password ")) != ""
 	case strings.EqualFold(trimmed, "/review"):
 		return true
 	case strings.HasPrefix(strings.ToLower(trimmed), "/review "):

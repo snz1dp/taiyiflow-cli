@@ -3,8 +3,32 @@ package cmd
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 )
+
+func TestInspectBackendStatusTreatsAuthenticationErrorAsAvailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/taiyi/composer/api/v1/version" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	app := &App{}
+	status := app.inspectBackendStatus(context.Background(), providerclient.NewClient(server.URL, ""), server.URL)
+	if !status.Available {
+		t.Fatalf("expected authentication failure to keep backend available, got %#v", status)
+	}
+	if got := status.Reason; got != "请重新登录太乙智启服务" {
+		t.Fatalf("unexpected auth-required backend reason: %q", got)
+	}
+}
 
 func TestNormalizeStreamEventError(t *testing.T) {
 	t.Run("user canceled", func(t *testing.T) {
