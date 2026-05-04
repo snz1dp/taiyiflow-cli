@@ -2059,6 +2059,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			Workdir:                  strings.TrimSpace(config.Workdir),
 			CommandTimeoutSeconds:    strconv.Itoa(config.CommandTimeoutSeconds),
 			StreamIdleTimeoutSeconds: strconv.Itoa(config.StreamIdleTimeoutSeconds),
+			QRWaitTimeoutSeconds:     strconv.Itoa(config.QRWaitTimeoutSeconds),
 			AgentAutoLoopEnabled:     strconv.FormatBool(config.AgentAutoLoopEnabled),
 			AgentAutoLoopMaxRounds:   strconv.Itoa(config.AgentAutoLoopMaxRounds),
 			OutputLanguage:           strings.TrimSpace(config.OutputLanguage),
@@ -2136,6 +2137,12 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 	if strings.TrimSpace(submission.Values.StreamIdleTimeoutSeconds) == "" {
 		config.StreamIdleTimeoutSeconds = internalconfig.Default().StreamIdleTimeoutSeconds
 	} else if err := assignConfigValue(&config, "stream_idle_timeout_seconds", submission.Values.StreamIdleTimeoutSeconds); err != nil {
+		return internalconfig.Config{}, err
+	}
+
+	if strings.TrimSpace(submission.Values.QRWaitTimeoutSeconds) == "" {
+		config.QRWaitTimeoutSeconds = internalconfig.Default().QRWaitTimeoutSeconds
+	} else if err := assignConfigValue(&config, "qr_wait_timeout_seconds", submission.Values.QRWaitTimeoutSeconds); err != nil {
 		return internalconfig.Config{}, err
 	}
 

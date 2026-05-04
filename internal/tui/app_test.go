@@ -266,12 +266,13 @@ func TestHandleConfigFormKeyMovesAgentAutoLoopSelector(t *testing.T) {
 
 func TestRenderLoginFormShowsQRCodeState(t *testing.T) {
 	state := newLoginFormState(LoginFormState{
-		Title:      "登录(login)",
-		Mode:       "qr",
-		Remember:   true,
-		QRTicket:   "ticket-1",
-		QRLoginURL: "https://example.com/login/scan",
-		QRScanHint: "请使用企业微信扫码确认",
+		Title:       "登录(login)",
+		Mode:        "qr",
+		Remember:    true,
+		QRTicket:    "ticket-1",
+		QRLoginURL:  "https://example.com/login/scan",
+		QRScanHint:  "请使用企业微信扫码确认",
+		QRCodeASCII: "██  ██\n  ██  ",
 	})
 	state.cursor = loginFieldSubmit
 
@@ -281,11 +282,136 @@ func TestRenderLoginFormShowsQRCodeState(t *testing.T) {
 	}
 
 	rendered := sanitizeTerminalText(model.renderLoginForm())
-	if !strings.Contains(rendered, "扫码地址(qr_url)") || !strings.Contains(rendered, "ticket-1") {
-		t.Fatalf("expected qr login details in login overlay, got %q", rendered)
+	if !strings.Contains(rendered, "终端二维码(qr_code)") {
+		t.Fatalf("expected terminal qr code label in login overlay, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "等待扫码结果") {
-		t.Fatalf("expected qr wait action in login overlay, got %q", rendered)
+	if strings.Contains(rendered, "扫码地址(qr_url)") || strings.Contains(rendered, "ticket-1") {
+		t.Fatalf("expected qr login details to hide raw url and ticket, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "继续等待(Enter/w)") || !strings.Contains(rendered, "g 重新生成二维码") {
+		t.Fatalf("expected qr wait action hints in login overlay, got %q", rendered)
+	}
+}
+
+func TestRenderOverlayUsesFullscreenForLoginForm(t *testing.T) {
+	state := newLoginFormState(LoginFormState{
+		Title:    "登录",
+		Mode:     "password",
+		Remember: true,
+	})
+
+	appModel := model{
+		width:        96,
+		height:       28,
+		contentWidth: 88,
+		loginForm:    state,
+	}
+
+	rendered := appModel.renderOverlay()
+	if lipgloss.Width(rendered) != 96 {
+		t.Fatalf("expected login overlay to use full width, got %d", lipgloss.Width(rendered))
+	}
+	if lipgloss.Height(rendered) != 28 {
+		t.Fatalf("expected login overlay to use full height, got %d", lipgloss.Height(rendered))
+	}
+}
+
+func TestQRCodeWaitTickSubmitsWaitAction(t *testing.T) {
+	state := newLoginFormState(LoginFormState{
+		Title:           "登录",
+		Mode:            "qr",
+		Remember:        true,
+		QRTicket:        "ticket-1",
+		QRLoginURL:      "https://example.com/login/scan",
+		QRScanHint:      "请打开企业微信扫码登录。",
+		QRCodeASCII:     "██  ██\n  ██  ",
+		QRWaiting:       true,
+		QRWaitPollCount: 7,
+	})
+
+	captured := LoginFormSubmission{}
+	appModel := model{
+		ctx:       context.Background(),
+		snapshot:  Snapshot{BackendAvailable: true},
+		loginForm: state,
+		loginFormSubmit: func(ctx context.Context, snapshot Snapshot, submission LoginFormSubmission) (LocalCommandResult, error) {
+			captured = submission
+			return LocalCommandResult{Handled: true}, nil
+		},
+	}
+
+	updatedModel, cmd := appModel.Update(qrCodeWaitTickMsg{ticket: "ticket-1"})
+	updated := updatedModel.(model)
+	if updated.loginForm == nil || !updated.loginForm.qrWaiting {
+		t.Fatalf("expected qr waiting state to remain active, got %#v", updated.loginForm)
+	}
+	if cmd == nil {
+		t.Fatal("expected qr wait tick to submit wait_qr action")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg from qr wait tick, got %T", cmd())
+	}
+	for _, item := range batch {
+		if item == nil {
+			continue
+		}
+		if _, ok := item().(loginFormSavedMsg); ok {
+			break
+		}
+	}
+	if captured.Action != "wait_qr" {
+		t.Fatalf("expected qr wait submission action, got %#v", captured)
+	}
+	if captured.QRTicket != "ticket-1" || captured.QRWaitPollCount != 7 {
+		t.Fatalf("expected qr wait submission to preserve ticket and poll count, got %#v", captured)
+	}
+}
+
+func TestHandleLoginFormModeSwitchToQRAutoStartsQRCode(t *testing.T) {
+	state := newLoginFormState(LoginFormState{
+		Title:    "登录(login)",
+		Mode:     "password",
+		Remember: true,
+	})
+	state.cursor = loginFieldMode
+
+	captured := LoginFormSubmission{}
+	appModel := model{
+		ctx:       context.Background(),
+		snapshot:  Snapshot{BackendAvailable: true},
+		loginForm: state,
+		loginFormSubmit: func(ctx context.Context, snapshot Snapshot, submission LoginFormSubmission) (LocalCommandResult, error) {
+			captured = submission
+			return LocalCommandResult{Handled: true}, nil
+		},
+	}
+
+	updatedModel, cmd := appModel.handleLoginFormKey(tea.KeyMsg{Type: tea.KeyRight})
+	updated := updatedModel.(model)
+	if updated.loginForm == nil || updated.loginForm.mode != loginFormModeQR {
+		t.Fatalf("expected qr mode after switching, got %#v", updated.loginForm)
+	}
+	if cmd == nil {
+		t.Fatal("expected switch to qr mode to auto-submit start_qr")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg from qr mode switch, got %T", cmd())
+	}
+	for _, item := range batch {
+		if item == nil {
+			continue
+		}
+		if _, ok := item().(loginFormSavedMsg); ok {
+			break
+		}
+	}
+	if captured.Action != "start_qr" {
+		t.Fatalf("expected auto-generated qr action, got %#v", captured)
+	}
+	if captured.Mode != loginFormModeQR {
+		t.Fatalf("expected qr submission mode, got %#v", captured)
 	}
 }
 
@@ -336,6 +462,9 @@ func TestRenderLoginFormShowsTaiyiHeaderAndHidesRemember(t *testing.T) {
 	}
 	if strings.Contains(rendered, "记住登录(remember)") {
 		t.Fatalf("expected remember toggle to be hidden, got %q", rendered)
+	}
+	if strings.Contains(rendered, "密码登录与扫码登录统一使用同一服务地址") {
+		t.Fatalf("expected login overlay to hide meaningless default hint, got %q", rendered)
 	}
 	if strings.Contains(rendered, "验证码票据(captcha_ticket)") {
 		t.Fatalf("expected captcha ticket field to stay hidden before captcha step, got %q", rendered)

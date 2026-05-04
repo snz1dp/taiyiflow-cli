@@ -191,6 +191,12 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("stream_idle_timeout_seconds 仅支持大于等于 0 的整数秒，0 表示禁用")
 		}
 		config.StreamIdleTimeoutSeconds = seconds
+	case "qr_wait_timeout_seconds":
+		seconds, err := strconv.Atoi(trimmedValue)
+		if err != nil || seconds < 0 {
+			return fmt.Errorf("qr_wait_timeout_seconds 仅支持大于等于 0 的整数秒，0 表示禁用")
+		}
+		config.QRWaitTimeoutSeconds = seconds
 	case "agent_auto_loop_enabled":
 		normalized := strings.ToLower(trimmedValue)
 		if normalized != "true" && normalized != "false" {
@@ -277,6 +283,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.CommandTimeoutSeconds = defaults.CommandTimeoutSeconds
 	case "stream_idle_timeout_seconds":
 		config.StreamIdleTimeoutSeconds = defaults.StreamIdleTimeoutSeconds
+	case "qr_wait_timeout_seconds":
+		config.QRWaitTimeoutSeconds = defaults.QRWaitTimeoutSeconds
 	case "agent_auto_loop_enabled":
 		config.AgentAutoLoopEnabled = defaults.AgentAutoLoopEnabled
 	case "agent_auto_loop_max_rounds":
@@ -319,6 +327,8 @@ func normalizeConfigKey(key string) string {
 		return "command_timeout_seconds"
 	case "stream_idle_timeout":
 		return "stream_idle_timeout_seconds"
+	case "qr_wait_timeout", "qrcode_wait_timeout", "qr_login_wait_timeout":
+		return "qr_wait_timeout_seconds"
 	case "agent_auto_continue_enabled", "agent_autoloop_enabled", "agent_auto_loop":
 		return "agent_auto_loop_enabled"
 	case "agent_auto_continue_max_rounds", "agent_autoloop_max_rounds", "agent_auto_loop_rounds":
@@ -367,6 +377,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("写入确认策略: %s", fallbackConfigValue(config.WriteConfirmationPolicy, internalconfig.Default().WriteConfirmationPolicy)),
 		fmt.Sprintf("命令执行超时: %d 秒", config.CommandTimeoutSeconds),
 		fmt.Sprintf("流式空闲超时: %d 秒", config.StreamIdleTimeoutSeconds),
+		fmt.Sprintf("扫码等待超时: %d 秒", config.QRWaitTimeoutSeconds),
 		fmt.Sprintf("输出语言: %s", fallbackConfigValue(config.OutputLanguage, internalconfig.Default().OutputLanguage)),
 		fmt.Sprintf("审计日志: %t", config.AuditEnabled),
 		fmt.Sprintf("技能安装位置: %s", skillInstallScopeLabel(config)),

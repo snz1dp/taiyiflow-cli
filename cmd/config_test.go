@@ -50,6 +50,27 @@ func TestResetConfigValueCommandTimeoutSeconds(t *testing.T) {
 	}
 }
 
+func TestAssignConfigValueQRWaitTimeoutSeconds(t *testing.T) {
+	config := internalconfig.Default()
+	if err := assignConfigValue(&config, "qr_wait_timeout_seconds", "0"); err != nil {
+		t.Fatalf("assignConfigValue returned error: %v", err)
+	}
+	if config.QRWaitTimeoutSeconds != 0 {
+		t.Fatalf("expected qr wait timeout 0, got %d", config.QRWaitTimeoutSeconds)
+	}
+}
+
+func TestResetConfigValueQRWaitTimeoutSeconds(t *testing.T) {
+	config := internalconfig.Default()
+	config.QRWaitTimeoutSeconds = 99
+	if err := resetConfigValue(&config, "qr_wait_timeout_seconds"); err != nil {
+		t.Fatalf("resetConfigValue returned error: %v", err)
+	}
+	if config.QRWaitTimeoutSeconds != internalconfig.Default().QRWaitTimeoutSeconds {
+		t.Fatalf("expected default qr wait timeout %d, got %d", internalconfig.Default().QRWaitTimeoutSeconds, config.QRWaitTimeoutSeconds)
+	}
+}
+
 func TestAssignConfigValueExternalResourceAccessPolicyAlias(t *testing.T) {
 	config := internalconfig.Default()
 	if err := assignConfigValue(&config, "external_resource_access_policy", "allow"); err != nil {

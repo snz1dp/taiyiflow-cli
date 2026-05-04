@@ -422,6 +422,7 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 			Workdir:                  "/workspace/demo",
 			CommandTimeoutSeconds:    "45",
 			StreamIdleTimeoutSeconds: "300",
+			QRWaitTimeoutSeconds:     "90",
 			AgentAutoLoopEnabled:     "false",
 			OutputLanguage:           "zh-CN",
 			SkillsInstallScope:       "workspace",
@@ -469,6 +470,9 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	if updated.CommandTimeoutSeconds != 45 {
 		t.Fatalf("expected command timeout saved, got %#v", updated.CommandTimeoutSeconds)
 	}
+	if updated.QRWaitTimeoutSeconds != 90 {
+		t.Fatalf("expected qr wait timeout saved, got %#v", updated.QRWaitTimeoutSeconds)
+	}
 	if updated.AgentAutoLoopEnabled {
 		t.Fatalf("expected agent auto loop switch saved as false, got %#v", updated.AgentAutoLoopEnabled)
 	}
@@ -485,6 +489,9 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	}
 	if reloaded.CommandTimeoutSeconds != 45 {
 		t.Fatalf("expected persisted command timeout, got %#v", reloaded.CommandTimeoutSeconds)
+	}
+	if reloaded.QRWaitTimeoutSeconds != 90 {
+		t.Fatalf("expected persisted qr wait timeout, got %#v", reloaded.QRWaitTimeoutSeconds)
 	}
 	if reloaded.AgentAutoLoopEnabled {
 		t.Fatalf("expected persisted auto loop switch false, got %#v", reloaded.AgentAutoLoopEnabled)

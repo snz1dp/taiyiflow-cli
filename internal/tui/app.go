@@ -179,6 +179,7 @@ type ConfigFormValues struct {
 	Workdir                  string
 	CommandTimeoutSeconds    string
 	StreamIdleTimeoutSeconds string
+	QRWaitTimeoutSeconds     string
 	AgentAutoLoopEnabled     string
 	AgentAutoLoopMaxRounds   string
 	OutputLanguage           string
@@ -208,33 +209,39 @@ type ConfigFormSubmission struct {
 }
 
 type LoginFormState struct {
-	Title         string
-	Hint          string
-	StatusText    string
-	StatusIsError bool
-	FocusField    int
-	Mode          string
-	Username      string
-	Password      string
-	Remember      bool
-	KaptchaTicket string
-	KaptchaCode   string
-	QRTicket      string
-	QRLoginURL    string
-	QRScanHint    string
+	Title           string
+	Hint            string
+	StatusText      string
+	StatusIsError   bool
+	FocusField      int
+	Mode            string
+	Username        string
+	Password        string
+	Remember        bool
+	KaptchaTicket   string
+	KaptchaCode     string
+	QRTicket        string
+	QRLoginURL      string
+	QRScanHint      string
+	QRCodeASCII     string
+	QRWaiting       bool
+	QRWaitPollCount int
 }
 
 type LoginFormSubmission struct {
-	Action        string
-	Mode          string
-	Username      string
-	Password      string
-	Remember      bool
-	KaptchaTicket string
-	KaptchaCode   string
-	QRTicket      string
-	QRLoginURL    string
-	QRScanHint    string
+	Action          string
+	Mode            string
+	Username        string
+	Password        string
+	Remember        bool
+	KaptchaTicket   string
+	KaptchaCode     string
+	QRTicket        string
+	QRLoginURL      string
+	QRScanHint      string
+	QRCodeASCII     string
+	QRWaiting       bool
+	QRWaitPollCount int
 }
 
 type slashCommand struct {
@@ -458,6 +465,10 @@ type localCommandExecutedMsg struct {
 	err    error
 }
 
+type qrCodeWaitTickMsg struct {
+	ticket string
+}
+
 type backendRetryTickMsg struct{}
 
 type snapshotRefreshedMsg struct {
@@ -568,17 +579,20 @@ type configFormState struct {
 }
 
 type loginFormState struct {
-	title         string
-	hint          string
-	statusText    string
-	statusIsError bool
-	mode          string
-	remember      bool
-	inputs        []textinput.Model
-	cursor        int
-	qrTicket      string
-	qrLoginURL    string
-	qrScanHint    string
+	title           string
+	hint            string
+	statusText      string
+	statusIsError   bool
+	mode            string
+	remember        bool
+	inputs          []textinput.Model
+	cursor          int
+	qrTicket        string
+	qrLoginURL      string
+	qrScanHint      string
+	qrCodeASCII     string
+	qrWaiting       bool
+	qrWaitPollCount int
 }
 
 type configFieldSpec struct {
@@ -600,6 +614,7 @@ const (
 	configFieldWorkdir
 	configFieldCommandTimeout
 	configFieldStreamIdleTimeout
+	configFieldQRWaitTimeout
 	configFieldAgentAutoLoopEnabled
 	configFieldAgentAutoLoopMaxRounds
 	configFieldOutputLanguage
@@ -1029,7 +1044,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd := m.applyLocalCommandResult(typed.result); cmd != nil {
 			return m, tea.Batch(cmd, textinput.Blink)
 		}
-		return m, tea.Batch(m.transitionProgress(progressIdle), textinput.Blink)
+		return m.continueQRCodeWaitIfNeeded()
 	case localCommandExecutedMsg:
 		if typed.err != nil {
 			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
@@ -1039,7 +1054,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd := m.applyLocalCommandResult(typed.result); cmd != nil {
 			return m, tea.Batch(cmd, textinput.Blink)
 		}
-		return m, tea.Batch(m.transitionProgress(progressIdle), textinput.Blink)
+		return m.continueQRCodeWaitIfNeeded()
+	case qrCodeWaitTickMsg:
+		if m.loginForm == nil || m.loginForm.mode != loginFormModeQR || !m.loginForm.qrWaiting {
+			return m, tea.Batch(m.transitionProgress(progressIdle), textinput.Blink)
+		}
+		if strings.TrimSpace(typed.ticket) == "" || strings.TrimSpace(m.loginForm.qrTicket) != strings.TrimSpace(typed.ticket) {
+			return m, tea.Batch(m.transitionProgress(progressIdle), textinput.Blink)
+		}
+		return m, tea.Batch(m.transitionProgress(progressExecuting), submitLoginFormCmd(m.ctx, m.snapshot, LoginFormSubmission{
+			Action:          "wait_qr",
+			Mode:            m.loginForm.mode,
+			Remember:        m.loginForm.remember,
+			QRTicket:        strings.TrimSpace(m.loginForm.qrTicket),
+			QRLoginURL:      strings.TrimSpace(m.loginForm.qrLoginURL),
+			QRScanHint:      strings.TrimSpace(m.loginForm.qrScanHint),
+			QRCodeASCII:     m.loginForm.qrCodeASCII,
+			QRWaiting:       true,
+			QRWaitPollCount: m.loginForm.qrWaitPollCount,
+		}, m.loginFormSubmit), textinput.Blink)
 	case tea.KeyMsg:
 		if m.pendingConfirm != nil {
 			return m.handleConfirmKey(typed)
@@ -1621,25 +1654,21 @@ func (m model) handleLoginFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "left", "h":
 		switch m.loginForm.cursor {
 		case loginFieldMode:
-			m.setLoginFormMode(loginFormModePassword)
-			return m, nil
+			return m.switchLoginFormMode(loginFormModePassword)
 		}
 	case "right", "l":
 		switch m.loginForm.cursor {
 		case loginFieldMode:
-			m.setLoginFormMode(loginFormModeQR)
-			return m, nil
+			return m.switchLoginFormMode(loginFormModeQR)
 		}
 	case " ":
 		if m.loginForm.cursor == loginFieldMode {
-			m.toggleLoginFormMode()
-			return m, nil
+			return m.toggleLoginFormMode()
 		}
 	case "enter":
 		switch m.loginForm.cursor {
 		case loginFieldMode:
-			m.toggleLoginFormMode()
-			return m, nil
+			return m.toggleLoginFormMode()
 		default:
 			return m.submitLoginForm("")
 		}
@@ -1654,6 +1683,26 @@ func (m model) handleLoginFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.loginForm.inputs[inputIndex], cmd = m.loginForm.inputs[inputIndex].Update(msg)
 	return m, cmd
+}
+
+func (m model) continueQRCodeWaitIfNeeded() (tea.Model, tea.Cmd) {
+	if m.loginForm == nil || m.loginForm.mode != loginFormModeQR || !m.loginForm.qrWaiting || strings.TrimSpace(m.loginForm.qrTicket) == "" {
+		return m, tea.Batch(m.transitionProgress(progressIdle), textinput.Blink)
+	}
+	return m, tea.Batch(m.transitionProgress(progressExecuting), m.scheduleQRCodeWait(), textinput.Blink)
+}
+
+func (m model) scheduleQRCodeWait() tea.Cmd {
+	if m.loginForm == nil || m.loginForm.mode != loginFormModeQR {
+		return nil
+	}
+	ticket := strings.TrimSpace(m.loginForm.qrTicket)
+	if ticket == "" {
+		return nil
+	}
+	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+		return qrCodeWaitTickMsg{ticket: ticket}
+	})
 }
 
 func (m model) handleConfigFlowDropdownKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -2566,6 +2615,7 @@ func (m model) renderSlashCommandHints() string {
 func (m model) renderOverlay() string {
 	content := ""
 	width := 0
+	fullScreenLogin := false
 	if m.pendingConfirm != nil {
 		width = minInt(m.contentWidth-6, 90)
 		content = m.renderConfirmOverlay()
@@ -2573,8 +2623,8 @@ func (m model) renderOverlay() string {
 		width = minInt(m.contentWidth-6, 96)
 		content = m.renderToolPanel()
 	} else if m.loginForm != nil {
-		width = minInt(m.contentWidth-6, 92)
 		content = m.renderLoginForm()
+		fullScreenLogin = true
 	} else if m.configForm != nil {
 		width = minInt(m.contentWidth-6, 92)
 		content = m.renderConfigForm()
@@ -2599,6 +2649,17 @@ func (m model) renderOverlay() string {
 	}
 	if content == "" {
 		return ""
+	}
+	if fullScreenLogin {
+		innerWidth := m.width - 2
+		if innerWidth < 20 {
+			innerWidth = 20
+		}
+		innerHeight := m.height - 2
+		if innerHeight < 5 {
+			innerHeight = 5
+		}
+		return overlayStyle.Width(innerWidth).Height(innerHeight).Render(m.fitOverlayContent(content))
 	}
 	if width < 24 {
 		width = 24
@@ -2718,7 +2779,11 @@ func (m model) renderLoginForm() string {
 		return ""
 	}
 	hasCaptcha := hasLoginCaptchaTicket(m.loginForm)
-	lines := []string{headerBarStyle.Render("太乙智启"), fallback(strings.TrimSpace(m.loginForm.title), "登录(login)")}
+	title := strings.TrimSpace(m.loginForm.title)
+	if title == "" {
+		title = "登录"
+	}
+	lines := []string{headerBarStyle.Render("太乙智启 · " + title)}
 	if strings.TrimSpace(m.loginForm.hint) != "" {
 		lines = append(lines, strings.TrimSpace(m.loginForm.hint))
 	}
@@ -2760,21 +2825,21 @@ func (m model) renderLoginForm() string {
 			)
 		}
 	} else {
-		if strings.TrimSpace(m.loginForm.qrLoginURL) != "" {
-			lines = append(lines, labelStyle.Render("扫码地址(qr_url)"), hardWrapText(strings.TrimSpace(m.loginForm.qrLoginURL), maxInt(24, m.contentWidth-16)))
+		if strings.TrimSpace(m.loginForm.qrCodeASCII) != "" {
+			lines = append(lines, labelStyle.Render("终端二维码(qr_code)"), m.loginForm.qrCodeASCII)
 		}
 		if strings.TrimSpace(m.loginForm.qrScanHint) != "" {
 			lines = append(lines, labelStyle.Render("扫码提示(qr_hint)"), hintStyle.Render(hardWrapText(strings.TrimSpace(m.loginForm.qrScanHint), maxInt(24, m.contentWidth-16))))
 		}
 		if strings.TrimSpace(m.loginForm.qrTicket) != "" {
-			lines = append(lines, labelStyle.Render("扫码票据(ticket)"), valueStyle.Render(trimForWidth(strings.TrimSpace(m.loginForm.qrTicket), m.contentWidth-16)))
+			lines = append(lines, hintStyle.Render(trimForWidth("操作提示: g 重新生成二维码，Enter 或 w 继续等待扫码确认。", m.contentWidth-16)))
 		}
 		lines = append(lines, "")
 	}
 
 	lines = append(lines, m.renderLoginSubmitField(), "")
 	if m.loginForm.mode == loginFormModeQR {
-		lines = append(lines, commandHintStyle.Render("Tab 切换字段，左右键切换登录方式，Enter 提交，g 重新生成二维码，w 等待扫码，Ctrl+L 退出登录，Esc 关闭。"))
+		lines = append(lines, commandHintStyle.Render("Tab 切换字段，左右键切换登录方式，g 重新生成二维码，Enter 或 w 继续等待，Ctrl+L 退出登录，Esc 关闭。"))
 	} else {
 		lines = append(lines, commandHintStyle.Render("Tab 切换字段，左右键切换登录方式，Enter 提交，Ctrl+L 退出登录，Esc 关闭。"))
 	}
@@ -2801,23 +2866,6 @@ func (m model) renderLoginFormTextField(field int, label string, description str
 	return strings.Join(parts, "\n")
 }
 
-func (m model) renderLoginRememberField() string {
-	if m.loginForm == nil {
-		return ""
-	}
-	marker := "( ) 关闭(off)"
-	if m.loginForm.remember {
-		marker = "(*) 开启(on)"
-	}
-	line := marker + "  保存 persistent_token，便于下次自动登录"
-	if m.loginForm.cursor == loginFieldRemember {
-		line = markOverlayFocus(selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-16)), true)
-	} else {
-		line = commandHintStyle.Render(trimForWidth(line, m.contentWidth-16))
-	}
-	return strings.Join([]string{labelStyle.Render("记住登录(remember)"), line, ""}, "\n")
-}
-
 func (m model) renderLoginSubmitField() string {
 	if m.loginForm == nil {
 		return ""
@@ -2827,7 +2875,7 @@ func (m model) renderLoginSubmitField() string {
 		if strings.TrimSpace(m.loginForm.qrTicket) == "" {
 			label = "生成扫码地址"
 		} else {
-			label = "等待扫码结果"
+			label = "继续等待(Enter/w)"
 		}
 	}
 	line := fmt.Sprintf("[%s] Enter", label)
@@ -4281,15 +4329,27 @@ func (m *model) setLoginFormMode(mode string) {
 	m.syncLayout()
 }
 
-func (m *model) toggleLoginFormMode() {
+func (m model) switchLoginFormMode(mode string) (tea.Model, tea.Cmd) {
 	if m.loginForm == nil {
-		return
+		return m, nil
+	}
+	previousMode := m.loginForm.mode
+	previousTicket := strings.TrimSpace(m.loginForm.qrTicket)
+	m.setLoginFormMode(mode)
+	if previousMode != loginFormModeQR && m.loginForm.mode == loginFormModeQR && previousTicket == "" && strings.TrimSpace(m.loginForm.qrTicket) == "" {
+		return m.submitLoginForm("start_qr")
+	}
+	return m, nil
+}
+
+func (m model) toggleLoginFormMode() (tea.Model, tea.Cmd) {
+	if m.loginForm == nil {
+		return m, nil
 	}
 	if m.loginForm.mode == loginFormModeQR {
-		m.setLoginFormMode(loginFormModePassword)
-		return
+		return m.switchLoginFormMode(loginFormModePassword)
 	}
-	m.setLoginFormMode(loginFormModeQR)
+	return m.switchLoginFormMode(loginFormModeQR)
 }
 
 func (m *model) focusLoginFormField(field int) {
@@ -4360,6 +4420,9 @@ func (m model) overlayPageStep() int {
 
 func (m model) overlayVisibleLineLimit() int {
 	limit := m.height - overlayStyle.GetVerticalFrameSize() - 6
+	if m.loginForm != nil {
+		limit = m.height - overlayStyle.GetVerticalFrameSize() - 2
+	}
 	if limit < 5 {
 		limit = 5
 	}
@@ -4520,16 +4583,19 @@ func (m model) submitLoginForm(action string) (tea.Model, tea.Cmd) {
 		}
 	}
 	submission := LoginFormSubmission{
-		Action:        action,
-		Mode:          m.loginForm.mode,
-		Username:      strings.TrimSpace(m.loginForm.inputs[0].Value()),
-		Password:      m.loginForm.inputs[1].Value(),
-		Remember:      m.loginForm.remember,
-		KaptchaTicket: strings.TrimSpace(m.loginForm.inputs[2].Value()),
-		KaptchaCode:   strings.TrimSpace(m.loginForm.inputs[3].Value()),
-		QRTicket:      strings.TrimSpace(m.loginForm.qrTicket),
-		QRLoginURL:    strings.TrimSpace(m.loginForm.qrLoginURL),
-		QRScanHint:    strings.TrimSpace(m.loginForm.qrScanHint),
+		Action:          action,
+		Mode:            m.loginForm.mode,
+		Username:        strings.TrimSpace(m.loginForm.inputs[0].Value()),
+		Password:        m.loginForm.inputs[1].Value(),
+		Remember:        m.loginForm.remember,
+		KaptchaTicket:   strings.TrimSpace(m.loginForm.inputs[2].Value()),
+		KaptchaCode:     strings.TrimSpace(m.loginForm.inputs[3].Value()),
+		QRTicket:        strings.TrimSpace(m.loginForm.qrTicket),
+		QRLoginURL:      strings.TrimSpace(m.loginForm.qrLoginURL),
+		QRScanHint:      strings.TrimSpace(m.loginForm.qrScanHint),
+		QRCodeASCII:     m.loginForm.qrCodeASCII,
+		QRWaiting:       m.loginForm.qrWaiting,
+		QRWaitPollCount: m.loginForm.qrWaitPollCount,
 	}
 	return m, tea.Batch(m.transitionProgress(progressExecuting), submitLoginFormCmd(m.ctx, m.snapshot, submission, m.loginFormSubmit))
 }
@@ -4591,17 +4657,20 @@ func newLoginFormState(state LoginFormState) *loginFormState {
 	}
 	mode := normalizeLoginFormMode(state.Mode)
 	loginState := &loginFormState{
-		title:         state.Title,
-		hint:          state.Hint,
-		statusText:    state.StatusText,
-		statusIsError: state.StatusIsError,
-		mode:          mode,
-		remember:      state.Remember,
-		inputs:        models,
-		cursor:        loginFieldMode,
-		qrTicket:      strings.TrimSpace(state.QRTicket),
-		qrLoginURL:    strings.TrimSpace(state.QRLoginURL),
-		qrScanHint:    strings.TrimSpace(state.QRScanHint),
+		title:           state.Title,
+		hint:            state.Hint,
+		statusText:      state.StatusText,
+		statusIsError:   state.StatusIsError,
+		mode:            mode,
+		remember:        state.Remember,
+		inputs:          models,
+		cursor:          loginFieldMode,
+		qrTicket:        strings.TrimSpace(state.QRTicket),
+		qrLoginURL:      strings.TrimSpace(state.QRLoginURL),
+		qrScanHint:      strings.TrimSpace(state.QRScanHint),
+		qrCodeASCII:     state.QRCodeASCII,
+		qrWaiting:       state.QRWaiting,
+		qrWaitPollCount: state.QRWaitPollCount,
 	}
 	if state.FocusField >= 0 && loginFieldVisible(mode, state.FocusField, hasLoginCaptchaTicket(loginState)) {
 		loginState.cursor = state.FocusField
@@ -4710,6 +4779,7 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "工作区目录", placeholder: "留空表示当前目录", description: "默认使用当前工作目录。"},
 		{label: "命令执行超时（秒）", placeholder: "30", description: "本地命令与语言服务查询在未显式传超时(timeout)时使用该默认值，范围 1-300 秒。"},
 		{label: "流式空闲超时（秒）", placeholder: "300", description: "大于等于 0 的整数秒，0 表示禁用流式空闲超时。"},
+		{label: "扫码等待超时（秒）", placeholder: "30", description: "二维码登录在自动轮询时使用该默认值；大于等于 0 的整数秒，0 表示持续等待直到手动取消。"},
 		{label: "智能体自动续跑默认开关", placeholder: "", description: "仅对智能体模式生效；左右键或空格切换恢复默认(default)、开启(true)、关闭(false)。"},
 		{label: "智能体自动续跑最大轮数", placeholder: "3", description: "仅对智能体模式生效；填写大于等于 1 的整数。"},
 		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
@@ -4747,18 +4817,20 @@ func configFormFieldValue(index int, values ConfigFormValues) string {
 	case 11:
 		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
 	case 12:
-		return ""
+		return strings.TrimSpace(values.QRWaitTimeoutSeconds)
 	case 13:
-		return strings.TrimSpace(values.AgentAutoLoopMaxRounds)
-	case 14:
-		return strings.TrimSpace(values.OutputLanguage)
-	case 15:
 		return ""
+	case 14:
+		return strings.TrimSpace(values.AgentAutoLoopMaxRounds)
+	case 15:
+		return strings.TrimSpace(values.OutputLanguage)
 	case 16:
 		return ""
 	case 17:
 		return ""
 	case 18:
+		return ""
+	case 19:
 		return strings.TrimSpace(values.SkillsRegistryURL)
 	default:
 		return ""
@@ -4788,21 +4860,24 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 	if len(inputs) > 11 {
 		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[11].Value())
 	}
-	if len(inputs) > 13 {
-		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[13].Value())
+	if len(inputs) > 12 {
+		values.QRWaitTimeoutSeconds = strings.TrimSpace(inputs[12].Value())
 	}
 	if len(inputs) > 14 {
-		values.OutputLanguage = strings.TrimSpace(inputs[14].Value())
+		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[14].Value())
 	}
-	if len(inputs) > 18 {
-		values.SkillsRegistryURL = strings.TrimSpace(inputs[18].Value())
+	if len(inputs) > 15 {
+		values.OutputLanguage = strings.TrimSpace(inputs[15].Value())
+	}
+	if len(inputs) > 19 {
+		values.SkillsRegistryURL = strings.TrimSpace(inputs[19].Value())
 	}
 	return values
 }
 
 func isConfigTextField(index int) bool {
 	switch index {
-	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldSkillsRegistryURL:
+	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldQRWaitTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldSkillsRegistryURL:
 		return true
 	default:
 		return false
