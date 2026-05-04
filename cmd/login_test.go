@@ -8,8 +8,12 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -137,6 +141,17 @@ func TestExecuteTUILoginCommandOpensOverlay(t *testing.T) {
 }
 
 func TestSubmitTUILoginFormPasswordRequiresCaptcha(t *testing.T) {
+	originalOpenCaptchaPreviewFile := openCaptchaPreviewFile
+	openedPreviewPath := ""
+	openCaptchaPreviewFile = func(path string) error {
+		openedPreviewPath = path
+		return nil
+	}
+	defer func() {
+		openCaptchaPreviewFile = originalOpenCaptchaPreviewFile
+	}()
+	t.Setenv("TERM_PROGRAM", "vscode")
+
 	privateKey, err := rsa.GenerateKey(cryptorand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate rsa key failed: %v", err)
@@ -146,6 +161,20 @@ func TestSubmitTUILoginFormPasswordRequiresCaptcha(t *testing.T) {
 		t.Fatalf("marshal public key failed: %v", err)
 	}
 	publicKeyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicKeyDER}))
+	var kaptchaPNG bytes.Buffer
+	kaptchaImage := image.NewRGBA(image.Rect(0, 0, 32, 12))
+	for y := 0; y < 12; y++ {
+		for x := 0; x < 32; x++ {
+			pixel := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+			if (x/4+y/3)%2 == 0 {
+				pixel = color.RGBA{R: 32, G: 32, B: 32, A: 255}
+			}
+			kaptchaImage.Set(x, y, pixel)
+		}
+	}
+	if err := png.Encode(&kaptchaPNG, kaptchaImage); err != nil {
+		t.Fatalf("encode captcha image failed: %v", err)
+	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
@@ -158,6 +187,9 @@ func TestSubmitTUILoginFormPasswordRequiresCaptcha(t *testing.T) {
 		case "/xeai/kaptcha/ticket":
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"captcha-ticket-1","expired":120}}`)
+		case "/xeai/kaptcha/image":
+			writer.Header().Set("Content-Type", "image/png")
+			_, _ = writer.Write(kaptchaPNG.Bytes())
 		default:
 			http.NotFound(writer, request)
 		}
@@ -194,14 +226,65 @@ func TestSubmitTUILoginFormPasswordRequiresCaptcha(t *testing.T) {
 	if result.LoginForm.Password != "secret-123" || result.LoginForm.Username != "zhangsan" {
 		t.Fatalf("expected password flow to preserve username/password, got %#v", result.LoginForm)
 	}
-	if len(result.Events) != 1 || !strings.Contains(result.Events[0].Text, "需要验证码") {
+	if len(result.Events) != 1 || !strings.Contains(result.Events[0].Text, "图形验证码") {
 		t.Fatalf("expected captcha-required hint event, got %#v", result.Events)
 	}
-	if !strings.Contains(result.LoginForm.StatusText, "需要验证码") {
+	if !strings.Contains(result.LoginForm.StatusText, "图形验证码") {
 		t.Fatalf("expected captcha-required hint in login overlay status, got %#v", result.LoginForm)
+	}
+	if result.LoginForm.StatusIsError {
+		t.Fatalf("expected captcha-required hint to stay non-error, got %#v", result.LoginForm)
+	}
+	if result.Events[0].Kind != tui.EventSystemNote {
+		t.Fatalf("expected captcha-required hint to use system note, got %#v", result.Events)
+	}
+	if result.LoginForm.VerifyType != "kaptcha" {
+		t.Fatalf("expected captcha flow to expose verification type, got %#v", result.LoginForm)
+	}
+	if strings.TrimSpace(result.LoginForm.VerifyImageASCII) == "" {
+		t.Fatalf("expected captcha flow to render captcha image, got %#v", result.LoginForm)
+	}
+	if strings.TrimSpace(result.LoginForm.VerifyImagePNGBase64) == "" {
+		t.Fatalf("expected captcha flow to keep terminal image payload, got %#v", result.LoginForm)
+	}
+	if strings.TrimSpace(result.LoginForm.VerifyImagePreviewPath) == "" {
+		t.Fatalf("expected captcha flow to keep external preview path, got %#v", result.LoginForm)
+	}
+	if openedPreviewPath != result.LoginForm.VerifyImagePreviewPath {
+		t.Fatalf("expected preview opener to receive same path, got opened=%q result=%q", openedPreviewPath, result.LoginForm.VerifyImagePreviewPath)
+	}
+	if _, err := os.Stat(result.LoginForm.VerifyImagePreviewPath); err != nil {
+		t.Fatalf("expected preview image file to exist, got %v", err)
+	}
+	if result.LoginForm.VerifyImageWidth <= 0 || result.LoginForm.VerifyImageHeight <= 0 {
+		t.Fatalf("expected captcha flow to keep image size, got %#v", result.LoginForm)
 	}
 	if result.LoginForm.FocusField != 3 {
 		t.Fatalf("expected captcha flow to focus captcha field, got %#v", result.LoginForm)
+	}
+}
+
+func TestRenderVerificationImageASCIIFromImageUsesBlockGlyphs(t *testing.T) {
+	decodedImage := image.NewRGBA(image.Rect(0, 0, 32, 12))
+	for y := 0; y < 12; y++ {
+		for x := 0; x < 32; x++ {
+			pixel := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+			if (x/4+y/3)%2 == 0 {
+				pixel = color.RGBA{R: 16, G: 16, B: 16, A: 255}
+			}
+			decodedImage.Set(x, y, pixel)
+		}
+	}
+
+	rendered := renderVerificationImageASCIIFromImage(decodedImage)
+	if strings.TrimSpace(rendered) == "" {
+		t.Fatal("expected block ascii captcha rendering")
+	}
+	if !strings.ContainsAny(rendered, "█▀▄") {
+		t.Fatalf("expected block glyphs in captcha rendering, got %q", rendered)
+	}
+	if strings.ContainsAny(rendered, ".:-=+*#%@") {
+		t.Fatalf("expected old grayscale ramp to be removed, got %q", rendered)
 	}
 }
 
@@ -287,6 +370,9 @@ func TestLoginSlashUsagePrioritizesOverlayEntry(t *testing.T) {
 	}
 	if !strings.Contains(usage, "旧的 /login password 与 /login qr wait 已移除") {
 		t.Fatalf("expected usage to explain removed commands, got %q", usage)
+	}
+	if !strings.Contains(usage, "TAIYIFLOW_CLI_TERMINAL_IMAGE_PROTOCOL=kitty|iterm2|off") {
+		t.Fatalf("expected usage to mention terminal image protocol override, got %q", usage)
 	}
 	if strings.Contains(usage, "打开 overlay 登录表单") {
 		t.Fatalf("expected usage to stop using old overlay wording, got %q", usage)

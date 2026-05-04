@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -150,6 +151,11 @@ type WaitEvent struct {
 type KaptchaToken struct {
 	Ticket  string `json:"ticket"`
 	Expired int    `json:"expired"`
+}
+
+type KaptchaImage struct {
+	ContentType string
+	Data        []byte
 }
 
 func NewAuthClient(baseURL string) *AuthClient {
@@ -295,6 +301,37 @@ func (c *AuthClient) VerifyKaptcha(ctx context.Context, ticket, code string) err
 	return c.doEnvelopeRequest(ctx, http.MethodGet, "/kaptcha/verify", values, "", nil)
 }
 
+func (c *AuthClient) GetKaptchaImage(ctx context.Context, ticket string) (*KaptchaImage, error) {
+	trimmedTicket := strings.TrimSpace(ticket)
+	if trimmedTicket == "" {
+		return nil, nil
+	}
+
+	type imageCandidate struct {
+		path  string
+		query url.Values
+	}
+
+	candidates := []imageCandidate{
+		{path: "/kaptcha/image", query: url.Values{"ticket": []string{trimmedTicket}}},
+		{path: "/kaptcha/image", query: url.Values{"kaptcha_ticket": []string{trimmedTicket}}},
+		{path: "/kaptcha/render", query: url.Values{"ticket": []string{trimmedTicket}}},
+		{path: "/kaptcha", query: url.Values{"ticket": []string{trimmedTicket}}},
+	}
+
+	var lastErr error
+	for _, candidate := range candidates {
+		image, err := c.fetchKaptchaImageCandidate(ctx, candidate.path, candidate.query)
+		if err == nil && image != nil {
+			return image, nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+	}
+	return nil, lastErr
+}
+
 func (c *AuthClient) ExchangePersistentToken(ctx context.Context, persistentToken string, deviceID string) (*AuthSession, error) {
 	trimmedPersistentToken := strings.TrimSpace(persistentToken)
 	trimmedDeviceID := strings.TrimSpace(deviceID)
@@ -363,6 +400,46 @@ func (c *AuthClient) doEnvelopeRequest(ctx context.Context, method string, path 
 		return err
 	}
 	return nil
+}
+
+func (c *AuthClient) fetchKaptchaImageCandidate(ctx context.Context, path string, query url.Values) (*KaptchaImage, error) {
+	endpoint, err := c.authURL(path, query)
+	if err != nil {
+		return nil, &AuthError{Operation: "获取图形验证码", Message: err.Error()}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, &AuthError{Operation: "获取图形验证码", Message: err.Error()}
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, &AuthError{Operation: "获取图形验证码", Message: err.Error()}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readAuthHTTPError(path, resp)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &AuthError{Operation: "获取图形验证码", StatusCode: resp.StatusCode, Message: fmt.Sprintf("读取验证码图片失败: %v", err)}
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	contentType := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
+	if contentType == "" {
+		contentType = strings.ToLower(http.DetectContentType(data))
+	}
+	if !strings.HasPrefix(contentType, "image/") {
+		return nil, nil
+	}
+
+	return &KaptchaImage{ContentType: contentType, Data: data}, nil
 }
 
 func (c *AuthClient) authURL(path string, query url.Values) (string, error) {

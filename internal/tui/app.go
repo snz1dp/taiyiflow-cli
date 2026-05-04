@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -209,39 +211,55 @@ type ConfigFormSubmission struct {
 }
 
 type LoginFormState struct {
-	Title           string
-	Hint            string
-	StatusText      string
-	StatusIsError   bool
-	FocusField      int
-	Mode            string
-	Username        string
-	Password        string
-	Remember        bool
-	KaptchaTicket   string
-	KaptchaCode     string
-	QRTicket        string
-	QRLoginURL      string
-	QRScanHint      string
-	QRCodeASCII     string
-	QRWaiting       bool
-	QRWaitPollCount int
+	Title            string
+	Hint             string
+	StatusText       string
+	StatusIsError    bool
+	FocusField       int
+	Mode             string
+	Username         string
+	Password         string
+	Remember         bool
+	VerifyType       string
+	VerifyHint       string
+	VerifyTarget     string
+	VerifyImageASCII string
+	VerifyImagePNGBase64 string
+	VerifyImageWidth int
+	VerifyImageHeight int
+	VerifyImagePreviewPath string
+	KaptchaTicket    string
+	KaptchaCode      string
+	QRTicket         string
+	QRLoginURL       string
+	QRScanHint       string
+	QRCodeASCII      string
+	QRWaiting        bool
+	QRWaitPollCount  int
 }
 
 type LoginFormSubmission struct {
-	Action          string
-	Mode            string
-	Username        string
-	Password        string
-	Remember        bool
-	KaptchaTicket   string
-	KaptchaCode     string
-	QRTicket        string
-	QRLoginURL      string
-	QRScanHint      string
-	QRCodeASCII     string
-	QRWaiting       bool
-	QRWaitPollCount int
+	Action           string
+	Mode             string
+	Username         string
+	Password         string
+	Remember         bool
+	VerifyType       string
+	VerifyHint       string
+	VerifyTarget     string
+	VerifyImageASCII string
+	VerifyImagePNGBase64 string
+	VerifyImageWidth int
+	VerifyImageHeight int
+	VerifyImagePreviewPath string
+	KaptchaTicket    string
+	KaptchaCode      string
+	QRTicket         string
+	QRLoginURL       string
+	QRScanHint       string
+	QRCodeASCII      string
+	QRWaiting        bool
+	QRWaitPollCount  int
 }
 
 type slashCommand struct {
@@ -579,20 +597,28 @@ type configFormState struct {
 }
 
 type loginFormState struct {
-	title           string
-	hint            string
-	statusText      string
-	statusIsError   bool
-	mode            string
-	remember        bool
-	inputs          []textinput.Model
-	cursor          int
-	qrTicket        string
-	qrLoginURL      string
-	qrScanHint      string
-	qrCodeASCII     string
-	qrWaiting       bool
-	qrWaitPollCount int
+	title            string
+	hint             string
+	statusText       string
+	statusIsError    bool
+	mode             string
+	remember         bool
+	verifyType       string
+	verifyHint       string
+	verifyTarget     string
+	verifyImageASCII string
+	verifyImagePNGBase64 string
+	verifyImageWidth int
+	verifyImageHeight int
+	verifyImagePreviewPath string
+	inputs           []textinput.Model
+	cursor           int
+	qrTicket         string
+	qrLoginURL       string
+	qrScanHint       string
+	qrCodeASCII      string
+	qrWaiting        bool
+	qrWaitPollCount  int
 }
 
 type configFieldSpec struct {
@@ -631,6 +657,13 @@ const (
 )
 
 const (
+	loginVerifyTypeKaptcha = "kaptcha"
+	loginVerifyTypeSMS     = "sms"
+	loginVerifyTypeMail    = "mail"
+	loginVerifyTypeTOTP    = "totp"
+)
+
+const (
 	loginFieldMode = iota
 	loginFieldUsername
 	loginFieldPassword
@@ -644,6 +677,8 @@ const (
 var (
 	ansiCSIRegexp      = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 	ansiOSCRegexp      = regexp.MustCompile(`\x1b\][^\a]*(\a|\x1b\\)`)
+	ansiAPCRegexp      = regexp.MustCompile(`(?s)\x1b_G.*?\x1b\\`)
+	ansiTmuxDCSRegexp  = regexp.MustCompile(`(?s)\x1bPtmux;.*?\x1b\\`)
 	overlayFocusMarker = "<<overlay-focus>>"
 
 	overlayStyle = lipgloss.NewStyle().
@@ -1669,6 +1704,15 @@ func (m model) handleLoginFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch m.loginForm.cursor {
 		case loginFieldMode:
 			return m.toggleLoginFormMode()
+		case loginFieldUsername:
+			if m.loginForm.mode == loginFormModePassword {
+				m.blurLoginFormField(loginFieldUsername)
+				m.loginForm.cursor = loginFieldPassword
+				m.focusLoginFormField(loginFieldPassword)
+				m.syncLayout()
+				return m, nil
+			}
+			return m.submitLoginForm("")
 		default:
 			return m.submitLoginForm("")
 		}
@@ -2778,7 +2822,7 @@ func (m model) renderLoginForm() string {
 	if m.loginForm == nil {
 		return ""
 	}
-	hasCaptcha := hasLoginCaptchaTicket(m.loginForm)
+	hasVerification := hasLoginVerificationChallenge(m.loginForm)
 	title := strings.TrimSpace(m.loginForm.title)
 	if title == "" {
 		title = "登录"
@@ -2813,11 +2857,40 @@ func (m model) renderLoginForm() string {
 	lines = append(lines, labelStyle.Render("登录方式(login_mode)"), modeLine, "")
 
 	if m.loginForm.mode == loginFormModePassword {
-		if hasCaptcha {
+		if hasVerification {
 			if username := strings.TrimSpace(m.loginForm.inputs[0].Value()); username != "" {
 				lines = append(lines, labelStyle.Render("登录账号(username)"), valueStyle.Render(trimForWidth(username, m.contentWidth-16)), "")
 			}
-			lines = append(lines, m.renderLoginFormTextField(loginFieldCaptchaCode, "验证码(captcha_code)", "检测到需要验证码，请输入验证码后继续登录。"))
+			lines = append(lines,
+				labelStyle.Render("验证方式(verify_type)"),
+				valueStyle.Render(trimForWidth(loginVerificationTypeLabel(m.loginForm.verifyType), m.contentWidth-16)),
+				"",
+			)
+			if target := strings.TrimSpace(m.loginForm.verifyTarget); target != "" {
+				lines = append(lines,
+					labelStyle.Render("验证目标(verify_target)"),
+					valueStyle.Render(trimForWidth(target, m.contentWidth-16)),
+					"",
+				)
+			}
+			if verificationImage := m.renderLoginVerificationImage(); verificationImage != "" {
+				lines = append(lines, labelStyle.Render("图形验证码(kaptcha)"), verificationImage, "")
+				if imageHint := loginVerificationImageHint(m.loginForm); imageHint != "" {
+					lines = append(lines, hintStyle.Render(trimForWidth(imageHint, m.contentWidth-16)), "")
+				}
+				if previewHint := loginVerificationImagePreviewHint(m.loginForm, m.contentWidth-16); previewHint != "" {
+					lines = append(lines, previewHint, "")
+				}
+				if backupASCII := renderLoginVerificationImageBackupASCII(m.loginForm); backupASCII != "" {
+					lines = append(lines,
+						labelStyle.Render("ASCII 备用图(ascii_fallback)"),
+						backupASCII,
+						hintStyle.Render(trimForWidth("如果上方终端图片未显示，请以下方 ASCII 备用图为准。", m.contentWidth-16)),
+						"",
+					)
+				}
+			}
+			lines = append(lines, m.renderLoginFormTextField(loginFieldCaptchaCode, loginVerificationCodeLabel(m.loginForm.verifyType), loginVerificationDescription(m.loginForm.verifyType, m.loginForm.verifyHint)))
 		} else {
 			lines = append(lines,
 				m.renderLoginFormTextField(loginFieldUsername, "用户名(username)", "请输入用户名"),
@@ -2864,6 +2937,77 @@ func (m model) renderLoginFormTextField(field int, label string, description str
 	}
 	parts = append(parts, "")
 	return strings.Join(parts, "\n")
+}
+
+func (m model) renderLoginVerificationImage() string {
+	if m.loginForm == nil {
+		return ""
+	}
+	if protocolImage := renderTerminalVerificationImage(m.loginForm, m.contentWidth-16); protocolImage != "" {
+		return protocolImage
+	}
+	return strings.TrimSpace(m.loginForm.verifyImageASCII)
+}
+
+func loginVerificationImageHint(state *loginFormState) string {
+	if state == nil || strings.TrimSpace(state.verifyImagePNGBase64) == "" {
+		return ""
+	}
+	switch detectTerminalImageProtocol() {
+	case "kitty":
+		if runningInsideTmux() {
+			return "当前通过 tmux 透传 kitty 终端图片协议显示图形验证码。"
+		}
+		return "当前使用 kitty 终端图片协议显示图形验证码。"
+	case "iterm2":
+		if runningInsideTmux() {
+			return "当前通过 tmux 透传 iTerm2 终端图片协议显示图形验证码。"
+		}
+		return "当前使用 iTerm2 终端图片协议显示图形验证码。"
+	default:
+		if strings.TrimSpace(state.verifyImageASCII) == "" {
+			return ""
+		}
+		return "当前终端未启用图片协议，已回退为 ASCII 图形验证码。"
+	}
+}
+
+func renderLoginVerificationImageBackupASCII(state *loginFormState) string {
+	if state == nil {
+		return ""
+	}
+	if detectTerminalImageProtocol() == "" {
+		return ""
+	}
+	return strings.TrimSpace(state.verifyImageASCII)
+}
+
+func loginVerificationImagePreviewHint(state *loginFormState, width int) string {
+	if state == nil || strings.TrimSpace(state.verifyImagePreviewPath) == "" {
+		return ""
+	}
+	previewPath := strings.TrimSpace(state.verifyImagePreviewPath)
+	lines := []string{
+		hintStyle.Render(hardWrapText("已将图形验证码保存到本地图片，并尝试用系统预览打开。", width)),
+		hintStyle.Render("本地路径(image_path):"),
+		hintStyle.Render(hardWrapText(previewPath, width)),
+	}
+	if previewURL := loginVerificationImagePreviewURL(previewPath); previewURL != "" {
+		lines = append(lines,
+			hintStyle.Render("图片地址(image_url):"),
+			hintStyle.Render(hardWrapText(previewURL, width)),
+		)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func loginVerificationImagePreviewURL(previewPath string) string {
+	previewPath = strings.TrimSpace(previewPath)
+	if previewPath == "" {
+		return ""
+	}
+	previewURL := &url.URL{Scheme: "file", Path: previewPath}
+	return previewURL.String()
 }
 
 func (m model) renderLoginSubmitField() string {
@@ -3727,7 +3871,9 @@ func sanitizeTerminalText(content string) string {
 	if content == "" {
 		return ""
 	}
-	cleaned := ansiOSCRegexp.ReplaceAllString(content, "")
+	cleaned := ansiTmuxDCSRegexp.ReplaceAllString(content, "")
+	cleaned = ansiAPCRegexp.ReplaceAllString(cleaned, "")
+	cleaned = ansiOSCRegexp.ReplaceAllString(cleaned, "")
 	cleaned = ansiCSIRegexp.ReplaceAllString(cleaned, "")
 	cleaned = strings.ReplaceAll(cleaned, "\x1b", "")
 	return cleaned
@@ -4583,19 +4729,27 @@ func (m model) submitLoginForm(action string) (tea.Model, tea.Cmd) {
 		}
 	}
 	submission := LoginFormSubmission{
-		Action:          action,
-		Mode:            m.loginForm.mode,
-		Username:        strings.TrimSpace(m.loginForm.inputs[0].Value()),
-		Password:        m.loginForm.inputs[1].Value(),
-		Remember:        m.loginForm.remember,
-		KaptchaTicket:   strings.TrimSpace(m.loginForm.inputs[2].Value()),
-		KaptchaCode:     strings.TrimSpace(m.loginForm.inputs[3].Value()),
-		QRTicket:        strings.TrimSpace(m.loginForm.qrTicket),
-		QRLoginURL:      strings.TrimSpace(m.loginForm.qrLoginURL),
-		QRScanHint:      strings.TrimSpace(m.loginForm.qrScanHint),
-		QRCodeASCII:     m.loginForm.qrCodeASCII,
-		QRWaiting:       m.loginForm.qrWaiting,
-		QRWaitPollCount: m.loginForm.qrWaitPollCount,
+		Action:           action,
+		Mode:             m.loginForm.mode,
+		Username:         strings.TrimSpace(m.loginForm.inputs[0].Value()),
+		Password:         m.loginForm.inputs[1].Value(),
+		Remember:         m.loginForm.remember,
+		VerifyType:       strings.TrimSpace(m.loginForm.verifyType),
+		VerifyHint:       strings.TrimSpace(m.loginForm.verifyHint),
+		VerifyTarget:     strings.TrimSpace(m.loginForm.verifyTarget),
+		VerifyImageASCII: m.loginForm.verifyImageASCII,
+		VerifyImagePNGBase64: m.loginForm.verifyImagePNGBase64,
+		VerifyImageWidth: m.loginForm.verifyImageWidth,
+		VerifyImageHeight: m.loginForm.verifyImageHeight,
+		VerifyImagePreviewPath: m.loginForm.verifyImagePreviewPath,
+		KaptchaTicket:    strings.TrimSpace(m.loginForm.inputs[2].Value()),
+		KaptchaCode:      strings.TrimSpace(m.loginForm.inputs[3].Value()),
+		QRTicket:         strings.TrimSpace(m.loginForm.qrTicket),
+		QRLoginURL:       strings.TrimSpace(m.loginForm.qrLoginURL),
+		QRScanHint:       strings.TrimSpace(m.loginForm.qrScanHint),
+		QRCodeASCII:      m.loginForm.qrCodeASCII,
+		QRWaiting:        m.loginForm.qrWaiting,
+		QRWaitPollCount:  m.loginForm.qrWaitPollCount,
 	}
 	return m, tea.Batch(m.transitionProgress(progressExecuting), submitLoginFormCmd(m.ctx, m.snapshot, submission, m.loginFormSubmit))
 }
@@ -4639,7 +4793,11 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 }
 
 func newLoginFormState(state LoginFormState) *loginFormState {
-	placeholders := []string{"请输入用户名", "请输入密码", "无验证码可留空", "无验证码可留空"}
+	codePlaceholder := "请输入验证码"
+	if strings.TrimSpace(state.VerifyType) == loginVerifyTypeTOTP {
+		codePlaceholder = "请输入同台密码"
+	}
+	placeholders := []string{"请输入用户名", "请输入密码", "无验证码可留空", codePlaceholder}
 	values := []string{state.Username, state.Password, state.KaptchaTicket, state.KaptchaCode}
 	models := make([]textinput.Model, 0, len(placeholders))
 	for index, placeholder := range placeholders {
@@ -4657,28 +4815,36 @@ func newLoginFormState(state LoginFormState) *loginFormState {
 	}
 	mode := normalizeLoginFormMode(state.Mode)
 	loginState := &loginFormState{
-		title:           state.Title,
-		hint:            state.Hint,
-		statusText:      state.StatusText,
-		statusIsError:   state.StatusIsError,
-		mode:            mode,
-		remember:        state.Remember,
-		inputs:          models,
-		cursor:          loginFieldMode,
-		qrTicket:        strings.TrimSpace(state.QRTicket),
-		qrLoginURL:      strings.TrimSpace(state.QRLoginURL),
-		qrScanHint:      strings.TrimSpace(state.QRScanHint),
-		qrCodeASCII:     state.QRCodeASCII,
-		qrWaiting:       state.QRWaiting,
-		qrWaitPollCount: state.QRWaitPollCount,
+		title:            state.Title,
+		hint:             state.Hint,
+		statusText:       state.StatusText,
+		statusIsError:    state.StatusIsError,
+		mode:             mode,
+		remember:         state.Remember,
+		verifyType:       strings.TrimSpace(state.VerifyType),
+		verifyHint:       strings.TrimSpace(state.VerifyHint),
+		verifyTarget:     strings.TrimSpace(state.VerifyTarget),
+		verifyImageASCII: state.VerifyImageASCII,
+		verifyImagePNGBase64: state.VerifyImagePNGBase64,
+		verifyImageWidth: state.VerifyImageWidth,
+		verifyImageHeight: state.VerifyImageHeight,
+		verifyImagePreviewPath: state.VerifyImagePreviewPath,
+		inputs:           models,
+		cursor:           loginFieldMode,
+		qrTicket:         strings.TrimSpace(state.QRTicket),
+		qrLoginURL:       strings.TrimSpace(state.QRLoginURL),
+		qrScanHint:       strings.TrimSpace(state.QRScanHint),
+		qrCodeASCII:      state.QRCodeASCII,
+		qrWaiting:        state.QRWaiting,
+		qrWaitPollCount:  state.QRWaitPollCount,
 	}
-	if state.FocusField >= 0 && loginFieldVisible(mode, state.FocusField, hasLoginCaptchaTicket(loginState)) {
+	if state.FocusField >= 0 && loginFieldVisible(mode, state.FocusField, hasLoginVerificationChallenge(loginState)) {
 		loginState.cursor = state.FocusField
 		loginState.focusLoginFieldCursor()
 		return loginState
 	}
 	if mode == loginFormModePassword {
-		if hasLoginCaptchaTicket(loginState) {
+		if hasLoginVerificationChallenge(loginState) {
 			loginState.cursor = loginFieldCaptchaCode
 			loginState.focusLoginFieldCursor()
 		} else {
@@ -4707,27 +4873,37 @@ func normalizeLoginFormMode(mode string) string {
 	return loginFormModePassword
 }
 
-func loginFieldVisible(mode string, field int, hasCaptcha bool) bool {
+func loginFieldVisible(mode string, field int, hasVerification bool) bool {
 	if field == loginFieldMode || field == loginFieldSubmit {
 		return true
 	}
 	if normalizeLoginFormMode(mode) != loginFormModePassword {
 		return false
 	}
-	if hasCaptcha {
+	if hasVerification {
 		return field == loginFieldCaptchaCode
 	}
 	return field == loginFieldUsername || field == loginFieldPassword
 }
 
-func visibleLoginFields(mode string, hasCaptcha bool) []int {
+func visibleLoginFields(mode string, hasVerification bool) []int {
 	fields := make([]int, 0, loginFieldCount)
 	for field := 0; field < loginFieldCount; field++ {
-		if loginFieldVisible(mode, field, hasCaptcha) {
+		if loginFieldVisible(mode, field, hasVerification) {
 			fields = append(fields, field)
 		}
 	}
 	return fields
+}
+
+func hasLoginVerificationChallenge(state *loginFormState) bool {
+	if state == nil {
+		return false
+	}
+	if strings.TrimSpace(state.verifyType) != "" {
+		return true
+	}
+	return hasLoginCaptchaTicket(state)
 }
 
 func hasLoginCaptchaTicket(state *loginFormState) bool {
@@ -4735,6 +4911,162 @@ func hasLoginCaptchaTicket(state *loginFormState) bool {
 		return false
 	}
 	return strings.TrimSpace(state.inputs[2].Value()) != ""
+}
+
+func loginVerificationTypeLabel(verifyType string) string {
+	switch strings.ToLower(strings.TrimSpace(verifyType)) {
+	case loginVerifyTypeKaptcha:
+		return "图形验证码(kaptcha)"
+	case loginVerifyTypeSMS:
+		return "短信验证码(sms)"
+	case loginVerifyTypeMail:
+		return "邮箱验证码(mail)"
+	case loginVerifyTypeTOTP:
+		return "同台密码(totp)"
+	default:
+		return "验证码(verify_code)"
+	}
+}
+
+func loginVerificationCodeLabel(verifyType string) string {
+	switch strings.ToLower(strings.TrimSpace(verifyType)) {
+	case loginVerifyTypeKaptcha:
+		return "图形验证码(captcha_code)"
+	case loginVerifyTypeSMS:
+		return "短信验证码(sms_code)"
+	case loginVerifyTypeMail:
+		return "邮箱验证码(mail_code)"
+	case loginVerifyTypeTOTP:
+		return "同台密码(totp_code)"
+	default:
+		return "验证码(verify_code)"
+	}
+}
+
+func loginVerificationDescription(verifyType string, verifyHint string) string {
+	if hint := strings.TrimSpace(verifyHint); hint != "" {
+		return hint
+	}
+	switch strings.ToLower(strings.TrimSpace(verifyType)) {
+	case loginVerifyTypeKaptcha:
+		return "检测到需要图形验证码，请输入验证码后继续登录。"
+	case loginVerifyTypeSMS:
+		return "检测到需要短信验证码，请输入短信验证码后继续登录。"
+	case loginVerifyTypeMail:
+		return "检测到需要邮箱验证码，请输入邮箱验证码后继续登录。"
+	case loginVerifyTypeTOTP:
+		return "检测到需要同台密码，请输入同台密码后继续登录。"
+	default:
+		return "检测到需要验证码，请输入验证码后继续登录。"
+	}
+}
+
+func renderTerminalVerificationImage(state *loginFormState, maxWidth int) string {
+	if state == nil || strings.TrimSpace(state.verifyImagePNGBase64) == "" {
+		return ""
+	}
+	widthCells, heightCells := loginVerificationImageCellSize(state.verifyImageWidth, state.verifyImageHeight, maxWidth)
+	switch detectTerminalImageProtocol() {
+	case "kitty":
+		return renderKittyInlineImage(state.verifyImagePNGBase64, widthCells, heightCells)
+	case "iterm2":
+		return renderITerm2InlineImage(state.verifyImagePNGBase64, widthCells, heightCells)
+	default:
+		return ""
+	}
+}
+
+func detectTerminalImageProtocol() string {
+	if override, ok := terminalImageProtocolOverride(); ok {
+		return override
+	}
+	if strings.TrimSpace(os.Getenv("KITTY_WINDOW_ID")) != "" || strings.Contains(strings.ToLower(strings.TrimSpace(os.Getenv("TERM"))), "kitty") {
+		return "kitty"
+	}
+	termProgram := strings.ToLower(strings.TrimSpace(os.Getenv("TERM_PROGRAM")))
+	lcTerminal := strings.ToLower(strings.TrimSpace(os.Getenv("LC_TERMINAL")))
+	if termProgram == "iterm.app" || lcTerminal == "iterm2" {
+		return "iterm2"
+	}
+	return ""
+}
+
+func terminalImageProtocolOverride() (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("TAIYIFLOW_CLI_TERMINAL_IMAGE_PROTOCOL"))) {
+	case "kitty":
+		return "kitty", true
+	case "iterm2", "iterm":
+		return "iterm2", true
+	case "off", "none", "disable", "disabled", "false", "0":
+		return "", true
+	default:
+		return "", false
+	}
+}
+
+func runningInsideTmux() bool {
+	return strings.TrimSpace(os.Getenv("TMUX")) != ""
+}
+
+func loginVerificationImageCellSize(imageWidth int, imageHeight int, maxWidth int) (int, int) {
+	maxCells := 48
+	if maxWidth > 0 {
+		maxCells = minInt(64, maxInt(24, maxWidth-2))
+	}
+	widthCells := maxCells
+	if imageWidth > 0 {
+		widthCells = maxInt(24, minInt(maxCells, int(math.Round(float64(imageWidth)*0.85))))
+	}
+	heightCells := 10
+	if imageWidth > 0 && imageHeight > 0 {
+		ratio := float64(imageHeight) / float64(imageWidth)
+		heightCells = int(math.Round(float64(widthCells) * ratio))
+	}
+	heightCells = maxInt(8, minInt(24, heightCells))
+	return widthCells, heightCells
+}
+
+func renderITerm2InlineImage(base64Data string, widthCells int, heightCells int) string {
+	if strings.TrimSpace(base64Data) == "" {
+		return ""
+	}
+	sequence := fmt.Sprintf("\x1b]1337;File=inline=1;width=%d;height=%d;preserveAspectRatio=1:%s\a", widthCells, heightCells, base64Data)
+	return wrapTmuxPassthrough(sequence)
+}
+
+func renderKittyInlineImage(base64Data string, widthCells int, heightCells int) string {
+	trimmed := strings.TrimSpace(base64Data)
+	if trimmed == "" {
+		return ""
+	}
+	const kittyChunkSize = 4096
+	var builder strings.Builder
+	remaining := trimmed
+	firstChunk := true
+	for len(remaining) > 0 {
+		chunk := remaining
+		continuation := 0
+		if len(chunk) > kittyChunkSize {
+			chunk = remaining[:kittyChunkSize]
+			continuation = 1
+		}
+		if firstChunk {
+			builder.WriteString(fmt.Sprintf("\x1b_Gf=100,a=T,t=d,c=%d,r=%d,m=%d;%s\x1b\\", widthCells, heightCells, continuation, chunk))
+			firstChunk = false
+		} else {
+			builder.WriteString(fmt.Sprintf("\x1b_Gm=%d;%s\x1b\\", continuation, chunk))
+		}
+		remaining = remaining[len(chunk):]
+	}
+	return wrapTmuxPassthrough(builder.String())
+}
+
+func wrapTmuxPassthrough(sequence string) string {
+	if !runningInsideTmux() || strings.TrimSpace(sequence) == "" {
+		return sequence
+	}
+	escaped := strings.ReplaceAll(sequence, "\x1b", "\x1b\x1b")
+	return "\x1bPtmux;" + escaped + "\x1b\\"
 }
 
 func (m model) mustCompleteLogin() bool {

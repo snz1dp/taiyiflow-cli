@@ -319,6 +319,9 @@ func TestBuildTUIHelpLinesUsesLoginOverlayWording(t *testing.T) {
 	if !strings.Contains(joined, "/login 打开登录表单") {
 		t.Fatalf("expected help text to describe /login as overlay entry, got %q", joined)
 	}
+	if !strings.Contains(joined, "kitty/iTerm2 终端图片协议") {
+		t.Fatalf("expected help text to mention terminal image captcha rendering, got %q", joined)
+	}
 	if strings.Contains(joined, "/login [status|qr|password|logout]") {
 		t.Fatalf("expected help text to drop legacy login command catalog, got %q", joined)
 	}

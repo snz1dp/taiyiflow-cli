@@ -415,6 +415,42 @@ func TestHandleLoginFormModeSwitchToQRAutoStartsQRCode(t *testing.T) {
 	}
 }
 
+func TestHandleLoginFormEnterOnUsernameMovesToPassword(t *testing.T) {
+	state := newLoginFormState(LoginFormState{
+		Title:    "登录(login)",
+		Mode:     "password",
+		Username: "zhangsan",
+	})
+	state.cursor = loginFieldUsername
+	state.focusLoginFieldCursor()
+
+	submitted := false
+	appModel := model{
+		ctx:       context.Background(),
+		snapshot:  Snapshot{BackendAvailable: true},
+		loginForm: state,
+		loginFormSubmit: func(ctx context.Context, snapshot Snapshot, submission LoginFormSubmission) (LocalCommandResult, error) {
+			submitted = true
+			return LocalCommandResult{Handled: true}, nil
+		},
+	}
+
+	updatedModel, cmd := appModel.handleLoginFormKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := updatedModel.(model)
+	if cmd != nil {
+		t.Fatalf("expected username enter to only move focus, got command %T", cmd)
+	}
+	if submitted {
+		t.Fatal("expected username enter not to submit login form")
+	}
+	if updated.loginForm == nil || updated.loginForm.cursor != loginFieldPassword {
+		t.Fatalf("expected username enter to move focus to password, got %#v", updated.loginForm)
+	}
+	if !updated.loginForm.inputs[1].Focused() {
+		t.Fatalf("expected password input focused after username enter, got %#v", updated.loginForm.inputs[1])
+	}
+}
+
 func TestHandleLoginFormKeyQuitsWhenLoginIsRequired(t *testing.T) {
 	state := newLoginFormState(LoginFormState{
 		Title:    "登录(login)",
@@ -476,12 +512,18 @@ func TestRenderLoginFormShowsTaiyiHeaderAndHidesRemember(t *testing.T) {
 
 func TestRenderLoginFormShowsCaptchaStepWhenTicketPresent(t *testing.T) {
 	state := newLoginFormState(LoginFormState{
-		Title:         "登录(login)",
-		Mode:          "password",
-		Username:      "zhangsan",
-		Password:      "secret-123",
-		Remember:      true,
-		KaptchaTicket: "captcha-ticket-1",
+		Title:                  "登录(login)",
+		Mode:                   "password",
+		Username:               "zhangsan",
+		Password:               "secret-123",
+		Remember:               true,
+		VerifyType:             "kaptcha",
+		VerifyImageASCII:       "##@@\n@@##",
+		VerifyImagePNGBase64:   "QUJD",
+		VerifyImageWidth:       120,
+		VerifyImageHeight:      48,
+		VerifyImagePreviewPath: "/tmp/kaptcha-preview.png",
+		KaptchaTicket:          "captcha-ticket-1",
 	})
 
 	appModel := model{
@@ -493,11 +535,182 @@ func TestRenderLoginFormShowsCaptchaStepWhenTicketPresent(t *testing.T) {
 	if !strings.Contains(rendered, "登录账号(username)") {
 		t.Fatalf("expected username summary in captcha step, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "验证码(captcha_code)") {
+	if !strings.Contains(rendered, "图形验证码(captcha_code)") {
 		t.Fatalf("expected captcha input in captcha step, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "图形验证码(kaptcha)") {
+		t.Fatalf("expected captcha step to show captcha type and image, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "已回退为 ASCII 图形验证码") {
+		t.Fatalf("expected captcha step to explain ascii fallback, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "已将图形验证码保存到本地图片，并尝试用系统预览打开") {
+		t.Fatalf("expected captcha step to show preview path hint, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "图片地址(image_url):") || !strings.Contains(rendered, "file:///tmp/kaptcha-preview.png") {
+		t.Fatalf("expected captcha step to show preview file url, got %q", rendered)
 	}
 	if strings.Contains(rendered, "验证码票据(captcha_ticket)") || strings.Contains(rendered, "密码(password)") {
 		t.Fatalf("expected captcha step to hide ticket and password fields, got %q", rendered)
+	}
+}
+
+func TestRenderLoginFormUsesITerm2InlineImageForCaptcha(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	t.Setenv("KITTY_WINDOW_ID", "")
+	state := newLoginFormState(LoginFormState{
+		Title:                "登录(login)",
+		Mode:                 "password",
+		Username:             "zhangsan",
+		VerifyType:           "kaptcha",
+		VerifyImageASCII:     "ascii-fallback",
+		VerifyImagePNGBase64: "QUJD",
+		VerifyImageWidth:     120,
+		VerifyImageHeight:    48,
+		KaptchaTicket:        "captcha-ticket-1",
+	})
+
+	appModel := model{contentWidth: 80, loginForm: state}
+	rendered := appModel.renderLoginForm()
+	if !strings.Contains(rendered, "\x1b]1337;File=inline=1;width=62;height=24;") {
+		t.Fatalf("expected iterm2 inline image protocol, got %q", rendered)
+	}
+	if !strings.Contains(sanitizeTerminalText(rendered), "当前使用 iTerm2 终端图片协议显示图形验证码") {
+		t.Fatalf("expected iterm2 hint in captcha step, got %q", sanitizeTerminalText(rendered))
+	}
+	if !strings.Contains(sanitizeTerminalText(rendered), "ASCII 备用图(ascii_fallback)") {
+		t.Fatalf("expected iterm2 captcha step to keep ascii backup, got %q", sanitizeTerminalText(rendered))
+	}
+	if !strings.Contains(sanitizeTerminalText(rendered), "ascii-fallback") {
+		t.Fatalf("expected iterm2 captcha step to keep ascii fallback content, got %q", sanitizeTerminalText(rendered))
+	}
+}
+
+func TestRenderLoginFormUsesKittyInlineImageForCaptcha(t *testing.T) {
+	t.Setenv("KITTY_WINDOW_ID", "1")
+	t.Setenv("TERM_PROGRAM", "")
+	state := newLoginFormState(LoginFormState{
+		Title:                "登录(login)",
+		Mode:                 "password",
+		Username:             "zhangsan",
+		VerifyType:           "kaptcha",
+		VerifyImageASCII:     "ascii-fallback",
+		VerifyImagePNGBase64: "QUJD",
+		VerifyImageWidth:     120,
+		VerifyImageHeight:    48,
+		KaptchaTicket:        "captcha-ticket-1",
+	})
+
+	appModel := model{contentWidth: 80, loginForm: state}
+	rendered := appModel.renderLoginForm()
+	if !strings.Contains(rendered, "\x1b_Gf=100,a=T,t=d,c=62,r=24,") {
+		t.Fatalf("expected kitty inline image protocol, got %q", rendered)
+	}
+	if !strings.Contains(sanitizeTerminalText(rendered), "当前使用 kitty 终端图片协议显示图形验证码") {
+		t.Fatalf("expected kitty hint in captcha step, got %q", sanitizeTerminalText(rendered))
+	}
+	if !strings.Contains(sanitizeTerminalText(rendered), "ASCII 备用图(ascii_fallback)") {
+		t.Fatalf("expected kitty captcha step to keep ascii backup, got %q", sanitizeTerminalText(rendered))
+	}
+	if !strings.Contains(sanitizeTerminalText(rendered), "ascii-fallback") {
+		t.Fatalf("expected kitty captcha step to keep ascii fallback content, got %q", sanitizeTerminalText(rendered))
+	}
+}
+
+func TestRenderLoginFormShowsTmuxPassthroughHintForCaptcha(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	state := newLoginFormState(LoginFormState{
+		Title:                "登录(login)",
+		Mode:                 "password",
+		Username:             "zhangsan",
+		VerifyType:           "kaptcha",
+		VerifyImageASCII:     "ascii-fallback",
+		VerifyImagePNGBase64: "QUJD",
+		VerifyImageWidth:     120,
+		VerifyImageHeight:    48,
+		KaptchaTicket:        "captcha-ticket-1",
+	})
+
+	appModel := model{contentWidth: 80, loginForm: state}
+	rendered := sanitizeTerminalText(appModel.renderLoginForm())
+	if !strings.Contains(rendered, "当前通过 tmux 透传 iTerm2 终端图片协议显示图形验证码") {
+		t.Fatalf("expected tmux passthrough hint in captcha step, got %q", rendered)
+	}
+}
+
+func TestRenderKittyInlineImageChunksPayload(t *testing.T) {
+	rendered := renderKittyInlineImage(strings.Repeat("A", 5000), 24, 6)
+	if strings.Count(rendered, "\x1b_G") < 2 {
+		t.Fatalf("expected kitty image payload to be chunked, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "m=1;") || !strings.Contains(rendered, "m=0;") {
+		t.Fatalf("expected kitty chunk markers in rendered output, got %q", rendered)
+	}
+}
+
+func TestDetectTerminalImageProtocolKeepsKittyInsideTmux(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+	t.Setenv("KITTY_WINDOW_ID", "1")
+	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	t.Setenv("TAIYIFLOW_CLI_TERMINAL_IMAGE_PROTOCOL", "")
+
+	if got := detectTerminalImageProtocol(); got != "kitty" {
+		t.Fatalf("expected tmux session to keep kitty inline image protocol, got %q", got)
+	}
+}
+
+func TestDetectTerminalImageProtocolKeepsITerm2InsideTmux(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	t.Setenv("KITTY_WINDOW_ID", "")
+	t.Setenv("TAIYIFLOW_CLI_TERMINAL_IMAGE_PROTOCOL", "")
+
+	if got := detectTerminalImageProtocol(); got != "iterm2" {
+		t.Fatalf("expected tmux session to keep iTerm2 inline image protocol, got %q", got)
+	}
+}
+
+func TestDetectTerminalImageProtocolHonorsExplicitOverride(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+	t.Setenv("TERM_PROGRAM", "")
+	t.Setenv("KITTY_WINDOW_ID", "")
+	t.Setenv("TAIYIFLOW_CLI_TERMINAL_IMAGE_PROTOCOL", "kitty")
+
+	if got := detectTerminalImageProtocol(); got != "kitty" {
+		t.Fatalf("expected explicit override to select kitty, got %q", got)
+	}
+}
+
+func TestDetectTerminalImageProtocolHonorsDisableOverride(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	t.Setenv("KITTY_WINDOW_ID", "1")
+	t.Setenv("TAIYIFLOW_CLI_TERMINAL_IMAGE_PROTOCOL", "off")
+
+	if got := detectTerminalImageProtocol(); got != "" {
+		t.Fatalf("expected disable override to turn off inline image protocol, got %q", got)
+	}
+}
+
+func TestRenderITerm2InlineImageWrapsForTmux(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+	rendered := renderITerm2InlineImage("QUJD", 24, 6)
+	if !strings.HasPrefix(rendered, "\x1bPtmux;") {
+		t.Fatalf("expected tmux passthrough prefix, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "\x1b\x1b]1337;File=inline=1;") {
+		t.Fatalf("expected tmux passthrough to escape iTerm2 image sequence, got %q", rendered)
+	}
+}
+
+func TestRenderKittyInlineImageWrapsForTmux(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+	rendered := renderKittyInlineImage("QUJD", 24, 6)
+	if !strings.HasPrefix(rendered, "\x1bPtmux;") {
+		t.Fatalf("expected tmux passthrough prefix, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "\x1b\x1b_Gf=100,a=T,t=d,") {
+		t.Fatalf("expected tmux passthrough to escape kitty image sequence, got %q", rendered)
 	}
 }
 
@@ -520,6 +733,21 @@ func TestRenderLoginFormHighlightsErrorStatus(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "用户名密码错误，您还有2次尝试机会！") {
 		t.Fatalf("expected highlighted login error message, got %q", rendered)
+	}
+}
+
+func TestSanitizeTerminalTextRemovesKittyAPC(t *testing.T) {
+	content := "before" + renderKittyInlineImage("QUJD", 24, 6) + "after"
+	if got := sanitizeTerminalText(content); got != "beforeafter" {
+		t.Fatalf("expected kitty APC to be removed, got %q", got)
+	}
+}
+
+func TestSanitizeTerminalTextRemovesTmuxPassthrough(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+	content := "before" + renderITerm2InlineImage("QUJD", 24, 6) + "after"
+	if got := sanitizeTerminalText(content); got != "beforeafter" {
+		t.Fatalf("expected tmux passthrough image sequence to be removed, got %q", got)
 	}
 }
 

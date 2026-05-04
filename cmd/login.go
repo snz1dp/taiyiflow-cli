@@ -1,9 +1,20 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	_ "image/gif"
+	_ "image/jpeg"
+	"image/png"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -16,11 +27,28 @@ import (
 type tuiSnapshotRefresh func(context.Context, tui.Snapshot) (tui.Snapshot, []tui.FlowItem, error)
 
 type passwordLoginCommand struct {
-	Username      string
-	Password      string
-	Remember      bool
-	KaptchaTicket string
-	KaptchaCode   string
+	Username             string
+	Password             string
+	Remember             bool
+	VerifyType           string
+	VerifyHint           string
+	VerifyTarget         string
+	VerifyImageASCII     string
+	VerifyImagePNGBase64 string
+	VerifyImageWidth     int
+	VerifyImageHeight    int
+	VerifyImagePreviewPath string
+	KaptchaTicket        string
+	KaptchaCode          string
+}
+
+var openCaptchaPreviewFile = defaultOpenCaptchaPreviewFile
+
+type verificationImageRenderData struct {
+	ASCII     string
+	PNGBase64 string
+	Width     int
+	Height    int
 }
 
 type qrWaitCommand struct {
@@ -34,6 +62,13 @@ const (
 	loginFormActionRefreshQR = "refresh_qr"
 	loginFormActionWaitQR    = "wait_qr"
 	loginFormActionLogout    = "logout"
+)
+
+const (
+	loginVerifyTypeKaptcha = "kaptcha"
+	loginVerifyTypeSMS     = "sms"
+	loginVerifyTypeMail    = "mail"
+	loginVerifyTypeTOTP    = "totp"
 )
 
 func (a *App) runLogin(ctx context.Context, args []string) error {
@@ -91,7 +126,7 @@ func (a *App) executeTUILoginCommand(
 
 	switch {
 	case strings.EqualFold(trimmed, "/login"):
-		return tui.LocalCommandResult{Handled: true, LoginForm: buildTUILoginFormState(localConfig, snapshot, "password", true, "", "", "", "", nil)}, nil
+		return tui.LocalCommandResult{Handled: true, LoginForm: buildTUILoginFormState(localConfig, snapshot, "password", passwordLoginCommand{Remember: true}, nil)}, nil
 	case strings.EqualFold(trimmed, "/login help"):
 		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: loginSlashUsage()}}}, nil
 	case strings.EqualFold(trimmed, "/login status"):
@@ -103,7 +138,7 @@ func (a *App) executeTUILoginCommand(
 		if err != nil {
 			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
 		}
-		loginForm := buildTUILoginFormState(localConfig, snapshot, "qr", true, "", "", "", "", qrToken)
+		loginForm := buildTUILoginFormState(localConfig, snapshot, "qr", passwordLoginCommand{Remember: true}, qrToken)
 		if loginForm != nil {
 			loginForm.QRWaiting = true
 		}
@@ -164,10 +199,25 @@ func (a *App) submitTUILoginForm(
 		return a.executeTUILogout(ctx, providerClient, snapshot, localConfig, refresh)
 	case loginFormActionStartQR, loginFormActionRefreshQR:
 		qrToken, err := authClient.GetQRCodeLoginToken(ctx, "", false, "login", "")
-		if err != nil {
-			return tui.LocalCommandResult{Handled: true, LoginForm: buildTUILoginFormState(localConfig, snapshot, "qr", remember, submission.Username, submission.Password, submission.KaptchaTicket, submission.KaptchaCode, qrTokenFromSubmission(submission)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
+		parsed := passwordLoginCommand{
+			Username:             strings.TrimSpace(submission.Username),
+			Password:             submission.Password,
+			Remember:             remember,
+			VerifyType:           normalizeLoginVerifyType(submission.VerifyType),
+			VerifyHint:           strings.TrimSpace(submission.VerifyHint),
+			VerifyTarget:         strings.TrimSpace(submission.VerifyTarget),
+			VerifyImageASCII:     submission.VerifyImageASCII,
+			VerifyImagePNGBase64: submission.VerifyImagePNGBase64,
+			VerifyImageWidth:     submission.VerifyImageWidth,
+			VerifyImageHeight:    submission.VerifyImageHeight,
+			VerifyImagePreviewPath: strings.TrimSpace(submission.VerifyImagePreviewPath),
+			KaptchaTicket:        strings.TrimSpace(submission.KaptchaTicket),
+			KaptchaCode:          strings.TrimSpace(submission.KaptchaCode),
 		}
-		loginForm := buildTUILoginFormState(localConfig, snapshot, "qr", remember, submission.Username, submission.Password, submission.KaptchaTicket, submission.KaptchaCode, qrToken)
+		if err != nil {
+			return tui.LocalCommandResult{Handled: true, LoginForm: buildTUILoginFormState(localConfig, snapshot, "qr", parsed, qrTokenFromSubmission(submission)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
+		}
+		loginForm := buildTUILoginFormState(localConfig, snapshot, "qr", parsed, qrToken)
 		if loginForm != nil {
 			loginForm.QRWaiting = true
 			loginForm.QRWaitPollCount = 0
@@ -177,15 +227,37 @@ func (a *App) submitTUILoginForm(
 		return a.executeTUIQRWait(ctx, providerClient, snapshot, localConfig, authClient, remember, submission.QRTicket, submission.QRLoginURL, submission.QRScanHint, submission.QRWaitPollCount, refresh)
 	case "", loginFormActionPassword:
 		parsed := passwordLoginCommand{
-			Username:      strings.TrimSpace(submission.Username),
-			Password:      submission.Password,
-			Remember:      remember,
-			KaptchaTicket: strings.TrimSpace(submission.KaptchaTicket),
-			KaptchaCode:   strings.TrimSpace(submission.KaptchaCode),
+			Username:             strings.TrimSpace(submission.Username),
+			Password:             submission.Password,
+			Remember:             remember,
+			VerifyType:           normalizeLoginVerifyType(submission.VerifyType),
+			VerifyHint:           strings.TrimSpace(submission.VerifyHint),
+			VerifyTarget:         strings.TrimSpace(submission.VerifyTarget),
+			VerifyImageASCII:     submission.VerifyImageASCII,
+			VerifyImagePNGBase64: submission.VerifyImagePNGBase64,
+			VerifyImageWidth:     submission.VerifyImageWidth,
+			VerifyImageHeight:    submission.VerifyImageHeight,
+			VerifyImagePreviewPath: strings.TrimSpace(submission.VerifyImagePreviewPath),
+			KaptchaTicket:        strings.TrimSpace(submission.KaptchaTicket),
+			KaptchaCode:          strings.TrimSpace(submission.KaptchaCode),
 		}
 		return a.executeTUIPasswordLogin(ctx, providerClient, snapshot, localConfig, authClient, parsed, refresh)
 	default:
-		return tui.LocalCommandResult{Handled: true, LoginForm: buildTUILoginFormState(localConfig, snapshot, submission.Mode, remember, submission.Username, submission.Password, submission.KaptchaTicket, submission.KaptchaCode, qrTokenFromSubmission(submission)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "不支持的登录动作。"}}}, nil
+		return tui.LocalCommandResult{Handled: true, LoginForm: buildTUILoginFormState(localConfig, snapshot, submission.Mode, passwordLoginCommand{
+			Username:             strings.TrimSpace(submission.Username),
+			Password:             submission.Password,
+			Remember:             remember,
+			VerifyType:           normalizeLoginVerifyType(submission.VerifyType),
+			VerifyHint:           strings.TrimSpace(submission.VerifyHint),
+			VerifyTarget:         strings.TrimSpace(submission.VerifyTarget),
+			VerifyImageASCII:     submission.VerifyImageASCII,
+			VerifyImagePNGBase64: submission.VerifyImagePNGBase64,
+			VerifyImageWidth:     submission.VerifyImageWidth,
+			VerifyImageHeight:    submission.VerifyImageHeight,
+			VerifyImagePreviewPath: strings.TrimSpace(submission.VerifyImagePreviewPath),
+			KaptchaTicket:        strings.TrimSpace(submission.KaptchaTicket),
+			KaptchaCode:          strings.TrimSpace(submission.KaptchaCode),
+		}, qrTokenFromSubmission(submission)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "不支持的登录动作。"}}}, nil
 	}
 }
 
@@ -229,6 +301,8 @@ func loginSlashUsage() string {
 		"/login status 查看当前登录状态",
 		"/login logout 清除本地登录态",
 		"/login qr 在终端显示二维码，并自动等待扫码登录完成",
+		"提示: 图形验证码优先使用 kitty 与 iTerm2 终端图片协议；在 tmux 中会自动透传到底层终端。",
+		"提示: 可通过 TAIYIFLOW_CLI_TERMINAL_IMAGE_PROTOCOL=kitty|iterm2|off 显式指定或关闭图片协议。",
 		"提示: 密码登录与扫码登录都收口到 /login 表单，旧的 /login password 与 /login qr wait 已移除。",
 	}, "\n")
 }
@@ -456,27 +530,35 @@ func buildTUILoginFormState(
 	config internalconfig.Config,
 	snapshot tui.Snapshot,
 	mode string,
-	remember bool,
-	username string,
-	password string,
-	kaptchaTicket string,
-	kaptchaCode string,
+	parsed passwordLoginCommand,
 	qrToken *providerclient.RedirectLoginToken,
 ) *tui.LoginFormState {
 	formMode := "password"
 	if strings.EqualFold(strings.TrimSpace(mode), "qr") {
 		formMode = "qr"
 	}
+	verifyType := normalizeLoginVerifyType(parsed.VerifyType)
+	if verifyType == "" && strings.TrimSpace(parsed.KaptchaTicket) != "" {
+		verifyType = loginVerifyTypeKaptcha
+	}
 	state := &tui.LoginFormState{
-		Title:         "登录",
-		Hint:          loginFormHint(kaptchaTicket),
-		StatusText:    renderLoginFormStatus(snapshot),
-		Mode:          formMode,
-		Username:      strings.TrimSpace(username),
-		Password:      password,
-		Remember:      remember,
-		KaptchaTicket: strings.TrimSpace(kaptchaTicket),
-		KaptchaCode:   strings.TrimSpace(kaptchaCode),
+		Title:                "登录",
+		Hint:                 loginFormHint(parsed),
+		StatusText:           renderLoginFormStatus(snapshot),
+		Mode:                 formMode,
+		Username:             strings.TrimSpace(parsed.Username),
+		Password:             parsed.Password,
+		Remember:             parsed.Remember,
+		VerifyType:           verifyType,
+		VerifyHint:           strings.TrimSpace(parsed.VerifyHint),
+		VerifyTarget:         strings.TrimSpace(parsed.VerifyTarget),
+		VerifyImageASCII:     parsed.VerifyImageASCII,
+		VerifyImagePNGBase64: parsed.VerifyImagePNGBase64,
+		VerifyImageWidth:     parsed.VerifyImageWidth,
+		VerifyImageHeight:    parsed.VerifyImageHeight,
+		VerifyImagePreviewPath: strings.TrimSpace(parsed.VerifyImagePreviewPath),
+		KaptchaTicket:        strings.TrimSpace(parsed.KaptchaTicket),
+		KaptchaCode:          strings.TrimSpace(parsed.KaptchaCode),
 	}
 	if qrToken != nil {
 		state.QRTicket = strings.TrimSpace(qrToken.Ticket)
@@ -594,6 +676,15 @@ func withLoginFormStatus(state *tui.LoginFormState, message string, isError bool
 	return state
 }
 
+func withLoginFormNotice(state *tui.LoginFormState, message string, focusField int) *tui.LoginFormState {
+	state = withLoginFormStatus(state, message, false)
+	if state == nil {
+		return nil
+	}
+	state.FocusField = focusField
+	return state
+}
+
 func loginFeedbackMessage(err error) string {
 	if err == nil {
 		return ""
@@ -607,19 +698,12 @@ func loginFeedbackMessage(err error) string {
 	return strings.TrimSpace(err.Error())
 }
 
-func loginFormHint(kaptchaTicket string) string {
-	if strings.TrimSpace(kaptchaTicket) != "" {
-		return "检测到需要验证码，请输入验证码后继续登录。"
-	}
-	return ""
-}
-
 func buildPasswordLoginFormState(config internalconfig.Config, snapshot tui.Snapshot, parsed passwordLoginCommand) *tui.LoginFormState {
-	return buildTUILoginFormState(config, snapshot, "password", parsed.Remember, parsed.Username, parsed.Password, parsed.KaptchaTicket, parsed.KaptchaCode, nil)
+	return buildTUILoginFormState(config, snapshot, "password", parsed, nil)
 }
 
 func buildQRLoginFormState(config internalconfig.Config, snapshot tui.Snapshot, remember bool, ticket string, qrLoginURL string, qrScanHint string, waitPollCount int) *tui.LoginFormState {
-	state := buildTUILoginFormState(config, snapshot, "qr", remember, "", "", "", "", &providerclient.RedirectLoginToken{
+	state := buildTUILoginFormState(config, snapshot, "qr", passwordLoginCommand{Remember: remember}, &providerclient.RedirectLoginToken{
 		Ticket:   strings.TrimSpace(ticket),
 		FireURL:  strings.TrimSpace(qrLoginURL),
 		ScanHint: strings.TrimSpace(qrScanHint),
@@ -631,7 +715,7 @@ func buildQRLoginFormState(config internalconfig.Config, snapshot tui.Snapshot, 
 }
 
 func passwordLoginFocusField(parsed passwordLoginCommand) int {
-	if strings.TrimSpace(parsed.KaptchaTicket) != "" {
+	if normalizeLoginVerifyType(parsed.VerifyType) != "" || strings.TrimSpace(parsed.KaptchaTicket) != "" {
 		return 3
 	}
 	if strings.TrimSpace(parsed.Username) == "" {
@@ -640,9 +724,9 @@ func passwordLoginFocusField(parsed passwordLoginCommand) int {
 	return 2
 }
 
-func isCaptchaRequiredError(err error) bool {
+func isVerificationRequiredError(err error) bool {
 	message := strings.ToLower(strings.TrimSpace(err.Error()))
-	return strings.Contains(message, "验证码") || strings.Contains(message, "captcha") || strings.Contains(message, "kaptcha")
+	return strings.Contains(message, "验证码") || strings.Contains(message, "captcha") || strings.Contains(message, "kaptcha") || strings.Contains(message, "sms") || strings.Contains(message, "短信") || strings.Contains(message, "mail") || strings.Contains(message, "email") || strings.Contains(message, "邮箱") || strings.Contains(message, "totp") || strings.Contains(message, "otp") || strings.Contains(message, "口令")
 }
 
 func qrTokenFromSubmission(submission tui.LoginFormSubmission) *providerclient.RedirectLoginToken {
@@ -685,8 +769,26 @@ func (a *App) executeTUIPasswordLogin(
 	if strings.TrimSpace(parsed.Username) == "" || strings.TrimSpace(parsed.Password) == "" {
 		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), "username 和 password 不能为空", passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "username 和 password 不能为空"}}}, nil
 	}
-	if strings.TrimSpace(parsed.KaptchaTicket) != "" && strings.TrimSpace(parsed.KaptchaCode) == "" {
-		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), "请输入验证码后继续登录。", passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "请输入验证码后继续登录。"}}}, nil
+	parsed.VerifyType = effectiveLoginVerifyType(parsed)
+	if parsed.VerifyType != "" && strings.TrimSpace(parsed.KaptchaCode) == "" {
+		message := buildVerificationNotice(parsed)
+		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormNotice(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventSystemNote, Text: message}}}, nil
+	}
+	if parsed.VerifyType != "" && parsed.VerifyType != loginVerifyTypeKaptcha {
+		session, err := authClient.CompleteVerifyLogin(ctx, parsed.KaptchaTicket, parsed.KaptchaCode)
+		if err != nil {
+			message := loginFeedbackMessage(err)
+			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
+		}
+		if _, err := a.persistAuthenticatedSession(ctx, providerClient, localConfig, session, parsed.Remember); err != nil {
+			message := loginFeedbackMessage(err)
+			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
+		}
+		message := "已完成验证码登录。"
+		if parsed.Remember {
+			message += " 已默认记住登录。"
+		}
+		return a.refreshLoginSnapshotResult(ctx, snapshot, refresh, message)
 	}
 	loginToken, err := authClient.GetPasswordLoginToken(ctx)
 	if err != nil {
@@ -702,17 +804,19 @@ func (a *App) executeTUIPasswordLogin(
 		KaptchaCode:   parsed.KaptchaCode,
 	})
 	if err != nil {
-		if isCaptchaRequiredError(err) {
-			if strings.TrimSpace(parsed.KaptchaTicket) == "" {
-				captchaToken, captchaErr := authClient.GetKaptchaTicket(ctx)
-				if captchaErr == nil && captchaToken != nil {
-					parsed.KaptchaTicket = strings.TrimSpace(captchaToken.Ticket)
-				}
+		if isVerificationRequiredError(err) {
+			parsed.VerifyType = normalizeLoginVerifyType(detectLoginVerifyType(loginFeedbackMessage(err), parsed.VerifyType))
+			if parsed.VerifyType == "" {
+				parsed.VerifyType = loginVerifyTypeKaptcha
 			}
-			if strings.TrimSpace(parsed.KaptchaTicket) != "" {
-				parsed.KaptchaCode = ""
-				return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), "需要验证码，请输入验证码后继续登录。", passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "需要验证码，请输入验证码后继续登录。"}}}, nil
+			if parsed.VerifyType == loginVerifyTypeKaptcha {
+				populateKaptchaChallenge(ctx, authClient, &parsed)
+			} else {
+				populateVerifyChallenge(ctx, authClient, &parsed)
 			}
+			parsed.KaptchaCode = ""
+			message := buildVerificationNotice(parsed)
+			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormNotice(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventSystemNote, Text: message}}}, nil
 		}
 		message := loginFeedbackMessage(err)
 		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
@@ -726,6 +830,328 @@ func (a *App) executeTUIPasswordLogin(
 		message += " 已默认记住登录。"
 	}
 	return a.refreshLoginSnapshotResult(ctx, snapshot, refresh, message)
+}
+
+func normalizeLoginVerifyType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case loginVerifyTypeKaptcha:
+		return loginVerifyTypeKaptcha
+	case loginVerifyTypeSMS:
+		return loginVerifyTypeSMS
+	case loginVerifyTypeMail:
+		return loginVerifyTypeMail
+	case loginVerifyTypeTOTP:
+		return loginVerifyTypeTOTP
+	default:
+		return ""
+	}
+}
+
+func effectiveLoginVerifyType(parsed passwordLoginCommand) string {
+	verifyType := normalizeLoginVerifyType(parsed.VerifyType)
+	if verifyType == "" && strings.TrimSpace(parsed.KaptchaTicket) != "" {
+		return loginVerifyTypeKaptcha
+	}
+	return verifyType
+}
+
+func detectLoginVerifyType(message string, fallback string) string {
+	if normalized := normalizeLoginVerifyType(fallback); normalized != "" {
+		return normalized
+	}
+	lowerMessage := strings.ToLower(strings.TrimSpace(message))
+	switch {
+	case strings.Contains(lowerMessage, "kaptcha"), strings.Contains(lowerMessage, "captcha"), strings.Contains(lowerMessage, "图形"):
+		return loginVerifyTypeKaptcha
+	case strings.Contains(lowerMessage, "sms"), strings.Contains(lowerMessage, "短信"):
+		return loginVerifyTypeSMS
+	case strings.Contains(lowerMessage, "mail"), strings.Contains(lowerMessage, "email"), strings.Contains(lowerMessage, "邮箱"), strings.Contains(lowerMessage, "邮件"):
+		return loginVerifyTypeMail
+	case strings.Contains(lowerMessage, "totp"), strings.Contains(lowerMessage, "otp"), strings.Contains(lowerMessage, "口令"):
+		return loginVerifyTypeTOTP
+	case strings.Contains(lowerMessage, "验证码"):
+		return loginVerifyTypeKaptcha
+	default:
+		return ""
+	}
+}
+
+func loginFormHint(parsed passwordLoginCommand) string {
+	if parsed.VerifyHint != "" {
+		return strings.TrimSpace(parsed.VerifyHint)
+	}
+	if effectiveLoginVerifyType(parsed) != "" {
+		return buildVerificationNotice(parsed)
+	}
+	return ""
+}
+
+func buildVerificationNotice(parsed passwordLoginCommand) string {
+	if hint := strings.TrimSpace(parsed.VerifyHint); hint != "" {
+		return hint
+	}
+	message := "需要验证码，请输入验证码后继续登录。"
+	switch effectiveLoginVerifyType(parsed) {
+	case loginVerifyTypeKaptcha:
+		message = "需要图形验证码，请输入验证码后继续登录。"
+	case loginVerifyTypeSMS:
+		message = "需要短信验证码，请输入短信验证码后继续登录。"
+	case loginVerifyTypeMail:
+		message = "需要邮箱验证码，请输入邮箱验证码后继续登录。"
+	case loginVerifyTypeTOTP:
+		message = "需要同台密码，请输入同台密码后继续登录。"
+	}
+	if target := strings.TrimSpace(parsed.VerifyTarget); target != "" {
+		message += " 验证目标: " + target + "。"
+	}
+	return message
+}
+
+func populateKaptchaChallenge(ctx context.Context, authClient *providerclient.AuthClient, parsed *passwordLoginCommand) {
+	if parsed == nil {
+		return
+	}
+	parsed.VerifyType = loginVerifyTypeKaptcha
+	if strings.TrimSpace(parsed.KaptchaTicket) == "" {
+		captchaToken, err := authClient.GetKaptchaTicket(ctx)
+		if err == nil && captchaToken != nil {
+			parsed.KaptchaTicket = strings.TrimSpace(captchaToken.Ticket)
+		}
+	}
+	if (strings.TrimSpace(parsed.VerifyImageASCII) == "" || strings.TrimSpace(parsed.VerifyImagePNGBase64) == "" || parsed.VerifyImageWidth == 0 || parsed.VerifyImageHeight == 0) && strings.TrimSpace(parsed.KaptchaTicket) != "" {
+		captchaImage, err := authClient.GetKaptchaImage(ctx, parsed.KaptchaTicket)
+		if err == nil && captchaImage != nil {
+			renderData := buildVerificationImageRenderData(captchaImage.Data)
+			if parsed.VerifyImageASCII == "" {
+				parsed.VerifyImageASCII = renderData.ASCII
+			}
+			if parsed.VerifyImagePNGBase64 == "" {
+				parsed.VerifyImagePNGBase64 = renderData.PNGBase64
+			}
+			if parsed.VerifyImageWidth == 0 {
+				parsed.VerifyImageWidth = renderData.Width
+			}
+			if parsed.VerifyImageHeight == 0 {
+				parsed.VerifyImageHeight = renderData.Height
+			}
+			if strings.TrimSpace(parsed.VerifyImagePreviewPath) == "" {
+				parsed.VerifyImagePreviewPath = maybePrepareExternalCaptchaPreview(captchaImage.Data)
+			}
+		}
+	}
+}
+
+func maybePrepareExternalCaptchaPreview(imageData []byte) string {
+	if len(imageData) == 0 || !shouldUseExternalCaptchaPreview() {
+		return ""
+	}
+	previewPath, err := writeCaptchaPreviewImage(imageData)
+	if err != nil {
+		return ""
+	}
+	_ = openCaptchaPreviewFile(previewPath)
+	return previewPath
+}
+
+func shouldUseExternalCaptchaPreview() bool {
+	if strings.ToLower(strings.TrimSpace(os.Getenv("TAIYIFLOW_CLI_TERMINAL_IMAGE_PROTOCOL"))) == "off" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("TERM_PROGRAM")), "vscode")
+}
+
+func writeCaptchaPreviewImage(imageData []byte) (string, error) {
+	previewDir := filepath.Join(os.TempDir(), "taiyiflow-cli", "captcha-preview")
+	if err := os.MkdirAll(previewDir, 0o755); err != nil {
+		return "", err
+	}
+	previewFile, err := os.CreateTemp(previewDir, "kaptcha-*.png")
+	if err != nil {
+		return "", err
+	}
+	defer previewFile.Close()
+	if _, err := previewFile.Write(imageData); err != nil {
+		return "", err
+	}
+	return previewFile.Name(), nil
+}
+
+func defaultOpenCaptchaPreviewFile(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("open", path).Start()
+	case "linux":
+		return exec.Command("xdg-open", path).Start()
+	case "windows":
+		return exec.Command("cmd", "/c", "start", "", path).Start()
+	default:
+		return nil
+	}
+}
+
+func populateVerifyChallenge(ctx context.Context, authClient *providerclient.AuthClient, parsed *passwordLoginCommand) {
+	if parsed == nil || effectiveLoginVerifyType(*parsed) == "" || effectiveLoginVerifyType(*parsed) == loginVerifyTypeKaptcha {
+		return
+	}
+	if strings.TrimSpace(parsed.KaptchaTicket) != "" {
+		return
+	}
+	token, err := authClient.RequestVerifyLoginToken(ctx, parsed.VerifyType, "")
+	if err != nil || token == nil {
+		return
+	}
+	parsed.VerifyType = normalizeLoginVerifyType(token.Type)
+	if parsed.VerifyType == "" {
+		parsed.VerifyType = normalizeLoginVerifyType(parsed.VerifyType)
+	}
+	parsed.KaptchaTicket = strings.TrimSpace(token.Ticket)
+	if parsed.VerifyHint == "" {
+		parsed.VerifyHint = strings.TrimSpace(token.Hint)
+	}
+	if parsed.VerifyTarget == "" {
+		parsed.VerifyTarget = strings.TrimSpace(token.Target)
+	}
+}
+
+func buildVerificationImageRenderData(imageData []byte) verificationImageRenderData {
+	if len(imageData) == 0 {
+		return verificationImageRenderData{}
+	}
+	decodedImage, _, err := image.Decode(bytes.NewReader(imageData))
+	if err != nil {
+		return verificationImageRenderData{}
+	}
+
+	bounds := decodedImage.Bounds()
+	imageWidth := bounds.Dx()
+	imageHeight := bounds.Dy()
+	if imageWidth <= 0 || imageHeight <= 0 {
+		return verificationImageRenderData{}
+	}
+
+	renderData := verificationImageRenderData{
+		ASCII:  renderVerificationImageASCIIFromImage(decodedImage),
+		Width:  imageWidth,
+		Height: imageHeight,
+	}
+	var pngBuffer bytes.Buffer
+	if err := png.Encode(&pngBuffer, decodedImage); err == nil {
+		renderData.PNGBase64 = base64.StdEncoding.EncodeToString(pngBuffer.Bytes())
+	}
+	return renderData
+}
+
+func renderVerificationImageASCII(imageData []byte) string {
+	return buildVerificationImageRenderData(imageData).ASCII
+}
+
+func renderVerificationImageASCIIFromImage(decodedImage image.Image) string {
+	bounds := decodedImage.Bounds()
+	imageWidth := bounds.Dx()
+	imageHeight := bounds.Dy()
+	if imageWidth <= 0 || imageHeight <= 0 {
+		return ""
+	}
+	targetWidth := imageWidth
+	if targetWidth > 48 {
+		targetWidth = 48
+	}
+	if targetWidth < 24 {
+		targetWidth = 24
+	}
+	targetHeightPixels := int(float64(imageHeight) * float64(targetWidth) / float64(imageWidth))
+	if targetHeightPixels < 8 {
+		targetHeightPixels = 8
+	}
+	if targetHeightPixels > 24 {
+		targetHeightPixels = 24
+	}
+	if targetHeightPixels%2 != 0 {
+		targetHeightPixels++
+	}
+	minGray, maxGray := verificationImageGrayRange(decodedImage)
+	threshold := (minGray + maxGray) / 2
+	if maxGray-minGray < 24 {
+		threshold = 128
+	}
+	lines := make([]string, 0, targetHeightPixels/2)
+	for y := 0; y < targetHeightPixels; y += 2 {
+		var line strings.Builder
+		for x := 0; x < targetWidth; x++ {
+			topDark := verificationPixelDark(decodedImage, bounds, x, y, targetWidth, targetHeightPixels, threshold)
+			bottomDark := verificationPixelDark(decodedImage, bounds, x, y+1, targetWidth, targetHeightPixels, threshold)
+			switch {
+			case topDark && bottomDark:
+				line.WriteRune('█')
+			case topDark:
+				line.WriteRune('▀')
+			case bottomDark:
+				line.WriteRune('▄')
+			default:
+				line.WriteRune(' ')
+			}
+		}
+		lines = append(lines, strings.TrimRight(line.String(), " "))
+	}
+	return strings.Join(trimVerificationImageBlankLines(lines), "\n")
+}
+
+func verificationImageGrayRange(decodedImage image.Image) (uint32, uint32) {
+	bounds := decodedImage.Bounds()
+	minGray := uint32(255)
+	maxGray := uint32(0)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			gray := verificationPixelGray(decodedImage.At(x, y))
+			if gray < minGray {
+				minGray = gray
+			}
+			if gray > maxGray {
+				maxGray = gray
+			}
+		}
+	}
+	return minGray, maxGray
+}
+
+func verificationPixelDark(decodedImage image.Image, bounds image.Rectangle, x int, y int, targetWidth int, targetHeight int, threshold uint32) bool {
+	if targetWidth <= 0 || targetHeight <= 0 {
+		return false
+	}
+	sourceX := bounds.Min.X + x*bounds.Dx()/targetWidth
+	sourceY := bounds.Min.Y + y*bounds.Dy()/targetHeight
+	return verificationPixelGray(decodedImage.At(sourceX, sourceY)) <= threshold
+}
+
+func verificationPixelGray(pixel color.Color) uint32 {
+	red, green, blue, _ := pixel.RGBA()
+	return ((299 * (red >> 8)) + (587 * (green >> 8)) + (114 * (blue >> 8))) / 1000
+}
+
+func trimVerificationImageBlankLines(lines []string) []string {
+	start := 0
+	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	end := len(lines)
+	for end > start && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	if start >= end {
+		return nil
+	}
+	return lines[start:end]
+}
+
+func minInt(left int, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func (a *App) executeTUIQRWait(
@@ -813,8 +1239,17 @@ func parsePasswordLoginCommand(command string) (passwordLoginCommand, error) {
 				return passwordLoginCommand{}, err
 			}
 			parsed.Remember = remember
+		case "verify_type":
+			parsed.VerifyType = normalizeLoginVerifyType(value)
+		case "verify_hint":
+			parsed.VerifyHint = strings.TrimSpace(value)
+		case "verify_target":
+			parsed.VerifyTarget = strings.TrimSpace(value)
 		case "captcha_ticket":
 			parsed.KaptchaTicket = strings.TrimSpace(value)
+			if parsed.VerifyType == "" {
+				parsed.VerifyType = loginVerifyTypeKaptcha
+			}
 		case "captcha_code":
 			parsed.KaptchaCode = strings.TrimSpace(value)
 		default:

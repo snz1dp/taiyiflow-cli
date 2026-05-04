@@ -791,7 +791,7 @@ func buildTUIHelpLines(snapshot tui.Snapshot) []string {
 		"/reasoning [on|off|default|status] 切换当前会话思考模式",
 		"/session 查看当前会话",
 		"/sessions [页码] 查看当前智能体的服务端会话列表",
-		"/login 打开登录表单；/login status 和 /login logout 查看或清理当前登录态",
+		"/login 打开登录表单；/login status 和 /login logout 查看或清理当前登录态；图形验证码优先使用 kitty/iTerm2 终端图片协议",
 		"/config 打开全局与权限配置弹窗",
 		"!<shell 命令> 在当前目录执行本地命令",
 		"/agents 或 /agents <名称> 选择智能体",

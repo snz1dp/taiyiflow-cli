@@ -33,12 +33,12 @@
 
 - 顶层登录入口：`./taiyiflow-cli login`，默认直接进入 TUI 登录表单。
 - 查看当前登录态：`./taiyiflow-cli login status`
-- 用户名密码登录：`./taiyiflow-cli login password <username> <password>`
-- 扫码登录：`./taiyiflow-cli login qr`，命令会输出 `ticket`、扫码地址和下一步等待命令。
-- 等待扫码完成：`./taiyiflow-cli login qr wait <ticket>`
+- 扫码登录：`./taiyiflow-cli login qr`，命令会直接在终端显示二维码并自动等待扫码完成。
 - 退出登录：`./taiyiflow-cli login logout`
 
-说明：命令行（CLI）登录与 TUI `/login` 共用同一套认证实现，默认使用配置中的 `backend_base_url`，并在成功登录后更新 `api_key`、`persistent_token`、`device_id` 与认证时间。
+说明：命令行（CLI）登录与 TUI `/login` 共用同一套认证实现，默认使用配置中的 `backend_base_url`，并在成功登录后更新 `api_key`、`persistent_token`、`device_id` 与认证时间。密码登录与验证码输入统一收口到 `/login` 表单，旧的 `login password` 与 `login qr wait` 子命令已移除。
+
+图形验证码说明：支持时优先使用 kitty 与 iTerm2 终端图片协议显示图形验证码，在 tmux 中会自动透传到底层终端；如需显式指定或关闭，可设置 `TAIYIFLOW_CLI_TERMINAL_IMAGE_PROTOCOL=kitty|iterm2|off`。
 
 ## 配置示例
 
