@@ -219,6 +219,7 @@ type LoginFormState struct {
 	StatusText             string
 	StatusIsError          bool
 	FocusField             int
+	SupportsQRCode         bool
 	Mode                   string
 	Username               string
 	Password               string
@@ -610,6 +611,7 @@ type loginFormState struct {
 	hint                   string
 	statusText             string
 	statusIsError          bool
+	supportsQRCode         bool
 	mode                   string
 	remember               bool
 	passwordPublicKey      string
@@ -2854,19 +2856,21 @@ func (m model) renderLoginForm() string {
 	}
 	lines = append(lines, "")
 
-	modeLabel := "密码登录(password)"
-	modeAlt := "扫码登录(qr)"
-	if m.loginForm.mode == loginFormModeQR {
-		modeLabel = "扫码登录(qr)"
-		modeAlt = "密码登录(password)"
+	if m.loginForm.supportsQRCode {
+		modeLabel := "密码登录(password)"
+		modeAlt := "扫码登录(qr)"
+		if m.loginForm.mode == loginFormModeQR {
+			modeLabel = "扫码登录(qr)"
+			modeAlt = "密码登录(password)"
+		}
+		modeLine := fmt.Sprintf("当前方式: %s  切换到 %s", modeLabel, modeAlt)
+		if m.loginForm.cursor == loginFieldMode {
+			modeLine = markOverlayFocus(selectedFlowStyle.Render(trimForWidth(modeLine, m.contentWidth-16)), true)
+		} else {
+			modeLine = commandHintStyle.Render(trimForWidth(modeLine, m.contentWidth-16))
+		}
+		lines = append(lines, labelStyle.Render("登录方式(login_mode)"), modeLine, "")
 	}
-	modeLine := fmt.Sprintf("当前方式: %s  切换到 %s", modeLabel, modeAlt)
-	if m.loginForm.cursor == loginFieldMode {
-		modeLine = markOverlayFocus(selectedFlowStyle.Render(trimForWidth(modeLine, m.contentWidth-16)), true)
-	} else {
-		modeLine = commandHintStyle.Render(trimForWidth(modeLine, m.contentWidth-16))
-	}
-	lines = append(lines, labelStyle.Render("登录方式(login_mode)"), modeLine, "")
 
 	if m.loginForm.mode == loginFormModePassword {
 		if hasVerification {
@@ -4429,7 +4433,7 @@ func (m *model) moveLoginFormCursor(delta int) {
 	if m.loginForm == nil {
 		return
 	}
-	visible := visibleLoginFields(m.loginForm.mode, hasLoginCaptchaTicket(m.loginForm))
+	visible := visibleLoginFields(m.loginForm.mode, hasLoginCaptchaTicket(m.loginForm), m.loginForm.supportsQRCode)
 	if len(visible) == 0 {
 		return
 	}
@@ -4466,8 +4470,8 @@ func (m *model) setLoginFormMode(mode string) {
 		m.blurLoginFormField(m.loginForm.cursor)
 	}
 	m.loginForm.mode = mode
-	if !loginFieldVisible(mode, m.loginForm.cursor, hasLoginCaptchaTicket(m.loginForm)) {
-		visible := visibleLoginFields(mode, hasLoginCaptchaTicket(m.loginForm))
+	if !loginFieldVisible(mode, m.loginForm.cursor, hasLoginCaptchaTicket(m.loginForm), m.loginForm.supportsQRCode) {
+		visible := visibleLoginFields(mode, hasLoginCaptchaTicket(m.loginForm), m.loginForm.supportsQRCode)
 		if len(visible) > 0 {
 			m.loginForm.cursor = visible[0]
 		}
@@ -4478,6 +4482,10 @@ func (m *model) setLoginFormMode(mode string) {
 
 func (m model) switchLoginFormMode(mode string) (tea.Model, tea.Cmd) {
 	if m.loginForm == nil {
+		return m, nil
+	}
+	if !m.loginForm.supportsQRCode {
+		m.setLoginFormMode(loginFormModePassword)
 		return m, nil
 	}
 	previousMode := m.loginForm.mode
@@ -4818,11 +4826,15 @@ func newLoginFormState(state LoginFormState) *loginFormState {
 		models = append(models, input)
 	}
 	mode := normalizeLoginFormMode(state.Mode)
+	if !state.SupportsQRCode {
+		mode = loginFormModePassword
+	}
 	loginState := &loginFormState{
 		title:                  state.Title,
 		hint:                   state.Hint,
 		statusText:             state.StatusText,
 		statusIsError:          state.StatusIsError,
+		supportsQRCode:         state.SupportsQRCode,
 		mode:                   mode,
 		remember:               state.Remember,
 		passwordPublicKey:      strings.TrimSpace(state.PasswordPublicKey),
@@ -4845,7 +4857,7 @@ func newLoginFormState(state LoginFormState) *loginFormState {
 		qrWaiting:              state.QRWaiting,
 		qrWaitPollCount:        state.QRWaitPollCount,
 	}
-	if state.FocusField >= 0 && loginFieldVisible(mode, state.FocusField, hasLoginVerificationChallenge(loginState)) {
+	if state.FocusField >= 0 && loginFieldVisible(mode, state.FocusField, hasLoginVerificationChallenge(loginState), state.SupportsQRCode) {
 		loginState.cursor = state.FocusField
 		loginState.focusLoginFieldCursor()
 		return loginState
@@ -4880,8 +4892,11 @@ func normalizeLoginFormMode(mode string) string {
 	return loginFormModePassword
 }
 
-func loginFieldVisible(mode string, field int, hasVerification bool) bool {
-	if field == loginFieldMode || field == loginFieldSubmit {
+func loginFieldVisible(mode string, field int, hasVerification bool, supportsQRCode bool) bool {
+	if field == loginFieldMode {
+		return supportsQRCode
+	}
+	if field == loginFieldSubmit {
 		return true
 	}
 	if normalizeLoginFormMode(mode) != loginFormModePassword {
@@ -4893,10 +4908,10 @@ func loginFieldVisible(mode string, field int, hasVerification bool) bool {
 	return field == loginFieldUsername || field == loginFieldPassword
 }
 
-func visibleLoginFields(mode string, hasVerification bool) []int {
+func visibleLoginFields(mode string, hasVerification bool, supportsQRCode bool) []int {
 	fields := make([]int, 0, loginFieldCount)
 	for field := 0; field < loginFieldCount; field++ {
-		if loginFieldVisible(mode, field, hasVerification) {
+		if loginFieldVisible(mode, field, hasVerification, supportsQRCode) {
 			fields = append(fields, field)
 		}
 	}

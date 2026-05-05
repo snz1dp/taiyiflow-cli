@@ -290,13 +290,14 @@ func TestHandleConfigFormKeyMovesAgentAutoLoopSelector(t *testing.T) {
 
 func TestRenderLoginFormShowsQRCodeState(t *testing.T) {
 	state := newLoginFormState(LoginFormState{
-		Title:       "登录(login)",
-		Mode:        "qr",
-		Remember:    true,
-		QRTicket:    "ticket-1",
-		QRLoginURL:  "https://example.com/login/scan",
-		QRScanHint:  "请使用微信扫码确认",
-		QRCodeASCII: "██  ██\n  ██  ",
+		Title:          "登录(login)",
+		SupportsQRCode: true,
+		Mode:           "qr",
+		Remember:       true,
+		QRTicket:       "ticket-1",
+		QRLoginURL:     "https://example.com/login/scan",
+		QRScanHint:     "请使用微信扫码确认",
+		QRCodeASCII:    "██  ██\n  ██  ",
 	})
 	state.cursor = loginFieldSubmit
 
@@ -343,6 +344,7 @@ func TestRenderOverlayUsesFullscreenForLoginForm(t *testing.T) {
 func TestQRCodeWaitTickSubmitsWaitAction(t *testing.T) {
 	state := newLoginFormState(LoginFormState{
 		Title:           "登录",
+		SupportsQRCode:  true,
 		Mode:            "qr",
 		Remember:        true,
 		QRTicket:        "ticket-1",
@@ -394,9 +396,10 @@ func TestQRCodeWaitTickSubmitsWaitAction(t *testing.T) {
 
 func TestHandleLoginFormModeSwitchToQRAutoStartsQRCode(t *testing.T) {
 	state := newLoginFormState(LoginFormState{
-		Title:    "登录(login)",
-		Mode:     "password",
-		Remember: true,
+		Title:          "登录(login)",
+		SupportsQRCode: true,
+		Mode:           "password",
+		Remember:       true,
 	})
 	state.cursor = loginFieldMode
 
@@ -503,7 +506,7 @@ func TestHandleLoginFormKeyQuitsWhenLoginIsRequired(t *testing.T) {
 }
 
 func TestHandleLoginFormKeyIgnoresQShortcut(t *testing.T) {
-	state := newLoginFormState(LoginFormState{Title: "登录(login)", Mode: "password"})
+	state := newLoginFormState(LoginFormState{Title: "登录(login)", SupportsQRCode: true, Mode: "password"})
 	state.cursor = loginFieldMode
 	appModel := model{loginForm: state, snapshot: Snapshot{BackendAvailable: true}}
 
@@ -549,6 +552,9 @@ func TestRenderLoginFormShowsTaiyiHeaderAndHidesRemember(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "用户名(username)") || !strings.Contains(rendered, "密码(password)") {
 		t.Fatalf("expected username/password fields in default password mode, got %q", rendered)
+	}
+	if strings.Contains(rendered, "扫码登录(qr)") || strings.Contains(rendered, "登录方式(login_mode)") {
+		t.Fatalf("expected password-only form to hide qr mode option, got %q", rendered)
 	}
 }
 
@@ -605,7 +611,7 @@ func TestRenderLoginFormShowsCaptchaStepWhenTicketPresent(t *testing.T) {
 }
 
 func TestVisibleLoginFieldsKeepPasswordDuringVerification(t *testing.T) {
-	fields := visibleLoginFields(loginFormModePassword, true)
+	fields := visibleLoginFields(loginFormModePassword, true, false)
 	if !containsInt(fields, loginFieldPassword) {
 		t.Fatalf("expected password field to stay visible during verification, got %#v", fields)
 	}
@@ -614,6 +620,21 @@ func TestVisibleLoginFieldsKeepPasswordDuringVerification(t *testing.T) {
 	}
 	if containsInt(fields, loginFieldUsername) {
 		t.Fatalf("expected username field to remain hidden during verification, got %#v", fields)
+	}
+}
+
+func TestNewLoginFormStateFallsBackToPasswordWhenQRCodeUnsupported(t *testing.T) {
+	state := newLoginFormState(LoginFormState{
+		Title:          "登录(login)",
+		SupportsQRCode: false,
+		Mode:           "qr",
+		Remember:       true,
+	})
+	if state.mode != loginFormModePassword {
+		t.Fatalf("expected qr mode to fall back to password when unsupported, got %#v", state)
+	}
+	if state.cursor == loginFieldMode {
+		t.Fatalf("expected mode cursor to be hidden when qr is unsupported, got %#v", state)
 	}
 }
 

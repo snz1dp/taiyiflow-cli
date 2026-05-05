@@ -332,6 +332,22 @@ func (c *AuthClient) GetQRCodeLoginToken(ctx context.Context, platform string, s
 	return &payload, nil
 }
 
+func (c *AuthClient) GetChannelNames(ctx context.Context) ([]string, error) {
+	var payload string
+	if err := c.doEnvelopeRequest(ctx, http.MethodGet, "/oauth/api/channel_names", nil, "", &payload); err != nil {
+		return nil, err
+	}
+	return splitChannelNames(payload), nil
+}
+
+func (c *AuthClient) SupportsQRCodeLogin(ctx context.Context) (bool, error) {
+	channels, err := c.GetChannelNames(ctx)
+	if err != nil {
+		return false, err
+	}
+	return hasQRCodeOAuthChannel(channels), nil
+}
+
 func (c *AuthClient) WaitQRCodeLoginEvent(ctx context.Context, ticket string) (*WaitEvent, error) {
 	values := url.Values{}
 	values.Set("ticket", strings.TrimSpace(ticket))
@@ -340,6 +356,48 @@ func (c *AuthClient) WaitQRCodeLoginEvent(ctx context.Context, ticket string) (*
 		return nil, err
 	}
 	return &payload, nil
+}
+
+func splitChannelNames(value string) []string {
+	trimmedValue := strings.TrimSpace(value)
+	if trimmedValue == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(trimmedValue, func(r rune) bool {
+		switch r {
+		case ',', '，', '、', ';', '；', '|', '/', '\\', '\n', '\r', '\t':
+			return true
+		default:
+			return false
+		}
+	})
+	if len(parts) == 0 {
+		return []string{trimmedValue}
+	}
+	seen := make(map[string]struct{}, len(parts))
+	channels := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmedPart := strings.TrimSpace(part)
+		if trimmedPart == "" {
+			continue
+		}
+		normalizedPart := strings.ToLower(trimmedPart)
+		if _, exists := seen[normalizedPart]; exists {
+			continue
+		}
+		seen[normalizedPart] = struct{}{}
+		channels = append(channels, trimmedPart)
+	}
+	return channels
+}
+
+func hasQRCodeOAuthChannel(channels []string) bool {
+	for _, channel := range channels {
+		if strings.TrimSpace(channel) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *AuthClient) GetVerificationImage(ctx context.Context, ticket string) (*VerificationImage, error) {

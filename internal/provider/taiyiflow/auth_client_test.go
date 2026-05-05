@@ -92,6 +92,76 @@ func TestCreatePersistentToken(t *testing.T) {
 	}
 }
 
+func TestSupportsQRCodeLoginRecognizesWeChatChannel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/xeai/oauth/api/channel_names" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"code":0,"message":"调用成功!","data":"微信"}`)
+	}))
+	defer server.Close()
+
+	client := NewAuthClient(server.URL)
+	supported, err := client.SupportsQRCodeLogin(context.Background())
+	if err != nil {
+		t.Fatalf("expected oauth channels request to succeed, got %v", err)
+	}
+	if !supported {
+		t.Fatal("expected wechat oauth channel to enable qr login")
+	}
+	channels, err := client.GetChannelNames(context.Background())
+	if err != nil {
+		t.Fatalf("expected channel list request to succeed, got %v", err)
+	}
+	if len(channels) != 1 || channels[0] != "微信" {
+		t.Fatalf("expected channel_names payload to be split into one channel, got %#v", channels)
+	}
+}
+
+func TestSupportsQRCodeLoginTreatsAnyNonEmptyChannelAsSupported(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/xeai/oauth/api/channel_names" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"code":0,"message":"调用成功!","data":"账号密码"}`)
+	}))
+	defer server.Close()
+
+	client := NewAuthClient(server.URL)
+	supported, err := client.SupportsQRCodeLogin(context.Background())
+	if err != nil {
+		t.Fatalf("expected oauth channels request to succeed, got %v", err)
+	}
+	if !supported {
+		t.Fatal("expected any non-empty channel_names payload to enable qr login")
+	}
+}
+
+func TestSupportsQRCodeLoginReturnsFalseWhenChannelNamesEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/xeai/oauth/api/channel_names" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"code":0,"message":"调用成功!","data":""}`)
+	}))
+	defer server.Close()
+
+	client := NewAuthClient(server.URL)
+	supported, err := client.SupportsQRCodeLogin(context.Background())
+	if err != nil {
+		t.Fatalf("expected oauth channels request to succeed, got %v", err)
+	}
+	if supported {
+		t.Fatal("expected empty channel_names payload to disable qr login")
+	}
+}
+
 func TestPasswordLoginEncryptsPasswordAndParsesSession(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(cryptorand.Reader, 2048)
 	if err != nil {

@@ -60,6 +60,11 @@ type qrWaitCommand struct {
 	Remember bool
 }
 
+type loginChannelCapabilities struct {
+	SupportsQRCode bool
+	ChannelNames   []string
+}
+
 const (
 	loginFormActionPassword  = "password_login"
 	loginFormActionStartQR   = "start_qr"
@@ -74,6 +79,8 @@ const (
 	loginVerifyTypeMail    = "mail"
 	loginVerifyTypeTOTP    = "totp"
 )
+
+const loginQRCodeUnavailableMessage = "当前认证服务未启用扫码登录。"
 
 func (a *App) runLogin(ctx context.Context, args []string) error {
 	if len(args) == 0 {
@@ -127,22 +134,26 @@ func (a *App) executeTUILoginCommand(
 		}
 	}
 	authClient := providerclient.NewAuthClient(localConfig.BackendBaseURL)
+	capabilities := loadLoginChannelCapabilities(ctx, authClient)
 
 	switch {
 	case strings.EqualFold(trimmed, "/login"):
-		return tui.LocalCommandResult{Handled: true, LoginForm: buildTUILoginFormState(localConfig, snapshot, "password", passwordLoginCommand{Remember: true}, nil)}, nil
+		return tui.LocalCommandResult{Handled: true, LoginForm: buildTUILoginFormState(localConfig, snapshot, "password", capabilities, passwordLoginCommand{Remember: true}, nil)}, nil
 	case strings.EqualFold(trimmed, "/login help"):
-		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: loginSlashUsage()}}}, nil
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: loginSlashUsage(capabilities.SupportsQRCode)}}}, nil
 	case strings.EqualFold(trimmed, "/login status"):
 		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: renderLoginStatus(localConfig, snapshot)}}}, nil
 	case strings.EqualFold(trimmed, "/login logout"):
 		return a.executeTUILogout(ctx, providerClient, snapshot, localConfig, refresh)
 	case strings.EqualFold(trimmed, "/login qr") || strings.EqualFold(trimmed, "/login qr start"):
+		if !capabilities.SupportsQRCode {
+			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: loginQRCodeUnavailableMessage}}}, nil
+		}
 		qrToken, err := authClient.GetQRCodeLoginToken(ctx, "", false, "login", "")
 		if err != nil {
 			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
 		}
-		loginForm := buildTUILoginFormState(localConfig, snapshot, "qr", passwordLoginCommand{Remember: true}, qrToken)
+		loginForm := buildTUILoginFormState(localConfig, snapshot, "qr", capabilities, passwordLoginCommand{Remember: true}, qrToken)
 		if loginForm != nil {
 			loginForm.QRWaiting = true
 		}
@@ -150,7 +161,7 @@ func (a *App) executeTUILoginCommand(
 	case strings.HasPrefix(strings.ToLower(trimmed), "/login password "), strings.HasPrefix(strings.ToLower(trimmed), "/login qr wait "):
 		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "旧登录命令已移除，请直接使用 /login。"}}}, nil
 	default:
-		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: loginSlashUsage()}}}, nil
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: loginSlashUsage(capabilities.SupportsQRCode)}}}, nil
 	}
 }
 
@@ -194,6 +205,7 @@ func (a *App) submitTUILoginForm(
 		return tui.LocalCommandResult{}, err
 	}
 	authClient := providerclient.NewAuthClient(localConfig.BackendBaseURL)
+	capabilities := loadLoginChannelCapabilities(ctx, authClient)
 	remember := submission.Remember
 	if strings.TrimSpace(submission.Mode) == "" {
 		submission.Mode = "password"
@@ -202,6 +214,27 @@ func (a *App) submitTUILoginForm(
 	case loginFormActionLogout:
 		return a.executeTUILogout(ctx, providerClient, snapshot, localConfig, refresh)
 	case loginFormActionStartQR, loginFormActionRefreshQR:
+		if !capabilities.SupportsQRCode {
+			parsed := passwordLoginCommand{
+				Username:               strings.TrimSpace(submission.Username),
+				Password:               submission.Password,
+				PasswordPublicKey:      strings.TrimSpace(submission.PasswordPublicKey),
+				PasswordTicket:         strings.TrimSpace(submission.PasswordTicket),
+				Remember:               remember,
+				VerifyType:             normalizeLoginVerifyType(submission.VerifyType),
+				VerifyHint:             strings.TrimSpace(submission.VerifyHint),
+				VerifyTarget:           strings.TrimSpace(submission.VerifyTarget),
+				VerifyImageASCII:       submission.VerifyImageASCII,
+				VerifyImagePNGBase64:   submission.VerifyImagePNGBase64,
+				VerifyImageWidth:       submission.VerifyImageWidth,
+				VerifyImageHeight:      submission.VerifyImageHeight,
+				VerifyImageURL:         strings.TrimSpace(submission.VerifyImageURL),
+				VerifyImagePreviewPath: strings.TrimSpace(submission.VerifyImagePreviewPath),
+				Ticket:                 strings.TrimSpace(submission.Ticket),
+				Code:                   strings.TrimSpace(submission.Code),
+			}
+			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildTUILoginFormState(localConfig, snapshot, "password", capabilities, parsed, nil), loginQRCodeUnavailableMessage, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: loginQRCodeUnavailableMessage}}}, nil
+		}
 		qrToken, err := authClient.GetQRCodeLoginToken(ctx, "", false, "login", "")
 		parsed := passwordLoginCommand{
 			Username:               strings.TrimSpace(submission.Username),
@@ -222,15 +255,36 @@ func (a *App) submitTUILoginForm(
 			Code:                   strings.TrimSpace(submission.Code),
 		}
 		if err != nil {
-			return tui.LocalCommandResult{Handled: true, LoginForm: buildTUILoginFormState(localConfig, snapshot, "qr", parsed, qrTokenFromSubmission(submission)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
+			return tui.LocalCommandResult{Handled: true, LoginForm: buildTUILoginFormState(localConfig, snapshot, "qr", capabilities, parsed, qrTokenFromSubmission(submission)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
 		}
-		loginForm := buildTUILoginFormState(localConfig, snapshot, "qr", parsed, qrToken)
+		loginForm := buildTUILoginFormState(localConfig, snapshot, "qr", capabilities, parsed, qrToken)
 		if loginForm != nil {
 			loginForm.QRWaiting = true
 			loginForm.QRWaitPollCount = 0
 		}
 		return tui.LocalCommandResult{Handled: true, LoginForm: loginForm}, nil
 	case loginFormActionWaitQR:
+		if !capabilities.SupportsQRCode {
+			parsed := passwordLoginCommand{
+				Username:               strings.TrimSpace(submission.Username),
+				Password:               submission.Password,
+				PasswordPublicKey:      strings.TrimSpace(submission.PasswordPublicKey),
+				PasswordTicket:         strings.TrimSpace(submission.PasswordTicket),
+				Remember:               remember,
+				VerifyType:             normalizeLoginVerifyType(submission.VerifyType),
+				VerifyHint:             strings.TrimSpace(submission.VerifyHint),
+				VerifyTarget:           strings.TrimSpace(submission.VerifyTarget),
+				VerifyImageASCII:       submission.VerifyImageASCII,
+				VerifyImagePNGBase64:   submission.VerifyImagePNGBase64,
+				VerifyImageWidth:       submission.VerifyImageWidth,
+				VerifyImageHeight:      submission.VerifyImageHeight,
+				VerifyImageURL:         strings.TrimSpace(submission.VerifyImageURL),
+				VerifyImagePreviewPath: strings.TrimSpace(submission.VerifyImagePreviewPath),
+				Ticket:                 strings.TrimSpace(submission.Ticket),
+				Code:                   strings.TrimSpace(submission.Code),
+			}
+			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildTUILoginFormState(localConfig, snapshot, "password", capabilities, parsed, nil), loginQRCodeUnavailableMessage, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: loginQRCodeUnavailableMessage}}}, nil
+		}
 		return a.executeTUIQRWait(ctx, providerClient, snapshot, localConfig, authClient, remember, submission.QRTicket, submission.QRLoginURL, submission.QRScanHint, submission.QRWaitPollCount, refresh)
 	case "", loginFormActionPassword:
 		parsed := passwordLoginCommand{
@@ -251,9 +305,9 @@ func (a *App) submitTUILoginForm(
 			Ticket:                 strings.TrimSpace(submission.Ticket),
 			Code:                   strings.TrimSpace(submission.Code),
 		}
-		return a.executeTUIPasswordLogin(ctx, providerClient, snapshot, localConfig, authClient, parsed, refresh)
+		return a.executeTUIPasswordLogin(ctx, providerClient, snapshot, localConfig, authClient, capabilities, parsed, refresh)
 	default:
-		return tui.LocalCommandResult{Handled: true, LoginForm: buildTUILoginFormState(localConfig, snapshot, submission.Mode, passwordLoginCommand{
+		return tui.LocalCommandResult{Handled: true, LoginForm: buildTUILoginFormState(localConfig, snapshot, submission.Mode, capabilities, passwordLoginCommand{
 			Username:               strings.TrimSpace(submission.Username),
 			Password:               submission.Password,
 			PasswordPublicKey:      strings.TrimSpace(submission.PasswordPublicKey),
@@ -272,6 +326,17 @@ func (a *App) submitTUILoginForm(
 			Code:                   strings.TrimSpace(submission.Code),
 		}, qrTokenFromSubmission(submission)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "不支持的登录动作。"}}}, nil
 	}
+}
+
+func loadLoginChannelCapabilities(ctx context.Context, authClient *providerclient.AuthClient) loginChannelCapabilities {
+	if authClient == nil {
+		return loginChannelCapabilities{}
+	}
+	channelNames, err := authClient.GetChannelNames(ctx)
+	if err != nil {
+		return loginChannelCapabilities{}
+	}
+	return loginChannelCapabilities{SupportsQRCode: len(channelNames) > 0, ChannelNames: channelNames}
 }
 
 func (a *App) refreshLoginSnapshotResult(
@@ -376,17 +441,21 @@ func joinLoginFooterHint(parts ...string) string {
 	return strings.Join(trimmedParts, " ")
 }
 
-func loginSlashUsage() string {
-	return strings.Join([]string{
+func loginSlashUsage(supportsQRCode bool) string {
+	lines := []string{
 		"登录命令:",
 		"/login 打开登录表单",
 		"/login status 查看当前登录状态",
 		"/login logout 清除本地登录态",
-		"/login qr 在终端显示二维码，并自动等待扫码登录完成",
 		"提示: 图形验证码优先使用 kitty 与 iTerm2 终端图片协议；在 tmux 中会自动透传到底层终端。",
 		"提示: 可通过 TAIYIFLOW_CLI_TERMINAL_IMAGE_PROTOCOL=kitty|iterm2|off 显式指定或关闭图片协议。",
-		"提示: 密码登录与扫码登录都收口到 /login 表单，旧的 /login password 与 /login qr wait 已移除。",
-	}, "\n")
+	}
+	if supportsQRCode {
+		lines = append(lines, "/login qr 在终端显示二维码，并自动等待扫码登录完成")
+	} else {
+		lines = append(lines, "提示: 当前认证服务未启用扫码登录，仅支持密码登录。")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func buildLoginCLICommand(args []string) string {
@@ -621,13 +690,15 @@ func renderLoginFormStatus(snapshot tui.Snapshot) string {
 	return "请登录后继续使用"
 }
 
-func normalizeQRScanHint(hint string) string {
+func normalizeQRScanHint(hint string, channelNames []string) string {
+	if channelLabel := joinQRChannelNames(channelNames); channelLabel != "" {
+		return "请使用" + channelLabel + "扫码登录。"
+	}
 	trimmed := strings.TrimSpace(hint)
 	trimmed = strings.TrimRight(trimmed, "。.!！")
 	if trimmed == "" {
-		return "请打开微信扫码登录。"
+		return "请使用可用渠道扫码登录。"
 	}
-	trimmed = strings.Replace(trimmed, "请使用", "请打开", 1)
 	if !strings.HasPrefix(trimmed, "请") {
 		trimmed = "请" + trimmed
 	}
@@ -640,15 +711,34 @@ func normalizeQRScanHint(hint string) string {
 	return trimmed + "。"
 }
 
+func joinQRChannelNames(channelNames []string) string {
+	trimmedNames := make([]string, 0, len(channelNames))
+	seen := make(map[string]struct{}, len(channelNames))
+	for _, channelName := range channelNames {
+		trimmedName := strings.TrimSpace(channelName)
+		if trimmedName == "" {
+			continue
+		}
+		normalizedName := strings.ToLower(trimmedName)
+		if _, exists := seen[normalizedName]; exists {
+			continue
+		}
+		seen[normalizedName] = struct{}{}
+		trimmedNames = append(trimmedNames, trimmedName)
+	}
+	return strings.Join(trimmedNames, "或")
+}
+
 func buildTUILoginFormState(
 	config internalconfig.Config,
 	snapshot tui.Snapshot,
 	mode string,
+	capabilities loginChannelCapabilities,
 	parsed passwordLoginCommand,
 	qrToken *providerclient.RedirectLoginToken,
 ) *tui.LoginFormState {
 	formMode := "password"
-	if strings.EqualFold(strings.TrimSpace(mode), "qr") {
+	if capabilities.SupportsQRCode && strings.EqualFold(strings.TrimSpace(mode), "qr") {
 		formMode = "qr"
 	}
 	verifyType := normalizeLoginVerifyType(parsed.VerifyType)
@@ -659,6 +749,7 @@ func buildTUILoginFormState(
 		Title:                  "登录",
 		Hint:                   loginFormHint(parsed),
 		StatusText:             renderLoginFormStatus(snapshot),
+		SupportsQRCode:         capabilities.SupportsQRCode,
 		Mode:                   formMode,
 		Username:               strings.TrimSpace(parsed.Username),
 		Password:               parsed.Password,
@@ -680,7 +771,7 @@ func buildTUILoginFormState(
 	if qrToken != nil {
 		state.QRTicket = strings.TrimSpace(qrToken.Ticket)
 		state.QRLoginURL = strings.TrimSpace(qrToken.FireURL)
-		state.QRScanHint = normalizeQRScanHint(qrToken.ScanHint)
+		state.QRScanHint = normalizeQRScanHint(qrToken.ScanHint, capabilities.ChannelNames)
 		state.QRCodeASCII = renderQRCodeASCII(state.QRLoginURL)
 	}
 	return state
@@ -815,12 +906,12 @@ func loginFeedbackMessage(err error) string {
 	return strings.TrimSpace(err.Error())
 }
 
-func buildPasswordLoginFormState(config internalconfig.Config, snapshot tui.Snapshot, parsed passwordLoginCommand) *tui.LoginFormState {
-	return buildTUILoginFormState(config, snapshot, "password", parsed, nil)
+func buildPasswordLoginFormState(config internalconfig.Config, snapshot tui.Snapshot, capabilities loginChannelCapabilities, parsed passwordLoginCommand) *tui.LoginFormState {
+	return buildTUILoginFormState(config, snapshot, "password", capabilities, parsed, nil)
 }
 
-func buildQRLoginFormState(config internalconfig.Config, snapshot tui.Snapshot, remember bool, ticket string, qrLoginURL string, qrScanHint string, waitPollCount int) *tui.LoginFormState {
-	state := buildTUILoginFormState(config, snapshot, "qr", passwordLoginCommand{Remember: remember}, &providerclient.RedirectLoginToken{
+func buildQRLoginFormState(config internalconfig.Config, snapshot tui.Snapshot, supportsQRCode bool, remember bool, ticket string, qrLoginURL string, qrScanHint string, waitPollCount int) *tui.LoginFormState {
+	state := buildTUILoginFormState(config, snapshot, "qr", loginChannelCapabilities{SupportsQRCode: supportsQRCode}, passwordLoginCommand{Remember: remember}, &providerclient.RedirectLoginToken{
 		Ticket:   strings.TrimSpace(ticket),
 		FireURL:  strings.TrimSpace(qrLoginURL),
 		ScanHint: strings.TrimSpace(qrScanHint),
@@ -914,33 +1005,34 @@ func (a *App) executeTUIPasswordLogin(
 	snapshot tui.Snapshot,
 	localConfig internalconfig.Config,
 	authClient *providerclient.AuthClient,
+	capabilities loginChannelCapabilities,
 	parsed passwordLoginCommand,
 	refresh tuiSnapshotRefresh,
 ) (tui.LocalCommandResult, error) {
 	if strings.TrimSpace(parsed.Username) == "" || strings.TrimSpace(parsed.Password) == "" {
-		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), "username 和 password 不能为空", passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "username 和 password 不能为空"}}}, nil
+		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, capabilities, parsed), "username 和 password 不能为空", passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "username 和 password 不能为空"}}}, nil
 	}
 	parsed.VerifyType = effectiveLoginVerifyType(parsed)
 	if parsed.VerifyType != "" && strings.TrimSpace(parsed.Code) == "" {
 		message := buildVerificationNotice(parsed)
-		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormNotice(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventSystemNote, Text: message}}}, nil
+		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormNotice(buildPasswordLoginFormState(localConfig, snapshot, capabilities, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventSystemNote, Text: message}}}, nil
 	}
 	if parsed.VerifyType != "" && parsed.VerifyType != loginVerifyTypeKaptcha {
 		session, err := authClient.CompleteVerifyLogin(ctx, parsed.Ticket, parsed.PasswordTicket, parsed.Code)
 		if err != nil {
 			message := loginFeedbackMessage(err)
-			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
+			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, capabilities, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
 		}
 		if _, err := a.persistAuthenticatedSession(ctx, providerClient, localConfig, session, parsed.Remember); err != nil {
 			message := loginFeedbackMessage(err)
-			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
+			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, capabilities, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
 		}
 		return a.refreshLoginSnapshotResultAfterNewSession(ctx, snapshot, refresh, "")
 	}
 	loginToken, err := authClient.GetPasswordLoginToken(ctx)
 	if err != nil {
 		message := loginFeedbackMessage(err)
-		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
+		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, capabilities, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
 	}
 	loginTicket := strings.TrimSpace(parsed.Ticket)
 	loginPasswordTicket := loginToken.EffectivePasswordTicket()
@@ -977,14 +1069,14 @@ func (a *App) executeTUIPasswordLogin(
 				parsed.Code = ""
 			}
 			message := buildVerificationNotice(parsed)
-			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormNotice(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventSystemNote, Text: message}}}, nil
+			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormNotice(buildPasswordLoginFormState(localConfig, snapshot, capabilities, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventSystemNote, Text: message}}}, nil
 		}
 		message := loginFeedbackMessage(err)
-		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
+		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, capabilities, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
 	}
 	if _, err := a.persistAuthenticatedSession(ctx, providerClient, localConfig, session, parsed.Remember); err != nil {
 		message := loginFeedbackMessage(err)
-		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
+		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, capabilities, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
 	}
 	return a.refreshLoginSnapshotResultAfterNewSession(ctx, snapshot, refresh, "")
 }
@@ -1343,23 +1435,23 @@ func (a *App) executeTUIQRWait(
 ) (tui.LocalCommandResult, error) {
 	ticket = strings.TrimSpace(ticket)
 	if ticket == "" {
-		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildQRLoginFormState(localConfig, snapshot, remember, "", qrLoginURL, qrScanHint, waitPollCount), "ticket 不能为空", 0), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "ticket 不能为空"}}}, nil
+		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildQRLoginFormState(localConfig, snapshot, true, remember, "", qrLoginURL, qrScanHint, waitPollCount), "ticket 不能为空", 0), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "ticket 不能为空"}}}, nil
 	}
 	waitEvent, err := authClient.WaitQRCodeLoginEvent(ctx, ticket)
 	if err != nil {
-		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildQRLoginFormState(localConfig, snapshot, remember, ticket, qrLoginURL, qrScanHint, waitPollCount), err.Error(), 0), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
+		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildQRLoginFormState(localConfig, snapshot, true, remember, ticket, qrLoginURL, qrScanHint, waitPollCount), err.Error(), 0), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
 	}
 	if strings.TrimSpace(waitEvent.AccessToken) == "" {
 		if waitEvent.State < 0 {
 			message := fmt.Sprintf("扫码登录已结束，状态=%d。请重新生成二维码后再试。", waitEvent.State)
-			loginForm := withLoginFormStatus(buildQRLoginFormState(localConfig, snapshot, remember, ticket, qrLoginURL, qrScanHint, waitPollCount), message, true)
+			loginForm := withLoginFormStatus(buildQRLoginFormState(localConfig, snapshot, true, remember, ticket, qrLoginURL, qrScanHint, waitPollCount), message, true)
 			if loginForm != nil {
 				loginForm.QRWaiting = false
 			}
 			return tui.LocalCommandResult{Handled: true, LoginForm: loginForm, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
 		}
 		nextWaitPollCount := waitPollCount + 1
-		loginForm := buildQRLoginFormState(localConfig, snapshot, remember, ticket, qrLoginURL, qrScanHint, nextWaitPollCount)
+		loginForm := buildQRLoginFormState(localConfig, snapshot, true, remember, ticket, qrLoginURL, qrScanHint, nextWaitPollCount)
 		events := []tui.Event{}
 		if loginForm != nil {
 			loginForm.QRWaiting = true
@@ -1382,7 +1474,7 @@ func (a *App) executeTUIQRWait(
 		Scope:        strings.TrimSpace(waitEvent.Scope),
 	}
 	if _, err := a.persistAuthenticatedSession(ctx, providerClient, localConfig, session, remember); err != nil {
-		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildQRLoginFormState(localConfig, snapshot, remember, ticket, qrLoginURL, qrScanHint, waitPollCount), err.Error(), 0), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
+		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildQRLoginFormState(localConfig, snapshot, true, remember, ticket, qrLoginURL, qrScanHint, waitPollCount), err.Error(), 0), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
 	}
 	return a.refreshLoginSnapshotResultAfterNewSession(ctx, snapshot, refresh, "")
 }

@@ -46,7 +46,7 @@ func TestBuildLoginCLISnapshotLoadsSavedSessionInfo(t *testing.T) {
 
 	snapshot := app.buildLoginCLISnapshot(context.Background(), &stubSnapshotProvider{
 		stubProvider: &stubProvider{
-			messages: &provider.SessionMessageList{Items: []provider.SessionMessage{{Sender: "user", Text: "你好"}, {Sender: "assistant", Text: "你好，我在。"}}},
+			messages:       &provider.SessionMessageList{Items: []provider.SessionMessage{{Sender: "user", Text: "你好"}, {Sender: "assistant", Text: "你好，我在。"}}},
 			sessionContext: &provider.SessionContextPreview{ContextWindow: &provider.ContextWindowUsage{MaxInputTokens: 8192}},
 		},
 		currentUser: &provider.CurrentUser{Name: "张三"},
@@ -251,7 +251,17 @@ func TestExecuteTUILoginCommandOpensOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new manager failed: %v", err)
 	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/xeai/oauth/api/channel_names" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"code":0,"message":"调用成功!","data":""}`)
+	}))
+	defer server.Close()
 	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
 	if err := manager.Save(config); err != nil {
 		t.Fatalf("save config failed: %v", err)
 	}
@@ -275,6 +285,9 @@ func TestExecuteTUILoginCommandOpensOverlay(t *testing.T) {
 	}
 	if result.LoginForm.StatusText != "请登录后继续使用" {
 		t.Fatalf("expected login overlay to use simplified status text, got %#v", result.LoginForm)
+	}
+	if result.LoginForm.SupportsQRCode {
+		t.Fatalf("expected /login to hide qr mode when channel capability is unavailable, got %#v", result.LoginForm)
 	}
 	if strings.Contains(result.LoginForm.StatusText, "设备标识") || strings.Contains(result.LoginForm.StatusText, "最近认证时间") {
 		t.Fatalf("expected login overlay to hide detailed auth status, got %#v", result.LoginForm)
@@ -1017,16 +1030,16 @@ func TestSubmitTUILoginFormPasswordVerifyLoginPreservesPasswordTicket(t *testing
 	}
 
 	secondResult, err := app.submitTUILoginForm(context.Background(), buildProviderClient(config), tui.Snapshot{BackendAvailable: true, AuthRequired: true}, tui.LoginFormSubmission{
-		Mode:            "password",
-		Username:        firstResult.LoginForm.Username,
-		Password:        firstResult.LoginForm.Password,
-		PasswordTicket:  firstResult.LoginForm.PasswordTicket,
-		Remember:        false,
-		VerifyType:      firstResult.LoginForm.VerifyType,
-		VerifyHint:      firstResult.LoginForm.VerifyHint,
-		VerifyTarget:    firstResult.LoginForm.VerifyTarget,
-		Ticket:          firstResult.LoginForm.Ticket,
-		Code:            "123456",
+		Mode:              "password",
+		Username:          firstResult.LoginForm.Username,
+		Password:          firstResult.LoginForm.Password,
+		PasswordTicket:    firstResult.LoginForm.PasswordTicket,
+		Remember:          false,
+		VerifyType:        firstResult.LoginForm.VerifyType,
+		VerifyHint:        firstResult.LoginForm.VerifyHint,
+		VerifyTarget:      firstResult.LoginForm.VerifyTarget,
+		Ticket:            firstResult.LoginForm.Ticket,
+		Code:              "123456",
 		PasswordPublicKey: firstResult.LoginForm.PasswordPublicKey,
 	}, nil)
 	if err != nil {
@@ -1134,7 +1147,7 @@ func TestSubmitTUILoginFormPasswordShowsInlineErrorAndKeepsPasswordFocus(t *test
 }
 
 func TestLoginSlashUsagePrioritizesOverlayEntry(t *testing.T) {
-	usage := loginSlashUsage()
+	usage := loginSlashUsage(true)
 	if !strings.Contains(usage, "/login 打开登录表单") {
 		t.Fatalf("expected usage to prioritize /login overlay entry, got %q", usage)
 	}
@@ -1147,14 +1160,54 @@ func TestLoginSlashUsagePrioritizesOverlayEntry(t *testing.T) {
 	if strings.Contains(usage, "\n/login password ") || strings.Contains(usage, "\n/login qr wait ") {
 		t.Fatalf("expected usage to drop removed commands, got %q", usage)
 	}
-	if !strings.Contains(usage, "旧的 /login password 与 /login qr wait 已移除") {
-		t.Fatalf("expected usage to explain removed commands, got %q", usage)
-	}
 	if !strings.Contains(usage, "TAIYIFLOW_CLI_TERMINAL_IMAGE_PROTOCOL=kitty|iterm2|off") {
 		t.Fatalf("expected usage to mention terminal image protocol override, got %q", usage)
 	}
 	if strings.Contains(usage, "打开 overlay 登录表单") {
 		t.Fatalf("expected usage to stop using old overlay wording, got %q", usage)
+	}
+}
+
+func TestLoginSlashUsageHidesQRCodeEntryWhenUnsupported(t *testing.T) {
+	usage := loginSlashUsage(false)
+	if strings.Contains(usage, "\n/login qr ") || strings.Contains(usage, "\n/login qr\n") {
+		t.Fatalf("expected usage to hide qr entry when unsupported, got %q", usage)
+	}
+	if !strings.Contains(usage, "当前认证服务未启用扫码登录") {
+		t.Fatalf("expected usage to explain qr unavailability, got %q", usage)
+	}
+}
+
+func TestExecuteTUILoginCommandRejectsQRCodeWhenChannelUnsupported(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/xeai/oauth/api/channel_names" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"code":0,"message":"调用成功!","data":""}`)
+	}))
+	defer server.Close()
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	app := &App{configManager: manager}
+	result, err := app.executeTUILoginCommand(context.Background(), buildProviderClient(config), tui.Snapshot{BackendAvailable: true}, "/login qr", nil)
+	if err != nil {
+		t.Fatalf("executeTUILoginCommand failed: %v", err)
+	}
+	if result.LoginForm != nil {
+		t.Fatalf("expected qr command to stop before opening qr form when unsupported, got %#v", result)
+	}
+	if len(result.Events) != 1 || result.Events[0].Text != loginQRCodeUnavailableMessage {
+		t.Fatalf("expected qr unsupported error event, got %#v", result.Events)
 	}
 }
 
@@ -1259,6 +1312,9 @@ func TestRunLoginQRSubcommandWaitsForScanAndPersistsAuthState(t *testing.T) {
 	waitCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
+		case "/xeai/oauth/api/channel_names":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"调用成功!","data":"钉钉"}`)
 		case "/xeai/oauth/api/token":
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"qr-ticket-1","fireurl":"https://example.com/scan","scanhint":"请使用微信扫码"}}`)
@@ -1313,6 +1369,12 @@ func TestRunLoginQRSubcommandWaitsForScanAndPersistsAuthState(t *testing.T) {
 	if !strings.Contains(output, "请扫码并在手机端确认登录，可按 Ctrl+C 取消。") {
 		t.Fatalf("expected auto wait hint, got %q", output)
 	}
+	if !strings.Contains(output, "扫码提示: 请使用钉钉扫码登录。") {
+		t.Fatalf("expected qr hint to use channel_names value, got %q", output)
+	}
+	if strings.Contains(output, "扫码提示: 请使用微信") {
+		t.Fatalf("expected qr hint to stop using hard-coded provider names, got %q", output)
+	}
 	if strings.Contains(output, "二维码已生成，等待扫码") || strings.Contains(output, "二维码已扫码") || strings.Contains(output, "扫码结果尚未完成") {
 		t.Fatalf("expected QR output to stop printing dynamic wait states, got %q", output)
 	}
@@ -1331,6 +1393,13 @@ func TestRunLoginQRSubcommandWaitsForScanAndPersistsAuthState(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
+func TestNormalizeQRScanHintUsesChannelNames(t *testing.T) {
+	hint := normalizeQRScanHint("请使用微信扫码", []string{"钉钉", "企业微信"})
+	if hint != "请使用钉钉或企业微信扫码登录。" {
+		t.Fatalf("expected qr hint to use channel names, got %q", hint)
 	}
 }
 
