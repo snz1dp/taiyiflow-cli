@@ -313,6 +313,23 @@ func TestBuildTUISnapshotMarksAuthRequired(t *testing.T) {
 	}
 }
 
+func TestBuildInitialTUISnapshotMarksAuthRequired(t *testing.T) {
+	app := &App{}
+	snapshot, err := app.buildInitialTUISnapshot(internalconfig.Default(), "", backendStatus{Available: true, AuthRequired: true, Reason: "请重新登录太乙智启服务"})
+	if err != nil {
+		t.Fatalf("buildInitialTUISnapshot failed: %v", err)
+	}
+	if !snapshot.AuthRequired {
+		t.Fatalf("expected initial snapshot to keep auth required, got %#v", snapshot)
+	}
+	if !strings.Contains(snapshot.AuthStatusReason, "/login") {
+		t.Fatalf("expected initial auth status reason to include /login hint, got %#v", snapshot)
+	}
+	if !strings.Contains(snapshot.AuthStatusReason, "请重新登录太乙智启服务") {
+		t.Fatalf("expected initial auth status reason to preserve backend reason, got %#v", snapshot)
+	}
+}
+
 func TestBuildTUIHelpLinesUsesLoginOverlayWording(t *testing.T) {
 	lines := buildTUIHelpLines(internaltui.Snapshot{BackendAvailable: true})
 	joined := strings.Join(lines, "\n")

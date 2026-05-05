@@ -27,19 +27,22 @@ import (
 type tuiSnapshotRefresh func(context.Context, tui.Snapshot) (tui.Snapshot, []tui.FlowItem, error)
 
 type passwordLoginCommand struct {
-	Username             string
-	Password             string
-	Remember             bool
-	VerifyType           string
-	VerifyHint           string
-	VerifyTarget         string
-	VerifyImageASCII     string
-	VerifyImagePNGBase64 string
-	VerifyImageWidth     int
-	VerifyImageHeight    int
+	Username               string
+	Password               string
+	PasswordPublicKey      string
+	PasswordTicket         string
+	Remember               bool
+	VerifyType             string
+	VerifyHint             string
+	VerifyTarget           string
+	VerifyImageASCII       string
+	VerifyImagePNGBase64   string
+	VerifyImageWidth       int
+	VerifyImageHeight      int
+	VerifyImageURL         string
 	VerifyImagePreviewPath string
-	KaptchaTicket        string
-	KaptchaCode          string
+	Ticket                 string
+	Code                   string
 }
 
 var openCaptchaPreviewFile = defaultOpenCaptchaPreviewFile
@@ -200,19 +203,22 @@ func (a *App) submitTUILoginForm(
 	case loginFormActionStartQR, loginFormActionRefreshQR:
 		qrToken, err := authClient.GetQRCodeLoginToken(ctx, "", false, "login", "")
 		parsed := passwordLoginCommand{
-			Username:             strings.TrimSpace(submission.Username),
-			Password:             submission.Password,
-			Remember:             remember,
-			VerifyType:           normalizeLoginVerifyType(submission.VerifyType),
-			VerifyHint:           strings.TrimSpace(submission.VerifyHint),
-			VerifyTarget:         strings.TrimSpace(submission.VerifyTarget),
-			VerifyImageASCII:     submission.VerifyImageASCII,
-			VerifyImagePNGBase64: submission.VerifyImagePNGBase64,
-			VerifyImageWidth:     submission.VerifyImageWidth,
-			VerifyImageHeight:    submission.VerifyImageHeight,
+			Username:               strings.TrimSpace(submission.Username),
+			Password:               submission.Password,
+			PasswordPublicKey:      strings.TrimSpace(submission.PasswordPublicKey),
+			PasswordTicket:         strings.TrimSpace(submission.PasswordTicket),
+			Remember:               remember,
+			VerifyType:             normalizeLoginVerifyType(submission.VerifyType),
+			VerifyHint:             strings.TrimSpace(submission.VerifyHint),
+			VerifyTarget:           strings.TrimSpace(submission.VerifyTarget),
+			VerifyImageASCII:       submission.VerifyImageASCII,
+			VerifyImagePNGBase64:   submission.VerifyImagePNGBase64,
+			VerifyImageWidth:       submission.VerifyImageWidth,
+			VerifyImageHeight:      submission.VerifyImageHeight,
+			VerifyImageURL:         strings.TrimSpace(submission.VerifyImageURL),
 			VerifyImagePreviewPath: strings.TrimSpace(submission.VerifyImagePreviewPath),
-			KaptchaTicket:        strings.TrimSpace(submission.KaptchaTicket),
-			KaptchaCode:          strings.TrimSpace(submission.KaptchaCode),
+			Ticket:                 strings.TrimSpace(submission.Ticket),
+			Code:                   strings.TrimSpace(submission.Code),
 		}
 		if err != nil {
 			return tui.LocalCommandResult{Handled: true, LoginForm: buildTUILoginFormState(localConfig, snapshot, "qr", parsed, qrTokenFromSubmission(submission)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
@@ -227,36 +233,42 @@ func (a *App) submitTUILoginForm(
 		return a.executeTUIQRWait(ctx, providerClient, snapshot, localConfig, authClient, remember, submission.QRTicket, submission.QRLoginURL, submission.QRScanHint, submission.QRWaitPollCount, refresh)
 	case "", loginFormActionPassword:
 		parsed := passwordLoginCommand{
-			Username:             strings.TrimSpace(submission.Username),
-			Password:             submission.Password,
-			Remember:             remember,
-			VerifyType:           normalizeLoginVerifyType(submission.VerifyType),
-			VerifyHint:           strings.TrimSpace(submission.VerifyHint),
-			VerifyTarget:         strings.TrimSpace(submission.VerifyTarget),
-			VerifyImageASCII:     submission.VerifyImageASCII,
-			VerifyImagePNGBase64: submission.VerifyImagePNGBase64,
-			VerifyImageWidth:     submission.VerifyImageWidth,
-			VerifyImageHeight:    submission.VerifyImageHeight,
+			Username:               strings.TrimSpace(submission.Username),
+			Password:               submission.Password,
+			PasswordPublicKey:      strings.TrimSpace(submission.PasswordPublicKey),
+			PasswordTicket:         strings.TrimSpace(submission.PasswordTicket),
+			Remember:               remember,
+			VerifyType:             normalizeLoginVerifyType(submission.VerifyType),
+			VerifyHint:             strings.TrimSpace(submission.VerifyHint),
+			VerifyTarget:           strings.TrimSpace(submission.VerifyTarget),
+			VerifyImageASCII:       submission.VerifyImageASCII,
+			VerifyImagePNGBase64:   submission.VerifyImagePNGBase64,
+			VerifyImageWidth:       submission.VerifyImageWidth,
+			VerifyImageHeight:      submission.VerifyImageHeight,
+			VerifyImageURL:         strings.TrimSpace(submission.VerifyImageURL),
 			VerifyImagePreviewPath: strings.TrimSpace(submission.VerifyImagePreviewPath),
-			KaptchaTicket:        strings.TrimSpace(submission.KaptchaTicket),
-			KaptchaCode:          strings.TrimSpace(submission.KaptchaCode),
+			Ticket:                 strings.TrimSpace(submission.Ticket),
+			Code:                   strings.TrimSpace(submission.Code),
 		}
 		return a.executeTUIPasswordLogin(ctx, providerClient, snapshot, localConfig, authClient, parsed, refresh)
 	default:
 		return tui.LocalCommandResult{Handled: true, LoginForm: buildTUILoginFormState(localConfig, snapshot, submission.Mode, passwordLoginCommand{
-			Username:             strings.TrimSpace(submission.Username),
-			Password:             submission.Password,
-			Remember:             remember,
-			VerifyType:           normalizeLoginVerifyType(submission.VerifyType),
-			VerifyHint:           strings.TrimSpace(submission.VerifyHint),
-			VerifyTarget:         strings.TrimSpace(submission.VerifyTarget),
-			VerifyImageASCII:     submission.VerifyImageASCII,
-			VerifyImagePNGBase64: submission.VerifyImagePNGBase64,
-			VerifyImageWidth:     submission.VerifyImageWidth,
-			VerifyImageHeight:    submission.VerifyImageHeight,
+			Username:               strings.TrimSpace(submission.Username),
+			Password:               submission.Password,
+			PasswordPublicKey:      strings.TrimSpace(submission.PasswordPublicKey),
+			PasswordTicket:         strings.TrimSpace(submission.PasswordTicket),
+			Remember:               remember,
+			VerifyType:             normalizeLoginVerifyType(submission.VerifyType),
+			VerifyHint:             strings.TrimSpace(submission.VerifyHint),
+			VerifyTarget:           strings.TrimSpace(submission.VerifyTarget),
+			VerifyImageASCII:       submission.VerifyImageASCII,
+			VerifyImagePNGBase64:   submission.VerifyImagePNGBase64,
+			VerifyImageWidth:       submission.VerifyImageWidth,
+			VerifyImageHeight:      submission.VerifyImageHeight,
+			VerifyImageURL:         strings.TrimSpace(submission.VerifyImageURL),
 			VerifyImagePreviewPath: strings.TrimSpace(submission.VerifyImagePreviewPath),
-			KaptchaTicket:        strings.TrimSpace(submission.KaptchaTicket),
-			KaptchaCode:          strings.TrimSpace(submission.KaptchaCode),
+			Ticket:                 strings.TrimSpace(submission.Ticket),
+			Code:                   strings.TrimSpace(submission.Code),
 		}, qrTokenFromSubmission(submission)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "不支持的登录动作。"}}}, nil
 	}
 }
@@ -511,7 +523,7 @@ func normalizeQRScanHint(hint string) string {
 	trimmed := strings.TrimSpace(hint)
 	trimmed = strings.TrimRight(trimmed, "。.!！")
 	if trimmed == "" {
-		return "请打开企业微信扫码登录。"
+		return "请打开微信扫码登录。"
 	}
 	trimmed = strings.Replace(trimmed, "请使用", "请打开", 1)
 	if !strings.HasPrefix(trimmed, "请") {
@@ -538,27 +550,30 @@ func buildTUILoginFormState(
 		formMode = "qr"
 	}
 	verifyType := normalizeLoginVerifyType(parsed.VerifyType)
-	if verifyType == "" && strings.TrimSpace(parsed.KaptchaTicket) != "" {
+	if verifyType == "" && strings.TrimSpace(parsed.Ticket) != "" {
 		verifyType = loginVerifyTypeKaptcha
 	}
 	state := &tui.LoginFormState{
-		Title:                "登录",
-		Hint:                 loginFormHint(parsed),
-		StatusText:           renderLoginFormStatus(snapshot),
-		Mode:                 formMode,
-		Username:             strings.TrimSpace(parsed.Username),
-		Password:             parsed.Password,
-		Remember:             parsed.Remember,
-		VerifyType:           verifyType,
-		VerifyHint:           strings.TrimSpace(parsed.VerifyHint),
-		VerifyTarget:         strings.TrimSpace(parsed.VerifyTarget),
-		VerifyImageASCII:     parsed.VerifyImageASCII,
-		VerifyImagePNGBase64: parsed.VerifyImagePNGBase64,
-		VerifyImageWidth:     parsed.VerifyImageWidth,
-		VerifyImageHeight:    parsed.VerifyImageHeight,
+		Title:                  "登录",
+		Hint:                   loginFormHint(parsed),
+		StatusText:             renderLoginFormStatus(snapshot),
+		Mode:                   formMode,
+		Username:               strings.TrimSpace(parsed.Username),
+		Password:               parsed.Password,
+		PasswordPublicKey:      strings.TrimSpace(parsed.PasswordPublicKey),
+		PasswordTicket:         strings.TrimSpace(parsed.PasswordTicket),
+		Remember:               parsed.Remember,
+		VerifyType:             verifyType,
+		VerifyHint:             strings.TrimSpace(parsed.VerifyHint),
+		VerifyTarget:           strings.TrimSpace(parsed.VerifyTarget),
+		VerifyImageASCII:       parsed.VerifyImageASCII,
+		VerifyImagePNGBase64:   parsed.VerifyImagePNGBase64,
+		VerifyImageWidth:       parsed.VerifyImageWidth,
+		VerifyImageHeight:      parsed.VerifyImageHeight,
+		VerifyImageURL:         strings.TrimSpace(parsed.VerifyImageURL),
 		VerifyImagePreviewPath: strings.TrimSpace(parsed.VerifyImagePreviewPath),
-		KaptchaTicket:        strings.TrimSpace(parsed.KaptchaTicket),
-		KaptchaCode:          strings.TrimSpace(parsed.KaptchaCode),
+		Ticket:                 strings.TrimSpace(parsed.Ticket),
+		Code:                   strings.TrimSpace(parsed.Code),
 	}
 	if qrToken != nil {
 		state.QRTicket = strings.TrimSpace(qrToken.Ticket)
@@ -715,7 +730,7 @@ func buildQRLoginFormState(config internalconfig.Config, snapshot tui.Snapshot, 
 }
 
 func passwordLoginFocusField(parsed passwordLoginCommand) int {
-	if normalizeLoginVerifyType(parsed.VerifyType) != "" || strings.TrimSpace(parsed.KaptchaTicket) != "" {
+	if normalizeLoginVerifyType(parsed.VerifyType) != "" || strings.TrimSpace(parsed.Ticket) != "" {
 		return 3
 	}
 	if strings.TrimSpace(parsed.Username) == "" {
@@ -725,8 +740,42 @@ func passwordLoginFocusField(parsed passwordLoginCommand) int {
 }
 
 func isVerificationRequiredError(err error) bool {
+	var authErr *providerclient.AuthError
+	if errors.As(err, &authErr) {
+		if authErr.IsVerificationRequired() {
+			return true
+		}
+	}
 	message := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(message, "验证码") || strings.Contains(message, "captcha") || strings.Contains(message, "kaptcha") || strings.Contains(message, "sms") || strings.Contains(message, "短信") || strings.Contains(message, "mail") || strings.Contains(message, "email") || strings.Contains(message, "邮箱") || strings.Contains(message, "totp") || strings.Contains(message, "otp") || strings.Contains(message, "口令")
+}
+
+func shouldResetVerificationCode(err error) bool {
+	var authErr *providerclient.AuthError
+	return errors.As(err, &authErr) && authErr.ShouldResetVerificationCode()
+}
+
+func applyVerificationChallengeFromError(parsed *passwordLoginCommand, err error) {
+	if parsed == nil || err == nil {
+		return
+	}
+	var authErr *providerclient.AuthError
+	if !errors.As(err, &authErr) || authErr.VerifyChallenge == nil {
+		return
+	}
+	challenge := authErr.VerifyChallenge
+	if verifyType := normalizeLoginVerifyType(challenge.Type); verifyType != "" {
+		parsed.VerifyType = verifyType
+	}
+	if ticket := strings.TrimSpace(challenge.Ticket); ticket != "" {
+		parsed.Ticket = ticket
+	}
+	if hint := strings.TrimSpace(challenge.Hint); hint != "" {
+		parsed.VerifyHint = hint
+	}
+	if target := strings.TrimSpace(challenge.Target); target != "" {
+		parsed.VerifyTarget = target
+	}
 }
 
 func qrTokenFromSubmission(submission tui.LoginFormSubmission) *providerclient.RedirectLoginToken {
@@ -770,12 +819,12 @@ func (a *App) executeTUIPasswordLogin(
 		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), "username 和 password 不能为空", passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "username 和 password 不能为空"}}}, nil
 	}
 	parsed.VerifyType = effectiveLoginVerifyType(parsed)
-	if parsed.VerifyType != "" && strings.TrimSpace(parsed.KaptchaCode) == "" {
+	if parsed.VerifyType != "" && strings.TrimSpace(parsed.Code) == "" {
 		message := buildVerificationNotice(parsed)
 		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormNotice(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventSystemNote, Text: message}}}, nil
 	}
 	if parsed.VerifyType != "" && parsed.VerifyType != loginVerifyTypeKaptcha {
-		session, err := authClient.CompleteVerifyLogin(ctx, parsed.KaptchaTicket, parsed.KaptchaCode)
+		session, err := authClient.CompleteVerifyLogin(ctx, parsed.Ticket, parsed.PasswordTicket, parsed.Code)
 		if err != nil {
 			message := loginFeedbackMessage(err)
 			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
@@ -795,26 +844,40 @@ func (a *App) executeTUIPasswordLogin(
 		message := loginFeedbackMessage(err)
 		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
 	}
+	loginTicket := strings.TrimSpace(parsed.Ticket)
+	loginPasswordTicket := loginToken.EffectivePasswordTicket()
+	loginPublicKey := strings.TrimSpace(loginToken.PubKey)
+	parsed.PasswordTicket = loginPasswordTicket
+	parsed.PasswordPublicKey = loginPublicKey
 	session, err := authClient.PasswordLogin(ctx, providerclient.PasswordLoginRequest{
-		Ticket:        strings.TrimSpace(loginToken.Ticket),
-		PublicKey:     strings.TrimSpace(loginToken.PubKey),
-		Username:      parsed.Username,
-		Password:      parsed.Password,
-		KaptchaTicket: parsed.KaptchaTicket,
-		KaptchaCode:   parsed.KaptchaCode,
+		VerifyTicket:         loginTicket,
+		PasswordTicket: loginPasswordTicket,
+		PublicKey:      loginPublicKey,
+		Username:       parsed.Username,
+		Password:       parsed.Password,
+		Code:           parsed.Code,
 	})
 	if err != nil {
 		if isVerificationRequiredError(err) {
+			applyVerificationChallengeFromError(&parsed, err)
 			parsed.VerifyType = normalizeLoginVerifyType(detectLoginVerifyType(loginFeedbackMessage(err), parsed.VerifyType))
 			if parsed.VerifyType == "" {
 				parsed.VerifyType = loginVerifyTypeKaptcha
 			}
 			if parsed.VerifyType == loginVerifyTypeKaptcha {
-				populateKaptchaChallenge(ctx, authClient, &parsed)
-			} else {
-				populateVerifyChallenge(ctx, authClient, &parsed)
+				resetCaptchaChallengeRenderState(&parsed)
+				if challengeTicket := strings.TrimSpace(parsed.Ticket); challengeTicket != "" {
+					loginTicket = challengeTicket
+				}
 			}
-			parsed.KaptchaCode = ""
+			if parsed.VerifyType == loginVerifyTypeKaptcha {
+				populateCaptchaChallenge(ctx, authClient, &parsed, loginTicket, loginPasswordTicket, loginPublicKey)
+			} else {
+				populateVerifyChallenge(ctx, authClient, &parsed, loginPasswordTicket)
+			}
+			if shouldResetVerificationCode(err) {
+				parsed.Code = ""
+			}
 			message := buildVerificationNotice(parsed)
 			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormNotice(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventSystemNote, Text: message}}}, nil
 		}
@@ -849,7 +912,7 @@ func normalizeLoginVerifyType(value string) string {
 
 func effectiveLoginVerifyType(parsed passwordLoginCommand) string {
 	verifyType := normalizeLoginVerifyType(parsed.VerifyType)
-	if verifyType == "" && strings.TrimSpace(parsed.KaptchaTicket) != "" {
+	if verifyType == "" && strings.TrimSpace(parsed.Ticket) != "" {
 		return loginVerifyTypeKaptcha
 	}
 	return verifyType
@@ -907,19 +970,34 @@ func buildVerificationNotice(parsed passwordLoginCommand) string {
 	return message
 }
 
-func populateKaptchaChallenge(ctx context.Context, authClient *providerclient.AuthClient, parsed *passwordLoginCommand) {
+func resetCaptchaChallengeRenderState(parsed *passwordLoginCommand) {
+	if parsed == nil {
+		return
+	}
+	parsed.VerifyImageASCII = ""
+	parsed.VerifyImagePNGBase64 = ""
+	parsed.VerifyImageWidth = 0
+	parsed.VerifyImageHeight = 0
+	parsed.VerifyImageURL = ""
+	parsed.VerifyImagePreviewPath = ""
+}
+
+func populateCaptchaChallenge(ctx context.Context, authClient *providerclient.AuthClient, parsed *passwordLoginCommand, loginTicket string, loginPasswordTicket string, loginPublicKey string) {
 	if parsed == nil {
 		return
 	}
 	parsed.VerifyType = loginVerifyTypeKaptcha
-	if strings.TrimSpace(parsed.KaptchaTicket) == "" {
-		captchaToken, err := authClient.GetKaptchaTicket(ctx)
-		if err == nil && captchaToken != nil {
-			parsed.KaptchaTicket = strings.TrimSpace(captchaToken.Ticket)
-		}
+	if trimmed := strings.TrimSpace(loginTicket); trimmed != "" {
+		parsed.Ticket = trimmed
 	}
-	if (strings.TrimSpace(parsed.VerifyImageASCII) == "" || strings.TrimSpace(parsed.VerifyImagePNGBase64) == "" || parsed.VerifyImageWidth == 0 || parsed.VerifyImageHeight == 0) && strings.TrimSpace(parsed.KaptchaTicket) != "" {
-		captchaImage, err := authClient.GetKaptchaImage(ctx, parsed.KaptchaTicket)
+	if trimmed := strings.TrimSpace(loginPasswordTicket); trimmed != "" {
+		parsed.PasswordTicket = trimmed
+	}
+	if trimmed := strings.TrimSpace(loginPublicKey); trimmed != "" {
+		parsed.PasswordPublicKey = trimmed
+	}
+	if (strings.TrimSpace(parsed.VerifyImageASCII) == "" || strings.TrimSpace(parsed.VerifyImagePNGBase64) == "" || parsed.VerifyImageWidth == 0 || parsed.VerifyImageHeight == 0) && strings.TrimSpace(parsed.Ticket) != "" {
+		captchaImage, err := authClient.GetVerificationImage(ctx, parsed.Ticket)
 		if err == nil && captchaImage != nil {
 			renderData := buildVerificationImageRenderData(captchaImage.Data)
 			if parsed.VerifyImageASCII == "" {
@@ -933,6 +1011,9 @@ func populateKaptchaChallenge(ctx context.Context, authClient *providerclient.Au
 			}
 			if parsed.VerifyImageHeight == 0 {
 				parsed.VerifyImageHeight = renderData.Height
+			}
+			if strings.TrimSpace(parsed.VerifyImageURL) == "" {
+				parsed.VerifyImageURL = strings.TrimSpace(captchaImage.URL)
 			}
 			if strings.TrimSpace(parsed.VerifyImagePreviewPath) == "" {
 				parsed.VerifyImagePreviewPath = maybePrepareExternalCaptchaPreview(captchaImage.Data)
@@ -965,7 +1046,7 @@ func writeCaptchaPreviewImage(imageData []byte) (string, error) {
 	if err := os.MkdirAll(previewDir, 0o755); err != nil {
 		return "", err
 	}
-	previewFile, err := os.CreateTemp(previewDir, "kaptcha-*.png")
+	previewFile, err := os.CreateTemp(previewDir, "captcha-*.png")
 	if err != nil {
 		return "", err
 	}
@@ -993,11 +1074,14 @@ func defaultOpenCaptchaPreviewFile(path string) error {
 	}
 }
 
-func populateVerifyChallenge(ctx context.Context, authClient *providerclient.AuthClient, parsed *passwordLoginCommand) {
+func populateVerifyChallenge(ctx context.Context, authClient *providerclient.AuthClient, parsed *passwordLoginCommand, loginPasswordTicket string) {
 	if parsed == nil || effectiveLoginVerifyType(*parsed) == "" || effectiveLoginVerifyType(*parsed) == loginVerifyTypeKaptcha {
 		return
 	}
-	if strings.TrimSpace(parsed.KaptchaTicket) != "" {
+	if trimmed := strings.TrimSpace(loginPasswordTicket); trimmed != "" {
+		parsed.PasswordTicket = trimmed
+	}
+	if strings.TrimSpace(parsed.Ticket) != "" {
 		return
 	}
 	token, err := authClient.RequestVerifyLoginToken(ctx, parsed.VerifyType, "")
@@ -1008,7 +1092,7 @@ func populateVerifyChallenge(ctx context.Context, authClient *providerclient.Aut
 	if parsed.VerifyType == "" {
 		parsed.VerifyType = normalizeLoginVerifyType(parsed.VerifyType)
 	}
-	parsed.KaptchaTicket = strings.TrimSpace(token.Ticket)
+	parsed.Ticket = strings.TrimSpace(token.Ticket)
 	if parsed.VerifyHint == "" {
 		parsed.VerifyHint = strings.TrimSpace(token.Hint)
 	}
@@ -1045,10 +1129,6 @@ func buildVerificationImageRenderData(imageData []byte) verificationImageRenderD
 	return renderData
 }
 
-func renderVerificationImageASCII(imageData []byte) string {
-	return buildVerificationImageRenderData(imageData).ASCII
-}
-
 func renderVerificationImageASCIIFromImage(decodedImage image.Image) string {
 	bounds := decodedImage.Bounds()
 	imageWidth := bounds.Dx()
@@ -1057,18 +1137,18 @@ func renderVerificationImageASCIIFromImage(decodedImage image.Image) string {
 		return ""
 	}
 	targetWidth := imageWidth
-	if targetWidth > 48 {
-		targetWidth = 48
+	if targetWidth > 56 {
+		targetWidth = 56
 	}
-	if targetWidth < 24 {
-		targetWidth = 24
+	if targetWidth < 32 {
+		targetWidth = 32
 	}
 	targetHeightPixels := int(float64(imageHeight) * float64(targetWidth) / float64(imageWidth))
-	if targetHeightPixels < 8 {
-		targetHeightPixels = 8
+	if targetHeightPixels < 10 {
+		targetHeightPixels = 10
 	}
-	if targetHeightPixels > 24 {
-		targetHeightPixels = 24
+	if targetHeightPixels > 28 {
+		targetHeightPixels = 28
 	}
 	if targetHeightPixels%2 != 0 {
 		targetHeightPixels++
@@ -1220,7 +1300,7 @@ func (a *App) executeTUIQRWait(
 func parsePasswordLoginCommand(command string) (passwordLoginCommand, error) {
 	fields := strings.Fields(strings.TrimSpace(command))
 	if len(fields) < 4 {
-		return passwordLoginCommand{}, fmt.Errorf("用法: /login password <username> <password> [remember=on|off] [captcha_ticket=<ticket>] [captcha_code=<code>]")
+		return passwordLoginCommand{}, fmt.Errorf("用法: /login password <username> <password> [remember=on|off] [ticket=<ticket>] [code=<code>]")
 	}
 	parsed := passwordLoginCommand{
 		Username: strings.TrimSpace(fields[2]),
@@ -1245,13 +1325,15 @@ func parsePasswordLoginCommand(command string) (passwordLoginCommand, error) {
 			parsed.VerifyHint = strings.TrimSpace(value)
 		case "verify_target":
 			parsed.VerifyTarget = strings.TrimSpace(value)
-		case "captcha_ticket":
-			parsed.KaptchaTicket = strings.TrimSpace(value)
+		case "password_ticket":
+			parsed.PasswordTicket = strings.TrimSpace(value)
+		case "ticket":
+			parsed.Ticket = strings.TrimSpace(value)
 			if parsed.VerifyType == "" {
 				parsed.VerifyType = loginVerifyTypeKaptcha
 			}
-		case "captcha_code":
-			parsed.KaptchaCode = strings.TrimSpace(value)
+		case "code":
+			parsed.Code = strings.TrimSpace(value)
 		default:
 			return passwordLoginCommand{}, fmt.Errorf("不支持的登录选项: %s", key)
 		}

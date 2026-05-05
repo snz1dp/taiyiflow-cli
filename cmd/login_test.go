@@ -6,6 +6,7 @@ import (
 	cryptorand "crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"image"
@@ -37,7 +38,7 @@ func TestSubmitTUILoginFormPasswordUpdatesAuthState(t *testing.T) {
 		switch request.URL.Path {
 		case "/xeai/oauth/api/password_token":
 			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
 		case "/xeai/ajax_logon":
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
@@ -140,6 +141,48 @@ func TestExecuteTUILoginCommandOpensOverlay(t *testing.T) {
 	}
 }
 
+func TestParsePasswordLoginCommandAcceptsTicketAndCode(t *testing.T) {
+	parsed, err := parsePasswordLoginCommand("/login password zhangsan secret-123 ticket=ticket-1 code=ABCD remember=off")
+	if err != nil {
+		t.Fatalf("parsePasswordLoginCommand failed: %v", err)
+	}
+	if parsed.Username != "zhangsan" || parsed.Password != "secret-123" {
+		t.Fatalf("unexpected parsed credentials: %#v", parsed)
+	}
+	if parsed.Ticket != "ticket-1" || parsed.Code != "ABCD" {
+		t.Fatalf("expected ticket/code to be parsed, got %#v", parsed)
+	}
+	if parsed.VerifyType != loginVerifyTypeKaptcha {
+		t.Fatalf("expected ticket to imply kaptcha verify type, got %#v", parsed)
+	}
+	if parsed.Remember {
+		t.Fatalf("expected remember=off to disable remember, got %#v", parsed)
+	}
+}
+
+func TestParsePasswordLoginCommandAcceptsPasswordTicket(t *testing.T) {
+	parsed, err := parsePasswordLoginCommand("/login password zhangsan secret-123 verify_type=sms password_ticket=password-ticket-1 ticket=verify-ticket-1 code=123456")
+	if err != nil {
+		t.Fatalf("parsePasswordLoginCommand failed: %v", err)
+	}
+	if parsed.PasswordTicket != "password-ticket-1" {
+		t.Fatalf("expected password_ticket to be parsed, got %#v", parsed)
+	}
+	if parsed.Ticket != "verify-ticket-1" {
+		t.Fatalf("expected verify ticket to be parsed separately, got %#v", parsed)
+	}
+}
+
+func TestParsePasswordLoginCommandRejectsLegacyCaptchaAliases(t *testing.T) {
+	_, err := parsePasswordLoginCommand("/login password zhangsan secret-123 captcha_ticket=ticket-1 captcha_code=ABCD")
+	if err == nil {
+		t.Fatal("expected legacy captcha aliases to be rejected")
+	}
+	if !strings.Contains(err.Error(), "不支持的登录选项: captcha_ticket") {
+		t.Fatalf("expected legacy captcha alias error, got %v", err)
+	}
+}
+
 func TestSubmitTUILoginFormPasswordRequiresCaptcha(t *testing.T) {
 	originalOpenCaptchaPreviewFile := openCaptchaPreviewFile
 	openedPreviewPath := ""
@@ -161,6 +204,8 @@ func TestSubmitTUILoginFormPasswordRequiresCaptcha(t *testing.T) {
 		t.Fatalf("marshal public key failed: %v", err)
 	}
 	publicKeyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicKeyDER}))
+	kaptchaTicketCalled := false
+	kaptchaImageQueryTicket := ""
 	var kaptchaPNG bytes.Buffer
 	kaptchaImage := image.NewRGBA(image.Rect(0, 0, 32, 12))
 	for y := 0; y < 12; y++ {
@@ -180,14 +225,16 @@ func TestSubmitTUILoginFormPasswordRequiresCaptcha(t *testing.T) {
 		switch request.URL.Path {
 		case "/xeai/oauth/api/password_token":
 			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
 		case "/xeai/ajax_logon":
 			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(writer, `{"code":4001,"message":"需要验证码"}`)
+			writer.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(writer, `{"code":404,"message":"需要图形验证码","data":{"type":"kaptcha","ticket":"captcha-ticket-1","hint":"请输入图形验证码","interval":120}}`)
 		case "/xeai/kaptcha/ticket":
-			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"captcha-ticket-1","expired":120}}`)
+			kaptchaTicketCalled = true
+			http.NotFound(writer, request)
 		case "/xeai/kaptcha/image":
+			kaptchaImageQueryTicket = request.URL.Query().Get("ticket")
 			writer.Header().Set("Content-Type", "image/png")
 			_, _ = writer.Write(kaptchaPNG.Bytes())
 		default:
@@ -220,8 +267,17 @@ func TestSubmitTUILoginFormPasswordRequiresCaptcha(t *testing.T) {
 	if result.LoginForm == nil {
 		t.Fatalf("expected captcha flow to reopen login form, got %#v", result)
 	}
-	if result.LoginForm.KaptchaTicket != "captcha-ticket-1" {
-		t.Fatalf("expected captcha ticket to be fetched, got %#v", result.LoginForm)
+	if kaptchaTicketCalled {
+		t.Fatalf("expected captcha flow not to call /kaptcha/ticket, got %#v", result.LoginForm)
+	}
+	if result.LoginForm.Ticket != "captcha-ticket-1" {
+		t.Fatalf("expected captcha flow to use ajax_logon challenge ticket, got %#v", result.LoginForm)
+	}
+	if result.LoginForm.PasswordTicket != "password-ticket-1" {
+		t.Fatalf("expected captcha flow to keep password_ticket separately, got %#v", result.LoginForm)
+	}
+	if strings.TrimSpace(result.LoginForm.PasswordPublicKey) != strings.TrimSpace(publicKeyPEM) {
+		t.Fatalf("expected captcha flow to preserve login public key, got %#v", result.LoginForm)
 	}
 	if result.LoginForm.Password != "secret-123" || result.LoginForm.Username != "zhangsan" {
 		t.Fatalf("expected password flow to preserve username/password, got %#v", result.LoginForm)
@@ -247,6 +303,12 @@ func TestSubmitTUILoginFormPasswordRequiresCaptcha(t *testing.T) {
 	if strings.TrimSpace(result.LoginForm.VerifyImagePNGBase64) == "" {
 		t.Fatalf("expected captcha flow to keep terminal image payload, got %#v", result.LoginForm)
 	}
+	if !strings.Contains(result.LoginForm.VerifyImageURL, "/xeai/kaptcha/image") || !strings.Contains(result.LoginForm.VerifyImageURL, "ticket=captcha-ticket-1") {
+		t.Fatalf("expected captcha flow to keep real captcha image url, got %#v", result.LoginForm)
+	}
+	if kaptchaImageQueryTicket != "captcha-ticket-1" {
+		t.Fatalf("expected captcha image to use ajax_logon challenge ticket, got %q", kaptchaImageQueryTicket)
+	}
 	if strings.TrimSpace(result.LoginForm.VerifyImagePreviewPath) == "" {
 		t.Fatalf("expected captcha flow to keep external preview path, got %#v", result.LoginForm)
 	}
@@ -261,6 +323,576 @@ func TestSubmitTUILoginFormPasswordRequiresCaptcha(t *testing.T) {
 	}
 	if result.LoginForm.FocusField != 3 {
 		t.Fatalf("expected captcha flow to focus captcha field, got %#v", result.LoginForm)
+	}
+}
+
+func TestSubmitTUILoginFormPasswordCaptchaRefetchesPasswordTokenEachSubmit(t *testing.T) {
+	firstPrivateKey, err := rsa.GenerateKey(cryptorand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate first rsa key failed: %v", err)
+	}
+	firstPublicKeyDER, err := x509.MarshalPKIXPublicKey(&firstPrivateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal first public key failed: %v", err)
+	}
+	firstPublicKeyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: firstPublicKeyDER}))
+	secondPrivateKey, err := rsa.GenerateKey(cryptorand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate second rsa key failed: %v", err)
+	}
+	secondPublicKeyDER, err := x509.MarshalPKIXPublicKey(&secondPrivateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal second public key failed: %v", err)
+	}
+	secondPublicKeyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: secondPublicKeyDER}))
+	var passwordTokenCalls int
+	var ajaxLogonCalls int
+	var kaptchaTicketCalls int
+	var kaptchaImageCalls int
+	var kaptchaPNG bytes.Buffer
+	kaptchaImage := image.NewRGBA(image.Rect(0, 0, 16, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 16; x++ {
+			pixel := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+			if (x+y)%2 == 0 {
+				pixel = color.RGBA{R: 32, G: 32, B: 32, A: 255}
+			}
+			kaptchaImage.Set(x, y, pixel)
+		}
+	}
+	if err := png.Encode(&kaptchaPNG, kaptchaImage); err != nil {
+		t.Fatalf("encode captcha image failed: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/xeai/oauth/api/password_token":
+			passwordTokenCalls++
+			writer.Header().Set("Content-Type", "application/json")
+			if passwordTokenCalls == 1 {
+				fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"password-ticket-1","pubkey":%q}}`, firstPublicKeyPEM)
+				return
+			}
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"password-ticket-2","pubkey":%q}}`, secondPublicKeyPEM)
+		case "/xeai/ajax_logon":
+			ajaxLogonCalls++
+			query := request.URL.Query()
+			expectedTicket := ""
+			expectedPasswordTicket := "password-ticket-1"
+			decryptKey := firstPrivateKey
+			if ajaxLogonCalls > 1 {
+				expectedTicket = "captcha-ticket-1"
+				expectedPasswordTicket = "password-ticket-2"
+				decryptKey = secondPrivateKey
+			}
+			if got := query.Get("ticket"); got != expectedTicket {
+				t.Fatalf("unexpected ajax_logon ticket: %q", got)
+			}
+			if got := query.Get("password_ticket"); got != expectedPasswordTicket {
+				t.Fatalf("unexpected password ticket: %q", got)
+			}
+			encryptedPassword, decodeErr := base64.StdEncoding.DecodeString(query.Get("password0"))
+			if decodeErr != nil {
+				t.Fatalf("decode encrypted password failed: %v", decodeErr)
+			}
+			password, decryptErr := rsa.DecryptPKCS1v15(nil, decryptKey, encryptedPassword)
+			if decryptErr != nil {
+				t.Fatalf("decrypt password failed: %v", decryptErr)
+			}
+			if string(password) != "secret-123" {
+				t.Fatalf("unexpected decrypted password: %q", string(password))
+			}
+			if ajaxLogonCalls == 1 {
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusBadRequest)
+				fmt.Fprint(writer, `{"code":404,"message":"需要图形验证码","data":{"type":"kaptcha","ticket":"captcha-ticket-1","hint":"请输入图形验证码","interval":120}}`)
+				return
+			}
+			if got := query.Get("code"); got != "ABCD" {
+				t.Fatalf("unexpected code: %q", got)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
+		case "/xeai/kaptcha/ticket":
+			kaptchaTicketCalls++
+			http.NotFound(writer, request)
+		case "/xeai/kaptcha/image":
+			kaptchaImageCalls++
+			if got := request.URL.Query().Get("ticket"); got != "captcha-ticket-1" {
+				t.Fatalf("unexpected image ticket: %q", got)
+			}
+			writer.Header().Set("Content-Type", "image/png")
+			_, _ = writer.Write(kaptchaPNG.Bytes())
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	app := &App{configManager: manager}
+	firstResult, err := app.submitTUILoginForm(context.Background(), buildProviderClient(config), tui.Snapshot{BackendAvailable: true, AuthRequired: true}, tui.LoginFormSubmission{
+		Mode:     "password",
+		Username: "zhangsan",
+		Password: "secret-123",
+		Remember: false,
+	}, nil)
+	if err != nil {
+		t.Fatalf("first submitTUILoginForm failed: %v", err)
+	}
+	if firstResult.LoginForm == nil {
+		t.Fatalf("expected captcha challenge login form, got %#v", firstResult)
+	}
+	secondResult, err := app.submitTUILoginForm(context.Background(), buildProviderClient(config), tui.Snapshot{BackendAvailable: true, AuthRequired: true}, tui.LoginFormSubmission{
+		Mode:                 "password",
+		Username:             firstResult.LoginForm.Username,
+		Password:             firstResult.LoginForm.Password,
+		PasswordPublicKey:    firstResult.LoginForm.PasswordPublicKey,
+		PasswordTicket:       firstResult.LoginForm.PasswordTicket,
+		Remember:             false,
+		VerifyType:           firstResult.LoginForm.VerifyType,
+		VerifyImageASCII:     firstResult.LoginForm.VerifyImageASCII,
+		VerifyImagePNGBase64: firstResult.LoginForm.VerifyImagePNGBase64,
+		VerifyImageWidth:     firstResult.LoginForm.VerifyImageWidth,
+		VerifyImageHeight:    firstResult.LoginForm.VerifyImageHeight,
+		Ticket:               firstResult.LoginForm.Ticket,
+		Code:                 "ABCD",
+	}, nil)
+	if err != nil {
+		t.Fatalf("second submitTUILoginForm failed: %v", err)
+	}
+	if secondResult.LoginForm != nil {
+		t.Fatalf("expected captcha login to succeed, got %#v", secondResult)
+	}
+	if passwordTokenCalls != 2 {
+		t.Fatalf("expected password token fetched twice, got %d", passwordTokenCalls)
+	}
+	if ajaxLogonCalls != 2 {
+		t.Fatalf("expected ajax_logon called twice, got %d", ajaxLogonCalls)
+	}
+	if kaptchaTicketCalls != 0 {
+		t.Fatalf("expected /kaptcha/ticket not called, got %d", kaptchaTicketCalls)
+	}
+	if kaptchaImageCalls != 1 {
+		t.Fatalf("expected /kaptcha/image called once, got %d", kaptchaImageCalls)
+	}
+}
+
+func TestSubmitTUILoginFormPasswordUsesVerifyChallengeFromHTTPError(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(cryptorand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key failed: %v", err)
+	}
+	publicKeyDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal public key failed: %v", err)
+	}
+	publicKeyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicKeyDER}))
+	var kaptchaImageQueryTicket string
+	var kaptchaPNG bytes.Buffer
+	kaptchaImage := image.NewRGBA(image.Rect(0, 0, 16, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 16; x++ {
+			pixel := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+			if (x+y)%2 == 0 {
+				pixel = color.RGBA{R: 32, G: 32, B: 32, A: 255}
+			}
+			kaptchaImage.Set(x, y, pixel)
+		}
+	}
+	if err := png.Encode(&kaptchaPNG, kaptchaImage); err != nil {
+		t.Fatalf("encode captcha image failed: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/xeai/oauth/api/password_token":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
+		case "/xeai/ajax_logon":
+			writer.Header().Set("Content-Type", "application/json")
+			writer.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(writer, `{"code":404,"message":"需要图形验证码","data":{"type":"kaptcha","ticket":"captcha-ticket-1","hint":"请输入图形验证码","interval":120}}`)
+		case "/xeai/kaptcha/image":
+			kaptchaImageQueryTicket = request.URL.Query().Get("ticket")
+			writer.Header().Set("Content-Type", "image/png")
+			_, _ = writer.Write(kaptchaPNG.Bytes())
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	app := &App{configManager: manager}
+	result, err := app.submitTUILoginForm(context.Background(), buildProviderClient(config), tui.Snapshot{BackendAvailable: true, AuthRequired: true}, tui.LoginFormSubmission{
+		Mode:     "password",
+		Username: "zhangsan",
+		Password: "secret-123",
+		Remember: false,
+	}, nil)
+	if err != nil {
+		t.Fatalf("submitTUILoginForm failed: %v", err)
+	}
+	if result.LoginForm == nil {
+		t.Fatalf("expected captcha flow to reopen login form, got %#v", result)
+	}
+	if result.LoginForm.Ticket != "captcha-ticket-1" {
+		t.Fatalf("expected captcha flow to use ajax_logon challenge ticket, got %#v", result.LoginForm)
+	}
+	if result.LoginForm.VerifyHint != "请输入图形验证码" {
+		t.Fatalf("expected captcha flow to keep challenge hint, got %#v", result.LoginForm)
+	}
+	if kaptchaImageQueryTicket != "captcha-ticket-1" {
+		t.Fatalf("expected captcha image to use challenge ticket, got %q", kaptchaImageQueryTicket)
+	}
+	if strings.TrimSpace(result.LoginForm.VerifyImagePNGBase64) == "" {
+		t.Fatalf("expected captcha flow to keep terminal image payload, got %#v", result.LoginForm)
+	}
+}
+
+func TestSubmitTUILoginFormPasswordCaptchaFailureRefreshesImageByReturnedTicket(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(cryptorand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key failed: %v", err)
+	}
+	publicKeyDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal public key failed: %v", err)
+	}
+	publicKeyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicKeyDER}))
+
+	firstImage := image.NewRGBA(image.Rect(0, 0, 16, 8))
+	secondImage := image.NewRGBA(image.Rect(0, 0, 16, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 16; x++ {
+			firstPixel := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+			secondPixel := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+			if (x+y)%2 == 0 {
+				firstPixel = color.RGBA{R: 32, G: 32, B: 32, A: 255}
+			}
+			if (x/2+y)%2 == 0 {
+				secondPixel = color.RGBA{R: 16, G: 96, B: 180, A: 255}
+			}
+			firstImage.Set(x, y, firstPixel)
+			secondImage.Set(x, y, secondPixel)
+		}
+	}
+	var firstImagePNG bytes.Buffer
+	var secondImagePNG bytes.Buffer
+	if err := png.Encode(&firstImagePNG, firstImage); err != nil {
+		t.Fatalf("encode first captcha image failed: %v", err)
+	}
+	if err := png.Encode(&secondImagePNG, secondImage); err != nil {
+		t.Fatalf("encode second captcha image failed: %v", err)
+	}
+
+	var ajaxLogonCalls int
+	imageTickets := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/xeai/oauth/api/password_token":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
+		case "/xeai/ajax_logon":
+			ajaxLogonCalls++
+			query := request.URL.Query()
+			if got := query.Get("password_ticket"); got != "password-ticket-1" {
+				t.Fatalf("unexpected password_ticket: %q", got)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			writer.WriteHeader(http.StatusBadRequest)
+			if ajaxLogonCalls == 1 {
+				fmt.Fprint(writer, `{"code":404,"message":"需要图形验证码","data":{"type":"kaptcha","ticket":"captcha-ticket-1","hint":"请输入图形验证码","interval":120}}`)
+				return
+			}
+			if got := query.Get("ticket"); got != "captcha-ticket-1" {
+				t.Fatalf("unexpected retry captcha ticket: %q", got)
+			}
+			if got := query.Get("code"); got != "ABCD" {
+				t.Fatalf("unexpected retry captcha code: %q", got)
+			}
+			fmt.Fprint(writer, `{"code":408,"message":"图形验证码错误","data":{"type":"kaptcha","ticket":"captcha-ticket-2","hint":"请重新输入图形验证码","interval":120}}`)
+		case "/xeai/kaptcha/image":
+			ticket := request.URL.Query().Get("ticket")
+			imageTickets = append(imageTickets, ticket)
+			writer.Header().Set("Content-Type", "image/png")
+			if ticket == "captcha-ticket-2" {
+				_, _ = writer.Write(secondImagePNG.Bytes())
+				return
+			}
+			_, _ = writer.Write(firstImagePNG.Bytes())
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	app := &App{configManager: manager}
+	firstResult, err := app.submitTUILoginForm(context.Background(), buildProviderClient(config), tui.Snapshot{BackendAvailable: true, AuthRequired: true}, tui.LoginFormSubmission{
+		Mode:     "password",
+		Username: "zhangsan",
+		Password: "secret-123",
+		Remember: false,
+	}, nil)
+	if err != nil {
+		t.Fatalf("first submitTUILoginForm failed: %v", err)
+	}
+	if firstResult.LoginForm == nil {
+		t.Fatalf("expected first captcha challenge form, got %#v", firstResult)
+	}
+	firstImagePayload := firstResult.LoginForm.VerifyImagePNGBase64
+
+	secondResult, err := app.submitTUILoginForm(context.Background(), buildProviderClient(config), tui.Snapshot{BackendAvailable: true, AuthRequired: true}, tui.LoginFormSubmission{
+		Mode:                 "password",
+		Username:             firstResult.LoginForm.Username,
+		Password:             firstResult.LoginForm.Password,
+		PasswordPublicKey:    firstResult.LoginForm.PasswordPublicKey,
+		PasswordTicket:       firstResult.LoginForm.PasswordTicket,
+		Remember:             false,
+		VerifyType:           firstResult.LoginForm.VerifyType,
+		VerifyHint:           firstResult.LoginForm.VerifyHint,
+		VerifyTarget:         firstResult.LoginForm.VerifyTarget,
+		VerifyImageASCII:     firstResult.LoginForm.VerifyImageASCII,
+		VerifyImagePNGBase64: firstResult.LoginForm.VerifyImagePNGBase64,
+		VerifyImageWidth:     firstResult.LoginForm.VerifyImageWidth,
+		VerifyImageHeight:    firstResult.LoginForm.VerifyImageHeight,
+		VerifyImageURL:       firstResult.LoginForm.VerifyImageURL,
+		Ticket:               firstResult.LoginForm.Ticket,
+		Code:                 "ABCD",
+	}, nil)
+	if err != nil {
+		t.Fatalf("second submitTUILoginForm failed: %v", err)
+	}
+	if secondResult.LoginForm == nil {
+		t.Fatalf("expected captcha retry form, got %#v", secondResult)
+	}
+	if secondResult.LoginForm.Ticket != "captcha-ticket-2" {
+		t.Fatalf("expected retry form to adopt returned verify ticket, got %#v", secondResult.LoginForm)
+	}
+	if !strings.Contains(secondResult.LoginForm.VerifyImageURL, "ticket=captcha-ticket-2") {
+		t.Fatalf("expected retry form to refresh image url with returned ticket, got %#v", secondResult.LoginForm)
+	}
+	if secondResult.LoginForm.VerifyImagePNGBase64 == firstImagePayload {
+		t.Fatalf("expected retry form to refresh captcha payload, got %#v", secondResult.LoginForm)
+	}
+	if secondResult.LoginForm.Code != "" {
+		t.Fatalf("expected invalid captcha code to be cleared, got %#v", secondResult.LoginForm)
+	}
+	if len(imageTickets) != 2 || imageTickets[0] != "captcha-ticket-1" || imageTickets[1] != "captcha-ticket-2" {
+		t.Fatalf("expected captcha image to be fetched twice with refreshed tickets, got %#v", imageTickets)
+	}
+	if secondResult.LoginForm.FocusField != 3 {
+		t.Fatalf("expected retry form to keep captcha field focus, got %#v", secondResult.LoginForm)
+	}
+}
+
+func TestSubmitTUILoginFormPasswordChallengeTicketOverridesQRTicket(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(cryptorand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key failed: %v", err)
+	}
+	publicKeyDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal public key failed: %v", err)
+	}
+	publicKeyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicKeyDER}))
+	var kaptchaImageQueryTicket string
+	var kaptchaPNG bytes.Buffer
+	kaptchaImage := image.NewRGBA(image.Rect(0, 0, 16, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 16; x++ {
+			pixel := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+			if (x+y)%2 == 0 {
+				pixel = color.RGBA{R: 32, G: 32, B: 32, A: 255}
+			}
+			kaptchaImage.Set(x, y, pixel)
+		}
+	}
+	if err := png.Encode(&kaptchaPNG, kaptchaImage); err != nil {
+		t.Fatalf("encode captcha image failed: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/xeai/oauth/api/password_token":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
+		case "/xeai/ajax_logon":
+			writer.Header().Set("Content-Type", "application/json")
+			writer.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(writer, `{"code":404,"message":"需要图形验证码","data":{"type":"kaptcha","ticket":"captcha-ticket-1","hint":"请输入图形验证码","interval":120}}`)
+		case "/xeai/kaptcha/image":
+			kaptchaImageQueryTicket = request.URL.Query().Get("ticket")
+			writer.Header().Set("Content-Type", "image/png")
+			_, _ = writer.Write(kaptchaPNG.Bytes())
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	app := &App{configManager: manager}
+	result, err := app.submitTUILoginForm(context.Background(), buildProviderClient(config), tui.Snapshot{BackendAvailable: true, AuthRequired: true}, tui.LoginFormSubmission{
+		Mode:     "password",
+		Username: "zhangsan",
+		Password: "secret-123",
+		Remember: false,
+		QRTicket: "qr-ticket-1",
+	}, nil)
+	if err != nil {
+		t.Fatalf("submitTUILoginForm failed: %v", err)
+	}
+	if result.LoginForm == nil {
+		t.Fatalf("expected captcha flow to reopen login form, got %#v", result)
+	}
+	if result.LoginForm.Ticket != "captcha-ticket-1" {
+		t.Fatalf("expected captcha challenge ticket to override qr ticket, got %#v", result.LoginForm)
+	}
+	if kaptchaImageQueryTicket != "captcha-ticket-1" {
+		t.Fatalf("expected captcha image to use challenge ticket instead of qr ticket, got %q", kaptchaImageQueryTicket)
+	}
+	if result.LoginForm.QRTicket != "" {
+		t.Fatalf("expected password captcha form not to carry qr ticket, got %#v", result.LoginForm)
+	}
+}
+
+func TestSubmitTUILoginFormPasswordVerifyLoginPreservesPasswordTicket(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(cryptorand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key failed: %v", err)
+	}
+	publicKeyDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal public key failed: %v", err)
+	}
+	publicKeyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicKeyDER}))
+	var verifyLoginTicket string
+	var verifyLoginPasswordTicket string
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/xeai/oauth/api/password_token":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
+		case "/xeai/ajax_logon":
+			query := request.URL.Query()
+			if got := query.Get("password_ticket"); got != "password-ticket-1" {
+				t.Fatalf("unexpected ajax_logon password_ticket: %q", got)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":405,"message":"需要短信验证码","data":{"type":"sms","hint":"请输入短信验证码","target":"138****0000"}}`)
+		case "/xeai/ajax_logon/verify_token":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"verify-ticket-1","type":"sms","hint":"请输入短信验证码","target":"138****0000"}}`)
+		case "/xeai/ajax_logon/verify_login":
+			verifyLoginTicket = request.URL.Query().Get("ticket")
+			verifyLoginPasswordTicket = request.URL.Query().Get("password_ticket")
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	app := &App{configManager: manager}
+	firstResult, err := app.submitTUILoginForm(context.Background(), buildProviderClient(config), tui.Snapshot{BackendAvailable: true, AuthRequired: true}, tui.LoginFormSubmission{
+		Mode:     "password",
+		Username: "zhangsan",
+		Password: "secret-123",
+		Remember: false,
+	}, nil)
+	if err != nil {
+		t.Fatalf("first submitTUILoginForm failed: %v", err)
+	}
+	if firstResult.LoginForm == nil {
+		t.Fatalf("expected verify challenge login form, got %#v", firstResult)
+	}
+	if firstResult.LoginForm.PasswordTicket != "password-ticket-1" {
+		t.Fatalf("expected login form to preserve password ticket, got %#v", firstResult.LoginForm)
+	}
+	if firstResult.LoginForm.Ticket != "verify-ticket-1" {
+		t.Fatalf("expected login form to store verify ticket separately, got %#v", firstResult.LoginForm)
+	}
+
+	secondResult, err := app.submitTUILoginForm(context.Background(), buildProviderClient(config), tui.Snapshot{BackendAvailable: true, AuthRequired: true}, tui.LoginFormSubmission{
+		Mode:            "password",
+		Username:        firstResult.LoginForm.Username,
+		Password:        firstResult.LoginForm.Password,
+		PasswordTicket:  firstResult.LoginForm.PasswordTicket,
+		Remember:        false,
+		VerifyType:      firstResult.LoginForm.VerifyType,
+		VerifyHint:      firstResult.LoginForm.VerifyHint,
+		VerifyTarget:    firstResult.LoginForm.VerifyTarget,
+		Ticket:          firstResult.LoginForm.Ticket,
+		Code:            "123456",
+		PasswordPublicKey: firstResult.LoginForm.PasswordPublicKey,
+	}, nil)
+	if err != nil {
+		t.Fatalf("second submitTUILoginForm failed: %v", err)
+	}
+	if secondResult.LoginForm != nil {
+		t.Fatalf("expected verify login to succeed, got %#v", secondResult)
+	}
+	if verifyLoginTicket != "verify-ticket-1" {
+		t.Fatalf("expected verify_login to use verify ticket, got %q", verifyLoginTicket)
+	}
+	if verifyLoginPasswordTicket != "password-ticket-1" {
+		t.Fatalf("expected verify_login to preserve password_ticket from password token, got %q", verifyLoginPasswordTicket)
 	}
 }
 
@@ -303,7 +935,7 @@ func TestSubmitTUILoginFormPasswordShowsInlineErrorAndKeepsPasswordFocus(t *test
 		switch request.URL.Path {
 		case "/xeai/oauth/api/password_token":
 			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
 		case "/xeai/ajax_logon":
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":4001,"message":"用户名或密码错误"}`)
@@ -425,7 +1057,7 @@ func TestRunLoginPasswordSubcommandShowsRemovedCommandHint(t *testing.T) {
 		switch request.URL.Path {
 		case "/xeai/oauth/api/password_token":
 			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
 		case "/xeai/ajax_logon":
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
@@ -482,7 +1114,7 @@ func TestRunLoginQRSubcommandWaitsForScanAndPersistsAuthState(t *testing.T) {
 		switch request.URL.Path {
 		case "/xeai/oauth/api/token":
 			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"qr-ticket-1","fireurl":"https://example.com/scan","scanhint":"请使用企业微信扫码"}}`)
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"qr-ticket-1","fireurl":"https://example.com/scan","scanhint":"请使用微信扫码"}}`)
 		case "/xeai/oauth/api/wait_event":
 			writer.Header().Set("Content-Type", "application/json")
 			if waitCalls == 0 {
@@ -591,7 +1223,7 @@ func TestExecuteTUIQRWaitKeepsStaticQRCodeStateWithoutDynamicMessage(t *testing.
 		true,
 		"ticket-1",
 		"https://example.com/scan",
-		"请使用企业微信扫码",
+		"请使用微信扫码",
 		0,
 		nil,
 	)
@@ -645,7 +1277,7 @@ func TestExecuteTUIQRWaitShowsTerminalQRCodeStateError(t *testing.T) {
 		true,
 		"ticket-1",
 		"https://example.com/scan",
-		"请使用企业微信扫码",
+		"请使用微信扫码",
 		0,
 		nil,
 	)
@@ -694,7 +1326,7 @@ func TestExecuteTUIQRWaitStopsAutoRetryAfterTimeout(t *testing.T) {
 		true,
 		"ticket-1",
 		"https://example.com/scan",
-		"请使用企业微信扫码",
+		"请使用微信扫码",
 		config.QRWaitTimeoutSeconds-1,
 		nil,
 	)

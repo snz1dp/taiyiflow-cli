@@ -741,6 +741,10 @@ func (a *App) buildInitialTUISnapshot(
 		ApprovalMode:        config.ApprovalMode,
 		ReasoningEnabled:    config.ReasoningEnabled,
 	}
+	if backend.AuthRequired {
+		snapshot.AuthRequired = true
+		snapshot.AuthStatusReason = formatAuthRequiredStatusReason(backend.Reason)
+	}
 	if strings.TrimSpace(flowID) == "" {
 		return snapshot, nil
 	}
@@ -851,7 +855,7 @@ func (a *App) buildTUISnapshot(
 		)
 	} else if err != nil && isAuthenticationError(err) {
 		snapshot.AuthRequired = true
-		snapshot.AuthStatusReason = "服务端已连接，但当前登录态无效或缺失。登录表单已自动打开，也可手动执行 /login。"
+		snapshot.AuthStatusReason = formatAuthRequiredStatusReason(explainBackendFailure(err))
 	}
 	if strings.TrimSpace(flowID) == "" {
 		return snapshot, nil
@@ -909,6 +913,17 @@ func (a *App) buildTUISnapshot(
 		return snapshot, nil
 	}
 	return snapshot, nil
+}
+
+func formatAuthRequiredStatusReason(reason string) string {
+	trimmed := strings.TrimSpace(reason)
+	if trimmed == "" {
+		return "服务端已连接，但当前登录态无效或缺失。登录表单已自动打开，也可手动执行 /login。"
+	}
+	if strings.Contains(trimmed, "/login") {
+		return trimmed
+	}
+	return trimmed + "。登录表单已自动打开，也可手动执行 /login。"
 }
 
 func buildLocalShellCommandEvents(command string, result map[string]any) []tui.Event {

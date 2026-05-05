@@ -1,6 +1,7 @@
 package taiyiflow
 
 import (
+	"bytes"
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/rsa"
@@ -19,11 +20,43 @@ import (
 
 const authContextPath = "/xeai"
 
+const (
+	authCodeVerifyChallengeRequired = 404
+	authCodeVerifyCodeRequired      = 405
+	authCodeVerifyCodeInvalid       = 408
+)
+
 type AuthError struct {
-	Operation  string
-	StatusCode int
-	Code       int
-	Message    string
+	Operation       string
+	StatusCode      int
+	Code            int
+	Message         string
+	VerifyChallenge *VerifyCodeToken
+}
+
+func (e *AuthError) IsVerificationRequired() bool {
+	if e == nil {
+		return false
+	}
+	if e.VerifyChallenge != nil {
+		return true
+	}
+	switch e.Code {
+	case authCodeVerifyChallengeRequired, authCodeVerifyCodeRequired, authCodeVerifyCodeInvalid:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *AuthError) ShouldResetVerificationCode() bool {
+	if e == nil {
+		return false
+	}
+	if e.VerifyChallenge != nil {
+		return true
+	}
+	return e.Code == authCodeVerifyCodeInvalid
 }
 
 func (e *AuthError) Error() string {
@@ -103,17 +136,17 @@ type PersistentLoginToken struct {
 }
 
 type PasswordLoginToken struct {
-	Ticket string `json:"ticket"`
-	PubKey string `json:"pubkey"`
+	PasswordTicket string `json:"ticket"`
+	PubKey         string `json:"pubkey"`
 }
 
 type PasswordLoginRequest struct {
-	Ticket        string
-	PublicKey     string
-	Username      string
-	Password      string
-	KaptchaTicket string
-	KaptchaCode   string
+	VerifyTicket   string
+	PasswordTicket string
+	PublicKey      string
+	Username       string
+	Password       string
+	Code           string
 }
 
 type VerifyCodeToken struct {
@@ -148,14 +181,10 @@ type WaitEvent struct {
 	State        int    `json:"state"`
 }
 
-type KaptchaToken struct {
-	Ticket  string `json:"ticket"`
-	Expired int    `json:"expired"`
-}
-
-type KaptchaImage struct {
+type VerificationImage struct {
 	ContentType string
 	Data        []byte
+	URL         string
 }
 
 func NewAuthClient(baseURL string) *AuthClient {
@@ -170,17 +199,36 @@ func (c *AuthClient) GetPasswordLoginToken(ctx context.Context) (*PasswordLoginT
 	if err := c.doEnvelopeRequest(ctx, http.MethodGet, "/oauth/api/password_token", nil, "", &payload); err != nil {
 		return nil, err
 	}
+	payload.PasswordTicket = strings.TrimSpace(payload.PasswordTicket)
+	payload.PubKey = strings.TrimSpace(payload.PubKey)
+	if payload.PubKey == "" {
+		return nil, &AuthError{Operation: "获取登录公钥", Message: "登录公钥为空"}
+	}
+	if payload.PasswordTicket == "" {
+		return nil, &AuthError{Operation: "获取登录公钥", Message: "password_ticket 不能为空"}
+	}
 	return &payload, nil
 }
 
-func (c *AuthClient) PasswordLogin(ctx context.Context, request PasswordLoginRequest) (*AuthSession, error) {
-	trimmedTicket := strings.TrimSpace(request.Ticket)
-	trimmedUsername := strings.TrimSpace(request.Username)
-	if trimmedTicket == "" {
-		return nil, &AuthError{Operation: "用户名密码登录", Message: "验证码不能为空"}
+func (t *PasswordLoginToken) EffectivePasswordTicket() string {
+	if t == nil {
+		return ""
 	}
+	if trimmed := strings.TrimSpace(t.PasswordTicket); trimmed != "" {
+		return trimmed
+	}
+	return ""
+}
+
+func (c *AuthClient) PasswordLogin(ctx context.Context, request PasswordLoginRequest) (*AuthSession, error) {
+	trimmedTicket := strings.TrimSpace(request.VerifyTicket)
+	trimmedPasswordTicket := strings.TrimSpace(request.PasswordTicket)
+	trimmedUsername := strings.TrimSpace(request.Username)
 	if trimmedUsername == "" {
 		return nil, &AuthError{Operation: "用户名密码登录", Message: "用户名不能为空"}
+	}
+	if trimmedPasswordTicket == "" {
+		return nil, &AuthError{Operation: "用户名密码登录", Message: "请先获取登录公钥"}
 	}
 	if strings.TrimSpace(request.Password) == "" {
 		return nil, &AuthError{Operation: "用户名密码登录", Message: "密码不能为空"}
@@ -193,15 +241,11 @@ func (c *AuthClient) PasswordLogin(ctx context.Context, request PasswordLoginReq
 
 	values := url.Values{}
 	values.Set("ticket", trimmedTicket)
-	values.Set("password_ticket", trimmedTicket)
+	values.Set("password_ticket", trimmedPasswordTicket)
 	values.Set("username", trimmedUsername)
 	values.Set("password0", encryptedPassword)
-	values.Set("alg", "RSA")
-	if trimmed := strings.TrimSpace(request.KaptchaTicket); trimmed != "" {
-		values.Set("kaptcha_ticket", trimmed)
-	}
-	if trimmed := strings.TrimSpace(request.KaptchaCode); trimmed != "" {
-		values.Set("kaptcha_code", trimmed)
+	if trimmed := strings.TrimSpace(request.Code); trimmed != "" {
+		values.Set("code", trimmed)
 	}
 
 	var payload AuthSession
@@ -225,10 +269,16 @@ func (c *AuthClient) SendVerifyCode(ctx context.Context, username, verifyType, v
 	return &payload, nil
 }
 
-func (c *AuthClient) ValidateVerifyCode(ctx context.Context, username, verifyTicket, verifyType, verifyCode, verifyID string) error {
+func (c *AuthClient) ValidateVerifyCode(ctx context.Context, username, verifyTicket, passwordTicket, verifyType, verifyCode, verifyID string) error {
+	trimmedVerifyTicket := strings.TrimSpace(verifyTicket)
+	trimmedPasswordTicket := strings.TrimSpace(passwordTicket)
+	if trimmedPasswordTicket == "" {
+		trimmedPasswordTicket = trimmedVerifyTicket
+	}
 	values := url.Values{}
 	values.Set("username", strings.TrimSpace(username))
-	values.Set("verify_ticket", strings.TrimSpace(verifyTicket))
+	values.Set("verify_ticket", trimmedVerifyTicket)
+	values.Set("password_ticket", trimmedPasswordTicket)
 	values.Set("verify_type", strings.TrimSpace(verifyType))
 	values.Set("verify_code", strings.TrimSpace(verifyCode))
 	values.Set("verify_id", strings.TrimSpace(verifyID))
@@ -246,9 +296,15 @@ func (c *AuthClient) RequestVerifyLoginToken(ctx context.Context, verifyType, ve
 	return &payload, nil
 }
 
-func (c *AuthClient) CompleteVerifyLogin(ctx context.Context, ticket, verify string) (*AuthSession, error) {
+func (c *AuthClient) CompleteVerifyLogin(ctx context.Context, ticket, passwordTicket, verify string) (*AuthSession, error) {
+	trimmedTicket := strings.TrimSpace(ticket)
+	trimmedPasswordTicket := strings.TrimSpace(passwordTicket)
+	if trimmedPasswordTicket == "" {
+		trimmedPasswordTicket = trimmedTicket
+	}
 	values := url.Values{}
-	values.Set("ticket", strings.TrimSpace(ticket))
+	values.Set("ticket", trimmedTicket)
+	values.Set("password_ticket", trimmedPasswordTicket)
 	values.Set("verify", strings.TrimSpace(verify))
 	var payload AuthSession
 	if err := c.doEnvelopeRequest(ctx, http.MethodPost, "/ajax_logon/verify_login", values, "", &payload); err != nil {
@@ -286,22 +342,7 @@ func (c *AuthClient) WaitQRCodeLoginEvent(ctx context.Context, ticket string) (*
 	return &payload, nil
 }
 
-func (c *AuthClient) GetKaptchaTicket(ctx context.Context) (*KaptchaToken, error) {
-	var payload KaptchaToken
-	if err := c.doEnvelopeRequest(ctx, http.MethodGet, "/kaptcha/ticket", nil, "", &payload); err != nil {
-		return nil, err
-	}
-	return &payload, nil
-}
-
-func (c *AuthClient) VerifyKaptcha(ctx context.Context, ticket, code string) error {
-	values := url.Values{}
-	values.Set("ticket", strings.TrimSpace(ticket))
-	values.Set("code", strings.TrimSpace(code))
-	return c.doEnvelopeRequest(ctx, http.MethodGet, "/kaptcha/verify", values, "", nil)
-}
-
-func (c *AuthClient) GetKaptchaImage(ctx context.Context, ticket string) (*KaptchaImage, error) {
+func (c *AuthClient) GetVerificationImage(ctx context.Context, ticket string) (*VerificationImage, error) {
 	trimmedTicket := strings.TrimSpace(ticket)
 	if trimmedTicket == "" {
 		return nil, nil
@@ -321,7 +362,7 @@ func (c *AuthClient) GetKaptchaImage(ctx context.Context, ticket string) (*Kaptc
 
 	var lastErr error
 	for _, candidate := range candidates {
-		image, err := c.fetchKaptchaImageCandidate(ctx, candidate.path, candidate.query)
+		image, err := c.fetchVerificationImageCandidate(ctx, candidate.path, candidate.query)
 		if err == nil && image != nil {
 			return image, nil
 		}
@@ -402,7 +443,7 @@ func (c *AuthClient) doEnvelopeRequest(ctx context.Context, method string, path 
 	return nil
 }
 
-func (c *AuthClient) fetchKaptchaImageCandidate(ctx context.Context, path string, query url.Values) (*KaptchaImage, error) {
+func (c *AuthClient) fetchVerificationImageCandidate(ctx context.Context, path string, query url.Values) (*VerificationImage, error) {
 	endpoint, err := c.authURL(path, query)
 	if err != nil {
 		return nil, &AuthError{Operation: "获取图形验证码", Message: err.Error()}
@@ -439,7 +480,7 @@ func (c *AuthClient) fetchKaptchaImageCandidate(ctx context.Context, path string
 		return nil, nil
 	}
 
-	return &KaptchaImage{ContentType: contentType, Data: data}, nil
+	return &VerificationImage{ContentType: contentType, Data: data, URL: endpoint}, nil
 }
 
 func (c *AuthClient) authURL(path string, query url.Values) (string, error) {
@@ -466,7 +507,10 @@ func decodeAuthEnvelope(resp *http.Response, operation string, target any) error
 		return &AuthError{Operation: operation, StatusCode: resp.StatusCode, Message: fmt.Sprintf("解析认证响应失败: %v", err)}
 	}
 	if payload.Code != 0 {
-		return &AuthError{Operation: operation, StatusCode: resp.StatusCode, Code: payload.Code, Message: envelopeMessage(payload.Message, "认证请求失败")}
+		if target != nil {
+			_ = json.Unmarshal(payload.Data, target)
+		}
+		return buildAuthEnvelopeError(operation, resp.StatusCode, payload, "认证请求失败")
 	}
 	if target == nil {
 		return nil
@@ -475,6 +519,36 @@ func decodeAuthEnvelope(resp *http.Response, operation string, target any) error
 		return &AuthError{Operation: operation, StatusCode: resp.StatusCode, Message: fmt.Sprintf("解析认证 data 失败: %v", err)}
 	}
 	return nil
+}
+
+func buildAuthEnvelopeError(operation string, statusCode int, payload authEnvelope[json.RawMessage], fallback string) *AuthError {
+	authErr := &AuthError{
+		Operation:       operation,
+		StatusCode:      statusCode,
+		Code:            payload.Code,
+		Message:         envelopeMessage(payload.Message, fallback),
+		VerifyChallenge: decodeVerifyChallengePayload(payload.Data),
+	}
+	return authErr
+}
+
+func decodeVerifyChallengePayload(data json.RawMessage) *VerifyCodeToken {
+	trimmedData := bytes.TrimSpace(data)
+	if len(trimmedData) == 0 || bytes.Equal(trimmedData, []byte("null")) {
+		return nil
+	}
+	var challenge VerifyCodeToken
+	if err := json.Unmarshal(trimmedData, &challenge); err != nil {
+		return nil
+	}
+	challenge.Ticket = strings.TrimSpace(challenge.Ticket)
+	challenge.Hint = strings.TrimSpace(challenge.Hint)
+	challenge.Type = strings.TrimSpace(challenge.Type)
+	challenge.Target = strings.TrimSpace(challenge.Target)
+	if challenge.Ticket == "" && challenge.Hint == "" && challenge.Type == "" && challenge.Target == "" && challenge.Interval == 0 {
+		return nil
+	}
+	return &challenge
 }
 
 func buildPersistentLoginSignature(deviceID string, salt string) string {
@@ -521,12 +595,7 @@ func parseLoginPublicKey(value string) (*rsa.PublicKey, error) {
 func readAuthHTTPError(operation string, resp *http.Response) error {
 	var payload authEnvelope[json.RawMessage]
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err == nil {
-		return &AuthError{
-			Operation:  operation,
-			StatusCode: resp.StatusCode,
-			Code:       payload.Code,
-			Message:    envelopeMessage(payload.Message, resp.Status),
-		}
+		return buildAuthEnvelopeError(operation, resp.StatusCode, payload, resp.Status)
 	}
 	return &AuthError{
 		Operation:  operation,

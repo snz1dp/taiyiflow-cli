@@ -13,6 +13,7 @@ import (
 
 type backendStatus struct {
 	Available bool
+	AuthRequired bool
 	Reason    string
 }
 
@@ -27,7 +28,7 @@ func (a *App) inspectBackendStatus(ctx context.Context, client *providerclient.C
 
 	if _, err := client.GetVersionInfo(checkCtx); err != nil {
 		if isAuthenticationError(err) {
-			return backendStatus{Available: true, Reason: explainBackendFailure(err)}
+			return backendStatus{Available: true, AuthRequired: true, Reason: explainBackendFailure(err)}
 		}
 		return backendStatus{Reason: explainBackendFailure(err)}
 	}

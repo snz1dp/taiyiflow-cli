@@ -25,6 +25,9 @@ func TestInspectBackendStatusTreatsAuthenticationErrorAsAvailable(t *testing.T) 
 	if !status.Available {
 		t.Fatalf("expected authentication failure to keep backend available, got %#v", status)
 	}
+	if !status.AuthRequired {
+		t.Fatalf("expected authentication failure to mark auth required, got %#v", status)
+	}
 	if got := status.Reason; got != "请重新登录太乙智启服务" {
 		t.Fatalf("unexpected auth-required backend reason: %q", got)
 	}

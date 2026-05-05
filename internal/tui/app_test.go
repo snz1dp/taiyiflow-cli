@@ -1,8 +1,13 @@
 package tui
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +18,25 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+func testVerificationPNGBase64(t *testing.T) string {
+	t.Helper()
+	preview := image.NewRGBA(image.Rect(0, 0, 8, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 8; x++ {
+			pixel := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+			if (x+y)%2 == 0 {
+				pixel = color.RGBA{R: 24, G: 24, B: 24, A: 255}
+			}
+			preview.Set(x, y, pixel)
+		}
+	}
+	var buffer bytes.Buffer
+	if err := png.Encode(&buffer, preview); err != nil {
+		t.Fatalf("encode test verification image failed: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(buffer.Bytes())
+}
 
 func TestStartStreamErrorDoesNotQueueDoneMessage(t *testing.T) {
 	eventCh := make(chan tea.Msg, 4)
@@ -271,7 +295,7 @@ func TestRenderLoginFormShowsQRCodeState(t *testing.T) {
 		Remember:    true,
 		QRTicket:    "ticket-1",
 		QRLoginURL:  "https://example.com/login/scan",
-		QRScanHint:  "请使用企业微信扫码确认",
+		QRScanHint:  "请使用微信扫码确认",
 		QRCodeASCII: "██  ██\n  ██  ",
 	})
 	state.cursor = loginFieldSubmit
@@ -323,7 +347,7 @@ func TestQRCodeWaitTickSubmitsWaitAction(t *testing.T) {
 		Remember:        true,
 		QRTicket:        "ticket-1",
 		QRLoginURL:      "https://example.com/login/scan",
-		QRScanHint:      "请打开企业微信扫码登录。",
+		QRScanHint:      "请打开微信扫码登录。",
 		QRCodeASCII:     "██  ██\n  ██  ",
 		QRWaiting:       true,
 		QRWaitPollCount: 7,
@@ -478,6 +502,24 @@ func TestHandleLoginFormKeyQuitsWhenLoginIsRequired(t *testing.T) {
 	}
 }
 
+func TestHandleLoginFormKeyIgnoresQShortcut(t *testing.T) {
+	state := newLoginFormState(LoginFormState{Title: "登录(login)", Mode: "password"})
+	state.cursor = loginFieldMode
+	appModel := model{loginForm: state, snapshot: Snapshot{BackendAvailable: true}}
+
+	updatedModel, cmd := appModel.handleLoginFormKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	updated := updatedModel.(model)
+	if cmd != nil {
+		t.Fatalf("expected q not to close login form, got command %T", cmd)
+	}
+	if updated.loginForm == nil {
+		t.Fatal("expected login form to remain open after q")
+	}
+	if updated.quitting {
+		t.Fatalf("expected q not to quit app, got %#v", updated)
+	}
+}
+
 func TestRenderLoginFormShowsTaiyiHeaderAndHidesRemember(t *testing.T) {
 	state := newLoginFormState(LoginFormState{
 		Title:    "登录(login)",
@@ -519,11 +561,12 @@ func TestRenderLoginFormShowsCaptchaStepWhenTicketPresent(t *testing.T) {
 		Remember:               true,
 		VerifyType:             "kaptcha",
 		VerifyImageASCII:       "##@@\n@@##",
-		VerifyImagePNGBase64:   "QUJD",
+		VerifyImagePNGBase64:   testVerificationPNGBase64(t),
 		VerifyImageWidth:       120,
 		VerifyImageHeight:      48,
-		VerifyImagePreviewPath: "/tmp/kaptcha-preview.png",
-		KaptchaTicket:          "captcha-ticket-1",
+		VerifyImageURL:         "https://example.com/xeai/kaptcha/image?ticket=captcha-ticket-1",
+		VerifyImagePreviewPath: "/tmp/captcha-preview.png",
+		Ticket:                 "captcha-ticket-1",
 	})
 
 	appModel := model{
@@ -535,23 +578,98 @@ func TestRenderLoginFormShowsCaptchaStepWhenTicketPresent(t *testing.T) {
 	if !strings.Contains(rendered, "登录账号(username)") {
 		t.Fatalf("expected username summary in captcha step, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "图形验证码(captcha_code)") {
+	if !strings.Contains(rendered, "图形验证码(code)") {
 		t.Fatalf("expected captcha input in captcha step, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "图形验证码(kaptcha)") {
+	if !strings.Contains(rendered, "图形验证码(image)") {
 		t.Fatalf("expected captcha step to show captcha type and image, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "已回退为 ASCII 图形验证码") {
-		t.Fatalf("expected captcha step to explain ascii fallback, got %q", rendered)
+	if !strings.Contains(rendered, "已回退为 ANSI 彩色块预览") {
+		t.Fatalf("expected captcha step to explain ansi color fallback, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "已将图形验证码保存到本地图片，并尝试用系统预览打开") {
 		t.Fatalf("expected captcha step to show preview path hint, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "图片地址(image_url):") || !strings.Contains(rendered, "file:///tmp/kaptcha-preview.png") {
-		t.Fatalf("expected captcha step to show preview file url, got %q", rendered)
+	if strings.Contains(rendered, "本地路径(image_path):") || strings.Contains(rendered, "/tmp/captcha-preview.png") {
+		t.Fatalf("expected captcha step to hide local preview path, got %q", rendered)
 	}
-	if strings.Contains(rendered, "验证码票据(captcha_ticket)") || strings.Contains(rendered, "密码(password)") {
-		t.Fatalf("expected captcha step to hide ticket and password fields, got %q", rendered)
+	if strings.Contains(rendered, "图片地址(image_url):") || strings.Contains(rendered, "https://example.com/xeai/kaptcha/image?ticket=captcha-ticket-1") {
+		t.Fatalf("expected captcha step to hide image url, got %q", rendered)
+	}
+	if strings.Contains(rendered, "验证码票据(captcha_ticket)") {
+		t.Fatalf("expected captcha step to hide ticket field, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "密码(password)") {
+		t.Fatalf("expected captcha step to keep password field visible, got %q", rendered)
+	}
+}
+
+func TestVisibleLoginFieldsKeepPasswordDuringVerification(t *testing.T) {
+	fields := visibleLoginFields(loginFormModePassword, true)
+	if !containsInt(fields, loginFieldPassword) {
+		t.Fatalf("expected password field to stay visible during verification, got %#v", fields)
+	}
+	if !containsInt(fields, loginFieldCaptchaCode) {
+		t.Fatalf("expected captcha code field to stay visible during verification, got %#v", fields)
+	}
+	if containsInt(fields, loginFieldUsername) {
+		t.Fatalf("expected username field to remain hidden during verification, got %#v", fields)
+	}
+}
+
+func containsInt(values []int, target int) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func TestLoginVerificationImageCellSizeAllowsLargerCaptchaPreview(t *testing.T) {
+	widthCells, heightCells := loginVerificationImageCellSize(240, 96, 128)
+	if widthCells != 128 || heightCells != 48 {
+		t.Fatalf("expected enlarged captcha preview size, got width=%d height=%d", widthCells, heightCells)
+	}
+}
+
+func TestRenderLoginVerificationImageUsesANSIColorPreviewInPlainTerminal(t *testing.T) {
+	t.Setenv("TAIYIFLOW_CLI_TERMINAL_IMAGE_PROTOCOL", "off")
+	state := newLoginFormState(LoginFormState{VerifyImageASCII: "█▄\n▀ ", VerifyImagePNGBase64: testVerificationPNGBase64(t)})
+	appModel := model{contentWidth: 80, loginForm: state}
+	rendered := appModel.renderLoginVerificationImage()
+	if !strings.Contains(rendered, "\x1b[38;2;") || !strings.Contains(rendered, "▀") {
+		t.Fatalf("expected plain terminal captcha to use ansi color blocks, got %q", rendered)
+	}
+}
+
+func TestLoginVerificationASCIIScalePreservesWiderPadding(t *testing.T) {
+	scaleFactor := loginVerificationASCIIScale("  ██  \n  ██  ", 80)
+	if scaleFactor != 4 {
+		t.Fatalf("expected narrow captcha ascii to use max scale, got %d", scaleFactor)
+	}
+}
+
+func TestRenderLoginFormHidesImageURLWithoutPreviewPathInPlainTerminal(t *testing.T) {
+	t.Setenv("TAIYIFLOW_CLI_TERMINAL_IMAGE_PROTOCOL", "off")
+	state := newLoginFormState(LoginFormState{
+		Title:                "登录(login)",
+		Mode:                 "password",
+		VerifyType:           "kaptcha",
+		VerifyImageASCII:     "##",
+		VerifyImagePNGBase64: testVerificationPNGBase64(t),
+		VerifyImageURL:       "https://example.com/xeai/kaptcha/image?ticket=captcha-ticket-2",
+		Ticket:               "captcha-ticket-2",
+	})
+	rendered := sanitizeTerminalText((model{contentWidth: 80, loginForm: state}).renderLoginForm())
+	if strings.Contains(rendered, "图片地址(image_url):") || strings.Contains(rendered, "https://example.com/xeai/kaptcha/image?ticket=captcha-ticket-2") {
+		t.Fatalf("expected plain terminal captcha step to hide http image url, got %q", rendered)
+	}
+	if strings.Contains(rendered, "本地路径(image_path):") {
+		t.Fatalf("expected plain terminal captcha step to hide local image path, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "已回退为 ANSI 彩色块预览") {
+		t.Fatalf("expected plain terminal captcha step to mention ansi color preview, got %q", rendered)
 	}
 }
 
@@ -567,12 +685,12 @@ func TestRenderLoginFormUsesITerm2InlineImageForCaptcha(t *testing.T) {
 		VerifyImagePNGBase64: "QUJD",
 		VerifyImageWidth:     120,
 		VerifyImageHeight:    48,
-		KaptchaTicket:        "captcha-ticket-1",
+		Ticket:               "captcha-ticket-1",
 	})
 
 	appModel := model{contentWidth: 80, loginForm: state}
 	rendered := appModel.renderLoginForm()
-	if !strings.Contains(rendered, "\x1b]1337;File=inline=1;width=62;height=24;") {
+	if !strings.Contains(rendered, "\x1b]1337;File=inline=1;width=64;height=26;") {
 		t.Fatalf("expected iterm2 inline image protocol, got %q", rendered)
 	}
 	if !strings.Contains(sanitizeTerminalText(rendered), "当前使用 iTerm2 终端图片协议显示图形验证码") {
@@ -598,12 +716,12 @@ func TestRenderLoginFormUsesKittyInlineImageForCaptcha(t *testing.T) {
 		VerifyImagePNGBase64: "QUJD",
 		VerifyImageWidth:     120,
 		VerifyImageHeight:    48,
-		KaptchaTicket:        "captcha-ticket-1",
+		Ticket:               "captcha-ticket-1",
 	})
 
 	appModel := model{contentWidth: 80, loginForm: state}
 	rendered := appModel.renderLoginForm()
-	if !strings.Contains(rendered, "\x1b_Gf=100,a=T,t=d,c=62,r=24,") {
+	if !strings.Contains(rendered, "\x1b_Gf=100,a=T,t=d,c=64,r=26,") {
 		t.Fatalf("expected kitty inline image protocol, got %q", rendered)
 	}
 	if !strings.Contains(sanitizeTerminalText(rendered), "当前使用 kitty 终端图片协议显示图形验证码") {
@@ -629,7 +747,7 @@ func TestRenderLoginFormShowsTmuxPassthroughHintForCaptcha(t *testing.T) {
 		VerifyImagePNGBase64: "QUJD",
 		VerifyImageWidth:     120,
 		VerifyImageHeight:    48,
-		KaptchaTicket:        "captcha-ticket-1",
+		Ticket:               "captcha-ticket-1",
 	})
 
 	appModel := model{contentWidth: 80, loginForm: state}

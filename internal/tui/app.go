@@ -1,12 +1,15 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	cryptorand "crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"math"
-	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -211,55 +214,61 @@ type ConfigFormSubmission struct {
 }
 
 type LoginFormState struct {
-	Title            string
-	Hint             string
-	StatusText       string
-	StatusIsError    bool
-	FocusField       int
-	Mode             string
-	Username         string
-	Password         string
-	Remember         bool
-	VerifyType       string
-	VerifyHint       string
-	VerifyTarget     string
-	VerifyImageASCII string
-	VerifyImagePNGBase64 string
-	VerifyImageWidth int
-	VerifyImageHeight int
+	Title                  string
+	Hint                   string
+	StatusText             string
+	StatusIsError          bool
+	FocusField             int
+	Mode                   string
+	Username               string
+	Password               string
+	PasswordPublicKey      string
+	PasswordTicket         string
+	Remember               bool
+	VerifyType             string
+	VerifyHint             string
+	VerifyTarget           string
+	VerifyImageASCII       string
+	VerifyImagePNGBase64   string
+	VerifyImageWidth       int
+	VerifyImageHeight      int
+	VerifyImageURL         string
 	VerifyImagePreviewPath string
-	KaptchaTicket    string
-	KaptchaCode      string
-	QRTicket         string
-	QRLoginURL       string
-	QRScanHint       string
-	QRCodeASCII      string
-	QRWaiting        bool
-	QRWaitPollCount  int
+	Ticket                 string
+	Code                   string
+	QRTicket               string
+	QRLoginURL             string
+	QRScanHint             string
+	QRCodeASCII            string
+	QRWaiting              bool
+	QRWaitPollCount        int
 }
 
 type LoginFormSubmission struct {
-	Action           string
-	Mode             string
-	Username         string
-	Password         string
-	Remember         bool
-	VerifyType       string
-	VerifyHint       string
-	VerifyTarget     string
-	VerifyImageASCII string
-	VerifyImagePNGBase64 string
-	VerifyImageWidth int
-	VerifyImageHeight int
+	Action                 string
+	Mode                   string
+	Username               string
+	Password               string
+	PasswordPublicKey      string
+	PasswordTicket         string
+	Remember               bool
+	VerifyType             string
+	VerifyHint             string
+	VerifyTarget           string
+	VerifyImageASCII       string
+	VerifyImagePNGBase64   string
+	VerifyImageWidth       int
+	VerifyImageHeight      int
+	VerifyImageURL         string
 	VerifyImagePreviewPath string
-	KaptchaTicket    string
-	KaptchaCode      string
-	QRTicket         string
-	QRLoginURL       string
-	QRScanHint       string
-	QRCodeASCII      string
-	QRWaiting        bool
-	QRWaitPollCount  int
+	Ticket                 string
+	Code                   string
+	QRTicket               string
+	QRLoginURL             string
+	QRScanHint             string
+	QRCodeASCII            string
+	QRWaiting              bool
+	QRWaitPollCount        int
 }
 
 type slashCommand struct {
@@ -597,28 +606,31 @@ type configFormState struct {
 }
 
 type loginFormState struct {
-	title            string
-	hint             string
-	statusText       string
-	statusIsError    bool
-	mode             string
-	remember         bool
-	verifyType       string
-	verifyHint       string
-	verifyTarget     string
-	verifyImageASCII string
-	verifyImagePNGBase64 string
-	verifyImageWidth int
-	verifyImageHeight int
+	title                  string
+	hint                   string
+	statusText             string
+	statusIsError          bool
+	mode                   string
+	remember               bool
+	passwordPublicKey      string
+	passwordTicket         string
+	verifyType             string
+	verifyHint             string
+	verifyTarget           string
+	verifyImageASCII       string
+	verifyImagePNGBase64   string
+	verifyImageWidth       int
+	verifyImageHeight      int
+	verifyImageURL         string
 	verifyImagePreviewPath string
-	inputs           []textinput.Model
-	cursor           int
-	qrTicket         string
-	qrLoginURL       string
-	qrScanHint       string
-	qrCodeASCII      string
-	qrWaiting        bool
-	qrWaitPollCount  int
+	inputs                 []textinput.Model
+	cursor                 int
+	qrTicket               string
+	qrLoginURL             string
+	qrScanHint             string
+	qrCodeASCII            string
+	qrWaiting              bool
+	qrWaitPollCount        int
 }
 
 type configFieldSpec struct {
@@ -1663,7 +1675,7 @@ func (m model) handleLoginFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch msg.String() {
-	case "esc", "q", "ctrl+c":
+	case "esc", "ctrl+c":
 		if m.mustCompleteLogin() {
 			m.quitting = true
 			return m, tea.Quit
@@ -2861,11 +2873,7 @@ func (m model) renderLoginForm() string {
 			if username := strings.TrimSpace(m.loginForm.inputs[0].Value()); username != "" {
 				lines = append(lines, labelStyle.Render("登录账号(username)"), valueStyle.Render(trimForWidth(username, m.contentWidth-16)), "")
 			}
-			lines = append(lines,
-				labelStyle.Render("验证方式(verify_type)"),
-				valueStyle.Render(trimForWidth(loginVerificationTypeLabel(m.loginForm.verifyType), m.contentWidth-16)),
-				"",
-			)
+			lines = append(lines, m.renderLoginFormTextField(loginFieldPassword, "密码(password)", "请输入密码"))
 			if target := strings.TrimSpace(m.loginForm.verifyTarget); target != "" {
 				lines = append(lines,
 					labelStyle.Render("验证目标(verify_target)"),
@@ -2874,12 +2882,12 @@ func (m model) renderLoginForm() string {
 				)
 			}
 			if verificationImage := m.renderLoginVerificationImage(); verificationImage != "" {
-				lines = append(lines, labelStyle.Render("图形验证码(kaptcha)"), verificationImage, "")
-				if imageHint := loginVerificationImageHint(m.loginForm); imageHint != "" {
-					lines = append(lines, hintStyle.Render(trimForWidth(imageHint, m.contentWidth-16)), "")
-				}
+				lines = append(lines, labelStyle.Render("图形验证码(image)"), verificationImage, "")
 				if previewHint := loginVerificationImagePreviewHint(m.loginForm, m.contentWidth-16); previewHint != "" {
 					lines = append(lines, previewHint, "")
+				}
+				if imageHint := loginVerificationImageHint(m.loginForm); imageHint != "" {
+					lines = append(lines, hintStyle.Render(trimForWidth(imageHint, m.contentWidth-16)), "")
 				}
 				if backupASCII := renderLoginVerificationImageBackupASCII(m.loginForm); backupASCII != "" {
 					lines = append(lines,
@@ -2946,7 +2954,10 @@ func (m model) renderLoginVerificationImage() string {
 	if protocolImage := renderTerminalVerificationImage(m.loginForm, m.contentWidth-16); protocolImage != "" {
 		return protocolImage
 	}
-	return strings.TrimSpace(m.loginForm.verifyImageASCII)
+	if colorImage := renderANSIColorVerificationImage(m.loginForm.verifyImagePNGBase64, m.contentWidth-16); colorImage != "" {
+		return colorImage
+	}
+	return upscaleVerificationASCIIArt(m.loginForm.verifyImageASCII, loginVerificationASCIIScale(m.loginForm.verifyImageASCII, m.contentWidth))
 }
 
 func loginVerificationImageHint(state *loginFormState) string {
@@ -2965,6 +2976,9 @@ func loginVerificationImageHint(state *loginFormState) string {
 		}
 		return "当前使用 iTerm2 终端图片协议显示图形验证码。"
 	default:
+		if canRenderANSIColorVerificationImage(state.verifyImagePNGBase64) {
+			return "当前终端未启用专用图片协议，已回退为 ANSI 彩色块预览。"
+		}
 		if strings.TrimSpace(state.verifyImageASCII) == "" {
 			return ""
 		}
@@ -2983,31 +2997,15 @@ func renderLoginVerificationImageBackupASCII(state *loginFormState) string {
 }
 
 func loginVerificationImagePreviewHint(state *loginFormState, width int) string {
-	if state == nil || strings.TrimSpace(state.verifyImagePreviewPath) == "" {
+	if state == nil {
 		return ""
 	}
 	previewPath := strings.TrimSpace(state.verifyImagePreviewPath)
-	lines := []string{
-		hintStyle.Render(hardWrapText("已将图形验证码保存到本地图片，并尝试用系统预览打开。", width)),
-		hintStyle.Render("本地路径(image_path):"),
-		hintStyle.Render(hardWrapText(previewPath, width)),
-	}
-	if previewURL := loginVerificationImagePreviewURL(previewPath); previewURL != "" {
-		lines = append(lines,
-			hintStyle.Render("图片地址(image_url):"),
-			hintStyle.Render(hardWrapText(previewURL, width)),
-		)
-	}
-	return strings.Join(lines, "\n")
-}
-
-func loginVerificationImagePreviewURL(previewPath string) string {
-	previewPath = strings.TrimSpace(previewPath)
 	if previewPath == "" {
 		return ""
 	}
-	previewURL := &url.URL{Scheme: "file", Path: previewPath}
-	return previewURL.String()
+	lines := []string{hintStyle.Render(hardWrapText("已将图形验证码保存到本地图片，并尝试用系统预览打开。", width))}
+	return strings.Join(lines, "\n")
 }
 
 func (m model) renderLoginSubmitField() string {
@@ -4729,27 +4727,30 @@ func (m model) submitLoginForm(action string) (tea.Model, tea.Cmd) {
 		}
 	}
 	submission := LoginFormSubmission{
-		Action:           action,
-		Mode:             m.loginForm.mode,
-		Username:         strings.TrimSpace(m.loginForm.inputs[0].Value()),
-		Password:         m.loginForm.inputs[1].Value(),
-		Remember:         m.loginForm.remember,
-		VerifyType:       strings.TrimSpace(m.loginForm.verifyType),
-		VerifyHint:       strings.TrimSpace(m.loginForm.verifyHint),
-		VerifyTarget:     strings.TrimSpace(m.loginForm.verifyTarget),
-		VerifyImageASCII: m.loginForm.verifyImageASCII,
-		VerifyImagePNGBase64: m.loginForm.verifyImagePNGBase64,
-		VerifyImageWidth: m.loginForm.verifyImageWidth,
-		VerifyImageHeight: m.loginForm.verifyImageHeight,
+		Action:                 action,
+		Mode:                   m.loginForm.mode,
+		Username:               strings.TrimSpace(m.loginForm.inputs[0].Value()),
+		Password:               m.loginForm.inputs[1].Value(),
+		PasswordPublicKey:      strings.TrimSpace(m.loginForm.passwordPublicKey),
+		PasswordTicket:         strings.TrimSpace(m.loginForm.passwordTicket),
+		Remember:               m.loginForm.remember,
+		VerifyType:             strings.TrimSpace(m.loginForm.verifyType),
+		VerifyHint:             strings.TrimSpace(m.loginForm.verifyHint),
+		VerifyTarget:           strings.TrimSpace(m.loginForm.verifyTarget),
+		VerifyImageASCII:       m.loginForm.verifyImageASCII,
+		VerifyImagePNGBase64:   m.loginForm.verifyImagePNGBase64,
+		VerifyImageWidth:       m.loginForm.verifyImageWidth,
+		VerifyImageHeight:      m.loginForm.verifyImageHeight,
+		VerifyImageURL:         m.loginForm.verifyImageURL,
 		VerifyImagePreviewPath: m.loginForm.verifyImagePreviewPath,
-		KaptchaTicket:    strings.TrimSpace(m.loginForm.inputs[2].Value()),
-		KaptchaCode:      strings.TrimSpace(m.loginForm.inputs[3].Value()),
-		QRTicket:         strings.TrimSpace(m.loginForm.qrTicket),
-		QRLoginURL:       strings.TrimSpace(m.loginForm.qrLoginURL),
-		QRScanHint:       strings.TrimSpace(m.loginForm.qrScanHint),
-		QRCodeASCII:      m.loginForm.qrCodeASCII,
-		QRWaiting:        m.loginForm.qrWaiting,
-		QRWaitPollCount:  m.loginForm.qrWaitPollCount,
+		Ticket:                 strings.TrimSpace(m.loginForm.inputs[2].Value()),
+		Code:                   strings.TrimSpace(m.loginForm.inputs[3].Value()),
+		QRTicket:               strings.TrimSpace(m.loginForm.qrTicket),
+		QRLoginURL:             strings.TrimSpace(m.loginForm.qrLoginURL),
+		QRScanHint:             strings.TrimSpace(m.loginForm.qrScanHint),
+		QRCodeASCII:            m.loginForm.qrCodeASCII,
+		QRWaiting:              m.loginForm.qrWaiting,
+		QRWaitPollCount:        m.loginForm.qrWaitPollCount,
 	}
 	return m, tea.Batch(m.transitionProgress(progressExecuting), submitLoginFormCmd(m.ctx, m.snapshot, submission, m.loginFormSubmit))
 }
@@ -4798,7 +4799,7 @@ func newLoginFormState(state LoginFormState) *loginFormState {
 		codePlaceholder = "请输入同台密码"
 	}
 	placeholders := []string{"请输入用户名", "请输入密码", "无验证码可留空", codePlaceholder}
-	values := []string{state.Username, state.Password, state.KaptchaTicket, state.KaptchaCode}
+	values := []string{state.Username, state.Password, state.Ticket, state.Code}
 	models := make([]textinput.Model, 0, len(placeholders))
 	for index, placeholder := range placeholders {
 		input := textinput.New()
@@ -4815,28 +4816,31 @@ func newLoginFormState(state LoginFormState) *loginFormState {
 	}
 	mode := normalizeLoginFormMode(state.Mode)
 	loginState := &loginFormState{
-		title:            state.Title,
-		hint:             state.Hint,
-		statusText:       state.StatusText,
-		statusIsError:    state.StatusIsError,
-		mode:             mode,
-		remember:         state.Remember,
-		verifyType:       strings.TrimSpace(state.VerifyType),
-		verifyHint:       strings.TrimSpace(state.VerifyHint),
-		verifyTarget:     strings.TrimSpace(state.VerifyTarget),
-		verifyImageASCII: state.VerifyImageASCII,
-		verifyImagePNGBase64: state.VerifyImagePNGBase64,
-		verifyImageWidth: state.VerifyImageWidth,
-		verifyImageHeight: state.VerifyImageHeight,
+		title:                  state.Title,
+		hint:                   state.Hint,
+		statusText:             state.StatusText,
+		statusIsError:          state.StatusIsError,
+		mode:                   mode,
+		remember:               state.Remember,
+		passwordPublicKey:      strings.TrimSpace(state.PasswordPublicKey),
+		passwordTicket:         strings.TrimSpace(state.PasswordTicket),
+		verifyType:             strings.TrimSpace(state.VerifyType),
+		verifyHint:             strings.TrimSpace(state.VerifyHint),
+		verifyTarget:           strings.TrimSpace(state.VerifyTarget),
+		verifyImageASCII:       state.VerifyImageASCII,
+		verifyImagePNGBase64:   state.VerifyImagePNGBase64,
+		verifyImageWidth:       state.VerifyImageWidth,
+		verifyImageHeight:      state.VerifyImageHeight,
+		verifyImageURL:         state.VerifyImageURL,
 		verifyImagePreviewPath: state.VerifyImagePreviewPath,
-		inputs:           models,
-		cursor:           loginFieldMode,
-		qrTicket:         strings.TrimSpace(state.QRTicket),
-		qrLoginURL:       strings.TrimSpace(state.QRLoginURL),
-		qrScanHint:       strings.TrimSpace(state.QRScanHint),
-		qrCodeASCII:      state.QRCodeASCII,
-		qrWaiting:        state.QRWaiting,
-		qrWaitPollCount:  state.QRWaitPollCount,
+		inputs:                 models,
+		cursor:                 loginFieldMode,
+		qrTicket:               strings.TrimSpace(state.QRTicket),
+		qrLoginURL:             strings.TrimSpace(state.QRLoginURL),
+		qrScanHint:             strings.TrimSpace(state.QRScanHint),
+		qrCodeASCII:            state.QRCodeASCII,
+		qrWaiting:              state.QRWaiting,
+		qrWaitPollCount:        state.QRWaitPollCount,
 	}
 	if state.FocusField >= 0 && loginFieldVisible(mode, state.FocusField, hasLoginVerificationChallenge(loginState)) {
 		loginState.cursor = state.FocusField
@@ -4881,7 +4885,7 @@ func loginFieldVisible(mode string, field int, hasVerification bool) bool {
 		return false
 	}
 	if hasVerification {
-		return field == loginFieldCaptchaCode
+		return field == loginFieldPassword || field == loginFieldCaptchaCode
 	}
 	return field == loginFieldUsername || field == loginFieldPassword
 }
@@ -4916,7 +4920,7 @@ func hasLoginCaptchaTicket(state *loginFormState) bool {
 func loginVerificationTypeLabel(verifyType string) string {
 	switch strings.ToLower(strings.TrimSpace(verifyType)) {
 	case loginVerifyTypeKaptcha:
-		return "图形验证码(kaptcha)"
+		return "图形验证码(image)"
 	case loginVerifyTypeSMS:
 		return "短信验证码(sms)"
 	case loginVerifyTypeMail:
@@ -4931,7 +4935,7 @@ func loginVerificationTypeLabel(verifyType string) string {
 func loginVerificationCodeLabel(verifyType string) string {
 	switch strings.ToLower(strings.TrimSpace(verifyType)) {
 	case loginVerifyTypeKaptcha:
-		return "图形验证码(captcha_code)"
+		return "图形验证码(code)"
 	case loginVerifyTypeSMS:
 		return "短信验证码(sms_code)"
 	case loginVerifyTypeMail:
@@ -4965,12 +4969,14 @@ func renderTerminalVerificationImage(state *loginFormState, maxWidth int) string
 	if state == nil || strings.TrimSpace(state.verifyImagePNGBase64) == "" {
 		return ""
 	}
-	widthCells, heightCells := loginVerificationImageCellSize(state.verifyImageWidth, state.verifyImageHeight, maxWidth)
+	const scaleFactor = 2
+	renderedImage := upscaleVerificationImagePNG(state.verifyImagePNGBase64, scaleFactor)
+	widthCells, heightCells := loginVerificationImageCellSize(state.verifyImageWidth*scaleFactor, state.verifyImageHeight*scaleFactor, maxWidth)
 	switch detectTerminalImageProtocol() {
 	case "kitty":
-		return renderKittyInlineImage(state.verifyImagePNGBase64, widthCells, heightCells)
+		return renderKittyInlineImage(renderedImage, widthCells, heightCells)
 	case "iterm2":
-		return renderITerm2InlineImage(state.verifyImagePNGBase64, widthCells, heightCells)
+		return renderITerm2InlineImage(renderedImage, widthCells, heightCells)
 	default:
 		return ""
 	}
@@ -5009,21 +5015,179 @@ func runningInsideTmux() bool {
 }
 
 func loginVerificationImageCellSize(imageWidth int, imageHeight int, maxWidth int) (int, int) {
-	maxCells := 48
+	maxCells := 96
 	if maxWidth > 0 {
-		maxCells = minInt(64, maxInt(24, maxWidth-2))
+		maxCells = minInt(128, maxInt(32, maxWidth))
 	}
 	widthCells := maxCells
 	if imageWidth > 0 {
-		widthCells = maxInt(24, minInt(maxCells, int(math.Round(float64(imageWidth)*0.85))))
+		widthCells = maxInt(32, minInt(maxCells, int(math.Round(float64(imageWidth)*0.85))))
 	}
 	heightCells := 10
 	if imageWidth > 0 && imageHeight > 0 {
 		ratio := float64(imageHeight) / float64(imageWidth)
 		heightCells = int(math.Round(float64(widthCells) * ratio))
 	}
-	heightCells = maxInt(8, minInt(24, heightCells))
+	heightCells = maxInt(10, minInt(48, heightCells))
 	return widthCells, heightCells
+}
+
+func upscaleVerificationImagePNG(base64Data string, scaleFactor int) string {
+	trimmed := strings.TrimSpace(base64Data)
+	if trimmed == "" || scaleFactor <= 1 {
+		return trimmed
+	}
+	rawData, err := base64.StdEncoding.DecodeString(trimmed)
+	if err != nil {
+		return trimmed
+	}
+	sourceImage, _, err := image.Decode(bytes.NewReader(rawData))
+	if err != nil {
+		return trimmed
+	}
+	bounds := sourceImage.Bounds()
+	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
+		return trimmed
+	}
+	scaledImage := image.NewNRGBA(image.Rect(0, 0, bounds.Dx()*scaleFactor, bounds.Dy()*scaleFactor))
+	for y := 0; y < scaledImage.Bounds().Dy(); y++ {
+		sourceY := bounds.Min.Y + y/scaleFactor
+		for x := 0; x < scaledImage.Bounds().Dx(); x++ {
+			sourceX := bounds.Min.X + x/scaleFactor
+			scaledImage.Set(x, y, sourceImage.At(sourceX, sourceY))
+		}
+	}
+	var buffer bytes.Buffer
+	if err := png.Encode(&buffer, scaledImage); err != nil {
+		return trimmed
+	}
+	return base64.StdEncoding.EncodeToString(buffer.Bytes())
+}
+
+func upscaleVerificationASCIIArt(content string, scaleFactor int) string {
+	if strings.TrimSpace(content) == "" || scaleFactor <= 1 {
+		return strings.Trim(content, "\n")
+	}
+	lines := strings.Split(strings.Trim(content, "\n"), "\n")
+	expandedLines := make([]string, 0, len(lines)*scaleFactor)
+	for _, line := range lines {
+		var widened strings.Builder
+		for _, char := range line {
+			for repeat := 0; repeat < scaleFactor; repeat++ {
+				widened.WriteRune(char)
+			}
+		}
+		expanded := widened.String()
+		for repeat := 0; repeat < scaleFactor; repeat++ {
+			expandedLines = append(expandedLines, expanded)
+		}
+	}
+	return strings.Join(expandedLines, "\n")
+}
+
+func canRenderANSIColorVerificationImage(base64Data string) bool {
+	_, ok := decodeVerificationImageBase64(base64Data)
+	return ok
+}
+
+func renderANSIColorVerificationImage(base64Data string, maxWidth int) string {
+	decodedImage, ok := decodeVerificationImageBase64(base64Data)
+	if !ok {
+		return ""
+	}
+	return renderANSIColorVerificationImageFromDecoded(decodedImage, maxWidth)
+}
+
+func decodeVerificationImageBase64(base64Data string) (image.Image, bool) {
+	trimmed := strings.TrimSpace(base64Data)
+	if trimmed == "" {
+		return nil, false
+	}
+	rawData, err := base64.StdEncoding.DecodeString(trimmed)
+	if err != nil {
+		return nil, false
+	}
+	decodedImage, _, err := image.Decode(bytes.NewReader(rawData))
+	if err != nil {
+		return nil, false
+	}
+	bounds := decodedImage.Bounds()
+	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
+		return nil, false
+	}
+	return decodedImage, true
+}
+
+func renderANSIColorVerificationImageFromDecoded(decodedImage image.Image, maxWidth int) string {
+	bounds := decodedImage.Bounds()
+	targetWidth := bounds.Dx()
+	if maxWidth > 0 {
+		targetWidth = minInt(bounds.Dx(), maxInt(36, minInt(96, maxWidth)))
+	}
+	if targetWidth <= 0 {
+		return ""
+	}
+	targetHeightPixels := int(math.Round(float64(bounds.Dy()) * float64(targetWidth) / float64(bounds.Dx())))
+	targetHeightPixels = maxInt(12, minInt(48, targetHeightPixels))
+	if targetHeightPixels%2 != 0 {
+		targetHeightPixels++
+	}
+	var output strings.Builder
+	for y := 0; y < targetHeightPixels; y += 2 {
+		for x := 0; x < targetWidth; x++ {
+			top := sampleVerificationImageColor(decodedImage, bounds, x, y, targetWidth, targetHeightPixels)
+			bottom := sampleVerificationImageColor(decodedImage, bounds, x, y+1, targetWidth, targetHeightPixels)
+			output.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm▀", top.red, top.green, top.blue, bottom.red, bottom.green, bottom.blue))
+		}
+		output.WriteString("\x1b[0m")
+		if y+2 < targetHeightPixels {
+			output.WriteByte('\n')
+		}
+	}
+	return output.String()
+}
+
+type verificationImageColor struct {
+	red   uint8
+	green uint8
+	blue  uint8
+}
+
+func sampleVerificationImageColor(decodedImage image.Image, bounds image.Rectangle, x int, y int, targetWidth int, targetHeight int) verificationImageColor {
+	if targetWidth <= 0 || targetHeight <= 0 {
+		return verificationImageColor{red: 255, green: 255, blue: 255}
+	}
+	sourceX := bounds.Min.X + minInt(bounds.Dx()-1, maxInt(0, x*bounds.Dx()/targetWidth))
+	sourceY := bounds.Min.Y + minInt(bounds.Dy()-1, maxInt(0, y*bounds.Dy()/targetHeight))
+	red, green, blue, alpha := decodedImage.At(sourceX, sourceY).RGBA()
+	if alpha == 0 {
+		return verificationImageColor{red: 255, green: 255, blue: 255}
+	}
+	return verificationImageColor{red: uint8(red >> 8), green: uint8(green >> 8), blue: uint8(blue >> 8)}
+}
+
+func loginVerificationASCIIScale(content string, contentWidth int) int {
+	baseWidth := verificationASCIIMaxLineWidth(content)
+	if baseWidth <= 0 {
+		return 2
+	}
+	targetWidth := maxInt(64, minInt(112, contentWidth))
+	if targetWidth < 96 {
+		targetWidth = 96
+	}
+	scaleFactor := int(math.Ceil(float64(targetWidth) / float64(baseWidth)))
+	return maxInt(2, minInt(4, scaleFactor))
+}
+
+func verificationASCIIMaxLineWidth(content string) int {
+	maxWidth := 0
+	for _, line := range strings.Split(strings.Trim(content, "\n"), "\n") {
+		lineWidth := lipgloss.Width(line)
+		if lineWidth > maxWidth {
+			maxWidth = lineWidth
+		}
+	}
+	return maxWidth
 }
 
 func renderITerm2InlineImage(base64Data string, widthCells int, heightCells int) string {
