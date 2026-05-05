@@ -26,6 +26,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/loginprompt"
 )
 
 type Snapshot struct {
@@ -671,10 +672,10 @@ const (
 )
 
 const (
-	loginVerifyTypeKaptcha = "kaptcha"
-	loginVerifyTypeSMS     = "sms"
-	loginVerifyTypeMail    = "mail"
-	loginVerifyTypeTOTP    = "totp"
+	loginVerifyTypeKaptcha = loginprompt.VerifyTypeKaptcha
+	loginVerifyTypeSMS     = loginprompt.VerifyTypeSMS
+	loginVerifyTypeMail    = loginprompt.VerifyTypeMail
+	loginVerifyTypeTOTP    = loginprompt.VerifyTypeTOTP
 )
 
 const (
@@ -4805,10 +4806,7 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 }
 
 func newLoginFormState(state LoginFormState) *loginFormState {
-	codePlaceholder := "请输入验证码"
-	if strings.TrimSpace(state.VerifyType) == loginVerifyTypeTOTP {
-		codePlaceholder = "请输入动态口令（TOTP）"
-	}
+	codePlaceholder := loginprompt.CodePlaceholder(state.VerifyType)
 	placeholders := []string{"请输入用户名", "请输入密码", "无验证码可留空", codePlaceholder}
 	values := []string{state.Username, state.Password, state.Ticket, state.Code}
 	models := make([]textinput.Model, 0, len(placeholders))
@@ -4936,51 +4934,15 @@ func hasLoginCaptchaTicket(state *loginFormState) bool {
 }
 
 func loginVerificationTypeLabel(verifyType string) string {
-	switch strings.ToLower(strings.TrimSpace(verifyType)) {
-	case loginVerifyTypeKaptcha:
-		return "图形验证码(image)"
-	case loginVerifyTypeSMS:
-		return "短信验证码(sms)"
-	case loginVerifyTypeMail:
-		return "邮箱验证码(mail)"
-	case loginVerifyTypeTOTP:
-		return "动态口令(totp)"
-	default:
-		return "验证码(verify_code)"
-	}
+	return loginprompt.TypeLabel(verifyType)
 }
 
 func loginVerificationCodeLabel(verifyType string) string {
-	switch strings.ToLower(strings.TrimSpace(verifyType)) {
-	case loginVerifyTypeKaptcha:
-		return "图形验证码(code)"
-	case loginVerifyTypeSMS:
-		return "短信验证码(sms_code)"
-	case loginVerifyTypeMail:
-		return "邮箱验证码(mail_code)"
-	case loginVerifyTypeTOTP:
-		return "动态口令(totp_code)"
-	default:
-		return "验证码(verify_code)"
-	}
+	return loginprompt.CodeLabel(verifyType)
 }
 
 func loginVerificationDescription(verifyType string, verifyHint string) string {
-	if hint := strings.TrimSpace(verifyHint); hint != "" {
-		return hint
-	}
-	switch strings.ToLower(strings.TrimSpace(verifyType)) {
-	case loginVerifyTypeKaptcha:
-		return "检测到需要图形验证码，请输入验证码后继续登录。"
-	case loginVerifyTypeSMS:
-		return "检测到需要短信验证码，请输入短信验证码后继续登录。"
-	case loginVerifyTypeMail:
-		return "检测到需要邮箱验证码，请输入邮箱验证码后继续登录。"
-	case loginVerifyTypeTOTP:
-		return "检测到需要动态口令（TOTP），请输入动态口令后继续登录。"
-	default:
-		return "检测到需要验证码，请输入验证码后继续登录。"
-	}
+	return loginprompt.Description(verifyType, verifyHint)
 }
 
 func renderTerminalVerificationImage(state *loginFormState, maxWidth int) string {

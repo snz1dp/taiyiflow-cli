@@ -20,6 +20,7 @@ import (
 
 	qrcode "github.com/skip2/go-qrcode"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/loginprompt"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/tui"
@@ -74,10 +75,10 @@ const (
 )
 
 const (
-	loginVerifyTypeKaptcha = "kaptcha"
-	loginVerifyTypeSMS     = "sms"
-	loginVerifyTypeMail    = "mail"
-	loginVerifyTypeTOTP    = "totp"
+	loginVerifyTypeKaptcha = loginprompt.VerifyTypeKaptcha
+	loginVerifyTypeSMS     = loginprompt.VerifyTypeSMS
+	loginVerifyTypeMail    = loginprompt.VerifyTypeMail
+	loginVerifyTypeTOTP    = loginprompt.VerifyTypeTOTP
 )
 
 const loginQRCodeUnavailableMessage = "当前认证服务未启用扫码登录。"
@@ -939,8 +940,7 @@ func isVerificationRequiredError(err error) bool {
 			return true
 		}
 	}
-	message := strings.ToLower(strings.TrimSpace(err.Error()))
-	return strings.Contains(message, "验证码") || strings.Contains(message, "captcha") || strings.Contains(message, "kaptcha") || strings.Contains(message, "sms") || strings.Contains(message, "短信") || strings.Contains(message, "mail") || strings.Contains(message, "email") || strings.Contains(message, "邮箱") || strings.Contains(message, "totp") || strings.Contains(message, "otp") || strings.Contains(message, "口令")
+	return loginprompt.HasVerificationSignal(err.Error())
 }
 
 func shouldResetVerificationCode(err error) bool {
@@ -1070,18 +1070,7 @@ func (a *App) executeTUIPasswordLogin(
 }
 
 func normalizeLoginVerifyType(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case loginVerifyTypeKaptcha:
-		return loginVerifyTypeKaptcha
-	case loginVerifyTypeSMS:
-		return loginVerifyTypeSMS
-	case loginVerifyTypeMail:
-		return loginVerifyTypeMail
-	case loginVerifyTypeTOTP:
-		return loginVerifyTypeTOTP
-	default:
-		return ""
-	}
+	return loginprompt.NormalizeVerifyType(value)
 }
 
 func effectiveLoginVerifyType(parsed passwordLoginCommand) string {
@@ -1093,24 +1082,7 @@ func effectiveLoginVerifyType(parsed passwordLoginCommand) string {
 }
 
 func detectLoginVerifyType(message string, fallback string) string {
-	if normalized := normalizeLoginVerifyType(fallback); normalized != "" {
-		return normalized
-	}
-	lowerMessage := strings.ToLower(strings.TrimSpace(message))
-	switch {
-	case strings.Contains(lowerMessage, "kaptcha"), strings.Contains(lowerMessage, "captcha"), strings.Contains(lowerMessage, "图形"):
-		return loginVerifyTypeKaptcha
-	case strings.Contains(lowerMessage, "sms"), strings.Contains(lowerMessage, "短信"):
-		return loginVerifyTypeSMS
-	case strings.Contains(lowerMessage, "mail"), strings.Contains(lowerMessage, "email"), strings.Contains(lowerMessage, "邮箱"), strings.Contains(lowerMessage, "邮件"):
-		return loginVerifyTypeMail
-	case strings.Contains(lowerMessage, "totp"), strings.Contains(lowerMessage, "otp"), strings.Contains(lowerMessage, "口令"):
-		return loginVerifyTypeTOTP
-	case strings.Contains(lowerMessage, "验证码"):
-		return loginVerifyTypeKaptcha
-	default:
-		return ""
-	}
+	return loginprompt.DetectVerifyType(message, fallback)
 }
 
 func loginFormHint(parsed passwordLoginCommand) string {
@@ -1124,24 +1096,7 @@ func loginFormHint(parsed passwordLoginCommand) string {
 }
 
 func buildVerificationNotice(parsed passwordLoginCommand) string {
-	if hint := strings.TrimSpace(parsed.VerifyHint); hint != "" {
-		return hint
-	}
-	message := "需要验证码，请输入验证码后继续登录。"
-	switch effectiveLoginVerifyType(parsed) {
-	case loginVerifyTypeKaptcha:
-		message = "需要图形验证码，请输入验证码后继续登录。"
-	case loginVerifyTypeSMS:
-		message = "需要短信验证码，请输入短信验证码后继续登录。"
-	case loginVerifyTypeMail:
-		message = "需要邮箱验证码，请输入邮箱验证码后继续登录。"
-	case loginVerifyTypeTOTP:
-		message = "需要动态口令（TOTP），请输入动态口令后继续登录。"
-	}
-	if target := strings.TrimSpace(parsed.VerifyTarget); target != "" {
-		message += " 验证目标: " + target + "。"
-	}
-	return message
+	return loginprompt.Notice(effectiveLoginVerifyType(parsed), parsed.VerifyHint, parsed.VerifyTarget)
 }
 
 func resetCaptchaChallengeRenderState(parsed *passwordLoginCommand) {
