@@ -126,11 +126,17 @@ func TestSubmitTUILoginFormPasswordUpdatesAuthState(t *testing.T) {
 	if !refreshCalled {
 		t.Fatal("expected refresh callback to run after login")
 	}
+	if !result.ClearHistory || !result.RebuildEntries {
+		t.Fatalf("expected login success to reset session like /new, got %#v", result)
+	}
+	if len(result.Events) != 1 || result.Events[0].Kind != tui.EventSessionUpdate || result.Events[0].SessionID != "" {
+		t.Fatalf("expected login success to emit session reset event, got %#v", result.Events)
+	}
 	if result.Snapshot == nil || result.Snapshot.CurrentUserName != "张三" {
 		t.Fatalf("expected refreshed snapshot with current user, got %#v", result.Snapshot)
 	}
-	if result.FooterHint != "已完成用户名密码登录。 已默认记住登录。 张三(已登录)" {
-		t.Fatalf("expected footer hint to preserve success message and current user, got %#v", result)
+	if strings.TrimSpace(result.FooterHint) != "" {
+		t.Fatalf("expected login success to stay silent, got %#v", result)
 	}
 	reloaded, err := manager.Load()
 	if err != nil {
@@ -138,6 +144,104 @@ func TestSubmitTUILoginFormPasswordUpdatesAuthState(t *testing.T) {
 	}
 	if reloaded.AccessToken != "access-1" || reloaded.PersistentToken != "persist-1" {
 		t.Fatalf("expected persisted auth state, got %#v", reloaded)
+	}
+}
+
+func TestSubmitTUILoginFormPasswordClearsSavedSessionAfterSuccess(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(cryptorand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key failed: %v", err)
+	}
+	publicKeyDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal public key failed: %v", err)
+	}
+	publicKeyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicKeyDER}))
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/xeai/oauth/api/password_token":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
+		case "/xeai/ajax_logon":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
+		case "/xeai/logged/persistent_token":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"persist-1","userinfo":{"userid":"u-1","display_name":"张三"}}}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	app := newTestAppWithSessionStore(t)
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	app.configManager = manager
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.DefaultFlow = "flow-1"
+	workdir := t.TempDir()
+	config.Workdir = workdir
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	if err := app.sessionStore.Save(agent.SessionState{FlowID: "flow-1", Workdir: workdir, SessionID: "session-1", SessionTitle: "旧会话", ContextDir: workdir}); err != nil {
+		t.Fatalf("save session failed: %v", err)
+	}
+
+	providerClient := buildProviderClient(config)
+	snapshot := tui.Snapshot{BackendAvailable: true, DefaultFlow: "flow-1", Workdir: workdir, ContextDir: workdir, SessionID: "session-1", SessionTitle: "旧会话"}
+	result, err := app.submitTUILoginForm(context.Background(), providerClient, snapshot, tui.LoginFormSubmission{
+		Mode:     "password",
+		Username: "zhangsan",
+		Password: "secret-123",
+		Remember: true,
+	}, func(_ context.Context, current tui.Snapshot) (tui.Snapshot, []tui.FlowItem, error) {
+		refreshed := app.buildLoginCLISnapshot(context.Background(), &stubSnapshotProvider{
+			stubProvider: &stubProvider{},
+			currentUser:  &provider.CurrentUser{Name: "张三"},
+		}, internalconfig.Config{BackendBaseURL: server.URL, AccessToken: "access-1", DefaultFlow: current.DefaultFlow, Workdir: current.Workdir})
+		refreshed.RequestStats = &tui.RequestMetrics{
+			TokenUsage: &tui.TokenUsage{
+				ContextWindow: &tui.ContextWindow{MaxInputTokens: 8192},
+			},
+		}
+		return refreshed, nil, nil
+	})
+	if err != nil {
+		t.Fatalf("submitTUILoginForm failed: %v", err)
+	}
+	loaded, err := app.prepareSession("flow-1", false, workdir, "")
+	if err != nil {
+		t.Fatalf("prepareSession failed: %v", err)
+	}
+	if loaded.SessionID != "" {
+		t.Fatalf("expected saved session to be cleared after login, got %#v", loaded)
+	}
+	if result.Snapshot == nil || result.Snapshot.SessionID != "" {
+		t.Fatalf("expected refreshed snapshot to start a new session, got %#v", result.Snapshot)
+	}
+	if result.Snapshot.RequestMode != provider.RequestTypeAgent {
+		t.Fatalf("expected refreshed snapshot to reset request mode, got %#v", result.Snapshot)
+	}
+	if len(result.Snapshot.History) != 0 {
+		t.Fatalf("expected refreshed snapshot to drop old session history, got %#v", result.Snapshot)
+	}
+	if result.Snapshot.RequestStats == nil || result.Snapshot.RequestStats.TokenUsage == nil || result.Snapshot.RequestStats.TokenUsage.ContextWindow == nil {
+		t.Fatalf("expected refreshed snapshot to preserve context window budget, got %#v", result.Snapshot)
+	}
+	if result.Snapshot.RequestStats.TokenUsage.ContextWindow.MaxInputTokens != 8192 {
+		t.Fatalf("expected refreshed snapshot to preserve max input tokens, got %#v", result.Snapshot.RequestStats.TokenUsage.ContextWindow)
+	}
+	if result.Snapshot.RequestStats.TokenUsage.ContextWindow.CurrentRoundInputTokens != 0 {
+		t.Fatalf("expected refreshed snapshot to clear current round usage for new session, got %#v", result.Snapshot.RequestStats.TokenUsage.ContextWindow)
+	}
+	if !result.ClearHistory {
+		t.Fatalf("expected login success to clear history, got %#v", result)
 	}
 }
 
@@ -1212,11 +1316,8 @@ func TestRunLoginQRSubcommandWaitsForScanAndPersistsAuthState(t *testing.T) {
 	if strings.Contains(output, "二维码已生成，等待扫码") || strings.Contains(output, "二维码已扫码") || strings.Contains(output, "扫码结果尚未完成") {
 		t.Fatalf("expected QR output to stop printing dynamic wait states, got %q", output)
 	}
-	if !strings.Contains(output, "扫码登录成功。 已默认记住登录。") {
-		t.Fatalf("expected QR login success output, got %q", output)
-	}
-	if !strings.Contains(output, "张三(已登录)") {
-		t.Fatalf("expected refreshed current-user hint, got %q", output)
+	if strings.Contains(output, "扫码登录成功。") || strings.Contains(output, "已默认记住登录。") || strings.Contains(output, "张三(已登录)") {
+		t.Fatalf("expected QR login success to stay silent, got %q", output)
 	}
 	reloaded, err := manager.Load()
 	if err != nil {

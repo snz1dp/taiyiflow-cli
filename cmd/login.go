@@ -281,7 +281,11 @@ func (a *App) refreshLoginSnapshotResult(
 	message string,
 ) (tui.LocalCommandResult, error) {
 	trimmedMessage := strings.TrimSpace(message)
-	result := tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: trimmedMessage}}, FooterHint: trimmedMessage}
+	result := tui.LocalCommandResult{Handled: true}
+	if trimmedMessage != "" {
+		result.Events = []tui.Event{{Kind: tui.EventSystemNote, Text: trimmedMessage}}
+		result.FooterHint = trimmedMessage
+	}
 	if refresh == nil {
 		return result, nil
 	}
@@ -291,10 +295,75 @@ func (a *App) refreshLoginSnapshotResult(
 	}
 	result.Snapshot = &updatedSnapshot
 	result.Flows = updatedFlows
-	if currentUser := strings.TrimSpace(updatedSnapshot.CurrentUserName); currentUser != "" {
-		result.FooterHint = joinLoginFooterHint(trimmedMessage, currentUser+"(已登录)")
+	if trimmedMessage != "" {
+		if currentUser := strings.TrimSpace(updatedSnapshot.CurrentUserName); currentUser != "" {
+			result.FooterHint = joinLoginFooterHint(trimmedMessage, currentUser+"(已登录)")
+		}
 	}
 	return result, nil
+}
+
+func (a *App) refreshLoginSnapshotResultAfterNewSession(
+	ctx context.Context,
+	snapshot tui.Snapshot,
+	refresh tuiSnapshotRefresh,
+	message string,
+) (tui.LocalCommandResult, error) {
+	if a != nil && a.sessionStore != nil && strings.TrimSpace(snapshot.DefaultFlow) != "" {
+		if err := a.sessionStore.Delete(snapshot.DefaultFlow, snapshot.Workdir); err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+	}
+	result, err := a.refreshLoginSnapshotResult(ctx, snapshot, refresh, message)
+	if err != nil {
+		return tui.LocalCommandResult{}, err
+	}
+	result.ClearHistory = true
+	result.RebuildEntries = true
+	result.Events = append(result.Events, tui.Event{Kind: tui.EventSessionUpdate, SessionID: ""})
+	if result.Snapshot == nil {
+		updatedSnapshot := resetSnapshotForNewSession(snapshot)
+		result.Snapshot = &updatedSnapshot
+		return result, nil
+	}
+	updatedSnapshot := resetSnapshotForNewSession(*result.Snapshot)
+	result.Snapshot = &updatedSnapshot
+	return result, nil
+}
+
+func resetSnapshotForNewSession(snapshot tui.Snapshot) tui.Snapshot {
+	updatedSnapshot := snapshot
+	updatedSnapshot.SessionID = ""
+	updatedSnapshot.SessionTitle = ""
+	updatedSnapshot.RequestMode = provider.RequestTypeAgent
+	updatedSnapshot.ContextDir = resolveLocalWorkdir(snapshot.Workdir)
+	updatedSnapshot.SessionSandboxEscapePolicy = ""
+	updatedSnapshot.History = nil
+	updatedSnapshot.RequestStats = preserveNewSessionRequestStats(snapshot.RequestStats)
+	return updatedSnapshot
+}
+
+func preserveNewSessionRequestStats(source *tui.RequestMetrics) *tui.RequestMetrics {
+	if source == nil || source.TokenUsage == nil || source.TokenUsage.ContextWindow == nil {
+		return nil
+	}
+	contextWindow := source.TokenUsage.ContextWindow
+	if contextWindow.MaxInputTokens <= 0 {
+		return nil
+	}
+	return &tui.RequestMetrics{
+		TokenUsage: &tui.TokenUsage{
+			ContextWindow: &tui.ContextWindow{
+				MaxInputTokens:              contextWindow.MaxInputTokens,
+				NextRoundAvailableTokens:    contextWindow.MaxInputTokens,
+				CurrentRoundAvailableTokens: contextWindow.MaxInputTokens,
+				HighWatermarkRatio:          contextWindow.HighWatermarkRatio,
+				CompressionTargetRatio:      contextWindow.CompressionTargetRatio,
+				HighWatermarkTokens:         contextWindow.HighWatermarkTokens,
+				CompressionTargetTokens:     contextWindow.CompressionTargetTokens,
+			},
+		},
+	}
 }
 
 func joinLoginFooterHint(parts ...string) string {
@@ -866,11 +935,7 @@ func (a *App) executeTUIPasswordLogin(
 			message := loginFeedbackMessage(err)
 			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
 		}
-		message := "已完成验证码登录。"
-		if parsed.Remember {
-			message += " 已默认记住登录。"
-		}
-		return a.refreshLoginSnapshotResult(ctx, snapshot, refresh, message)
+		return a.refreshLoginSnapshotResultAfterNewSession(ctx, snapshot, refresh, "")
 	}
 	loginToken, err := authClient.GetPasswordLoginToken(ctx)
 	if err != nil {
@@ -883,7 +948,7 @@ func (a *App) executeTUIPasswordLogin(
 	parsed.PasswordTicket = loginPasswordTicket
 	parsed.PasswordPublicKey = loginPublicKey
 	session, err := authClient.PasswordLogin(ctx, providerclient.PasswordLoginRequest{
-		VerifyTicket:         loginTicket,
+		VerifyTicket:   loginTicket,
 		PasswordTicket: loginPasswordTicket,
 		PublicKey:      loginPublicKey,
 		Username:       parsed.Username,
@@ -921,11 +986,7 @@ func (a *App) executeTUIPasswordLogin(
 		message := loginFeedbackMessage(err)
 		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
 	}
-	message := "已完成用户名密码登录。"
-	if parsed.Remember {
-		message += " 已默认记住登录。"
-	}
-	return a.refreshLoginSnapshotResult(ctx, snapshot, refresh, message)
+	return a.refreshLoginSnapshotResultAfterNewSession(ctx, snapshot, refresh, "")
 }
 
 func normalizeLoginVerifyType(value string) string {
@@ -1323,11 +1384,7 @@ func (a *App) executeTUIQRWait(
 	if _, err := a.persistAuthenticatedSession(ctx, providerClient, localConfig, session, remember); err != nil {
 		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildQRLoginFormState(localConfig, snapshot, remember, ticket, qrLoginURL, qrScanHint, waitPollCount), err.Error(), 0), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
 	}
-	message := "扫码登录成功。"
-	if remember {
-		message += " 已默认记住登录。"
-	}
-	return a.refreshLoginSnapshotResult(ctx, snapshot, refresh, message)
+	return a.refreshLoginSnapshotResultAfterNewSession(ctx, snapshot, refresh, "")
 }
 
 func parsePasswordLoginCommand(command string) (passwordLoginCommand, error) {

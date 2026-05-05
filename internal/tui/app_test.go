@@ -1210,6 +1210,19 @@ func TestApplyLocalCommandResultClearHistoryDropsSnapshotHistory(t *testing.T) {
 	if m.requestStats.TokenUsage != nil {
 		t.Fatalf("expected request stats to be cleared for new session, got %#v", m.requestStats)
 	}
+	if strings.TrimSpace(m.footerHint) != "" {
+		t.Fatalf("expected clear history result without footer hint to clear footer, got %q", m.footerHint)
+	}
+}
+
+func TestApplyLocalCommandResultClearHistoryClearsExistingFooterHint(t *testing.T) {
+	m := model{footerHint: "已退出登录。"}
+
+	m.applyLocalCommandResult(LocalCommandResult{Handled: true, ClearHistory: true, RebuildEntries: true})
+
+	if strings.TrimSpace(m.footerHint) != "" {
+		t.Fatalf("expected clear history result to clear stale footer hint, got %q", m.footerHint)
+	}
 }
 
 func TestApplyLocalCommandResultOpensSkillsPicker(t *testing.T) {

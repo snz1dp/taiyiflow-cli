@@ -4033,6 +4033,9 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 			result.Snapshot.History = nil
 		}
 	}
+	if result.ClearHistory && strings.TrimSpace(result.FooterHint) == "" {
+		m.footerHint = ""
+	}
 	if footerHint := strings.TrimSpace(result.FooterHint); footerHint != "" {
 		m.footerHint = footerHint
 	}
