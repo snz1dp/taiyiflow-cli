@@ -18,10 +18,53 @@ import (
 	"strings"
 	"testing"
 
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/tui"
 )
+
+func TestBuildLoginCLISnapshotLoadsSavedSessionInfo(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	workdir := t.TempDir()
+	if err := app.sessionStore.Save(agent.SessionState{
+		FlowID:       "flow-1",
+		Workdir:      workdir,
+		ContextDir:   workdir,
+		SessionID:    "session-1",
+		SessionTitle: "历史会话",
+	}); err != nil {
+		t.Fatalf("save session failed: %v", err)
+	}
+
+	config := internalconfig.Default()
+	config.BackendBaseURL = "https://example.com"
+	config.AccessToken = "access-1"
+	config.DefaultFlow = "flow-1"
+	config.Workdir = workdir
+
+	snapshot := app.buildLoginCLISnapshot(context.Background(), &stubSnapshotProvider{
+		stubProvider: &stubProvider{
+			messages: &provider.SessionMessageList{Items: []provider.SessionMessage{{Sender: "user", Text: "你好"}, {Sender: "assistant", Text: "你好，我在。"}}},
+			sessionContext: &provider.SessionContextPreview{ContextWindow: &provider.ContextWindowUsage{MaxInputTokens: 8192}},
+		},
+		currentUser: &provider.CurrentUser{Name: "张三"},
+	}, config)
+
+	if snapshot.CurrentUserName != "张三" {
+		t.Fatalf("expected current user to be loaded, got %#v", snapshot)
+	}
+	if snapshot.SessionID != "session-1" || snapshot.SessionTitle != "历史会话" {
+		t.Fatalf("expected saved session info to be loaded, got %#v", snapshot)
+	}
+	if len(snapshot.History) != 2 {
+		t.Fatalf("expected saved session history to be loaded, got %#v", snapshot.History)
+	}
+	if snapshot.RequestStats == nil || snapshot.RequestStats.TokenUsage == nil || snapshot.RequestStats.TokenUsage.ContextWindow == nil {
+		t.Fatalf("expected session stats to be loaded, got %#v", snapshot.RequestStats)
+	}
+}
 
 func TestSubmitTUILoginFormPasswordUpdatesAuthState(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(cryptorand.Reader, 2048)
@@ -38,7 +81,7 @@ func TestSubmitTUILoginFormPasswordUpdatesAuthState(t *testing.T) {
 		switch request.URL.Path {
 		case "/xeai/oauth/api/password_token":
 			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
 		case "/xeai/ajax_logon":
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
@@ -225,7 +268,7 @@ func TestSubmitTUILoginFormPasswordRequiresCaptcha(t *testing.T) {
 		switch request.URL.Path {
 		case "/xeai/oauth/api/password_token":
 			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
 		case "/xeai/ajax_logon":
 			writer.Header().Set("Content-Type", "application/json")
 			writer.WriteHeader(http.StatusBadRequest)
@@ -370,10 +413,10 @@ func TestSubmitTUILoginFormPasswordCaptchaRefetchesPasswordTokenEachSubmit(t *te
 			passwordTokenCalls++
 			writer.Header().Set("Content-Type", "application/json")
 			if passwordTokenCalls == 1 {
-				fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"password-ticket-1","pubkey":%q}}`, firstPublicKeyPEM)
+				fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-1","pubkey":%q}}`, firstPublicKeyPEM)
 				return
 			}
-			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"password-ticket-2","pubkey":%q}}`, secondPublicKeyPEM)
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-2","pubkey":%q}}`, secondPublicKeyPEM)
 		case "/xeai/ajax_logon":
 			ajaxLogonCalls++
 			query := request.URL.Query()
@@ -518,7 +561,7 @@ func TestSubmitTUILoginFormPasswordUsesVerifyChallengeFromHTTPError(t *testing.T
 		switch request.URL.Path {
 		case "/xeai/oauth/api/password_token":
 			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
 		case "/xeai/ajax_logon":
 			writer.Header().Set("Content-Type", "application/json")
 			writer.WriteHeader(http.StatusBadRequest)
@@ -613,7 +656,7 @@ func TestSubmitTUILoginFormPasswordCaptchaFailureRefreshesImageByReturnedTicket(
 		switch request.URL.Path {
 		case "/xeai/oauth/api/password_token":
 			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
 		case "/xeai/ajax_logon":
 			ajaxLogonCalls++
 			query := request.URL.Query()
@@ -748,7 +791,7 @@ func TestSubmitTUILoginFormPasswordChallengeTicketOverridesQRTicket(t *testing.T
 		switch request.URL.Path {
 		case "/xeai/oauth/api/password_token":
 			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
 		case "/xeai/ajax_logon":
 			writer.Header().Set("Content-Type", "application/json")
 			writer.WriteHeader(http.StatusBadRequest)
@@ -816,7 +859,7 @@ func TestSubmitTUILoginFormPasswordVerifyLoginPreservesPasswordTicket(t *testing
 		switch request.URL.Path {
 		case "/xeai/oauth/api/password_token":
 			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
 		case "/xeai/ajax_logon":
 			query := request.URL.Query()
 			if got := query.Get("password_ticket"); got != "password-ticket-1" {
@@ -935,7 +978,7 @@ func TestSubmitTUILoginFormPasswordShowsInlineErrorAndKeepsPasswordFocus(t *test
 		switch request.URL.Path {
 		case "/xeai/oauth/api/password_token":
 			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
 		case "/xeai/ajax_logon":
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":4001,"message":"用户名或密码错误"}`)
@@ -1057,7 +1100,7 @@ func TestRunLoginPasswordSubcommandShowsRemovedCommandHint(t *testing.T) {
 		switch request.URL.Path {
 		case "/xeai/oauth/api/password_token":
 			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"password_ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
 		case "/xeai/ajax_logon":
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)

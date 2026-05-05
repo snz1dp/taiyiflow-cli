@@ -20,6 +20,7 @@ import (
 
 	qrcode "github.com/skip2/go-qrcode"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/tui"
 )
@@ -84,14 +85,14 @@ func (a *App) runLogin(ctx context.Context, args []string) error {
 		return err
 	}
 	providerClient := buildProviderClient(config)
-	snapshot := buildLoginCLISnapshot(ctx, providerClient, config)
+	snapshot := a.buildLoginCLISnapshot(ctx, providerClient, config)
 	refresh := func(refreshCtx context.Context, _ tui.Snapshot) (tui.Snapshot, []tui.FlowItem, error) {
 		updatedConfig, err := a.configManager.Load()
 		if err != nil {
 			return tui.Snapshot{}, nil, err
 		}
 		providerClient.SetAPIKey(updatedConfig.AccessToken)
-		return buildLoginCLISnapshot(refreshCtx, providerClient, updatedConfig), nil, nil
+		return a.buildLoginCLISnapshot(refreshCtx, providerClient, updatedConfig), nil, nil
 	}
 
 	result, err := a.executeTUILoginCommand(ctx, providerClient, snapshot, buildLoginCLICommand(args), refresh)
@@ -330,27 +331,59 @@ func buildLoginCLICommand(args []string) string {
 	return strings.Join(trimmedArgs, " ")
 }
 
-func buildLoginCLISnapshot(ctx context.Context, providerClient *providerclient.Client, config internalconfig.Config) tui.Snapshot {
+func (a *App) buildLoginCLISnapshot(ctx context.Context, providerClient provider.Provider, config internalconfig.Config) tui.Snapshot {
 	snapshot := tui.Snapshot{
 		BackendURL:       strings.TrimSpace(config.BackendBaseURL),
 		BackendAvailable: strings.TrimSpace(config.BackendBaseURL) != "",
+		DefaultFlow:      strings.TrimSpace(config.DefaultFlow),
+		Workdir:          resolveLocalWorkdir(config.Workdir),
+		ContextDir:       resolveLocalWorkdir(config.Workdir),
 	}
 	if !snapshot.BackendAvailable || strings.TrimSpace(config.AccessToken) == "" {
+		a.loadLoginSnapshotSession(ctx, providerClient, config, &snapshot)
 		return snapshot
 	}
 	currentUser, err := providerClient.GetCurrentUserInfo(ctx)
 	if err == nil {
 		snapshot.CurrentUserName = strings.TrimSpace(currentUser.Name)
+		a.loadLoginSnapshotSession(ctx, providerClient, config, &snapshot)
 		return snapshot
 	}
 	if isAuthenticationError(err) {
 		snapshot.AuthRequired = true
 		snapshot.AuthStatusReason = "服务端已连接，但当前登录态无效或缺失。"
+		a.loadLoginSnapshotSession(ctx, providerClient, config, &snapshot)
 		return snapshot
 	}
 	snapshot.BackendAvailable = false
 	snapshot.BackendStatusReason = err.Error()
+	a.loadLoginSnapshotSession(ctx, providerClient, config, &snapshot)
 	return snapshot
+}
+
+func (a *App) loadLoginSnapshotSession(ctx context.Context, providerClient provider.Provider, config internalconfig.Config, snapshot *tui.Snapshot) {
+	if a == nil || a.sessionStore == nil || snapshot == nil {
+		return
+	}
+	flowID := strings.TrimSpace(config.DefaultFlow)
+	if flowID == "" {
+		return
+	}
+	sessionState, err := a.prepareSession(flowID, false, snapshot.Workdir, "")
+	if err != nil {
+		return
+	}
+	snapshot.SessionID = sessionState.SessionID
+	snapshot.SessionTitle = resolveSessionTitle(sessionState)
+	snapshot.ContextDir = resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, snapshot.Workdir))
+	if strings.TrimSpace(snapshot.SessionID) == "" || providerClient == nil || snapshot.AuthRequired || !snapshot.BackendAvailable {
+		return
+	}
+	if title, titleErr := lookupSessionTitle(ctx, providerClient, flowID, snapshot.SessionID); titleErr == nil && strings.TrimSpace(title) != "" {
+		snapshot.SessionTitle = strings.TrimSpace(title)
+	}
+	snapshot.History = loadRecentSessionHistory(ctx, providerClient, flowID, snapshot.SessionID)
+	snapshot.RequestStats = loadLatestSessionMetrics(ctx, providerClient, flowID, snapshot.SessionID)
 }
 
 func (a *App) emitLoginCLIResult(result tui.LocalCommandResult) error {
