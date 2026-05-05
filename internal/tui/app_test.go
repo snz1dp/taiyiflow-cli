@@ -610,6 +610,60 @@ func TestRenderLoginFormShowsCaptchaStepWhenTicketPresent(t *testing.T) {
 	}
 }
 
+func TestRenderLoginFormShowsMailVerifyHint(t *testing.T) {
+	state := newLoginFormState(LoginFormState{
+		Title:       "登录(login)",
+		Mode:        "password",
+		Username:    "zhangsan",
+		Password:    "secret-123",
+		Remember:    true,
+		VerifyType:  "mail",
+		VerifyHint:  "验证码已发送到企业邮箱，请查收后输入。",
+		VerifyTarget:"zhangsan@example.com",
+		Ticket:      "verify-ticket-1",
+	})
+
+	appModel := model{
+		contentWidth: 80,
+		loginForm:    state,
+	}
+
+	rendered := sanitizeTerminalText(appModel.renderLoginForm())
+	if !strings.Contains(rendered, "验证码已发送到企业邮箱，请查收后输入。") {
+		t.Fatalf("expected mail verification hint to be rendered, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "邮箱验证码(mail_code)") {
+		t.Fatalf("expected mail verification field label, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "zhangsan@example.com") {
+		t.Fatalf("expected verify target to stay visible, got %q", rendered)
+	}
+}
+
+func TestTOTPVerificationCopyUsesDynamicOTPLabel(t *testing.T) {
+	state := newLoginFormState(LoginFormState{
+		Title:      "登录(login)",
+		Mode:       "password",
+		Username:   "zhangsan",
+		Password:   "secret-123",
+		VerifyType: "totp",
+		Ticket:     "verify-ticket-1",
+	})
+
+	if got := state.inputs[3].Placeholder; got != "请输入动态口令（TOTP）" {
+		t.Fatalf("expected totp placeholder to use dynamic otp copy, got %q", got)
+	}
+	if got := loginVerificationTypeLabel("totp"); got != "动态口令(totp)" {
+		t.Fatalf("expected totp type label to use dynamic otp copy, got %q", got)
+	}
+	if got := loginVerificationCodeLabel("totp"); got != "动态口令(totp_code)" {
+		t.Fatalf("expected totp code label to use dynamic otp copy, got %q", got)
+	}
+	if got := loginVerificationDescription("totp", ""); got != "检测到需要动态口令（TOTP），请输入动态口令后继续登录。" {
+		t.Fatalf("expected totp description to use dynamic otp copy, got %q", got)
+	}
+}
+
 func TestVisibleLoginFieldsKeepPasswordDuringVerification(t *testing.T) {
 	fields := visibleLoginFields(loginFormModePassword, true, false)
 	if !containsInt(fields, loginFieldPassword) {

@@ -372,37 +372,6 @@ func TestValidateVerifyCodeSendsPasswordTicket(t *testing.T) {
 	}
 }
 
-func TestCompleteVerifyLoginSendsPasswordTicket(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/xeai/ajax_logon/verify_login" {
-			http.NotFound(writer, request)
-			return
-		}
-		query := request.URL.Query()
-		if got := query.Get("ticket"); got != "ticket-1" {
-			t.Fatalf("unexpected ticket: %q", got)
-		}
-		if got := query.Get("password_ticket"); got != "password-ticket-1" {
-			t.Fatalf("unexpected password_ticket: %q", got)
-		}
-		if got := query.Get("verify"); got != "123456" {
-			t.Fatalf("unexpected verify code: %q", got)
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
-	}))
-	defer server.Close()
-
-	client := NewAuthClient(server.URL)
-	session, err := client.CompleteVerifyLogin(context.Background(), "ticket-1", "password-ticket-1", "123456")
-	if err != nil {
-		t.Fatalf("expected verify login to succeed, got %v", err)
-	}
-	if session == nil || session.AccessToken != "access-1" {
-		t.Fatalf("unexpected session: %#v", session)
-	}
-}
-
 func TestOAuthEndpointsUseXEAIContextPath(t *testing.T) {
 	requests := map[string]bool{}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

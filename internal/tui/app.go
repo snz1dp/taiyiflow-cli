@@ -4807,7 +4807,7 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 func newLoginFormState(state LoginFormState) *loginFormState {
 	codePlaceholder := "请输入验证码"
 	if strings.TrimSpace(state.VerifyType) == loginVerifyTypeTOTP {
-		codePlaceholder = "请输入同台密码"
+		codePlaceholder = "请输入动态口令（TOTP）"
 	}
 	placeholders := []string{"请输入用户名", "请输入密码", "无验证码可留空", codePlaceholder}
 	values := []string{state.Username, state.Password, state.Ticket, state.Code}
@@ -4944,7 +4944,7 @@ func loginVerificationTypeLabel(verifyType string) string {
 	case loginVerifyTypeMail:
 		return "邮箱验证码(mail)"
 	case loginVerifyTypeTOTP:
-		return "同台密码(totp)"
+		return "动态口令(totp)"
 	default:
 		return "验证码(verify_code)"
 	}
@@ -4959,7 +4959,7 @@ func loginVerificationCodeLabel(verifyType string) string {
 	case loginVerifyTypeMail:
 		return "邮箱验证码(mail_code)"
 	case loginVerifyTypeTOTP:
-		return "同台密码(totp_code)"
+		return "动态口令(totp_code)"
 	default:
 		return "验证码(verify_code)"
 	}
@@ -4977,7 +4977,7 @@ func loginVerificationDescription(verifyType string, verifyHint string) string {
 	case loginVerifyTypeMail:
 		return "检测到需要邮箱验证码，请输入邮箱验证码后继续登录。"
 	case loginVerifyTypeTOTP:
-		return "检测到需要同台密码，请输入同台密码后继续登录。"
+		return "检测到需要动态口令（TOTP），请输入动态口令后继续登录。"
 	default:
 		return "检测到需要验证码，请输入验证码后继续登录。"
 	}

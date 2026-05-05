@@ -1017,18 +1017,6 @@ func (a *App) executeTUIPasswordLogin(
 		message := buildVerificationNotice(parsed)
 		return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormNotice(buildPasswordLoginFormState(localConfig, snapshot, capabilities, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventSystemNote, Text: message}}}, nil
 	}
-	if parsed.VerifyType != "" && parsed.VerifyType != loginVerifyTypeKaptcha {
-		session, err := authClient.CompleteVerifyLogin(ctx, parsed.Ticket, parsed.PasswordTicket, parsed.Code)
-		if err != nil {
-			message := loginFeedbackMessage(err)
-			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, capabilities, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
-		}
-		if _, err := a.persistAuthenticatedSession(ctx, providerClient, localConfig, session, parsed.Remember); err != nil {
-			message := loginFeedbackMessage(err)
-			return tui.LocalCommandResult{Handled: true, LoginForm: withLoginFormFeedback(buildPasswordLoginFormState(localConfig, snapshot, capabilities, parsed), message, passwordLoginFocusField(parsed)), Events: []tui.Event{{Kind: tui.EventErrorNote, Text: message}}}, nil
-		}
-		return a.refreshLoginSnapshotResultAfterNewSession(ctx, snapshot, refresh, "")
-	}
 	loginToken, err := authClient.GetPasswordLoginToken(ctx)
 	if err != nil {
 		message := loginFeedbackMessage(err)
@@ -1148,7 +1136,7 @@ func buildVerificationNotice(parsed passwordLoginCommand) string {
 	case loginVerifyTypeMail:
 		message = "需要邮箱验证码，请输入邮箱验证码后继续登录。"
 	case loginVerifyTypeTOTP:
-		message = "需要同台密码，请输入同台密码后继续登录。"
+		message = "需要动态口令（TOTP），请输入动态口令后继续登录。"
 	}
 	if target := strings.TrimSpace(parsed.VerifyTarget); target != "" {
 		message += " 验证目标: " + target + "。"
@@ -1267,22 +1255,20 @@ func populateVerifyChallenge(ctx context.Context, authClient *providerclient.Aut
 	if trimmed := strings.TrimSpace(loginPasswordTicket); trimmed != "" {
 		parsed.PasswordTicket = trimmed
 	}
-	if strings.TrimSpace(parsed.Ticket) != "" {
-		return
-	}
 	token, err := authClient.RequestVerifyLoginToken(ctx, parsed.VerifyType, "")
 	if err != nil || token == nil {
 		return
 	}
-	parsed.VerifyType = normalizeLoginVerifyType(token.Type)
-	if parsed.VerifyType == "" {
-		parsed.VerifyType = normalizeLoginVerifyType(parsed.VerifyType)
+	if verifyType := normalizeLoginVerifyType(token.Type); verifyType != "" {
+		parsed.VerifyType = verifyType
 	}
-	parsed.Ticket = strings.TrimSpace(token.Ticket)
-	if parsed.VerifyHint == "" {
+	if ticket := strings.TrimSpace(token.Ticket); ticket != "" {
+		parsed.Ticket = ticket
+	}
+	if hint := strings.TrimSpace(token.Hint); hint != "" {
 		parsed.VerifyHint = strings.TrimSpace(token.Hint)
 	}
-	if parsed.VerifyTarget == "" {
+	if target := strings.TrimSpace(token.Target); target != "" {
 		parsed.VerifyTarget = strings.TrimSpace(token.Target)
 	}
 }

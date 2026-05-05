@@ -296,23 +296,6 @@ func (c *AuthClient) RequestVerifyLoginToken(ctx context.Context, verifyType, ve
 	return &payload, nil
 }
 
-func (c *AuthClient) CompleteVerifyLogin(ctx context.Context, ticket, passwordTicket, verify string) (*AuthSession, error) {
-	trimmedTicket := strings.TrimSpace(ticket)
-	trimmedPasswordTicket := strings.TrimSpace(passwordTicket)
-	if trimmedPasswordTicket == "" {
-		trimmedPasswordTicket = trimmedTicket
-	}
-	values := url.Values{}
-	values.Set("ticket", trimmedTicket)
-	values.Set("password_ticket", trimmedPasswordTicket)
-	values.Set("verify", strings.TrimSpace(verify))
-	var payload AuthSession
-	if err := c.doEnvelopeRequest(ctx, http.MethodPost, "/ajax_logon/verify_login", values, "", &payload); err != nil {
-		return nil, err
-	}
-	return &payload, nil
-}
-
 func (c *AuthClient) GetQRCodeLoginToken(ctx context.Context, platform string, silent bool, tokenType string, redirectURL string) (*RedirectLoginToken, error) {
 	values := url.Values{}
 	if trimmed := strings.TrimSpace(platform); trimmed != "" {
