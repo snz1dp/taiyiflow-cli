@@ -17,6 +17,7 @@ import (
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
+	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/tui"
@@ -25,6 +26,15 @@ import (
 var bracketErrorCodePattern = regexp.MustCompile(`^\[[A-Z0-9_]+\]\s*`)
 
 const skillsPickerCommandPrefix = "/skills-picker"
+
+func (a *App) prepareInitialTUIAuthentication(
+	ctx context.Context,
+	providerClient *providerclient.Client,
+	config internalconfig.Config,
+) internalconfig.Config {
+	updatedConfig, _, _ := a.ensureProviderAuthenticated(ctx, providerClient, config)
+	return updatedConfig
+}
 
 func (a *App) runTUI(ctx context.Context, args []string) error {
 	startupCommand := ""
@@ -38,6 +48,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	}
 
 	providerClient := buildProviderClient(config)
+	config = a.prepareInitialTUIAuthentication(ctx, providerClient, config)
 	backend := a.inspectBackendStatus(ctx, providerClient, config.BackendBaseURL)
 	workdir := resolveLocalWorkdir(config.Workdir)
 	snapshot, err := a.buildInitialTUISnapshot(config, strings.TrimSpace(config.DefaultFlow), backend)

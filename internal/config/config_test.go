@@ -217,6 +217,70 @@ func TestManagerSaveWritesAccessTokenField(t *testing.T) {
 	if !strings.Contains(serialized, "access_token:") {
 		t.Fatalf("expected serialized config to use access_token, got %q", serialized)
 	}
+	if strings.Contains(serialized, "access-token") {
+		t.Fatalf("expected serialized config not to contain plaintext access token, got %q", serialized)
+	}
+	if !strings.Contains(serialized, encryptedConfigValuePrefix) {
+		t.Fatalf("expected serialized config to use encrypted token marker, got %q", serialized)
+	}
+}
+
+func TestManagerSaveLoadEncryptsAndDecryptsAuthTokens(t *testing.T) {
+	tempDir := t.TempDir()
+	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
+
+	config := Default()
+	config.AccessToken = "access-token"
+	config.PersistentToken = "persistent-token"
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	if loaded.AccessToken != "access-token" {
+		t.Fatalf("expected decrypted access token, got %q", loaded.AccessToken)
+	}
+	if loaded.PersistentToken != "persistent-token" {
+		t.Fatalf("expected decrypted persistent token, got %q", loaded.PersistentToken)
+	}
+}
+
+func TestManagerLoadKeepsPlaintextAuthTokensForBackwardCompatibility(t *testing.T) {
+	tempDir := t.TempDir()
+	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
+
+	content := []byte("backend_base_url: http://localhost:4005\npersistent_token: persist-plain\naccess_token: access-plain\n")
+	if err := os.WriteFile(manager.path, content, 0o644); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	if loaded.AccessToken != "access-plain" {
+		t.Fatalf("expected plaintext access token to still load, got %q", loaded.AccessToken)
+	}
+	if loaded.PersistentToken != "persist-plain" {
+		t.Fatalf("expected plaintext persistent token to still load, got %q", loaded.PersistentToken)
+	}
+}
+
+func TestManagerLoadRejectsBrokenEncryptedAuthToken(t *testing.T) {
+	tempDir := t.TempDir()
+	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
+
+	content := []byte("backend_base_url: http://localhost:4005\naccess_token: enc:v1:not-base64\n")
+	if err := os.WriteFile(manager.path, content, 0o644); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+
+	if _, err := manager.Load(); err == nil || !strings.Contains(err.Error(), "解密 access_token 失败") {
+		t.Fatalf("expected encrypted token decode failure, got %v", err)
+	}
 }
 
 func TestManagerLoadAppliesDefaultSandboxEscapePolicy(t *testing.T) {

@@ -1,8 +1,14 @@
 package config
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	cryptorand "crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +28,7 @@ const (
 	DefaultStreamIdleTimeoutSeconds = 300
 	DefaultQRWaitTimeoutSeconds     = 30
 	DefaultAgentAutoLoopMaxRounds   = 3
+	encryptedConfigValuePrefix      = "enc:v1:"
 	SandboxEscapePolicyConfirm      = "confirm"
 	SandboxEscapePolicyDeny         = "deny"
 	SandboxEscapePolicyAllow        = "allow"
@@ -308,6 +315,17 @@ func (m *Manager) Load() (Config, error) {
 		return Config{}, fmt.Errorf("解析配置失败: %w", err)
 	}
 
+	decryptedAccessToken, err := decryptConfigSecret(config.AccessToken)
+	if err != nil {
+		return Config{}, fmt.Errorf("解密 access_token 失败: %w", err)
+	}
+	decryptedPersistentToken, err := decryptConfigSecret(config.PersistentToken)
+	if err != nil {
+		return Config{}, fmt.Errorf("解密 persistent_token 失败: %w", err)
+	}
+	config.AccessToken = decryptedAccessToken
+	config.PersistentToken = decryptedPersistentToken
+
 	if config.BackendBaseURL == "" {
 		config.BackendBaseURL = Default().BackendBaseURL
 	}
@@ -343,7 +361,19 @@ func (m *Manager) Save(config Config) error {
 		return fmt.Errorf("创建配置目录失败: %w", err)
 	}
 
-	content, err := yaml.Marshal(config)
+	serializedConfig := config
+	encryptedAccessToken, err := encryptConfigSecret(config.AccessToken)
+	if err != nil {
+		return fmt.Errorf("加密 access_token 失败: %w", err)
+	}
+	encryptedPersistentToken, err := encryptConfigSecret(config.PersistentToken)
+	if err != nil {
+		return fmt.Errorf("加密 persistent_token 失败: %w", err)
+	}
+	serializedConfig.AccessToken = encryptedAccessToken
+	serializedConfig.PersistentToken = encryptedPersistentToken
+
+	content, err := yaml.Marshal(serializedConfig)
 	if err != nil {
 		return fmt.Errorf("序列化配置失败: %w", err)
 	}
@@ -377,4 +407,77 @@ func NormalizePermissionRules(items []PermissionRule) []PermissionRule {
 		result = append(result, rule)
 	}
 	return result
+}
+
+func encryptConfigSecret(value string) (string, error) {
+	trimmedValue := strings.TrimSpace(value)
+	if trimmedValue == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(trimmedValue, encryptedConfigValuePrefix) {
+		return trimmedValue, nil
+	}
+	block, err := aes.NewCipher(configSecretKey())
+	if err != nil {
+		return "", err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := io.ReadFull(cryptorand.Reader, nonce); err != nil {
+		return "", err
+	}
+	sealed := aead.Seal(nil, nonce, []byte(trimmedValue), nil)
+	payload := append(nonce, sealed...)
+	return encryptedConfigValuePrefix + base64.RawStdEncoding.EncodeToString(payload), nil
+}
+
+func decryptConfigSecret(value string) (string, error) {
+	trimmedValue := strings.TrimSpace(value)
+	if trimmedValue == "" {
+		return "", nil
+	}
+	if !strings.HasPrefix(trimmedValue, encryptedConfigValuePrefix) {
+		return trimmedValue, nil
+	}
+	encodedPayload := strings.TrimPrefix(trimmedValue, encryptedConfigValuePrefix)
+	payload, err := base64.RawStdEncoding.DecodeString(encodedPayload)
+	if err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(configSecretKey())
+	if err != nil {
+		return "", err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	if len(payload) < aead.NonceSize() {
+		return "", fmt.Errorf("密文长度不足")
+	}
+	nonce := payload[:aead.NonceSize()]
+	ciphertext := payload[aead.NonceSize():]
+	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(plaintext)), nil
+}
+
+func configSecretKey() []byte {
+	seedParts := []string{"taiyiflow-cli/config-secret/v1"}
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		seedParts = append(seedParts, strings.TrimSpace(homeDir))
+	}
+	if hostName, err := os.Hostname(); err == nil {
+		seedParts = append(seedParts, strings.TrimSpace(hostName))
+	}
+	if rootDir, err := DefaultRootDir(); err == nil {
+		seedParts = append(seedParts, strings.TrimSpace(rootDir))
+	}
+	sum := sha256.Sum256([]byte(strings.Join(seedParts, "|")))
+	return sum[:]
 }

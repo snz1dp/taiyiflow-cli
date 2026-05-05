@@ -330,6 +330,68 @@ func TestBuildInitialTUISnapshotMarksAuthRequired(t *testing.T) {
 	}
 }
 
+func TestPrepareInitialTUIAuthenticationRefreshesAccessTokenBeforeInitialSnapshot(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/taiyi/composer/api/v1/users/whoami/userinfo":
+			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusUnauthorized)
+				fmt.Fprint(writer, `{"code":401,"message":"unauthorized"}`)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
+		case "/taiyi/composer/api/v1/version":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"package":"taiyiflow","main_version":"1.0.0"}`)
+		case "/xeai/sso/salt":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"salt-ticket","value":"salt-value"}}`)
+		case "/xeai/sso":
+			if got := request.URL.Query().Get("persistent_token"); got != "persist-1" {
+				t.Fatalf("unexpected persistent token: %q", got)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","persistent_token":"persist-2","idle_duration":3600,"scope":"employee"}}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.AccessToken = "expired-access"
+	config.PersistentToken = "persist-1"
+	config.DeviceID = "device-1"
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	app := &App{configManager: manager}
+	providerClient := buildProviderClient(config)
+	updatedConfig := app.prepareInitialTUIAuthentication(context.Background(), providerClient, config)
+	backend := app.inspectBackendStatus(context.Background(), providerClient, updatedConfig.BackendBaseURL)
+	snapshot, err := app.buildInitialTUISnapshot(updatedConfig, "", backend)
+	if err != nil {
+		t.Fatalf("buildInitialTUISnapshot failed: %v", err)
+	}
+	if snapshot.AuthRequired {
+		t.Fatalf("expected refreshed startup auth to avoid login overlay, got %#v", snapshot)
+	}
+	if reloaded, reloadErr := manager.Load(); reloadErr != nil {
+		t.Fatalf("reload config failed: %v", reloadErr)
+	} else if reloaded.AccessToken != "access-1" || reloaded.PersistentToken != "persist-2" {
+		t.Fatalf("expected refreshed auth state to persist before startup snapshot, got %#v", reloaded)
+	}
+}
+
 func TestBuildTUIHelpLinesUsesLoginOverlayWording(t *testing.T) {
 	lines := buildTUIHelpLines(internaltui.Snapshot{BackendAvailable: true})
 	joined := strings.Join(lines, "\n")
