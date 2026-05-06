@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -78,6 +79,39 @@ func TestBuildTUISkillsPickerLoadsRemoteItems(t *testing.T) {
 	}
 	if picker.RemoteQuery != "remote" {
 		t.Fatalf("expected remote query to persist, got %#v", picker)
+	}
+}
+
+func TestApplyConfigFormSubmissionReturnsFieldError(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	app := &App{configManager: manager}
+	if err := manager.Save(internalconfig.Default()); err != nil {
+		t.Fatalf("save default config failed: %v", err)
+	}
+
+	_, err = app.applyConfigFormSubmission(internaltui.ConfigFormSubmission{
+		Values: internaltui.ConfigFormValues{
+			BackendBaseURL:  "http://localhost:7860",
+			ApprovalMode:    "auto",
+			PermissionRules: "shell_exec=deny",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected invalid permission rules to fail")
+	}
+	var fieldErr internaltui.ConfigFieldError
+	if !errors.As(err, &fieldErr) {
+		t.Fatalf("expected ConfigFieldError, got %T (%v)", err, err)
+	}
+	if fieldErr.Field != "permission_rules" {
+		t.Fatalf("expected permission_rules field error, got %#v", fieldErr)
+	}
+	if !strings.Contains(fieldErr.Message, "权限规则格式错误") {
+		t.Fatalf("expected original validation message preserved, got %#v", fieldErr)
 	}
 }
 
@@ -502,6 +536,7 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 			PermissionRules:          "tool:shell_exec=deny; shell:git status=allow",
 			ReasoningEnabled:         true,
 			Workdir:                  "/workspace/demo",
+			HTTPTimeoutSeconds:       "75",
 			CommandTimeoutSeconds:    "45",
 			StreamIdleTimeoutSeconds: "300",
 			QRWaitTimeoutSeconds:     "90",
@@ -551,6 +586,9 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	}
 	if updated.CommandTimeoutSeconds != 45 {
 		t.Fatalf("expected command timeout saved, got %#v", updated.CommandTimeoutSeconds)
+	}
+	if updated.HTTPTimeoutSeconds != 75 {
+		t.Fatalf("expected http timeout saved, got %#v", updated.HTTPTimeoutSeconds)
 	}
 	if updated.QRWaitTimeoutSeconds != 90 {
 		t.Fatalf("expected qr wait timeout saved, got %#v", updated.QRWaitTimeoutSeconds)

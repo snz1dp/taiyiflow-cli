@@ -116,6 +116,24 @@ func TestNormalizeCommandTimeoutSeconds(t *testing.T) {
 	}
 }
 
+func TestNormalizeHTTPTimeoutSeconds(t *testing.T) {
+	cases := []struct {
+		input    int
+		expected int
+	}{
+		{input: DefaultHTTPTimeoutSeconds, expected: DefaultHTTPTimeoutSeconds},
+		{input: 1, expected: 1},
+		{input: MaxHTTPTimeoutSeconds + 1, expected: MaxHTTPTimeoutSeconds},
+		{input: 0, expected: DefaultHTTPTimeoutSeconds},
+		{input: -1, expected: DefaultHTTPTimeoutSeconds},
+	}
+	for _, item := range cases {
+		if got := NormalizeHTTPTimeoutSeconds(item.input); got != item.expected {
+			t.Fatalf("NormalizeHTTPTimeoutSeconds(%d) = %d, want %d", item.input, got, item.expected)
+		}
+	}
+}
+
 func TestNormalizeAgentAutoLoopMaxRounds(t *testing.T) {
 	cases := []struct {
 		input    int
@@ -135,11 +153,14 @@ func TestNormalizeAgentAutoLoopMaxRounds(t *testing.T) {
 
 func TestDefaultConfigIncludesAgentAutoLoopDefaults(t *testing.T) {
 	config := Default()
-	if config.BackendBaseURL != "http://localhost:4005" {
-		t.Fatalf("expected default backend base url http://localhost:4005, got %q", config.BackendBaseURL)
+	if config.BackendBaseURL != "https://snz1.cn" {
+		t.Fatalf("expected default backend base url https://snz1.cn, got %q", config.BackendBaseURL)
 	}
 	if config.BackendAPIPrefix != DefaultBackendAPIPrefix {
 		t.Fatalf("expected default backend api prefix %q, got %q", DefaultBackendAPIPrefix, config.BackendAPIPrefix)
+	}
+	if config.HTTPTimeoutSeconds != DefaultHTTPTimeoutSeconds {
+		t.Fatalf("expected default http timeout %d, got %d", DefaultHTTPTimeoutSeconds, config.HTTPTimeoutSeconds)
 	}
 	if config.AgentAutoLoopEnabled {
 		t.Fatal("expected agent auto loop to default to disabled")
@@ -352,6 +373,24 @@ func TestManagerLoadNormalizesInvalidCommandTimeoutSeconds(t *testing.T) {
 	}
 	if loaded.CommandTimeoutSeconds != MaxCommandTimeoutSeconds {
 		t.Fatalf("expected normalized command timeout %d, got %d", MaxCommandTimeoutSeconds, loaded.CommandTimeoutSeconds)
+	}
+}
+
+func TestManagerLoadNormalizesInvalidHTTPTimeoutSeconds(t *testing.T) {
+	tempDir := t.TempDir()
+	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
+
+	content := []byte("backend_base_url: http://localhost:7860\napproval_mode: confirm\nhttp_timeout_seconds: 999\n")
+	if err := os.WriteFile(manager.path, content, 0o644); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	if loaded.HTTPTimeoutSeconds != MaxHTTPTimeoutSeconds {
+		t.Fatalf("expected normalized http timeout %d, got %d", MaxHTTPTimeoutSeconds, loaded.HTTPTimeoutSeconds)
 	}
 }
 

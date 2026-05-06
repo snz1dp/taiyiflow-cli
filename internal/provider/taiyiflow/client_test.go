@@ -10,13 +10,14 @@ import (
 	"testing"
 	"time"
 
+	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
 
 func TestNewClientUsesUnlimitedTimeoutForStreamRequests(t *testing.T) {
 	client := NewClient("http://example.com", "")
 
-	if got := client.httpClient.Timeout; got != 60*time.Second {
+	if got := client.httpClient.Timeout; got != time.Duration(internalconfig.DefaultHTTPTimeoutSeconds)*time.Second {
 		t.Fatalf("expected standard client timeout to stay 60s, got %s", got)
 	}
 	if got := client.streamHTTPClient.Timeout; got != 0 {
@@ -36,6 +37,21 @@ func TestSetStreamIdleTimeoutSeconds(t *testing.T) {
 	client.SetStreamIdleTimeoutSeconds(45)
 	if client.streamIdleTimeout != 45*time.Second {
 		t.Fatalf("expected 45s idle timeout, got %s", client.streamIdleTimeout)
+	}
+}
+
+func TestSetHTTPTimeoutSeconds(t *testing.T) {
+	client := NewClient("http://example.com", "")
+	client.SetHTTPTimeoutSeconds(90)
+	if client.httpClient.Timeout != 90*time.Second {
+		t.Fatalf("expected 90s standard timeout, got %s", client.httpClient.Timeout)
+	}
+	if client.streamHTTPClient.Timeout != 0 {
+		t.Fatalf("expected stream timeout to remain unlimited, got %s", client.streamHTTPClient.Timeout)
+	}
+	client.SetHTTPTimeoutSeconds(0)
+	if client.httpClient.Timeout != time.Duration(internalconfig.DefaultHTTPTimeoutSeconds)*time.Second {
+		t.Fatalf("expected invalid timeout to normalize to default, got %s", client.httpClient.Timeout)
 	}
 }
 

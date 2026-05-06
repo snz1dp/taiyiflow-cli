@@ -183,6 +183,7 @@ type ConfigFormValues struct {
 	PermissionRules          string
 	ReasoningEnabled         bool
 	Workdir                  string
+	HTTPTimeoutSeconds       string
 	CommandTimeoutSeconds    string
 	StreamIdleTimeoutSeconds string
 	QRWaitTimeoutSeconds     string
@@ -202,16 +203,30 @@ type ConfigChoice struct {
 }
 
 type ConfigFormState struct {
-	Title       string
-	Hint        string
-	Path        string
-	Values      ConfigFormValues
-	SubmitText  string
-	FlowOptions []ConfigChoice
+	Title         string
+	Hint          string
+	StatusText    string
+	StatusIsError bool
+	Path          string
+	Values        ConfigFormValues
+	SubmitText    string
+	FlowOptions   []ConfigChoice
 }
 
 type ConfigFormSubmission struct {
 	Values ConfigFormValues
+}
+
+type ConfigFieldError struct {
+	Field   string
+	Message string
+}
+
+func (e ConfigFieldError) Error() string {
+	if strings.TrimSpace(e.Message) != "" {
+		return strings.TrimSpace(e.Message)
+	}
+	return "配置字段校验失败"
 }
 
 type LoginFormState struct {
@@ -296,15 +311,16 @@ const (
 )
 
 type Event struct {
-	Kind         EventKind
-	Text         string
-	MessageID    string
-	Stage        string
-	EventType    string
-	SessionID    string
-	SessionTitle string
-	Stats        *RequestMetrics
-	Panel        *ToolPanel
+	Kind           EventKind
+	Text           string
+	MessageID      string
+	Stage          string
+	EventType      string
+	SessionID      string
+	SessionTitle   string
+	SplitAssistant bool
+	Stats          *RequestMetrics
+	Panel          *ToolPanel
 }
 
 type Request struct {
@@ -589,6 +605,8 @@ type model struct {
 type configFormState struct {
 	title                   string
 	hint                    string
+	statusText              string
+	statusIsError           bool
 	path                    string
 	submitText              string
 	inputs                  []textinput.Model
@@ -605,6 +623,8 @@ type configFormState struct {
 	skillsCursor            int
 	skillsAutoInstallCursor int
 	skillsFreeTextCursor    int
+	fieldErrorKey           string
+	fieldErrorText          string
 }
 
 type loginFormState struct {
@@ -653,6 +673,7 @@ const (
 	configFieldPermissionRules
 	configFieldReasoningMode
 	configFieldWorkdir
+	configFieldHTTPTimeout
 	configFieldCommandTimeout
 	configFieldStreamIdleTimeout
 	configFieldQRWaitTimeout
@@ -1073,6 +1094,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case configFormSavedMsg:
 		if typed.err != nil {
+			if m.configForm != nil {
+				var fieldErr ConfigFieldError
+				m.configForm.statusText = ""
+				m.configForm.statusIsError = false
+				m.configForm.fieldErrorKey = ""
+				m.configForm.fieldErrorText = ""
+				if errors.As(typed.err, &fieldErr) && strings.TrimSpace(fieldErr.Field) != "" {
+					m.configForm.fieldErrorKey = strings.TrimSpace(fieldErr.Field)
+					m.configForm.fieldErrorText = fieldErr.Error()
+					m.focusConfigFormField(configFieldIndexByKey(m.configForm.fieldErrorKey))
+				} else {
+					m.configForm.statusText = typed.err.Error()
+					m.configForm.statusIsError = true
+				}
+				m.syncLayout()
+				return m, tea.Batch(m.transitionProgress(progressIdle), textinput.Blink)
+			}
 			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
 			m.syncViewport()
 			return m, tea.Batch(m.transitionProgress(progressFailed), textinput.Blink)
@@ -2071,6 +2109,9 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		messageID := strings.TrimSpace(event.MessageID)
 		stage := strings.TrimSpace(strings.ToLower(event.Stage))
 		if chunk == "" {
+			if event.SplitAssistant {
+				m.splitNextAssistant = true
+			}
 			if messageID != "" {
 				m.lastAssistantMessageID = messageID
 			}
@@ -2095,7 +2136,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		}
 		m.requestStats.OutputChars += utf8.RuneCountInString(chunk)
 		m.requestStats.ChunkCount++
-		startNewAssistantEntry := !hasAssistantEntry || m.splitNextAssistant
+		startNewAssistantEntry := !hasAssistantEntry || m.splitNextAssistant || event.SplitAssistant
 		if !startNewAssistantEntry && messageID != "" && m.lastAssistantMessageID != "" && messageID != m.lastAssistantMessageID {
 			startNewAssistantEntry = true
 		}
@@ -2109,7 +2150,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		if messageID != "" {
 			m.lastAssistantMessageID = messageID
 		}
-		if stage == "end" {
+		if stage == "end" || event.SplitAssistant {
 			m.splitNextAssistant = true
 		}
 	case EventProgressNote:
@@ -3041,6 +3082,14 @@ func (m model) renderConfigForm() string {
 	if strings.TrimSpace(m.configForm.hint) != "" {
 		lines = append(lines, strings.TrimSpace(m.configForm.hint))
 	}
+	if strings.TrimSpace(m.configForm.statusText) != "" {
+		statusText := hardWrapText(strings.TrimSpace(m.configForm.statusText), maxInt(24, m.contentWidth-16))
+		if m.configForm.statusIsError {
+			lines = append(lines, errorMessageStyle.Render(statusText))
+		} else {
+			lines = append(lines, hintStyle.Render(statusText))
+		}
+	}
 	if strings.TrimSpace(m.configForm.path) != "" {
 		lines = append(lines, hintStyle.Render(trimForWidth("配置文件: "+strings.TrimSpace(m.configForm.path), m.contentWidth-14)))
 	}
@@ -3083,6 +3132,9 @@ func (m model) renderConfigForm() string {
 			lines = append(lines, m.renderConfigSkillsFreeTextSearchField())
 		default:
 			lines = append(lines, m.configForm.inputs[index].View())
+		}
+		if key := configFieldKey(index); key != "" && strings.TrimSpace(m.configForm.fieldErrorText) != "" && m.configForm.fieldErrorKey == key {
+			lines = append(lines, errorMessageStyle.Render(trimForWidth(m.configForm.fieldErrorText, m.contentWidth-16)))
 		}
 		if strings.TrimSpace(spec.description) != "" {
 			lines = append(lines, hintStyle.Render(trimForWidth(spec.description, m.contentWidth-16)))
@@ -4674,10 +4726,32 @@ func (m *model) moveConfigFormCursor(delta int) {
 	m.syncLayout()
 }
 
+func (m *model) focusConfigFormField(index int) {
+	if m.configForm == nil || index < 0 || index >= len(m.configForm.inputs) {
+		return
+	}
+	if m.configForm.flowOpen {
+		m.configForm.flowOpen = false
+	}
+	current := m.configForm.cursor
+	if current >= 0 && current < len(m.configForm.inputs) && isConfigTextField(current) {
+		m.configForm.inputs[current].Blur()
+	}
+	m.configForm.cursor = index
+	if isConfigTextField(m.configForm.cursor) {
+		m.configForm.inputs[m.configForm.cursor].Focus()
+	}
+	m.syncLayout()
+}
+
 func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
 	if m.configForm == nil {
 		return m, nil
 	}
+	m.configForm.statusText = ""
+	m.configForm.statusIsError = false
+	m.configForm.fieldErrorKey = ""
+	m.configForm.fieldErrorText = ""
 	submission := ConfigFormSubmission{Values: configFormValuesFromInputs(m.configForm.inputs)}
 	if m.configForm.flowCursor >= 0 && m.configForm.flowCursor < len(m.configForm.flowOptions) {
 		submission.Values.DefaultFlow = strings.TrimSpace(m.configForm.flowOptions[m.configForm.flowCursor].Value)
@@ -4787,6 +4861,10 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 	return &configFormState{
 		title:                   state.Title,
 		hint:                    state.Hint,
+		statusText:              state.StatusText,
+		statusIsError:           state.StatusIsError,
+		fieldErrorKey:           "",
+		fieldErrorText:          "",
 		path:                    state.Path,
 		submitText:              state.SubmitText,
 		inputs:                  models,
@@ -5253,6 +5331,7 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "细粒度权限规则", placeholder: "tool:shell_exec=deny; shell:git status=allow", description: "使用工具规则(tool:name=动作)或命令前缀规则(shell:prefix=动作)，多个规则用分号分隔。"},
 		{label: "默认思考模式", placeholder: "", description: "左右键或空格切换是否默认启用思考模式。"},
 		{label: "工作区目录", placeholder: "留空表示当前目录", description: "默认使用当前工作目录。"},
+		{label: "HTTP 请求超时（秒）", placeholder: "60", description: "标准 HTTP 请求在未显式覆写时使用该默认值，范围 1-300 秒；不影响流式长连接。"},
 		{label: "命令执行超时（秒）", placeholder: "30", description: "本地命令与语言服务查询在未显式传超时(timeout)时使用该默认值，范围 1-300 秒。"},
 		{label: "流式空闲超时（秒）", placeholder: "300", description: "大于等于 0 的整数秒，0 表示禁用流式空闲超时。"},
 		{label: "扫码等待超时（秒）", placeholder: "30", description: "二维码登录在自动轮询时使用该默认值；大于等于 0 的整数秒，0 表示持续等待直到手动取消。"},
@@ -5289,24 +5368,26 @@ func configFormFieldValue(index int, values ConfigFormValues) string {
 	case 9:
 		return strings.TrimSpace(values.Workdir)
 	case 10:
-		return strings.TrimSpace(values.CommandTimeoutSeconds)
+		return strings.TrimSpace(values.HTTPTimeoutSeconds)
 	case 11:
-		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
+		return strings.TrimSpace(values.CommandTimeoutSeconds)
 	case 12:
-		return strings.TrimSpace(values.QRWaitTimeoutSeconds)
+		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
 	case 13:
-		return ""
+		return strings.TrimSpace(values.QRWaitTimeoutSeconds)
 	case 14:
-		return strings.TrimSpace(values.AgentAutoLoopMaxRounds)
-	case 15:
-		return strings.TrimSpace(values.OutputLanguage)
-	case 16:
 		return ""
+	case 15:
+		return strings.TrimSpace(values.AgentAutoLoopMaxRounds)
+	case 16:
+		return strings.TrimSpace(values.OutputLanguage)
 	case 17:
 		return ""
 	case 18:
 		return ""
 	case 19:
+		return ""
+	case 20:
 		return strings.TrimSpace(values.SkillsRegistryURL)
 	default:
 		return ""
@@ -5331,33 +5412,95 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 		values.Workdir = strings.TrimSpace(inputs[9].Value())
 	}
 	if len(inputs) > 10 {
-		values.CommandTimeoutSeconds = strings.TrimSpace(inputs[10].Value())
+		values.HTTPTimeoutSeconds = strings.TrimSpace(inputs[10].Value())
 	}
 	if len(inputs) > 11 {
-		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[11].Value())
+		values.CommandTimeoutSeconds = strings.TrimSpace(inputs[11].Value())
 	}
 	if len(inputs) > 12 {
-		values.QRWaitTimeoutSeconds = strings.TrimSpace(inputs[12].Value())
+		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[12].Value())
 	}
-	if len(inputs) > 14 {
-		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[14].Value())
+	if len(inputs) > 13 {
+		values.QRWaitTimeoutSeconds = strings.TrimSpace(inputs[13].Value())
 	}
 	if len(inputs) > 15 {
-		values.OutputLanguage = strings.TrimSpace(inputs[15].Value())
+		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[15].Value())
 	}
-	if len(inputs) > 19 {
-		values.SkillsRegistryURL = strings.TrimSpace(inputs[19].Value())
+	if len(inputs) > 16 {
+		values.OutputLanguage = strings.TrimSpace(inputs[16].Value())
+	}
+	if len(inputs) > 20 {
+		values.SkillsRegistryURL = strings.TrimSpace(inputs[20].Value())
 	}
 	return values
 }
 
 func isConfigTextField(index int) bool {
 	switch index {
-	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldQRWaitTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldSkillsRegistryURL:
+	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldQRWaitTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldSkillsRegistryURL:
 		return true
 	default:
 		return false
 	}
+}
+
+func configFieldKey(index int) string {
+	switch index {
+	case configFieldBackendBaseURL:
+		return "backend_base_url"
+	case configFieldDefaultFlow:
+		return "default_flow"
+	case configFieldApprovalMode:
+		return "approval_mode"
+	case configFieldSandboxPolicy:
+		return "external_resource_access_policy"
+	case configFieldSkillReviewPolicy:
+		return "skill_review_policy"
+	case configFieldWriteConfirmationPolicy:
+		return "write_confirmation_policy"
+	case configFieldSandboxRoots:
+		return "sandbox_roots"
+	case configFieldPermissionRules:
+		return "permission_rules"
+	case configFieldReasoningMode:
+		return "reasoning_enabled"
+	case configFieldWorkdir:
+		return "workdir"
+	case configFieldHTTPTimeout:
+		return "http_timeout_seconds"
+	case configFieldCommandTimeout:
+		return "command_timeout_seconds"
+	case configFieldStreamIdleTimeout:
+		return "stream_idle_timeout_seconds"
+	case configFieldQRWaitTimeout:
+		return "qr_wait_timeout_seconds"
+	case configFieldAgentAutoLoopEnabled:
+		return "agent_auto_loop_enabled"
+	case configFieldAgentAutoLoopMaxRounds:
+		return "agent_auto_loop_max_rounds"
+	case configFieldOutputLanguage:
+		return "output_language"
+	case configFieldSkillsInstallScope:
+		return "skills_install_scope"
+	case configFieldSkillsAutoInstallPolicy:
+		return "skills_auto_install_policy"
+	case configFieldSkillsFreeTextSearch:
+		return "skills_free_text_search"
+	case configFieldSkillsRegistryURL:
+		return "skills_registry_url"
+	default:
+		return ""
+	}
+}
+
+func configFieldIndexByKey(key string) int {
+	trimmed := strings.TrimSpace(key)
+	for index := 0; index < configFieldCount; index++ {
+		if configFieldKey(index) == trimmed {
+			return index
+		}
+	}
+	return -1
 }
 
 func (m *model) openConfigFlowDropdown() {

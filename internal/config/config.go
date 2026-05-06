@@ -23,11 +23,13 @@ const (
 	DefaultBackendAPIPrefix         = "/taiyi/composer/api/v1"
 	SkillInstallScopeUser           = "user"
 	SkillInstallScopeWorkspace      = "workspace"
-	DefaultCommandTimeoutSeconds    = 30
-	MaxCommandTimeoutSeconds        = 300
+	DefaultHTTPTimeoutSeconds       = 120
+	DefaultCommandTimeoutSeconds    = 300
+	MaxHTTPTimeoutSeconds           = 2000
+	MaxCommandTimeoutSeconds        = 2000
 	DefaultStreamIdleTimeoutSeconds = 300
-	DefaultQRWaitTimeoutSeconds     = 30
-	DefaultAgentAutoLoopMaxRounds   = 3
+	DefaultQRWaitTimeoutSeconds     = 60
+	DefaultAgentAutoLoopMaxRounds   = 10
 	encryptedConfigValuePrefix      = "enc:v1:"
 	SandboxEscapePolicyConfirm      = "confirm"
 	SandboxEscapePolicyDeny         = "deny"
@@ -52,6 +54,7 @@ type Config struct {
 	ApprovalMode             string           `yaml:"approval_mode"`
 	ReasoningEnabled         bool             `yaml:"reasoning_enabled,omitempty"`
 	Workdir                  string           `yaml:"workdir,omitempty"`
+	HTTPTimeoutSeconds       int              `yaml:"http_timeout_seconds,omitempty"`
 	SandboxEscapePolicy      string           `yaml:"sandbox_escape_policy,omitempty"`
 	CommandTimeoutSeconds    int              `yaml:"command_timeout_seconds,omitempty"`
 	StreamIdleTimeoutSeconds int              `yaml:"stream_idle_timeout_seconds,omitempty"`
@@ -102,6 +105,7 @@ func Default() Config {
 		ApprovalMode:             "confirm",
 		ReasoningEnabled:         false,
 		SandboxEscapePolicy:      SandboxEscapePolicyConfirm,
+		HTTPTimeoutSeconds:       DefaultHTTPTimeoutSeconds,
 		CommandTimeoutSeconds:    DefaultCommandTimeoutSeconds,
 		StreamIdleTimeoutSeconds: DefaultStreamIdleTimeoutSeconds,
 		QRWaitTimeoutSeconds:     DefaultQRWaitTimeoutSeconds,
@@ -153,6 +157,16 @@ func NormalizeCommandTimeoutSeconds(value int) int {
 	}
 	if value > MaxCommandTimeoutSeconds {
 		return MaxCommandTimeoutSeconds
+	}
+	return value
+}
+
+func NormalizeHTTPTimeoutSeconds(value int) int {
+	if value < 1 {
+		return DefaultHTTPTimeoutSeconds
+	}
+	if value > MaxHTTPTimeoutSeconds {
+		return MaxHTTPTimeoutSeconds
 	}
 	return value
 }
@@ -341,6 +355,7 @@ func (m *Manager) Load() (Config, error) {
 	config.SkillReviewPolicy = NormalizeSkillReviewPolicy(config.SkillReviewPolicy)
 	config.Skills.AutoInstallPolicy = NormalizeSkillAutoInstallPolicy(config.Skills.AutoInstallPolicy)
 	config.WriteConfirmationPolicy = NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy)
+	config.HTTPTimeoutSeconds = NormalizeHTTPTimeoutSeconds(config.HTTPTimeoutSeconds)
 	config.CommandTimeoutSeconds = NormalizeCommandTimeoutSeconds(config.CommandTimeoutSeconds)
 	config.StreamIdleTimeoutSeconds = NormalizeStreamIdleTimeoutSeconds(config.StreamIdleTimeoutSeconds)
 	config.QRWaitTimeoutSeconds = NormalizeQRWaitTimeoutSeconds(config.QRWaitTimeoutSeconds)

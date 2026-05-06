@@ -244,6 +244,44 @@ func TestRenderConfigFormHidesAccessTokenField(t *testing.T) {
 	}
 }
 
+func TestConfigFormSaveErrorStaysInConfigOverlay(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{
+		Title: "配置设置",
+		Hint:  "修改后保存",
+		Values: ConfigFormValues{
+			BackendBaseURL: "http://localhost:7860",
+		},
+	})
+	state.cursor = configFieldCommandTimeout
+	appModel := model{
+		contentWidth: 80,
+		configForm:   state,
+	}
+
+	updated, _ := appModel.Update(configFormSavedMsg{err: ConfigFieldError{Field: "backend_base_url", Message: "backend_base_url 必须是完整的 HTTP 地址"}})
+	typed := updated.(model)
+
+	if typed.configForm == nil {
+		t.Fatal("expected config form to stay open on save error")
+	}
+	if typed.configForm.fieldErrorKey != "backend_base_url" || typed.configForm.fieldErrorText != "backend_base_url 必须是完整的 HTTP 地址" {
+		t.Fatalf("expected config form to store field error, got %#v", typed.configForm)
+	}
+	if typed.configForm.cursor != configFieldBackendBaseURL {
+		t.Fatalf("expected config form to focus invalid field, got %d", typed.configForm.cursor)
+	}
+	if typed.configForm.statusText != "" || typed.configForm.statusIsError {
+		t.Fatalf("expected top-level status cleared for field error, got %#v", typed.configForm)
+	}
+	if len(typed.entries) != 0 {
+		t.Fatalf("expected save error not to be appended to history, got %#v", typed.entries)
+	}
+	rendered := sanitizeTerminalText(typed.renderConfigForm())
+	if !strings.Contains(rendered, "backend_base_url 必须是完整的 HTTP 地址") {
+		t.Fatalf("expected config form to render save error, got %q", rendered)
+	}
+}
+
 func TestRenderConfigFormUsesSelectorForAgentAutoLoopEnabled(t *testing.T) {
 	state := newConfigFormState(ConfigFormState{
 		Title: "配置设置",
@@ -612,15 +650,15 @@ func TestRenderLoginFormShowsCaptchaStepWhenTicketPresent(t *testing.T) {
 
 func TestRenderLoginFormShowsMailVerifyHint(t *testing.T) {
 	state := newLoginFormState(LoginFormState{
-		Title:       "登录(login)",
-		Mode:        "password",
-		Username:    "zhangsan",
-		Password:    "secret-123",
-		Remember:    true,
-		VerifyType:  "mail",
-		VerifyHint:  "验证码已发送到企业邮箱，请查收后输入。",
-		VerifyTarget:"zhangsan@example.com",
-		Ticket:      "verify-ticket-1",
+		Title:        "登录(login)",
+		Mode:         "password",
+		Username:     "zhangsan",
+		Password:     "secret-123",
+		Remember:     true,
+		VerifyType:   "mail",
+		VerifyHint:   "验证码已发送到企业邮箱，请查收后输入。",
+		VerifyTarget: "zhangsan@example.com",
+		Ticket:       "verify-ticket-1",
 	})
 
 	appModel := model{
@@ -2017,6 +2055,46 @@ func TestAssistantChunkSplitWhenMessageIDChanges(t *testing.T) {
 	}
 	if model.entries[0].content != "第一条" || model.entries[1].content != "第二条" {
 		t.Fatalf("unexpected assistant content after message_id split: %#v", model.entries)
+	}
+}
+
+func TestAssistantChunkSplitWhenBackendRequestsNewMessage(t *testing.T) {
+	model := model{}
+
+	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "第一段", MessageID: "msg-1"})
+	model.applyEvent(Event{Kind: EventAssistantChunk, SplitAssistant: true, MessageID: "msg-1"})
+	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "第二段", MessageID: "msg-1"})
+
+	assistantEntries := []entry{}
+	for _, item := range model.entries {
+		if item.role == "assistant" {
+			assistantEntries = append(assistantEntries, item)
+		}
+	}
+	if len(assistantEntries) != 2 {
+		t.Fatalf("expected two assistant entries after split marker, got %#v", model.entries)
+	}
+	if assistantEntries[0].content != "第一段" || assistantEntries[1].content != "第二段" {
+		t.Fatalf("unexpected assistant content after split marker: %#v", assistantEntries)
+	}
+}
+
+func TestConfigFormValuesFromInputsIncludesHTTPTimeout(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{})
+	state.inputs[10].SetValue("75")
+	state.inputs[11].SetValue("45")
+	state.inputs[12].SetValue("300")
+	state.inputs[13].SetValue("90")
+
+	values := configFormValuesFromInputs(state.inputs)
+	if values.HTTPTimeoutSeconds != "75" {
+		t.Fatalf("expected http timeout from form inputs, got %#v", values)
+	}
+	if values.CommandTimeoutSeconds != "45" || values.StreamIdleTimeoutSeconds != "300" || values.QRWaitTimeoutSeconds != "90" {
+		t.Fatalf("unexpected timeout values from form inputs: %#v", values)
+	}
+	if !isConfigTextField(configFieldHTTPTimeout) {
+		t.Fatal("expected http timeout field to be treated as text input")
 	}
 }
 

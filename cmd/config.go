@@ -179,6 +179,12 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			}
 		}
 		config.WriteConfirmationPolicy = normalizedPolicy
+	case "http_timeout_seconds":
+		seconds, err := strconv.Atoi(trimmedValue)
+		if err != nil || seconds < 1 || seconds > internalconfig.MaxHTTPTimeoutSeconds {
+			return fmt.Errorf("http_timeout_seconds 仅支持 1-%d 的整数秒", internalconfig.MaxHTTPTimeoutSeconds)
+		}
+		config.HTTPTimeoutSeconds = seconds
 	case "command_timeout_seconds":
 		seconds, err := strconv.Atoi(trimmedValue)
 		if err != nil || seconds < 1 || seconds > internalconfig.MaxCommandTimeoutSeconds {
@@ -279,6 +285,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.SkillReviewPolicy = defaults.SkillReviewPolicy
 	case "write_confirmation_policy":
 		config.WriteConfirmationPolicy = defaults.WriteConfirmationPolicy
+	case "http_timeout_seconds":
+		config.HTTPTimeoutSeconds = defaults.HTTPTimeoutSeconds
 	case "command_timeout_seconds":
 		config.CommandTimeoutSeconds = defaults.CommandTimeoutSeconds
 	case "stream_idle_timeout_seconds":
@@ -325,6 +333,8 @@ func normalizeConfigKey(key string) string {
 		return "write_confirmation_policy"
 	case "command_timeout", "local_command_timeout", "local_command_timeout_seconds":
 		return "command_timeout_seconds"
+	case "http_timeout", "request_timeout", "backend_http_timeout":
+		return "http_timeout_seconds"
 	case "stream_idle_timeout":
 		return "stream_idle_timeout_seconds"
 	case "qr_wait_timeout", "qrcode_wait_timeout", "qr_login_wait_timeout":

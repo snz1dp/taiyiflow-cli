@@ -108,6 +108,18 @@ type metadataResponse struct {
 	MaxInputTokens int    `json:"max_input_tokens"`
 	Enabled        bool   `json:"enabled"`
 	IsChat         bool   `json:"is_chat"`
+
+	// 子标题
+	SubHead   string   `json:"sub_head"`
+	Questions []string `json:"questions"`
+
+	// knowledge_search
+	// image_understanding
+	// audio_understanding
+	// video_understanding
+	// document_understanding
+	// support_mcp_tools
+	Features []string `json:"features"`
 }
 
 type versionInfoResponse struct {
@@ -276,7 +288,7 @@ func NewClient(baseURL, apiKey string) *Client {
 		baseURL:                 strings.TrimRight(baseURL, "/"),
 		apiPrefix:               internalconfig.DefaultBackendAPIPrefix,
 		apiKey:                  apiKey,
-		httpClient:              &http.Client{Timeout: 60 * time.Second},
+		httpClient:              &http.Client{Timeout: time.Duration(internalconfig.DefaultHTTPTimeoutSeconds) * time.Second},
 		streamHTTPClient:        &http.Client{},
 		streamIdleTimeout:       defaultStreamIdleTimeout,
 		compressionPollDelay:    defaultCompressionPollDelay,
@@ -290,6 +302,10 @@ func (c *Client) SetAPIPrefix(prefix string) {
 
 func (c *Client) SetAPIKey(apiKey string) {
 	c.apiKey = strings.TrimSpace(apiKey)
+}
+
+func (c *Client) SetHTTPTimeoutSeconds(seconds int) {
+	c.httpClient.Timeout = time.Duration(internalconfig.NormalizeHTTPTimeoutSeconds(seconds)) * time.Second
 }
 
 func (c *Client) apiURL(path string) string {
@@ -610,6 +626,9 @@ func (c *Client) GetMetadata(ctx context.Context, flowID string) (*provider.Meta
 		MaxInputTokens: payload.MaxInputTokens,
 		Enabled:        payload.Enabled,
 		IsChat:         payload.IsChat,
+		SubHead:        payload.SubHead,
+		Questions:      payload.Questions,
+		Features:       payload.Features,
 	}, nil
 }
 

@@ -1721,15 +1721,16 @@ func previewBuiltInCommand(payload map[string]any) string {
 
 func buildTUIAssistantChunkEvent(payload map[string]any) (tui.Event, bool) {
 	chunk := firstNonEmptyRawStringMapValue(payload, "chunk", "text")
-	if chunk == "" {
+	if chunk == "" && !splitAssistantMessage(payload) {
 		return tui.Event{}, false
 	}
 	return tui.Event{
-		Kind:      tui.EventAssistantChunk,
-		Text:      chunk,
-		MessageID: firstNonEmptyTrimmedStringMapValue(payload, "message_id", "id"),
-		Stage:     strings.TrimSpace(stringMapValue(payload, "stage")),
-		EventType: strings.TrimSpace(stringMapValue(payload, "event_type")),
+		Kind:           tui.EventAssistantChunk,
+		Text:           chunk,
+		MessageID:      firstNonEmptyTrimmedStringMapValue(payload, "message_id", "id"),
+		Stage:          strings.TrimSpace(stringMapValue(payload, "stage")),
+		EventType:      strings.TrimSpace(stringMapValue(payload, "event_type")),
+		SplitAssistant: splitAssistantMessage(payload),
 	}, true
 }
 
@@ -2083,6 +2084,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			PermissionRules:          formatPermissionRulesInline(config.PermissionRules),
 			ReasoningEnabled:         config.ReasoningEnabled,
 			Workdir:                  strings.TrimSpace(config.Workdir),
+			HTTPTimeoutSeconds:       strconv.Itoa(config.HTTPTimeoutSeconds),
 			CommandTimeoutSeconds:    strconv.Itoa(config.CommandTimeoutSeconds),
 			StreamIdleTimeoutSeconds: strconv.Itoa(config.StreamIdleTimeoutSeconds),
 			QRWaitTimeoutSeconds:     strconv.Itoa(config.QRWaitTimeoutSeconds),
@@ -2104,111 +2106,117 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 	}
 
 	if err := assignConfigValue(&config, "backend_base_url", submission.Values.BackendBaseURL); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "backend_base_url", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.DefaultFlow) == "" {
 		config.DefaultFlow = ""
 	} else if err := assignConfigValue(&config, "default_flow", submission.Values.DefaultFlow); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "default_flow", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.ApprovalMode) == "" {
 		config.ApprovalMode = internalconfig.Default().ApprovalMode
 	} else if err := assignConfigValue(&config, "approval_mode", submission.Values.ApprovalMode); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "approval_mode", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.SandboxEscapePolicy) == "" {
 		config.SandboxEscapePolicy = internalconfig.Default().SandboxEscapePolicy
 	} else if err := assignConfigValue(&config, "external_resource_access_policy", submission.Values.SandboxEscapePolicy); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "external_resource_access_policy", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.SkillReviewPolicy) == "" {
 		config.SkillReviewPolicy = internalconfig.Default().SkillReviewPolicy
 	} else if err := assignConfigValue(&config, "skill_review_policy", submission.Values.SkillReviewPolicy); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "skill_review_policy", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.WriteConfirmationPolicy) == "" {
 		config.WriteConfirmationPolicy = internalconfig.Default().WriteConfirmationPolicy
 	} else if err := assignConfigValue(&config, "write_confirmation_policy", submission.Values.WriteConfirmationPolicy); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "write_confirmation_policy", Message: err.Error()}
 	}
 
 	config.SandboxRoots = parseSandboxRootsInline(submission.Values.SandboxRoots)
 	parsedPermissionRules, err := parsePermissionRulesInline(submission.Values.PermissionRules)
 	if err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "permission_rules", Message: err.Error()}
 	}
 	config.PermissionRules = parsedPermissionRules
 
 	if err := assignConfigValue(&config, "reasoning_enabled", strconv.FormatBool(submission.Values.ReasoningEnabled)); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "reasoning_enabled", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.Workdir) == "" {
 		config.Workdir = ""
 	} else if err := assignConfigValue(&config, "workdir", submission.Values.Workdir); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "workdir", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.HTTPTimeoutSeconds) == "" {
+		config.HTTPTimeoutSeconds = internalconfig.Default().HTTPTimeoutSeconds
+	} else if err := assignConfigValue(&config, "http_timeout_seconds", submission.Values.HTTPTimeoutSeconds); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "http_timeout_seconds", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.CommandTimeoutSeconds) == "" {
 		config.CommandTimeoutSeconds = internalconfig.Default().CommandTimeoutSeconds
 	} else if err := assignConfigValue(&config, "command_timeout_seconds", submission.Values.CommandTimeoutSeconds); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "command_timeout_seconds", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.StreamIdleTimeoutSeconds) == "" {
 		config.StreamIdleTimeoutSeconds = internalconfig.Default().StreamIdleTimeoutSeconds
 	} else if err := assignConfigValue(&config, "stream_idle_timeout_seconds", submission.Values.StreamIdleTimeoutSeconds); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "stream_idle_timeout_seconds", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.QRWaitTimeoutSeconds) == "" {
 		config.QRWaitTimeoutSeconds = internalconfig.Default().QRWaitTimeoutSeconds
 	} else if err := assignConfigValue(&config, "qr_wait_timeout_seconds", submission.Values.QRWaitTimeoutSeconds); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "qr_wait_timeout_seconds", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.AgentAutoLoopEnabled) == "" {
 		config.AgentAutoLoopEnabled = internalconfig.Default().AgentAutoLoopEnabled
 	} else if err := assignConfigValue(&config, "agent_auto_loop_enabled", submission.Values.AgentAutoLoopEnabled); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "agent_auto_loop_enabled", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.AgentAutoLoopMaxRounds) == "" {
 		config.AgentAutoLoopMaxRounds = internalconfig.Default().AgentAutoLoopMaxRounds
 	} else if err := assignConfigValue(&config, "agent_auto_loop_max_rounds", submission.Values.AgentAutoLoopMaxRounds); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "agent_auto_loop_max_rounds", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.OutputLanguage) == "" {
 		config.OutputLanguage = internalconfig.Default().OutputLanguage
 	} else if err := assignConfigValue(&config, "output_language", submission.Values.OutputLanguage); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "output_language", Message: err.Error()}
 	}
 
 	if err := assignConfigValue(&config, "skills_install_scope", submission.Values.SkillsInstallScope); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "skills_install_scope", Message: err.Error()}
 	}
 	config.Skills.Directory = ""
 
 	if strings.TrimSpace(submission.Values.SkillsAutoInstallPolicy) == "" {
 		config.Skills.AutoInstallPolicy = internalconfig.Default().Skills.AutoInstallPolicy
 	} else if err := assignConfigValue(&config, "skills_auto_install_policy", submission.Values.SkillsAutoInstallPolicy); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "skills_auto_install_policy", Message: err.Error()}
 	}
 
 	if err := assignConfigValue(&config, "skills_free_text_search", strconv.FormatBool(submission.Values.SkillsFreeTextSearch)); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "skills_free_text_search", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.SkillsRegistryURL) == "" {
 		config.Skills.RegistryURL = internalconfig.Default().Skills.RegistryURL
 	} else if err := assignConfigValue(&config, "skills_registry_url", submission.Values.SkillsRegistryURL); err != nil {
-		return internalconfig.Config{}, err
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "skills_registry_url", Message: err.Error()}
 	}
 
 	if err := a.configManager.Save(config); err != nil {

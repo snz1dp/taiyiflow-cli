@@ -55,13 +55,16 @@ type rootOptions struct {
 }
 
 type cliStreamRenderState struct {
-	insideThink bool
-	pending     string
+	insideThink         bool
+	pending             string
+	splitNextAssistant  bool
+	hasPrintedAssistant bool
 }
 
 func buildProviderClient(config internalconfig.Config) *providerclient.Client {
 	client := providerclient.NewClient(config.BackendBaseURL, config.AccessToken)
 	client.SetAPIPrefix(config.BackendAPIPrefix)
+	client.SetHTTPTimeoutSeconds(config.HTTPTimeoutSeconds)
 	client.SetStreamIdleTimeoutSeconds(config.StreamIdleTimeoutSeconds)
 	return client
 }
@@ -551,8 +554,14 @@ func (a *App) streamTaskWithSkillRetry(
 					}
 				}
 			}
+			if splitAssistantMessage(event.Data) {
+				renderState.splitNextAssistant = true
+			}
 			if chunk, ok := event.Data["chunk"].(string); ok && chunk != "" {
 				chunk = sanitizeCLIStreamText(chunk)
+				if renderState.splitNextAssistant && renderState.hasPrintedAssistant {
+					chunk = "\n\n" + chunk
+				}
 				chunk = renderState.renderChunk(chunk, showThinking)
 				if !hasVisibleOutput {
 					chunk = strings.TrimLeft(chunk, "\r\n")
@@ -562,6 +571,8 @@ func (a *App) streamTaskWithSkillRetry(
 				}
 				fmt.Fprint(a.stdout, chunk)
 				hasVisibleOutput = true
+				renderState.hasPrintedAssistant = true
+				renderState.splitNextAssistant = false
 				continue
 			}
 			if showStreamEvents {
@@ -946,6 +957,21 @@ func firstNonEmpty(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func splitAssistantMessage(payload map[string]any) bool {
+	value, ok := payload["split_assistant_message"]
+	if !ok || value == nil {
+		return false
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true")
+	default:
+		return false
+	}
 }
 
 func (a *App) runInteractiveConfigCommand(command string) error {

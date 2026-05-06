@@ -19,15 +19,15 @@ import (
 )
 
 type stubProvider struct {
-	stream         <-chan provider.StreamEvent
-	streamErr      error
-	streamSession  *provider.StreamSession
-	messages       *provider.SessionMessageList
-	runStats       *provider.RunStats
-	sessionContext *provider.SessionContextPreview
-	skillPreview   *provider.SkillResolvePreview
-	skillPreviewErr error
-	lastRequest    provider.StreamRequest
+	stream             <-chan provider.StreamEvent
+	streamErr          error
+	streamSession      *provider.StreamSession
+	messages           *provider.SessionMessageList
+	runStats           *provider.RunStats
+	sessionContext     *provider.SessionContextPreview
+	skillPreview       *provider.SkillResolvePreview
+	skillPreviewErr    error
+	lastRequest        provider.StreamRequest
 	lastResolveRequest provider.SkillResolveRequest
 }
 
@@ -433,6 +433,41 @@ func TestStreamTaskUpdatesSessionTitleFromStream(t *testing.T) {
 	}
 	if loaded.SessionTitle != "新会话标题" {
 		t.Fatalf("expected persisted session title, got %q", loaded.SessionTitle)
+	}
+}
+
+func TestStreamTaskSplitsAssistantOutputWhenBackendRequestsNewMessage(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	stream := make(chan provider.StreamEvent, 4)
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "第一条"}}
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"split_assistant_message": true}}
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "第二条"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err := app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+
+	if got := stdout.String(); got != "第一条\n\n第二条\n" {
+		t.Fatalf("unexpected stdout: %q", got)
 	}
 }
 
@@ -1262,10 +1297,11 @@ func TestLoadLatestSessionMetricsOverridesContextWindowWithSessionPreview(t *tes
 
 func TestBuildTUIAssistantChunkEventIncludesMetadata(t *testing.T) {
 	event, ok := buildTUIAssistantChunkEvent(map[string]any{
-		"chunk":      "回答片段",
-		"message_id": "msg-1",
-		"stage":      "end",
-		"event_type": "message",
+		"chunk":                   "回答片段",
+		"message_id":              "msg-1",
+		"stage":                   "end",
+		"event_type":              "message",
+		"split_assistant_message": true,
 	})
 
 	if !ok {
@@ -1277,7 +1313,7 @@ func TestBuildTUIAssistantChunkEventIncludesMetadata(t *testing.T) {
 	if event.Text != "回答片段" {
 		t.Fatalf("expected chunk text preserved, got %q", event.Text)
 	}
-	if event.MessageID != "msg-1" || event.Stage != "end" || event.EventType != "message" {
+	if event.MessageID != "msg-1" || event.Stage != "end" || event.EventType != "message" || !event.SplitAssistant {
 		t.Fatalf("expected metadata to be preserved, got %#v", event)
 	}
 }
@@ -1302,5 +1338,15 @@ func TestBuildTUIAssistantChunkEventFallsBackToIDAndText(t *testing.T) {
 func TestBuildTUIAssistantChunkEventRejectsEmptyChunk(t *testing.T) {
 	if _, ok := buildTUIAssistantChunkEvent(map[string]any{"message": "仅进度"}); ok {
 		t.Fatalf("expected no assistant chunk event when chunk/text missing")
+	}
+}
+
+func TestBuildTUIAssistantChunkEventAllowsSplitMarkerWithoutChunk(t *testing.T) {
+	event, ok := buildTUIAssistantChunkEvent(map[string]any{"split_assistant_message": true})
+	if !ok {
+		t.Fatal("expected split marker to produce assistant event")
+	}
+	if !event.SplitAssistant || event.Text != "" {
+		t.Fatalf("expected split-only assistant event, got %#v", event)
 	}
 }
