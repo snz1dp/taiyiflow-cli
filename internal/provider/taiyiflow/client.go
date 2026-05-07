@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"runtime"
@@ -23,7 +24,7 @@ import (
 
 const SessionHeader = "X-TaiyiFlow-Session-id"
 
-const defaultStreamIdleTimeout = 2 * time.Minute
+const defaultStreamIdleTimeout = time.Duration(internalconfig.DefaultStreamIdleTimeoutSeconds) * time.Second
 const defaultCompressionPollDelay = 120 * time.Millisecond
 const defaultCompressionPollAttempts = 4
 
@@ -315,12 +316,23 @@ type clientCallResultBody struct {
 }
 
 func NewClient(baseURL, apiKey string) *Client {
+	streamTransport := http.DefaultTransport.(*http.Transport).Clone()
+	streamTransport.DialContext = (&net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 60 * time.Second,
+	}).DialContext
+	streamTransport.MaxIdleConns = 100
+	streamTransport.MaxIdleConnsPerHost = 20
+	streamTransport.IdleConnTimeout = 600 * time.Second
+	streamTransport.TLSHandshakeTimeout = 30 * time.Second
+	streamTransport.ExpectContinueTimeout = time.Second
+
 	return &Client{
 		baseURL:                 strings.TrimRight(baseURL, "/"),
 		apiPrefix:               internalconfig.DefaultBackendAPIPrefix,
 		apiKey:                  apiKey,
 		httpClient:              &http.Client{Timeout: time.Duration(internalconfig.DefaultHTTPTimeoutSeconds) * time.Second},
-		streamHTTPClient:        &http.Client{},
+		streamHTTPClient:        &http.Client{Transport: streamTransport},
 		streamIdleTimeout:       defaultStreamIdleTimeout,
 		compressionPollDelay:    defaultCompressionPollDelay,
 		compressionPollAttempts: defaultCompressionPollAttempts,

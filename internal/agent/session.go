@@ -23,6 +23,7 @@ type SessionState struct {
 	RequestMode                    string     `json:"request_mode,omitempty"`
 	ContextDir                     string     `json:"context_dir,omitempty"`
 	ReasoningOverride              string     `json:"reasoning_override,omitempty"`
+	InternetSearchOverride         string     `json:"internet_search_override,omitempty"`
 	AgentAutoLoopEnabledOverride   string     `json:"agent_auto_loop_enabled_override,omitempty"`
 	AgentAutoLoopMaxRoundsOverride int        `json:"agent_auto_loop_max_rounds_override,omitempty"`
 	SandboxEscapePolicyOverride    string     `json:"sandbox_escape_policy_override,omitempty"`
@@ -79,6 +80,7 @@ func (s *SessionStore) Load(flowID string, workdir string) (SessionState, error)
 		state.ContextDir = normalizeWorkdir(state.ContextDir)
 	}
 	state.ReasoningOverride = normalizeReasoningOverride(state.ReasoningOverride)
+	state.InternetSearchOverride = normalizeInternetSearchOverride(state.InternetSearchOverride)
 	state.AgentAutoLoopEnabledOverride = normalizeAgentAutoLoopEnabledOverride(state.AgentAutoLoopEnabledOverride)
 	state.AgentAutoLoopMaxRoundsOverride = normalizeAgentAutoLoopMaxRoundsOverride(state.AgentAutoLoopMaxRoundsOverride)
 	state.SandboxEscapePolicyOverride = normalizeSandboxEscapePolicyOverride(state.SandboxEscapePolicyOverride)
@@ -102,6 +104,7 @@ func (s *SessionStore) Save(state SessionState) error {
 		state.ContextDir = normalizeWorkdir(state.ContextDir)
 	}
 	state.ReasoningOverride = normalizeReasoningOverride(state.ReasoningOverride)
+	state.InternetSearchOverride = normalizeInternetSearchOverride(state.InternetSearchOverride)
 	state.AgentAutoLoopEnabledOverride = normalizeAgentAutoLoopEnabledOverride(state.AgentAutoLoopEnabledOverride)
 	state.AgentAutoLoopMaxRoundsOverride = normalizeAgentAutoLoopMaxRoundsOverride(state.AgentAutoLoopMaxRoundsOverride)
 	state.SandboxEscapePolicyOverride = normalizeSandboxEscapePolicyOverride(state.SandboxEscapePolicyOverride)
@@ -243,6 +246,17 @@ func normalizeApprovedSkillNames(items []string) []string {
 }
 
 func normalizeReasoningOverride(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "on", "true", "enable", "enabled":
+		return "on"
+	case "off", "false", "disable", "disabled":
+		return "off"
+	default:
+		return ""
+	}
+}
+
+func normalizeInternetSearchOverride(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "on", "true", "enable", "enabled":
 		return "on"

@@ -41,6 +41,10 @@ func (a *App) runDoctor(args []string) error {
 	fmt.Fprintf(a.stdout, "- 配置文件路径: %s（%s）\n", a.configManager.Path(), fileExistedLabel)
 	fmt.Fprintf(a.stdout, "- 后台服务地址: %s\n", config.BackendBaseURL)
 	fmt.Fprintf(a.stdout, "- 后台服务前缀: %s\n", config.BackendAPIPrefix)
+	fmt.Fprintf(a.stdout, "- HTTP 超时: %d 秒\n", config.HTTPTimeoutSeconds)
+	fmt.Fprintf(a.stdout, "- 命令超时: %d 秒\n", config.CommandTimeoutSeconds)
+	fmt.Fprintf(a.stdout, "- 流空闲超时: %d 秒\n", config.StreamIdleTimeoutSeconds)
+	fmt.Fprintln(a.stdout, "- 流异常自动重试: 1 次（仅连接中断/超时）")
 	fmt.Fprintf(a.stdout, "- 默认智能体: %s\n", flowDisplay)
 	fmt.Fprintf(a.stdout, "- 文件工具链: %s\n", detectLocalFileToolStatus())
 	if skillItems, directory, skillErr := skills.Discover(config); skillErr == nil {

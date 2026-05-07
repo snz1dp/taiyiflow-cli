@@ -12,10 +12,14 @@ import (
 )
 
 type backendStatus struct {
-	Available bool
+	Available    bool
 	AuthRequired bool
-	Reason    string
+	Reason       string
 }
+
+var errStreamBackendIdleTimeout = errors.New("stream backend idle timeout")
+var errStreamReadTimeout = errors.New("stream read timeout")
+var errStreamDisconnected = errors.New("stream disconnected")
 
 func (a *App) inspectBackendStatus(ctx context.Context, client *providerclient.Client, backendBaseURL string) backendStatus {
 	trimmedBaseURL := strings.TrimSpace(backendBaseURL)
@@ -89,23 +93,50 @@ func normalizeStreamEventError(raw any) error {
 	}
 
 	if strings.Contains(lowerMessage, "backend idle timeout") {
-		return fmt.Errorf("后端长时间未返回输出，流式请求已超时")
+		return fmt.Errorf("%w: 后端长时间未返回输出，流式请求已超时", errStreamBackendIdleTimeout)
 	}
 
 	if strings.Contains(lowerMessage, "context deadline exceeded") || strings.Contains(lowerMessage, "client.timeout") {
-		return fmt.Errorf("读取流式响应超时，连接可能已中断")
+		return fmt.Errorf("%w: 读取流式响应超时，连接可能已中断", errStreamReadTimeout)
 	}
 
 	if strings.Contains(lowerMessage, "读取 sse 失败") {
 		switch {
 		case strings.Contains(lowerMessage, "eof"):
-			return fmt.Errorf("流式响应已提前结束，连接可能已中断")
+			return fmt.Errorf("%w: 流式响应已提前结束，连接可能已中断", errStreamDisconnected)
 		case strings.Contains(lowerMessage, "broken pipe"), strings.Contains(lowerMessage, "connection reset by peer"), strings.Contains(lowerMessage, "use of closed network connection"):
-			return fmt.Errorf("流式连接已中断，请稍后重试")
+			return fmt.Errorf("%w: 流式连接已中断，请稍后重试", errStreamDisconnected)
 		default:
 			return fmt.Errorf("流式响应异常: %s", message)
 		}
 	}
 
 	return fmt.Errorf("后端返回错误: %s", message)
+}
+
+func shouldRetryStreamError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	return errors.Is(err, errStreamBackendIdleTimeout) ||
+		errors.Is(err, errStreamReadTimeout) ||
+		errors.Is(err, errStreamDisconnected)
+}
+
+func shouldRetryStreamRequestError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	lowerMessage := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(lowerMessage, "context deadline exceeded") ||
+		strings.Contains(lowerMessage, "client.timeout") ||
+		strings.Contains(lowerMessage, "timeout") ||
+		strings.Contains(lowerMessage, "connection reset by peer") ||
+		strings.Contains(lowerMessage, "broken pipe") ||
+		strings.Contains(lowerMessage, "eof") ||
+		strings.Contains(lowerMessage, "use of closed network connection")
 }

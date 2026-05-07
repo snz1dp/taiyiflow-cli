@@ -3,8 +3,10 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
@@ -43,21 +45,30 @@ func TestNormalizeStreamEventError(t *testing.T) {
 
 	t.Run("stream timeout", func(t *testing.T) {
 		err := normalizeStreamEventError("读取 SSE 失败: context deadline exceeded (Client.Timeout or context cancellation while reading body)")
-		if got := err.Error(); got != "读取流式响应超时，连接可能已中断" {
+		if !errors.Is(err, errStreamReadTimeout) {
+			t.Fatalf("expected stream read timeout marker, got %v", err)
+		}
+		if got := err.Error(); !strings.Contains(got, "读取流式响应超时，连接可能已中断") {
 			t.Fatalf("unexpected timeout message: %q", got)
 		}
 	})
 
 	t.Run("backend idle timeout", func(t *testing.T) {
 		err := normalizeStreamEventError("读取 SSE 失败: backend idle timeout after 2m0s without SSE activity")
-		if got := err.Error(); got != "后端长时间未返回输出，流式请求已超时" {
+		if !errors.Is(err, errStreamBackendIdleTimeout) {
+			t.Fatalf("expected backend idle timeout marker, got %v", err)
+		}
+		if got := err.Error(); !strings.Contains(got, "后端长时间未返回输出，流式请求已超时") {
 			t.Fatalf("unexpected backend idle timeout message: %q", got)
 		}
 	})
 
 	t.Run("stream disconnected", func(t *testing.T) {
 		err := normalizeStreamEventError("读取 SSE 失败: read tcp 127.0.0.1:1->127.0.0.1:2: connection reset by peer")
-		if got := err.Error(); got != "流式连接已中断，请稍后重试" {
+		if !errors.Is(err, errStreamDisconnected) {
+			t.Fatalf("expected stream disconnected marker, got %v", err)
+		}
+		if got := err.Error(); !strings.Contains(got, "流式连接已中断，请稍后重试") {
 			t.Fatalf("unexpected disconnect message: %q", got)
 		}
 	})
@@ -68,4 +79,32 @@ func TestNormalizeStreamEventError(t *testing.T) {
 			t.Fatalf("unexpected backend error message: %q", got)
 		}
 	})
+}
+
+func TestShouldRetryStreamError(t *testing.T) {
+	if shouldRetryStreamError(context.Canceled) {
+		t.Fatal("expected canceled context not to retry")
+	}
+
+	if !shouldRetryStreamError(fmt.Errorf("%w: demo", errStreamDisconnected)) {
+		t.Fatal("expected disconnected stream to retry")
+	}
+
+	if shouldRetryStreamError(errors.New("quota exceeded")) {
+		t.Fatal("expected business error not to retry")
+	}
+}
+
+func TestShouldRetryStreamRequestError(t *testing.T) {
+	if !shouldRetryStreamRequestError(context.DeadlineExceeded) {
+		t.Fatal("expected deadline exceeded to retry")
+	}
+
+	if !shouldRetryStreamRequestError(errors.New("read tcp: connection reset by peer")) {
+		t.Fatal("expected connection reset to retry")
+	}
+
+	if shouldRetryStreamRequestError(context.Canceled) {
+		t.Fatal("expected canceled context not to retry")
+	}
 }

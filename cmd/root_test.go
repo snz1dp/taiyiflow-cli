@@ -185,6 +185,64 @@ func TestResolveTaskRequestModeRejectsInvalidValue(t *testing.T) {
 	}
 }
 
+func TestResolveTaskReasoningMode(t *testing.T) {
+	t.Run("empty keeps inherited", func(t *testing.T) {
+		mode, err := resolveTaskReasoningMode("")
+		if err != nil {
+			t.Fatalf("resolveTaskReasoningMode returned error: %v", err)
+		}
+		if mode != "" {
+			t.Fatalf("expected empty reasoning mode, got %q", mode)
+		}
+	})
+
+	t.Run("accept on off", func(t *testing.T) {
+		mode, err := resolveTaskReasoningMode("on")
+		if err != nil || mode != "on" {
+			t.Fatalf("expected on, got mode=%q err=%v", mode, err)
+		}
+		mode, err = resolveTaskReasoningMode("OFF")
+		if err != nil || mode != "off" {
+			t.Fatalf("expected off, got mode=%q err=%v", mode, err)
+		}
+	})
+
+	t.Run("reject invalid", func(t *testing.T) {
+		if _, err := resolveTaskReasoningMode("default"); err == nil {
+			t.Fatal("expected invalid reasoning mode to return error")
+		}
+	})
+}
+
+func TestResolveTaskInternetSearchMode(t *testing.T) {
+	t.Run("empty keeps inherited", func(t *testing.T) {
+		mode, err := resolveTaskInternetSearchMode("")
+		if err != nil {
+			t.Fatalf("resolveTaskInternetSearchMode returned error: %v", err)
+		}
+		if mode != "" {
+			t.Fatalf("expected empty internet search mode, got %q", mode)
+		}
+	})
+
+	t.Run("accept on off", func(t *testing.T) {
+		mode, err := resolveTaskInternetSearchMode("on")
+		if err != nil || mode != "on" {
+			t.Fatalf("expected on, got mode=%q err=%v", mode, err)
+		}
+		mode, err = resolveTaskInternetSearchMode("OFF")
+		if err != nil || mode != "off" {
+			t.Fatalf("expected off, got mode=%q err=%v", mode, err)
+		}
+	})
+
+	t.Run("reject invalid", func(t *testing.T) {
+		if _, err := resolveTaskInternetSearchMode("default"); err == nil {
+			t.Fatal("expected invalid internet search mode to return error")
+		}
+	})
+}
+
 func TestEnsureDefaultFlowUsesServiceConfigDefaultFlowID(t *testing.T) {
 	flowListCalled := false
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -807,6 +865,96 @@ func TestStreamTaskShowsToolCallOnlyWhenStreamEventsEnabled(t *testing.T) {
 
 	if got := stdout.String(); got != "[工具调用]: read_file\n\n" {
 		t.Fatalf("expected tool call shown when stream events enabled, got %q", got)
+	}
+}
+
+func TestStreamTaskUsesReasoningOverride(t *testing.T) {
+	testCases := []struct {
+		name              string
+		globalReasoning   bool
+		override          string
+		expectedReasoning bool
+	}{
+		{name: "inherit global true", globalReasoning: true, override: "", expectedReasoning: true},
+		{name: "override on", globalReasoning: false, override: "on", expectedReasoning: true},
+		{name: "override off", globalReasoning: true, override: "off", expectedReasoning: false},
+	}
+
+	for _, item := range testCases {
+		t.Run(item.name, func(t *testing.T) {
+			app := newTestAppWithSessionStore(t)
+			app.stdout = io.Discard
+			app.stderr = io.Discard
+			app.runtime = clientruntime.NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+
+			stream := make(chan provider.StreamEvent, 1)
+			stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+			close(stream)
+
+			providerStub := &stubProvider{stream: stream}
+			config := internalconfig.Config{ReasoningEnabled: item.globalReasoning}
+			_, err := app.streamTask(
+				context.Background(),
+				providerStub,
+				config,
+				"demo-flow",
+				"demo task",
+				agent.SessionState{RequestMode: provider.RequestTypeAgent, ReasoningOverride: item.override},
+				"",
+				false,
+				false,
+			)
+			if err != nil {
+				t.Fatalf("streamTask failed: %v", err)
+			}
+			if providerStub.lastRequest.ReasoningEnabled != item.expectedReasoning {
+				t.Fatalf("expected reasoning_enabled=%v, got %v", item.expectedReasoning, providerStub.lastRequest.ReasoningEnabled)
+			}
+		})
+	}
+}
+
+func TestStreamTaskUsesInternetSearchOverride(t *testing.T) {
+	testCases := []struct {
+		name                   string
+		override               string
+		expectedInternetSearch bool
+	}{
+		{name: "default off", override: "", expectedInternetSearch: false},
+		{name: "override on", override: "on", expectedInternetSearch: true},
+		{name: "override off", override: "off", expectedInternetSearch: false},
+	}
+
+	for _, item := range testCases {
+		t.Run(item.name, func(t *testing.T) {
+			app := newTestAppWithSessionStore(t)
+			app.stdout = io.Discard
+			app.stderr = io.Discard
+			app.runtime = clientruntime.NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+
+			stream := make(chan provider.StreamEvent, 1)
+			stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+			close(stream)
+
+			providerStub := &stubProvider{stream: stream}
+			_, err := app.streamTask(
+				context.Background(),
+				providerStub,
+				internalconfig.Config{},
+				"demo-flow",
+				"demo task",
+				agent.SessionState{RequestMode: provider.RequestTypeAgent, InternetSearchOverride: item.override},
+				"",
+				false,
+				false,
+			)
+			if err != nil {
+				t.Fatalf("streamTask failed: %v", err)
+			}
+			if providerStub.lastRequest.InternetSearch != item.expectedInternetSearch {
+				t.Fatalf("expected internet_search=%v, got %v", item.expectedInternetSearch, providerStub.lastRequest.InternetSearch)
+			}
+		})
 	}
 }
 

@@ -63,6 +63,36 @@ func resolveTaskRequestMode(value string) (string, error) {
 	}
 }
 
+func resolveTaskReasoningMode(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	switch strings.ToLower(trimmed) {
+	case "on", "true", "enable", "enabled":
+		return "on", nil
+	case "off", "false", "disable", "disabled":
+		return "off", nil
+	default:
+		return "", errors.New("思考模式仅支持 on 或 off")
+	}
+}
+
+func resolveTaskInternetSearchMode(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	switch strings.ToLower(trimmed) {
+	case "on", "true", "enable", "enabled":
+		return "on", nil
+	case "off", "false", "disable", "disabled":
+		return "off", nil
+	default:
+		return "", errors.New("联网搜索仅支持 on 或 off")
+	}
+}
+
 func buildCLIUserAgent() string {
 	version := strings.TrimSpace(buildinfo.Version)
 	if version == "" {

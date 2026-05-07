@@ -100,7 +100,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}
 		runtimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
 		quietRuntimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
-		retryCount := 0
+		skillRetryCount := 0
+		streamRetryCount := 0
 		for {
 			resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
 			skillConfig := a.resolveEffectiveSkillConfig(config, resolvedContextDir)
@@ -132,6 +133,16 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				ClientSkillPackages:    clientSkillPackages,
 			})
 			if streamErr != nil {
+				if streamRetryCount < 1 && shouldRetryStreamRequestError(streamErr) {
+					streamRetryCount++
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: "检测到流式连接异常，正在自动重试（1/1）..."})
+					select {
+					case <-runCtx.Done():
+						return runCtx.Err()
+					case <-time.After(300 * time.Millisecond):
+					}
+					continue
+				}
 				return fmt.Errorf("%s", explainBackendFailure(streamErr))
 			}
 
@@ -277,7 +288,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					}
 				case provider.EventError:
 					normalizedErr := normalizeStreamEventError(event.Data["error"])
-					if retryCount < 1 {
+					if skillRetryCount < 1 {
 						missingSkillNames := detectMissingSkillNames(event.Data, normalizedErr)
 						if len(missingSkillNames) > 0 {
 							installedAny, installErr := a.autoInstallCandidates(
@@ -299,12 +310,18 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 								return installErr
 							}
 							if installedAny {
-								retryCount++
+								skillRetryCount++
 								retryRequested = true
 								emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("检测到缺失技能 %s，已完成补装，正在自动重试。", strings.Join(missingSkillNames, ", "))})
 								break eventLoop
 							}
 						}
+					}
+					if streamRetryCount < 1 && shouldRetryStreamError(normalizedErr) {
+						streamRetryCount++
+						retryRequested = true
+						emit(tui.Event{Kind: tui.EventProgressNote, Text: "检测到流式连接中断，正在自动重试（1/1）..."})
+						break eventLoop
 					}
 					return normalizedErr
 				case provider.EventClose:

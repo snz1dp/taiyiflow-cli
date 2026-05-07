@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/term"
 
@@ -47,6 +48,8 @@ type App struct {
 type rootOptions struct {
 	Flow                string
 	RequestMode         string
+	ReasoningMode       string
+	InternetSearchMode  string
 	NewSession          bool
 	Continue            bool
 	ShowStreamEvents    bool
@@ -136,6 +139,8 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	flagSet.StringVar(&options.Flow, "flow", "", "兼容旧参数：指定要运行的智能体 ID 或名称")
 	flagSet.StringVar(&options.RequestMode, "mode", "", "task 请求模式（agent|ask|plan），默认 agent")
 	flagSet.StringVar(&options.RequestMode, "request-mode", "", "兼容别名：task 请求模式（agent|ask|plan），默认 agent")
+	flagSet.StringVar(&options.ReasoningMode, "reasoning", "", "思考模式（on|off），仅影响当前 task 会话")
+	flagSet.StringVar(&options.InternetSearchMode, "internet-search", "", "联网搜索（on|off），仅影响当前 task 会话")
 	flagSet.BoolVar(&options.NewSession, "new", false, "忽略已有会话并新建会话")
 	flagSet.BoolVar(&options.Continue, "continue", false, "继续当前会话")
 	flagSet.BoolVar(&options.ShowStreamEvents, "show-stream-events", false, "显示系统提示与工具调用等流式调试信息")
@@ -151,6 +156,18 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 		return err
 	}
 	options.RequestMode = requestMode
+
+	reasoningMode, err := resolveTaskReasoningMode(options.ReasoningMode)
+	if err != nil {
+		return err
+	}
+	options.ReasoningMode = reasoningMode
+
+	internetSearchMode, err := resolveTaskInternetSearchMode(options.InternetSearchMode)
+	if err != nil {
+		return err
+	}
+	options.InternetSearchMode = internetSearchMode
 
 	task := strings.TrimSpace(strings.Join(flagSet.Args(), " "))
 	if task == "" && !options.Continue {
@@ -189,6 +206,12 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir, options.RequestMode)
 	if err != nil {
 		return err
+	}
+	if options.ReasoningMode != "" {
+		sessionState.ReasoningOverride = options.ReasoningMode
+	}
+	if options.InternetSearchMode != "" {
+		sessionState.InternetSearchOverride = options.InternetSearchMode
 	}
 	flowDisplayName := a.resolveFlowDisplayName(ctx, providerClient, flowID)
 	sessionState.FlowDisplayName = flowDisplayName
@@ -430,6 +453,12 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	if err != nil {
 		return err
 	}
+	if options.ReasoningMode != "" {
+		sessionState.ReasoningOverride = options.ReasoningMode
+	}
+	if options.InternetSearchMode != "" {
+		sessionState.InternetSearchOverride = options.InternetSearchMode
+	}
 
 	_, err = a.streamTask(ctx, providerClient, config, flowID, task, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents, options.ShowThinking)
 	return err
@@ -515,6 +544,7 @@ func (a *App) streamTaskWithSkillRetry(
 		FlowID:                 flowID,
 		Input:                  task,
 		InputType:              "any",
+		InternetSearch:         resolveInternetSearchEnabled(sessionState.InternetSearchOverride),
 		OutputType:             "any",
 		SessionID:              sessionState.SessionID,
 		RequestType:            normalizeRequestMode(sessionState.RequestMode),
@@ -530,6 +560,28 @@ func (a *App) streamTaskWithSkillRetry(
 		ClientSkillPackages:    clientSkillPackages,
 	})
 	if err != nil {
+		if retryCount < 1 && shouldRetryStreamRequestError(err) {
+			if showStreamEvents {
+				fmt.Fprintln(a.stdout, "[系统提示]: 检测到流式连接异常，正在自动重试（1/1）...")
+			}
+			select {
+			case <-ctx.Done():
+				return sessionState, ctx.Err()
+			case <-time.After(300 * time.Millisecond):
+			}
+			return a.streamTaskWithSkillRetry(
+				ctx,
+				providerClient,
+				config,
+				flowID,
+				task,
+				sessionState,
+				commandSandboxEscapePolicy,
+				showStreamEvents,
+				showThinking,
+				retryCount+1,
+			)
+		}
 		return sessionState, err
 	}
 	hasVisibleOutput := false
@@ -652,6 +704,26 @@ func (a *App) streamTaskWithSkillRetry(
 							retryCount+1,
 						)
 					}
+				}
+				if shouldRetryStreamError(normalizedErr) {
+					if hasVisibleOutput {
+						fmt.Fprintln(a.stdout)
+					}
+					if showStreamEvents {
+						fmt.Fprintln(a.stdout, "[系统提示]: 检测到流式连接中断，正在自动重试（1/1）...")
+					}
+					return a.streamTaskWithSkillRetry(
+						ctx,
+						providerClient,
+						config,
+						flowID,
+						task,
+						sessionState,
+						commandSandboxEscapePolicy,
+						showStreamEvents,
+						showThinking,
+						retryCount+1,
+					)
 				}
 			}
 			if hasVisibleOutput {
@@ -843,7 +915,7 @@ func writeTerminalControlSequence(writer io.Writer, sequence string) bool {
 func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "用法:")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli")
-	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--mode MODE] [--new] [--continue] [--show-stream-events] [--show-thinking] [--external-resource-access-policy POLICY] [任务描述]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--mode MODE] [--reasoning REASONING] [--internet-search INTERNET_SEARCH] [--new] [--continue] [--show-stream-events] [--show-thinking] [--external-resource-access-policy POLICY] [任务描述]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli login [help|status|logout|password|qr]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli config [show|init|path|set|unset]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
@@ -871,9 +943,13 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 	fmt.Fprintln(a.stdout, "  /new      清屏并重置当前智能体的本地会话")
 	fmt.Fprintln(a.stdout, "  /clear    清屏")
 	fmt.Fprintln(a.stdout, "  /exit     退出")
-	fmt.Fprintln(a.stdout, "  启动参数: --show-stream-events 可显示系统提示与工具调用日志；--show-thinking 可显示思考内容（不输出 <think></think> 标签）")
+	fmt.Fprintln(a.stdout, "  启动参数: --reasoning on|off 可设置本次会话初始思考模式；--internet-search on|off 可设置本次会话联网搜索；--show-stream-events 可显示系统提示与工具调用日志；--show-thinking 可显示思考内容（不输出 <think></think> 标签）")
 	fmt.Fprintln(a.stdout, "  提示: 交互模式下请使用 `taiyiflow-cli agents` 管理默认智能体。")
 	a.printSessionStatus(ctx, providerClient, flowDisplayName, flowID, sessionState)
+}
+
+func resolveInternetSearchEnabled(override string) bool {
+	return strings.EqualFold(strings.TrimSpace(override), "on")
 }
 
 func (a *App) printSessionStatus(ctx context.Context, providerClient provider.Provider, flowDisplayName string, flowID string, sessionState agent.SessionState) {

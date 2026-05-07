@@ -23,12 +23,12 @@ const (
 	DefaultBackendAPIPrefix         = "/taiyi/composer/api/v1"
 	SkillInstallScopeUser           = "user"
 	SkillInstallScopeWorkspace      = "workspace"
-	DefaultHTTPTimeoutSeconds       = 120
-	DefaultCommandTimeoutSeconds    = 300
+	DefaultHTTPTimeoutSeconds       = 300
+	DefaultCommandTimeoutSeconds    = 600
 	MaxHTTPTimeoutSeconds           = 2000
 	MaxCommandTimeoutSeconds        = 2000
-	DefaultStreamIdleTimeoutSeconds = 300
-	DefaultQRWaitTimeoutSeconds     = 60
+	DefaultStreamIdleTimeoutSeconds = 1200
+	DefaultQRWaitTimeoutSeconds     = 120
 	DefaultAgentAutoLoopMaxRounds   = 10
 	encryptedConfigValuePrefix      = "enc:v1:"
 	SandboxEscapePolicyConfirm      = "confirm"
