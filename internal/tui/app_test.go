@@ -89,6 +89,32 @@ func TestRenderSessionStatusTextIncludesSandboxPolicy(t *testing.T) {
 	}
 }
 
+func TestBuildWelcomeRenderLinesPlacesSubHeadBeforeCommands(t *testing.T) {
+	snapshot := Snapshot{
+		BackendAvailable: true,
+		SubHead:          "支持联网与知识库",
+		WelcomeMessage:   "欢迎使用",
+		Questions:        []string{"问题一"},
+	}
+
+	lines := buildWelcomeRenderLines(snapshot, buildWelcomeContent(snapshot))
+	if len(lines) != 3 {
+		t.Fatalf("expected subhead, command hint, and remaining content, got %#v", lines)
+	}
+	if lines[0] != "支持联网与知识库" {
+		t.Fatalf("expected subhead first, got %#v", lines)
+	}
+	if !strings.HasPrefix(lines[1], "可用命令: ") {
+		t.Fatalf("expected command hint after subhead, got %#v", lines)
+	}
+	if !strings.Contains(lines[2], "欢迎使用") {
+		t.Fatalf("expected welcome text after command hint, got %#v", lines)
+	}
+	if strings.Contains(lines[2], "支持联网与知识库") {
+		t.Fatalf("expected subhead not duplicated in trailing content, got %#v", lines)
+	}
+}
+
 func TestVisibleSlashCommandsListsAgentBeforeAgents(t *testing.T) {
 	input := textarea.New()
 	input.SetValue("/a")

@@ -4054,10 +4054,7 @@ func renderEntry(item entry, width int, height int, renderer *glamour.TermRender
 	switch item.role {
 	case "welcome":
 		_ = height
-		lines := append([]string{}, welcomeCommandsLabel(snapshot)...)
-		if strings.TrimSpace(content) != "" {
-			lines = append(lines, strings.TrimSpace(content))
-		}
+		lines := buildWelcomeRenderLines(snapshot, content)
 		return systemMessageStyle.Render(strings.Join(lines, "\n"))
 	case "user":
 		return userMessageStyle.Render(wrapped)
@@ -4069,6 +4066,22 @@ func renderEntry(item entry, width int, height int, renderer *glamour.TermRender
 	default:
 		return systemMessageStyle.Render(wrapped)
 	}
+}
+
+func buildWelcomeRenderLines(snapshot Snapshot, content string) []string {
+	trimmedContent := strings.TrimSpace(content)
+	lines := []string{}
+	if subHead := strings.TrimSpace(snapshot.SubHead); subHead != "" {
+		lines = append(lines, subHead)
+		if strings.HasPrefix(trimmedContent, subHead) {
+			trimmedContent = strings.TrimSpace(strings.TrimPrefix(trimmedContent, subHead))
+		}
+	}
+	lines = append(lines, welcomeCommandsLabel(snapshot)...)
+	if trimmedContent != "" {
+		lines = append(lines, trimmedContent)
+	}
+	return lines
 }
 
 func sanitizeTerminalText(content string) string {
