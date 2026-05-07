@@ -3889,16 +3889,9 @@ func (m model) statusBarSegments(maxWidth int) []string {
 func chatCapabilityStatus(snapshot Snapshot, compact bool) string {
 	parts := []string{}
 	if snapshot.InternetSearchSupported {
-		label := "联网关"
+		label := "联网搜索关闭"
 		if snapshot.InternetSearchEnabled {
-			label = "联网开"
-		}
-		if snapshot.InternetSearchDefault {
-			if compact {
-				label += "*"
-			} else {
-				label += "(默认)"
-			}
+			label = "联网搜索开启"
 		}
 		parts = append(parts, label)
 	}
@@ -6032,11 +6025,11 @@ func buildWelcomeEntries(snapshot Snapshot) []entry {
 
 func buildWelcomeContent(snapshot Snapshot) string {
 	lines := []string{}
-	if welcome := strings.TrimSpace(snapshot.WelcomeMessage); welcome != "" {
-		lines = append(lines, welcome)
-	}
 	if subHead := strings.TrimSpace(snapshot.SubHead); subHead != "" {
 		lines = append(lines, subHead)
+	}
+	if welcome := strings.TrimSpace(snapshot.WelcomeMessage); welcome != "" {
+		lines = append(lines, welcome)
 	}
 	questions := []string{}
 	for _, question := range snapshot.Questions {
@@ -6879,9 +6872,9 @@ func reasoningStatus(enabled bool, compact bool) string {
 		return "思考关"
 	}
 	if enabled {
-		return "思考模式已开启"
+		return "思考模式已开"
 	}
-	return "思考模式已关闭"
+	return "思考模式已关"
 }
 
 func sessionSandboxEscapePolicyStatus(value string, compact bool) string {

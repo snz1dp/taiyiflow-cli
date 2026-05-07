@@ -269,9 +269,9 @@ func (a *App) buildReviewPrompt(ctx context.Context, workdir string, target stri
 	} else {
 		targetLabel = trimmed + " 相关变更"
 	}
-	prompt := fmt.Sprintf("请按代码审查(review)方式检查%s，优先指出 bug、行为回归、风险点和缺少的测试；如果没有发现问题，也要明确说明剩余风险。只做只读审查，不要修改任何文件，不要调用 write_file、file_edit、shell_exec 或其他会产生本地写入/执行副作用的工具；如果需要修复方案，只输出问题与建议。", targetLabel)
+	prompt := fmt.Sprintf("请按代码审查(review)方式检查%s，优先指出缺陷(BUG)、行为回归、风险点和缺少的测试；如果没有发现问题，也要明确说明剩余风险。只做只读审查，不要修改任何文件，不要调用写文件(write_file)、文件编辑(file_edit)、执行命令(shell_exec)或其他会产生本地写入/执行副作用的工具；如果需要修复方案，只输出问题与建议。", targetLabel)
 	if diffSummary := summarizeReviewDiff(ctx, workdir); strings.TrimSpace(diffSummary) != "" {
-		prompt += "\n\n当前工作区 diff 摘要：\n" + diffSummary
+		prompt += "\n\n当前工作区变更(diff)摘要：\n" + diffSummary
 	}
 	return prompt
 }
