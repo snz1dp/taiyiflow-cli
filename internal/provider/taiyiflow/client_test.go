@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -162,6 +163,66 @@ func TestStreamEmitsBackendIdleTimeoutWhenNoSSEActivity(t *testing.T) {
 	}
 
 	t.Fatal("expected backend idle timeout event")
+}
+
+func TestStreamIdleTimeoutAllowsLongActiveStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := writer.(http.Flusher)
+		if !ok {
+			t.Fatalf("expected SSE response writer to implement http.Flusher")
+		}
+		for index := 0; index < 4; index++ {
+			fmt.Fprint(writer, "event: message\n")
+			fmt.Fprintf(writer, "data: {\"chunk\":\"part-%d\"}\n\n", index)
+			flusher.Flush()
+			time.Sleep(15 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	client.streamIdleTimeout = 30 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	stream, _, err := client.Stream(ctx, provider.StreamRequest{FlowID: "demo-flow"})
+	if err != nil {
+		t.Fatalf("expected stream request to succeed, got %v", err)
+	}
+
+	chunks := []string{}
+	for event := range stream {
+		if event.Type == provider.EventError {
+			t.Fatalf("expected active stream to avoid idle timeout, got %#v", event.Data)
+		}
+		if chunk, ok := event.Data["chunk"].(string); ok {
+			chunks = append(chunks, chunk)
+		}
+	}
+	if len(chunks) != 4 {
+		t.Fatalf("expected all active stream chunks, got %#v", chunks)
+	}
+}
+
+func TestIdleTimeoutReadCloserReportsNormalEOF(t *testing.T) {
+	reader := newIdleTimeoutReadCloser(io.NopCloser(strings.NewReader("done")), time.Second)
+	buffer := make([]byte, 4)
+	count, err := reader.Read(buffer)
+	if err != nil || count != 4 || string(buffer) != "done" {
+		t.Fatalf("expected first read to return content, count=%d err=%v buffer=%q", count, err, string(buffer))
+	}
+	count, err = reader.Read(buffer)
+	if err != io.EOF || count != 0 {
+		t.Fatalf("expected normal EOF, count=%d err=%v", count, err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("expected close to succeed, got %v", err)
+	}
 }
 
 func TestGetRunStatsPollsCompressionRecordsUntilAvailable(t *testing.T) {

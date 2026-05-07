@@ -207,6 +207,68 @@ func TestVisibleSlashCommandsKeepsLoginInReadOnlyMode(t *testing.T) {
 	t.Fatalf("expected /login to stay visible in read-only mode, got %#v", commands)
 }
 
+func TestVisibleSlashCommandsShowsRetryOnlyAfterFailure(t *testing.T) {
+	input := textarea.New()
+	input.SetValue("/ret")
+
+	model := model{
+		snapshot: Snapshot{BackendAvailable: true},
+		input:    input,
+	}
+	for _, command := range model.visibleSlashCommands() {
+		if command.Trigger == "/retry" {
+			t.Fatalf("expected /retry to be hidden before a failed request, got %#v", command)
+		}
+	}
+
+	request := model.buildRequest("重新试一下", "run-old")
+	model.lastRetryableRequest = cloneRequest(request)
+	model.retryAvailable = true
+	commands := model.visibleSlashCommands()
+	for _, command := range commands {
+		if command.Trigger == "/retry" {
+			return
+		}
+	}
+	t.Fatalf("expected /retry to be visible after a failed request, got %#v", commands)
+}
+
+func TestRetryLastFailedRequestReusesInputWithNewRunID(t *testing.T) {
+	input := textarea.New()
+	request := Request{Input: "再试一次", FlowID: "flow-1", RunID: "run-old"}
+
+	model := model{
+		ctx:                  context.Background(),
+		snapshot:             Snapshot{BackendAvailable: true},
+		input:                input,
+		eventCh:              make(chan tea.Msg, 4),
+		progress:             progress.New(progress.WithDefaultGradient()),
+		state:                newProgressState(progressIdle),
+		lastRetryableRequest: cloneRequest(request),
+		retryAvailable:       true,
+		runner: func(ctx context.Context, request Request, emit func(Event), confirm func(ConfirmRequest) bool) error {
+			return nil
+		},
+	}
+
+	cmd := model.retryLastFailedRequest()
+	if cmd == nil {
+		t.Fatal("expected retry command")
+	}
+	if len(model.entries) != 1 || model.entries[0].role != "user" || model.entries[0].content != request.Input {
+		t.Fatalf("expected retry to append user entry, got %#v", model.entries)
+	}
+	if model.lastRetryableRequest == nil || model.lastRetryableRequest.Input != request.Input || model.lastRetryableRequest.FlowID != request.FlowID {
+		t.Fatalf("expected retry to keep retryable request content, got %#v", model.lastRetryableRequest)
+	}
+	if model.lastRetryableRequest.RunID == "" || model.lastRetryableRequest.RunID == request.RunID {
+		t.Fatalf("expected retry to generate a new run id, got %#v", model.lastRetryableRequest.RunID)
+	}
+	if model.retryAvailable {
+		t.Fatal("expected retry availability to clear while retry request is running")
+	}
+}
+
 func TestEnterExecutesLoginSlashCommandImmediately(t *testing.T) {
 	input := textarea.New()
 	input.SetValue("/login")
@@ -2136,17 +2198,21 @@ func TestConfigFormValuesFromInputsIncludesHTTPTimeout(t *testing.T) {
 	state.inputs[10].SetValue("75")
 	state.inputs[11].SetValue("45")
 	state.inputs[12].SetValue("300")
-	state.inputs[13].SetValue("90")
+	state.inputs[13].SetValue("2")
+	state.inputs[14].SetValue("90")
 
 	values := configFormValuesFromInputs(state.inputs)
 	if values.HTTPTimeoutSeconds != "75" {
 		t.Fatalf("expected http timeout from form inputs, got %#v", values)
 	}
-	if values.CommandTimeoutSeconds != "45" || values.StreamIdleTimeoutSeconds != "300" || values.QRWaitTimeoutSeconds != "90" {
+	if values.CommandTimeoutSeconds != "45" || values.StreamIdleTimeoutSeconds != "300" || values.StreamRetryAttempts != "2" || values.QRWaitTimeoutSeconds != "90" {
 		t.Fatalf("unexpected timeout values from form inputs: %#v", values)
 	}
 	if !isConfigTextField(configFieldHTTPTimeout) {
 		t.Fatal("expected http timeout field to be treated as text input")
+	}
+	if !isConfigTextField(configFieldStreamRetryAttempts) {
+		t.Fatal("expected stream retry attempts field to be treated as text input")
 	}
 }
 

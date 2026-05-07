@@ -41,20 +41,17 @@ type idleTimeoutReadCloser struct {
 	idleTimeout time.Duration
 	timer       *time.Timer
 	mu          sync.Mutex
+	lastActive  time.Time
 	timedOut    bool
+	closed      bool
 	closeOnce   sync.Once
 	closeErr    error
 }
 
 func newIdleTimeoutReadCloser(reader io.ReadCloser, idleTimeout time.Duration) *idleTimeoutReadCloser {
-	wrapped := &idleTimeoutReadCloser{reader: reader, idleTimeout: idleTimeout}
+	wrapped := &idleTimeoutReadCloser{reader: reader, idleTimeout: idleTimeout, lastActive: time.Now()}
 	if idleTimeout > 0 {
-		wrapped.timer = time.AfterFunc(idleTimeout, func() {
-			wrapped.mu.Lock()
-			wrapped.timedOut = true
-			wrapped.mu.Unlock()
-			_ = wrapped.closeUnderlying()
-		})
+		wrapped.timer = time.AfterFunc(idleTimeout, wrapped.handleIdleTimeout)
 	}
 	return wrapped
 }
@@ -62,7 +59,7 @@ func newIdleTimeoutReadCloser(reader io.ReadCloser, idleTimeout time.Duration) *
 func (r *idleTimeoutReadCloser) Read(buffer []byte) (int, error) {
 	count, err := r.reader.Read(buffer)
 	if count > 0 && r.timer != nil {
-		r.timer.Reset(r.idleTimeout)
+		r.markActive()
 	}
 	if err != nil && r.didTimeOut() {
 		return count, streamIdleTimeoutError{idleTimeout: r.idleTimeout}
@@ -71,10 +68,42 @@ func (r *idleTimeoutReadCloser) Read(buffer []byte) (int, error) {
 }
 
 func (r *idleTimeoutReadCloser) Close() error {
+	r.mu.Lock()
+	r.closed = true
+	r.mu.Unlock()
 	if r.timer != nil {
 		r.timer.Stop()
 	}
 	return r.closeUnderlying()
+}
+
+func (r *idleTimeoutReadCloser) markActive() {
+	r.mu.Lock()
+	r.lastActive = time.Now()
+	closed := r.closed
+	r.mu.Unlock()
+	if !closed {
+		r.timer.Reset(r.idleTimeout)
+	}
+}
+
+func (r *idleTimeoutReadCloser) handleIdleTimeout() {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	elapsed := time.Since(r.lastActive)
+	if elapsed < r.idleTimeout {
+		remaining := r.idleTimeout - elapsed
+		r.mu.Unlock()
+		r.timer.Reset(remaining)
+		return
+	}
+	r.timedOut = true
+	r.closed = true
+	r.mu.Unlock()
+	_ = r.closeUnderlying()
 }
 
 func (r *idleTimeoutReadCloser) didTimeOut() bool {
@@ -1191,13 +1220,13 @@ func readSSE(reader io.Reader, output chan<- provider.StreamEvent) {
 		if errors.As(err, &idleTimeoutErr) {
 			output <- provider.StreamEvent{
 				Type: provider.EventError,
-				Data: map[string]any{"error": fmt.Sprintf("读取 SSE 失败: %s", idleTimeoutErr.Error())},
+				Data: map[string]any{"error": fmt.Sprintf("读取流失败: %s", idleTimeoutErr.Error())},
 			}
 			return
 		}
 		output <- provider.StreamEvent{
 			Type: provider.EventError,
-			Data: map[string]any{"error": fmt.Sprintf("读取 SSE 失败: %v", err)},
+			Data: map[string]any{"error": fmt.Sprintf("读取流失败: %v", err)},
 		}
 	}
 }

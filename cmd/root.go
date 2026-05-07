@@ -55,6 +55,8 @@ type rootOptions struct {
 	ShowStreamEvents    bool
 	ShowThinking        bool
 	SandboxEscapePolicy string
+	StreamRetryAttempts int
+	StreamRetrySet      bool
 }
 
 type cliStreamRenderState struct {
@@ -147,9 +149,21 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	flagSet.BoolVar(&options.ShowThinking, "show-thinking", false, "显示思考内容（不输出 <think></think> 标签）")
 	flagSet.StringVar(&options.SandboxEscapePolicy, "external-resource-access-policy", "", "外部资源访问策略（confirm|deny|allow），仅影响当前命令")
 	flagSet.StringVar(&options.SandboxEscapePolicy, "sandbox-escape-policy", "", "兼容旧参数：外部资源访问策略（confirm|deny|allow），仅影响当前命令")
+	flagSet.IntVar(&options.StreamRetryAttempts, "stream-retry-attempts", 0, "流失败后自动重试次数（0-3），默认使用系统配置")
+	flagSet.IntVar(&options.StreamRetryAttempts, "retry-attempts", 0, "兼容别名：流失败后自动重试次数（0-3），默认使用系统配置")
+	flagSet.IntVar(&options.StreamRetryAttempts, "stream-retries", 0, "兼容别名：流失败后自动重试次数（0-3），默认使用系统配置")
 
 	if err := flagSet.Parse(args); err != nil {
 		return err
+	}
+	flagSet.Visit(func(flag *flag.Flag) {
+		switch flag.Name {
+		case "stream-retry-attempts", "retry-attempts", "stream-retries":
+			options.StreamRetrySet = true
+		}
+	})
+	if options.StreamRetrySet && (options.StreamRetryAttempts < 0 || options.StreamRetryAttempts > internalconfig.MaxStreamRetryAttempts) {
+		return fmt.Errorf("重试次数仅支持 0-%d 的整数，0 表示不重试", internalconfig.MaxStreamRetryAttempts)
 	}
 	requestMode, err := resolveTaskRequestMode(options.RequestMode)
 	if err != nil {
@@ -183,6 +197,9 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	config, err := a.configManager.Load()
 	if err != nil {
 		return err
+	}
+	if options.StreamRetrySet {
+		config.StreamRetryAttempts = options.StreamRetryAttempts
 	}
 	providerClient := buildProviderClient(config)
 	config, _, err = a.ensureProviderAuthenticated(ctx, providerClient, config)
@@ -430,6 +447,9 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	if err != nil {
 		return err
 	}
+	if options.StreamRetrySet {
+		config.StreamRetryAttempts = options.StreamRetryAttempts
+	}
 	providerClient := buildProviderClient(config)
 	config, _, err = a.ensureProviderAuthenticated(ctx, providerClient, config)
 	if err != nil {
@@ -529,6 +549,7 @@ func (a *App) streamTaskWithSkillRetry(
 	showThinking bool,
 	retryCount int,
 ) (agent.SessionState, error) {
+	providerClient = a.providerWithCallbackAuthRefresh(providerClient, &config)
 	a.runtime.SetStreamEventLogsEnabled(showStreamEvents)
 	defer a.runtime.SetStreamEventLogsEnabled(true)
 
@@ -560,9 +581,10 @@ func (a *App) streamTaskWithSkillRetry(
 		ClientSkillPackages:    clientSkillPackages,
 	})
 	if err != nil {
-		if retryCount < 1 && shouldRetryStreamRequestError(err) {
+		streamRetryLimit := internalconfig.NormalizeStreamRetryAttempts(config.StreamRetryAttempts)
+		if retryCount < streamRetryLimit && shouldRetryStreamRequestError(err) {
 			if showStreamEvents {
-				fmt.Fprintln(a.stdout, "[系统提示]: 检测到流式连接异常，正在自动重试（1/1）...")
+				fmt.Fprintf(a.stdout, "[系统提示]: 检测到流式连接异常，正在自动重试（%d/%d）...\n", retryCount+1, streamRetryLimit)
 			}
 			select {
 			case <-ctx.Done():
@@ -705,26 +727,27 @@ func (a *App) streamTaskWithSkillRetry(
 						)
 					}
 				}
-				if shouldRetryStreamError(normalizedErr) {
-					if hasVisibleOutput {
-						fmt.Fprintln(a.stdout)
-					}
-					if showStreamEvents {
-						fmt.Fprintln(a.stdout, "[系统提示]: 检测到流式连接中断，正在自动重试（1/1）...")
-					}
-					return a.streamTaskWithSkillRetry(
-						ctx,
-						providerClient,
-						config,
-						flowID,
-						task,
-						sessionState,
-						commandSandboxEscapePolicy,
-						showStreamEvents,
-						showThinking,
-						retryCount+1,
-					)
+			}
+			streamRetryLimit := internalconfig.NormalizeStreamRetryAttempts(config.StreamRetryAttempts)
+			if retryCount < streamRetryLimit && shouldRetryStreamError(normalizedErr) {
+				if hasVisibleOutput {
+					fmt.Fprintln(a.stdout)
 				}
+				if showStreamEvents {
+					fmt.Fprintf(a.stdout, "[系统提示]: 检测到流式连接中断，正在自动重试（%d/%d）...\n", retryCount+1, streamRetryLimit)
+				}
+				return a.streamTaskWithSkillRetry(
+					ctx,
+					providerClient,
+					config,
+					flowID,
+					task,
+					sessionState,
+					commandSandboxEscapePolicy,
+					showStreamEvents,
+					showThinking,
+					retryCount+1,
+				)
 			}
 			if hasVisibleOutput {
 				fmt.Fprintln(a.stderr)
@@ -915,7 +938,7 @@ func writeTerminalControlSequence(writer io.Writer, sequence string) bool {
 func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "用法:")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli")
-	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--mode MODE] [--reasoning REASONING] [--internet-search INTERNET_SEARCH] [--new] [--continue] [--show-stream-events] [--show-thinking] [--external-resource-access-policy POLICY] [任务描述]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--mode MODE] [--reasoning REASONING] [--internet-search INTERNET_SEARCH] [--stream-retry-attempts N] [--new] [--continue] [--show-stream-events] [--show-thinking] [--external-resource-access-policy POLICY] [任务描述]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli login [help|status|logout|password|qr]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli config [show|init|path|set|unset]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
@@ -943,7 +966,7 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 	fmt.Fprintln(a.stdout, "  /new      清屏并重置当前智能体的本地会话")
 	fmt.Fprintln(a.stdout, "  /clear    清屏")
 	fmt.Fprintln(a.stdout, "  /exit     退出")
-	fmt.Fprintln(a.stdout, "  启动参数: --reasoning on|off 可设置本次会话初始思考模式；--internet-search on|off 可设置本次会话联网搜索；--show-stream-events 可显示系统提示与工具调用日志；--show-thinking 可显示思考内容（不输出 <think></think> 标签）")
+	fmt.Fprintln(a.stdout, "  启动参数: --reasoning on|off 可设置本次会话初始思考模式；--internet-search on|off 可设置本次会话联网搜索；--stream-retry-attempts 0-3 可覆盖本次任务流失败重试次数；--show-stream-events 可显示系统提示与工具调用日志；--show-thinking 可显示思考内容（不输出 <think></think> 标签）")
 	fmt.Fprintln(a.stdout, "  提示: 交互模式下请使用 `taiyiflow-cli agents` 管理默认智能体。")
 	a.printSessionStatus(ctx, providerClient, flowDisplayName, flowID, sessionState)
 }

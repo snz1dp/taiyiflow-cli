@@ -711,6 +711,7 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 			HTTPTimeoutSeconds:       "75",
 			CommandTimeoutSeconds:    "45",
 			StreamIdleTimeoutSeconds: "300",
+			StreamRetryAttempts:      "2",
 			QRWaitTimeoutSeconds:     "90",
 			AgentAutoLoopEnabled:     "false",
 			OutputLanguage:           "zh-CN",
@@ -765,6 +766,9 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	if updated.QRWaitTimeoutSeconds != 90 {
 		t.Fatalf("expected qr wait timeout saved, got %#v", updated.QRWaitTimeoutSeconds)
 	}
+	if updated.StreamRetryAttempts != 2 {
+		t.Fatalf("expected stream retry attempts saved, got %#v", updated.StreamRetryAttempts)
+	}
 	if updated.AgentAutoLoopEnabled {
 		t.Fatalf("expected agent auto loop switch saved as false, got %#v", updated.AgentAutoLoopEnabled)
 	}
@@ -784,6 +788,9 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	}
 	if reloaded.QRWaitTimeoutSeconds != 90 {
 		t.Fatalf("expected persisted qr wait timeout, got %#v", reloaded.QRWaitTimeoutSeconds)
+	}
+	if reloaded.StreamRetryAttempts != 2 {
+		t.Fatalf("expected persisted stream retry attempts, got %#v", reloaded.StreamRetryAttempts)
 	}
 	if reloaded.AgentAutoLoopEnabled {
 		t.Fatalf("expected persisted auto loop switch false, got %#v", reloaded.AgentAutoLoopEnabled)

@@ -102,6 +102,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		quietRuntimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
 		skillRetryCount := 0
 		streamRetryCount := 0
+		streamRetryLimit := internalconfig.NormalizeStreamRetryAttempts(config.StreamRetryAttempts)
+		callbackProvider := a.providerWithCallbackAuthRefresh(providerClient, &config)
 		for {
 			resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
 			skillConfig := a.resolveEffectiveSkillConfig(config, resolvedContextDir)
@@ -133,9 +135,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				ClientSkillPackages:    clientSkillPackages,
 			})
 			if streamErr != nil {
-				if streamRetryCount < 1 && shouldRetryStreamRequestError(streamErr) {
+				if streamRetryCount < streamRetryLimit && shouldRetryStreamRequestError(streamErr) {
 					streamRetryCount++
-					emit(tui.Event{Kind: tui.EventProgressNote, Text: "检测到流式连接异常，正在自动重试（1/1）..."})
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("检测到流式连接异常，正在自动重试（%d/%d）...", streamRetryCount, streamRetryLimit)})
 					select {
 					case <-runCtx.Done():
 						return runCtx.Err()
@@ -204,7 +206,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				case provider.EventBuiltIn:
 					if !modeAllowsBuiltIn(request.RequestMode) {
 						emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝本地命令执行：当前为%s。", requestModeLabel(request.RequestMode))})
-						if err := submitClientCallFailure(runCtx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(request.RequestMode))); err != nil {
+						if err := submitClientCallFailure(runCtx, callbackProvider, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(request.RequestMode))); err != nil {
 							return err
 						}
 						continue
@@ -220,7 +222,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						approved := confirm(buildTUIConfirmRequest(event.Data))
 						if !approved {
 							emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端命令执行。"})
-							if err := submitClientCallFailure(runCtx, providerClient, event.Data, "用户拒绝执行客户端命令"); err != nil {
+							if err := submitClientCallFailure(runCtx, callbackProvider, event.Data, "用户拒绝执行客户端命令"); err != nil {
 								return err
 							}
 							continue
@@ -229,19 +231,19 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						if strings.TrimSpace(execConfig.ApprovalMode) != "readonly" {
 							execConfig.ApprovalMode = "auto"
 						}
-						if err := quietRuntimeClient.HandleBuiltInEvent(runCtx, providerClient, execConfig, event.Data); err != nil {
+						if err := quietRuntimeClient.HandleBuiltInEvent(runCtx, callbackProvider, execConfig, event.Data); err != nil {
 							return err
 						}
 						continue
 					}
-					if err := quietRuntimeClient.HandleBuiltInEvent(runCtx, providerClient, localConfig, event.Data); err != nil {
+					if err := quietRuntimeClient.HandleBuiltInEvent(runCtx, callbackProvider, localConfig, event.Data); err != nil {
 						return err
 					}
 				case provider.EventClientTool:
 					toolName := nestedStringValue(event.Data, "function", "name")
 					if !modeAllowsClientTool(request.RequestMode, toolName) {
 						emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝客户端工具 %s：当前为%s。", toolName, requestModeLabel(request.RequestMode))})
-						if err := submitClientCallFailure(runCtx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(request.RequestMode), toolName)); err != nil {
+						if err := submitClientCallFailure(runCtx, callbackProvider, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(request.RequestMode), toolName)); err != nil {
 							return err
 						}
 						continue
@@ -265,7 +267,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						approved := confirm(buildTUIClientToolConfirmRequest(localConfig, sessionState.ContextDir, event.Data, persistApprovedSkillReview, persistSkillReviewAllowAll))
 						if !approved {
 							emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端工具执行。"})
-							if err := submitClientCallFailure(runCtx, providerClient, event.Data, "用户拒绝执行客户端工具"); err != nil {
+							if err := submitClientCallFailure(runCtx, callbackProvider, event.Data, "用户拒绝执行客户端工具"); err != nil {
 								return err
 							}
 							continue
@@ -276,14 +278,14 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						}
 						toolName, result, toolErr := runtimeClient.ExecuteClientToolPayload(runCtx, execConfig, event.Data)
 						emitTUIClientToolResultEvents(emit, toolName, result, toolErr)
-						if err := runtimeClient.SubmitClientToolCallback(runCtx, providerClient, event.Data, result, toolErr); err != nil {
+						if err := runtimeClient.SubmitClientToolCallback(runCtx, callbackProvider, event.Data, result, toolErr); err != nil {
 							return err
 						}
 						continue
 					}
 					toolName, result, toolErr := runtimeClient.ExecuteClientToolPayload(runCtx, localConfig, event.Data)
 					emitTUIClientToolResultEvents(emit, toolName, result, toolErr)
-					if err := runtimeClient.SubmitClientToolCallback(runCtx, providerClient, event.Data, result, toolErr); err != nil {
+					if err := runtimeClient.SubmitClientToolCallback(runCtx, callbackProvider, event.Data, result, toolErr); err != nil {
 						return err
 					}
 				case provider.EventError:
@@ -317,10 +319,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 							}
 						}
 					}
-					if streamRetryCount < 1 && shouldRetryStreamError(normalizedErr) {
+					if streamRetryCount < streamRetryLimit && shouldRetryStreamError(normalizedErr) {
 						streamRetryCount++
 						retryRequested = true
-						emit(tui.Event{Kind: tui.EventProgressNote, Text: "检测到流式连接中断，正在自动重试（1/1）..."})
+						emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("检测到流式连接中断，正在自动重试（%d/%d）...", streamRetryCount, streamRetryLimit)})
 						break eventLoop
 					}
 					return normalizedErr
@@ -2156,6 +2158,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			HTTPTimeoutSeconds:       strconv.Itoa(config.HTTPTimeoutSeconds),
 			CommandTimeoutSeconds:    strconv.Itoa(config.CommandTimeoutSeconds),
 			StreamIdleTimeoutSeconds: strconv.Itoa(config.StreamIdleTimeoutSeconds),
+			StreamRetryAttempts:      strconv.Itoa(config.StreamRetryAttempts),
 			QRWaitTimeoutSeconds:     strconv.Itoa(config.QRWaitTimeoutSeconds),
 			AgentAutoLoopEnabled:     strconv.FormatBool(config.AgentAutoLoopEnabled),
 			AgentAutoLoopMaxRounds:   strconv.Itoa(config.AgentAutoLoopMaxRounds),
@@ -2241,6 +2244,12 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		config.StreamIdleTimeoutSeconds = internalconfig.Default().StreamIdleTimeoutSeconds
 	} else if err := assignConfigValue(&config, "stream_idle_timeout_seconds", submission.Values.StreamIdleTimeoutSeconds); err != nil {
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "stream_idle_timeout_seconds", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.StreamRetryAttempts) == "" {
+		config.StreamRetryAttempts = internalconfig.Default().StreamRetryAttempts
+	} else if err := assignConfigValue(&config, "stream_retry_attempts", submission.Values.StreamRetryAttempts); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "stream_retry_attempts", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.QRWaitTimeoutSeconds) == "" {

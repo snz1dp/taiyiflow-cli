@@ -122,10 +122,10 @@ func TestBuildReviewPromptIncludesDiffSummary(t *testing.T) {
 	if !strings.Contains(prompt, "cmd 相关变更") {
 		t.Fatalf("expected target in review prompt, got %q", prompt)
 	}
-	if !strings.Contains(prompt, "当前工作区 diff 摘要") || !strings.Contains(prompt, "未暂存变更") || !strings.Contains(prompt, "demo.txt") {
+	if !strings.Contains(prompt, "当前工作区变更(diff)摘要") || !strings.Contains(prompt, "未暂存变更") || !strings.Contains(prompt, "demo.txt") {
 		t.Fatalf("expected diff summary in review prompt, got %q", prompt)
 	}
-	if !strings.Contains(prompt, "只做只读审查") || !strings.Contains(prompt, "不要调用 write_file、file_edit、shell_exec") {
+	if !strings.Contains(prompt, "只做只读审查") || !strings.Contains(prompt, "写文件(write_file)") || !strings.Contains(prompt, "文件编辑(file_edit)") || !strings.Contains(prompt, "执行命令(shell_exec)") {
 		t.Fatalf("expected read-only review constraint in prompt, got %q", prompt)
 	}
 }

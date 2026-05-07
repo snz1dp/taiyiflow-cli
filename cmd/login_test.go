@@ -959,7 +959,7 @@ func TestSubmitTUILoginFormPasswordChallengeTicketOverridesQRTicket(t *testing.T
 	}
 }
 
-func TestSubmitTUILoginFormPasswordSMSUsesAjaxLogon(t *testing.T) {
+func TestSubmitTUILoginFormPasswordSMSChallengeReusesAjaxLogon(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(cryptorand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate rsa key failed: %v", err)
@@ -1095,7 +1095,7 @@ func TestSubmitTUILoginFormPasswordSMSUsesAjaxLogon(t *testing.T) {
 	}
 }
 
-func TestSubmitTUILoginFormPasswordMailUsesAjaxLogon(t *testing.T) {
+func TestSubmitTUILoginFormPasswordSMSUsesAjaxLogon(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(cryptorand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate rsa key failed: %v", err)
@@ -1211,14 +1211,14 @@ func TestSubmitTUILoginFormPasswordMailUsesAjaxLogon(t *testing.T) {
 	if secondResult.LoginForm != nil {
 		t.Fatalf("expected verify login to succeed, got %#v", secondResult)
 	}
-	if firstResult.LoginForm.VerifyType != loginVerifyTypeMail {
-		t.Fatalf("expected mail verify type, got %#v", firstResult.LoginForm)
+	if firstResult.LoginForm.VerifyType != loginVerifyTypeSMS {
+		t.Fatalf("expected sms verify type, got %#v", firstResult.LoginForm)
 	}
 	if ajaxLogonCalls != 2 {
-		t.Fatalf("expected mail verification to submit through ajax_logon twice, got %d calls", ajaxLogonCalls)
+		t.Fatalf("expected sms verification to submit through ajax_logon twice, got %d calls", ajaxLogonCalls)
 	}
 	if verifyLoginCalls != 0 {
-		t.Fatalf("expected mail verification not to call verify_login, got %d calls", verifyLoginCalls)
+		t.Fatalf("expected sms verification not to call verify_login, got %d calls", verifyLoginCalls)
 	}
 	if secondAjaxLogonTicket != "verify-ticket-1" {
 		t.Fatalf("expected second ajax_logon to use verify ticket, got %q", secondAjaxLogonTicket)
@@ -1227,7 +1227,7 @@ func TestSubmitTUILoginFormPasswordMailUsesAjaxLogon(t *testing.T) {
 		t.Fatalf("expected second ajax_logon to preserve password ticket, got %q", secondAjaxLogonPasswordTicket)
 	}
 	if secondAjaxLogonCode != "123456" {
-		t.Fatalf("expected second ajax_logon to submit mail code, got %q", secondAjaxLogonCode)
+		t.Fatalf("expected second ajax_logon to submit sms code, got %q", secondAjaxLogonCode)
 	}
 }
 

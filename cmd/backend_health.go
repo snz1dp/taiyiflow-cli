@@ -17,9 +17,9 @@ type backendStatus struct {
 	Reason       string
 }
 
-var errStreamBackendIdleTimeout = errors.New("stream backend idle timeout")
-var errStreamReadTimeout = errors.New("stream read timeout")
-var errStreamDisconnected = errors.New("stream disconnected")
+var errStreamBackendIdleTimeout = errors.New("后台输出超时")
+var errStreamReadTimeout = errors.New("流式读取超时")
+var errStreamDisconnected = errors.New("流式连接已断开")
 
 func (a *App) inspectBackendStatus(ctx context.Context, client *providerclient.Client, backendBaseURL string) backendStatus {
 	trimmedBaseURL := strings.TrimSpace(backendBaseURL)
@@ -93,19 +93,21 @@ func normalizeStreamEventError(raw any) error {
 	}
 
 	if strings.Contains(lowerMessage, "backend idle timeout") {
-		return fmt.Errorf("%w: 后端长时间未返回输出，流式请求已超时", errStreamBackendIdleTimeout)
+		return fmt.Errorf("%w，流式请求已超时", errStreamBackendIdleTimeout)
 	}
 
 	if strings.Contains(lowerMessage, "context deadline exceeded") || strings.Contains(lowerMessage, "client.timeout") {
-		return fmt.Errorf("%w: 读取流式响应超时，连接可能已中断", errStreamReadTimeout)
+		return fmt.Errorf("%w，连接可能已中断", errStreamReadTimeout)
 	}
 
-	if strings.Contains(lowerMessage, "读取 sse 失败") {
+	if strings.Contains(lowerMessage, "读取流失败") {
 		switch {
 		case strings.Contains(lowerMessage, "eof"):
-			return fmt.Errorf("%w: 流式响应已提前结束，连接可能已中断", errStreamDisconnected)
-		case strings.Contains(lowerMessage, "broken pipe"), strings.Contains(lowerMessage, "connection reset by peer"), strings.Contains(lowerMessage, "use of closed network connection"):
-			return fmt.Errorf("%w: 流式连接已中断，请稍后重试", errStreamDisconnected)
+			return fmt.Errorf("%w，连接可能已中断", errStreamDisconnected)
+		case strings.Contains(lowerMessage, "broken pipe"),
+			strings.Contains(lowerMessage, "connection reset by peer"),
+			strings.Contains(lowerMessage, "use of closed network connection"):
+			return fmt.Errorf("%w，请稍后重试", errStreamDisconnected)
 		default:
 			return fmt.Errorf("流式响应异常: %s", message)
 		}

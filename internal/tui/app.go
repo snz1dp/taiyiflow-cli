@@ -225,6 +225,7 @@ type ConfigFormValues struct {
 	HTTPTimeoutSeconds       string
 	CommandTimeoutSeconds    string
 	StreamIdleTimeoutSeconds string
+	StreamRetryAttempts      string
 	QRWaitTimeoutSeconds     string
 	AgentAutoLoopEnabled     string
 	AgentAutoLoopMaxRounds   string
@@ -638,6 +639,8 @@ type model struct {
 	commandCursor          int
 	startupCommand         string
 	queuedInput            string
+	lastRetryableRequest   *Request
+	retryAvailable         bool
 	pendingConfirm         *confirmState
 	toolPanel              *ToolPanel
 	overlayManualScroll    bool
@@ -722,6 +725,7 @@ const (
 	configFieldHTTPTimeout
 	configFieldCommandTimeout
 	configFieldStreamIdleTimeout
+	configFieldStreamRetryAttempts
 	configFieldQRWaitTimeout
 	configFieldAgentAutoLoopEnabled
 	configFieldAgentAutoLoopMaxRounds
@@ -864,6 +868,7 @@ var (
 
 var slashCommands = []slashCommand{
 	{Trigger: "/new", Completion: "/new", Description: "重置当前智能体的本地会话"},
+	{Trigger: "/retry", Completion: "/retry", Description: "重新发起最近一次失败的请求"},
 	{Trigger: "/clear", Completion: "/clear", Description: "清空当前界面消息"},
 	{Trigger: "/internet", Completion: "/internet ", Description: "查看或切换当前对话的联网搜索"},
 	{Trigger: "/knowledge", Completion: "/knowledge ", Description: "查看或切换当前对话的知识库范围"},
@@ -1041,6 +1046,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activityHint = ""
 		m.currentToolLabel = ""
 		m.requestCancel = nil
+		m.retryAvailable = m.lastRetryableRequest != nil
 		m.syncViewport()
 		m.input.Focus()
 		if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
@@ -1062,6 +1068,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activityHint = ""
 		m.currentToolLabel = ""
 		m.requestCancel = nil
+		m.retryAvailable = false
 		m.input.Focus()
 		if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
 			return m, tea.Batch(queuedCmd, m.maybeRefreshSessionSnapshot())
@@ -1354,17 +1361,9 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if commandHandled, cmd := m.handleSlashCommand(input); commandHandled {
 			return m, cmd
 		}
-		m.entries = append(m.entries, entry{role: "user", content: input})
+		request := m.buildRequest(input, newRequestRunID())
 		m.input.SetValue("")
-		m.activityHint = ""
-		m.interrupting = false
-		runID := newRequestRunID()
-		m.startRequestStats(input, runID)
-		m.syncViewport()
-		request := m.buildRequest(input, runID)
-		requestCtx, cancel := context.WithCancel(m.ctx)
-		m.requestCancel = cancel
-		return m, tea.Batch(m.transitionProgress(progressSending), startStream(requestCtx, request, m.runner, m.eventCh))
+		return m, m.startRequest(request, true)
 	}
 
 	wasShowingCommandHints := m.showSlashCommandHints()
@@ -2377,17 +2376,38 @@ func (m *model) startQueuedRequest() tea.Cmd {
 		return nil
 	}
 	m.queuedInput = ""
-	m.entries = append(m.entries, entry{role: "user", content: queued})
+	request := m.buildRequest(queued, newRequestRunID())
+	return m.startRequest(request, true)
+}
+
+func (m *model) startRequest(request Request, appendUserEntry bool) tea.Cmd {
+	request.InputFiles = append([]string(nil), request.InputFiles...)
+	request.KnowledgeScopes = append([]string(nil), request.KnowledgeScopes...)
+	request.KnowledgeDocs = append([]string(nil), request.KnowledgeDocs...)
+	if strings.TrimSpace(request.RunID) == "" {
+		request.RunID = newRequestRunID()
+	}
+	if appendUserEntry {
+		m.entries = append(m.entries, entry{role: "user", content: request.Input})
+	}
 	m.activityHint = ""
 	m.currentToolLabel = ""
 	m.interrupting = false
-	runID := newRequestRunID()
-	m.startRequestStats(queued, runID)
+	m.retryAvailable = false
+	m.lastRetryableRequest = cloneRequest(request)
+	m.startRequestStats(request.Input, request.RunID)
 	m.syncViewport()
-	request := m.buildRequest(queued, runID)
 	requestCtx, cancel := context.WithCancel(m.ctx)
 	m.requestCancel = cancel
 	return tea.Batch(m.transitionProgress(progressSending), startStream(requestCtx, request, m.runner, m.eventCh))
+}
+
+func cloneRequest(request Request) *Request {
+	cloned := request
+	cloned.InputFiles = append([]string(nil), request.InputFiles...)
+	cloned.KnowledgeScopes = append([]string(nil), request.KnowledgeScopes...)
+	cloned.KnowledgeDocs = append([]string(nil), request.KnowledgeDocs...)
+	return &cloned
 }
 
 func (m *model) syncLayout() {
@@ -2804,7 +2824,7 @@ func (m model) renderOverlay() string {
 	width := 0
 	fullScreenLogin := false
 	if m.pendingConfirm != nil {
-		width = minInt(m.contentWidth-6, 90)
+		width = minInt(m.contentWidth-4, 112)
 		content = m.renderConfirmOverlay()
 	} else if m.toolPanel != nil {
 		width = minInt(m.contentWidth-6, 96)
@@ -2871,11 +2891,11 @@ func (m model) renderConfirmOverlay() string {
 		lines = append(lines, request.PreviewTitle)
 	}
 	if strings.TrimSpace(request.PreviewBody) != "" {
-		lines = append(lines, hardWrapText(request.PreviewBody, maxInt(24, minInt(m.contentWidth-18, 76))))
+		lines = append(lines, hardWrapText(request.PreviewBody, maxInt(24, minInt(m.contentWidth-14, 104))))
 	}
 	renderedOptions := make([]string, 0, len(options))
 	for index, option := range options {
-		renderedOptions = append(renderedOptions, m.renderOverlayOption(option.label, m.pendingConfirm.cursor == index))
+		renderedOptions = append(renderedOptions, m.renderOverlayOption("[ "+option.label+" ]", m.pendingConfirm.cursor == index))
 	}
 	optionsLine := ""
 	if len(renderedOptions) > 0 {
@@ -4217,6 +4237,9 @@ func (m *model) openFlowPicker() tea.Cmd {
 func (m *model) handleSlashCommand(input string) (bool, tea.Cmd) {
 	trimmed := strings.TrimSpace(input)
 	switch {
+	case strings.EqualFold(trimmed, "/retry"):
+		m.input.SetValue("")
+		return true, m.retryLastFailedRequest()
 	case strings.EqualFold(trimmed, "/agents"):
 		m.input.SetValue("")
 		return true, m.openFlowPicker()
@@ -4233,6 +4256,27 @@ func (m *model) handleSlashCommand(input string) (bool, tea.Cmd) {
 	default:
 		return m.handleLocalSlashCommand(trimmed)
 	}
+}
+
+func (m *model) retryLastFailedRequest() tea.Cmd {
+	if m.isBusy() {
+		m.entries = append(m.entries, entry{role: "error", content: "当前请求仍在执行，无法重试。"})
+		m.refreshLayoutAfterStateChange()
+		return nil
+	}
+	if !m.snapshot.BackendAvailable {
+		m.entries = append(m.entries, entry{role: "error", content: m.backendUnavailableMessage()})
+		m.refreshLayoutAfterStateChange()
+		return nil
+	}
+	if !m.retryAvailable || m.lastRetryableRequest == nil {
+		m.entries = append(m.entries, entry{role: "error", content: "当前没有可重试的失败请求。"})
+		m.refreshLayoutAfterStateChange()
+		return nil
+	}
+	request := *cloneRequest(*m.lastRetryableRequest)
+	request.RunID = newRequestRunID()
+	return m.startRequest(request, true)
 }
 
 func (m *model) handleLocalSlashCommand(command string) (bool, tea.Cmd) {
@@ -4410,6 +4454,9 @@ func (m model) visibleSlashCommands() []slashCommand {
 	query := slashCommandQuery(m.input.Value())
 	visible := make([]slashCommand, 0, len(slashCommands))
 	for _, command := range slashCommands {
+		if command.Trigger == "/retry" && (!m.retryAvailable || m.lastRetryableRequest == nil) {
+			continue
+		}
 		if !m.snapshot.BackendAvailable && !isAvailableInReadOnlyMode(command.Trigger) {
 			continue
 		}
@@ -5547,7 +5594,7 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "命令执行模式", placeholder: "", description: "左右键或空格切换单选项。"},
 		{label: "外部资源访问策略", placeholder: "", description: "左右键或空格切换每次确认(confirm)、禁止访问(deny)、直接允许(allow)。"},
 		{label: "技能包审查策略", placeholder: "", description: "左右键或空格切换逐次审查(confirm)、忽略审查(ignore)。选择忽略审查(ignore)后不再弹出技能审查窗口。"},
-		{label: "写入确认策略", placeholder: "", description: "左右键或空格切换逐次确认(confirm)、直接写入(direct)。选择直接写入(direct)后会直接执行写入工具。"},
+		{label: "文件修改审查窗口", placeholder: "", description: "左右键或空格切换显示审查窗口(confirm)、直接写入(direct)。选择直接写入(direct)后 write_file、file_edit 不再弹出审查窗口。"},
 		{label: "可访问外部资源目录", placeholder: "/path/a, /path/b", description: "多个目录用逗号分隔；留空表示仅允许当前工作区。"},
 		{label: "细粒度权限规则", placeholder: "tool:shell_exec=deny; shell:git status=allow", description: "使用工具规则(tool:name=动作)或命令前缀规则(shell:prefix=动作)，多个规则用分号分隔。"},
 		{label: "默认思考模式", placeholder: "", description: "左右键或空格切换是否默认启用思考模式。"},
@@ -5555,6 +5602,7 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "HTTP 请求超时（秒）", placeholder: "60", description: "标准 HTTP 请求在未显式覆写时使用该默认值，范围 1-300 秒；不影响流式长连接。"},
 		{label: "命令执行超时（秒）", placeholder: "30", description: "本地命令与语言服务查询在未显式传超时(timeout)时使用该默认值，范围 1-300 秒。"},
 		{label: "流式空闲超时（秒）", placeholder: "300", description: "大于等于 0 的整数秒，0 表示禁用流式空闲超时。"},
+		{label: "流失败自动重试次数", placeholder: "0", description: "流连接异常后的自动重试次数，范围 0-3；0 表示不自动重试。"},
 		{label: "扫码等待超时（秒）", placeholder: "30", description: "二维码登录在自动轮询时使用该默认值；大于等于 0 的整数秒，0 表示持续等待直到手动取消。"},
 		{label: "智能体自动续跑默认开关", placeholder: "", description: "仅对智能体模式生效；左右键或空格切换恢复默认(default)、开启(true)、关闭(false)。"},
 		{label: "智能体自动续跑最大轮数", placeholder: "3", description: "仅对智能体模式生效；填写大于等于 1 的整数。"},
@@ -5595,20 +5643,22 @@ func configFormFieldValue(index int, values ConfigFormValues) string {
 	case 12:
 		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
 	case 13:
-		return strings.TrimSpace(values.QRWaitTimeoutSeconds)
+		return strings.TrimSpace(values.StreamRetryAttempts)
 	case 14:
-		return ""
+		return strings.TrimSpace(values.QRWaitTimeoutSeconds)
 	case 15:
-		return strings.TrimSpace(values.AgentAutoLoopMaxRounds)
-	case 16:
-		return strings.TrimSpace(values.OutputLanguage)
-	case 17:
 		return ""
+	case 16:
+		return strings.TrimSpace(values.AgentAutoLoopMaxRounds)
+	case 17:
+		return strings.TrimSpace(values.OutputLanguage)
 	case 18:
 		return ""
 	case 19:
 		return ""
 	case 20:
+		return ""
+	case 21:
 		return strings.TrimSpace(values.SkillsRegistryURL)
 	default:
 		return ""
@@ -5642,23 +5692,26 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[12].Value())
 	}
 	if len(inputs) > 13 {
-		values.QRWaitTimeoutSeconds = strings.TrimSpace(inputs[13].Value())
+		values.StreamRetryAttempts = strings.TrimSpace(inputs[13].Value())
 	}
-	if len(inputs) > 15 {
-		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[15].Value())
+	if len(inputs) > 14 {
+		values.QRWaitTimeoutSeconds = strings.TrimSpace(inputs[14].Value())
 	}
 	if len(inputs) > 16 {
-		values.OutputLanguage = strings.TrimSpace(inputs[16].Value())
+		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[16].Value())
 	}
-	if len(inputs) > 20 {
-		values.SkillsRegistryURL = strings.TrimSpace(inputs[20].Value())
+	if len(inputs) > 17 {
+		values.OutputLanguage = strings.TrimSpace(inputs[17].Value())
+	}
+	if len(inputs) > 21 {
+		values.SkillsRegistryURL = strings.TrimSpace(inputs[21].Value())
 	}
 	return values
 }
 
 func isConfigTextField(index int) bool {
 	switch index {
-	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldQRWaitTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldSkillsRegistryURL:
+	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldStreamRetryAttempts, configFieldQRWaitTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldSkillsRegistryURL:
 		return true
 	default:
 		return false
@@ -5693,6 +5746,8 @@ func configFieldKey(index int) string {
 		return "command_timeout_seconds"
 	case configFieldStreamIdleTimeout:
 		return "stream_idle_timeout_seconds"
+	case configFieldStreamRetryAttempts:
+		return "stream_retry_attempts"
 	case configFieldQRWaitTimeout:
 		return "qr_wait_timeout_seconds"
 	case configFieldAgentAutoLoopEnabled:

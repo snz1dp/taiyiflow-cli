@@ -31,6 +31,25 @@ type stubProvider struct {
 	lastResolveRequest provider.SkillResolveRequest
 }
 
+type sequenceStreamProvider struct {
+	stubProvider
+	streams []<-chan provider.StreamEvent
+	calls   int
+}
+
+func (s *sequenceStreamProvider) Stream(_ context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
+	s.calls++
+	s.lastRequest = request
+	if len(s.streams) == 0 {
+		stream := make(chan provider.StreamEvent)
+		close(stream)
+		return stream, nil, nil
+	}
+	stream := s.streams[0]
+	s.streams = s.streams[1:]
+	return stream, nil, nil
+}
+
 func (s stubProvider) Name() string { return "stub" }
 
 func (s stubProvider) ListFlows(context.Context, string, string, int, int) (*provider.FlowList, error) {
@@ -88,6 +107,15 @@ func (s stubProvider) GetSessionContextWindow(context.Context, string, string) (
 
 func (s stubProvider) SubmitClientCallResult(context.Context, provider.ClientCallResult) error {
 	return nil
+}
+
+func streamWithEvents(events ...provider.StreamEvent) <-chan provider.StreamEvent {
+	stream := make(chan provider.StreamEvent, len(events))
+	for _, event := range events {
+		stream <- event
+	}
+	close(stream)
+	return stream
 }
 
 func newTestAppWithSessionStore(t *testing.T) *App {
@@ -166,6 +194,96 @@ func TestPrepareSessionNewSessionDefaultsToAgentMode(t *testing.T) {
 	}
 	if loaded.RequestMode != provider.RequestTypeAgent {
 		t.Fatalf("expected new session request mode %q, got %q", provider.RequestTypeAgent, loaded.RequestMode)
+	}
+}
+
+func TestStreamTaskDoesNotRetryDisconnectedEventWhenConfigDisablesRetry(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	store, err := agent.NewSessionStore()
+	if err != nil {
+		t.Fatalf("new session store failed: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := &App{stdout: &stdout, stderr: &stderr, configManager: manager, sessionStore: store}
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	config := internalconfig.Default()
+	config.Workdir = t.TempDir()
+	providerStub := &sequenceStreamProvider{streams: []<-chan provider.StreamEvent{
+		streamWithEvents(provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "读取流失败: read tcp: connection reset by peer"}}),
+	}}
+
+	_, err = app.streamTask(
+		context.Background(),
+		providerStub,
+		config,
+		"demo-flow",
+		"请处理任务",
+		agent.SessionState{FlowID: "demo-flow", RequestMode: provider.RequestTypeAgent, ContextDir: config.Workdir, Workdir: config.Workdir},
+		"",
+		true,
+		false,
+	)
+	if err == nil || !strings.Contains(err.Error(), "流式连接已断开") {
+		t.Fatalf("expected disconnected stream error, got %v", err)
+	}
+	if providerStub.calls != 1 {
+		t.Fatalf("expected no retry when stream_retry_attempts is 0, got %d calls", providerStub.calls)
+	}
+	if strings.Contains(stdout.String(), "正在自动重试") {
+		t.Fatalf("expected no retry progress output, got %q", stdout.String())
+	}
+}
+
+func TestStreamTaskRetriesDisconnectedEventUsingConfiguredLimit(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	store, err := agent.NewSessionStore()
+	if err != nil {
+		t.Fatalf("new session store failed: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := &App{stdout: &stdout, stderr: &stderr, configManager: manager, sessionStore: store}
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	config := internalconfig.Default()
+	config.Workdir = t.TempDir()
+	config.StreamRetryAttempts = 2
+	providerStub := &sequenceStreamProvider{streams: []<-chan provider.StreamEvent{
+		streamWithEvents(provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "读取流失败: read tcp: connection reset by peer"}}),
+		streamWithEvents(provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "读取流失败: read tcp: connection reset by peer"}}),
+		streamWithEvents(provider.StreamEvent{Type: provider.EventClose}),
+	}}
+
+	_, err = app.streamTask(
+		context.Background(),
+		providerStub,
+		config,
+		"demo-flow",
+		"请处理任务",
+		agent.SessionState{FlowID: "demo-flow", RequestMode: provider.RequestTypeAgent, ContextDir: config.Workdir, Workdir: config.Workdir},
+		"",
+		true,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+	if providerStub.calls != 3 {
+		t.Fatalf("expected two retries plus final stream, got %d calls", providerStub.calls)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "正在自动重试（1/2）") || !strings.Contains(output, "正在自动重试（2/2）") {
+		t.Fatalf("expected configured retry progress output, got %q", output)
 	}
 }
 
@@ -368,6 +486,144 @@ func TestRunTaskOnceRefreshesPersistentLoginBeforeStream(t *testing.T) {
 	}
 	if !streamCalled {
 		t.Fatal("expected stream endpoint to be called")
+	}
+	reloaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("reload config failed: %v", err)
+	}
+	if reloaded.AccessToken != "access-1" || reloaded.PersistentToken != "persist-2" {
+		t.Fatalf("expected refreshed auth state to persist, got %#v", reloaded)
+	}
+}
+
+func TestRunTaskStreamRetryFlagOverridesSystemConfig(t *testing.T) {
+	streamCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/taiyi/composer/api/v1/users/whoami/userinfo":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
+		case "/taiyi/composer/api/v1/version":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"package":"taiyiflow","main_version":"1.0.0"}`)
+		case "/taiyi/composer/api/v1/config":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"default_flow_id":"flow-1"}`)
+		case "/taiyi/composer/api/v1/run/flow-1/stream":
+			streamCalls++
+			writer.Header().Set("Content-Type", "text/event-stream")
+			if streamCalls < 3 {
+				fmt.Fprint(writer, "event: error\ndata: {\"error\":\"读取流失败: read tcp: connection reset by peer\"}\n\n")
+				return
+			}
+			fmt.Fprint(writer, "event: close\ndata: {}\n\n")
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.AccessToken = "access-1"
+	config.StreamRetryAttempts = 0
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	store, err := agent.NewSessionStore()
+	if err != nil {
+		t.Fatalf("new session store failed: %v", err)
+	}
+	var stdout bytes.Buffer
+	app := &App{
+		configManager: manager,
+		sessionStore:  store,
+		stdout:        &stdout,
+		stderr:        io.Discard,
+		stdin:         strings.NewReader(""),
+		runtime:       clientruntime.NewClientRuntime(strings.NewReader(""), &stdout, io.Discard),
+	}
+
+	if err := app.runTask(context.Background(), []string{"--stream-retry-attempts", "2", "--show-stream-events", "测试任务"}); err != nil {
+		t.Fatalf("runTask failed: %v", err)
+	}
+	if streamCalls != 3 {
+		t.Fatalf("expected flag override to allow two retries, got %d stream calls", streamCalls)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "正在自动重试（1/2）") || !strings.Contains(output, "正在自动重试（2/2）") {
+		t.Fatalf("expected retry progress from flag override, got %q", output)
+	}
+}
+
+func TestCallbackAuthRefreshProviderRetriesSubmitAfterUnauthorized(t *testing.T) {
+	callbackCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/taiyi/composer/api/v1/agents/client/call/result":
+			callbackCalls++
+			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusUnauthorized)
+				fmt.Fprint(writer, `{"message":"未登录或会话令牌已失效","code":401}`)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{}`)
+		case "/xeai/sso/salt":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"salt-ticket","value":"salt-value"}}`)
+		case "/xeai/sso":
+			if got := request.URL.Query().Get("persistent_token"); got != "persist-1" {
+				t.Fatalf("unexpected persistent token: %q", got)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","persistent_token":"persist-2","idle_duration":3600,"scope":"employee"}}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.AccessToken = "expired-access"
+	config.PersistentToken = "persist-1"
+	config.DeviceID = "device-1"
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	app := &App{configManager: manager}
+	client := buildProviderClient(config)
+	callbackProvider := app.providerWithCallbackAuthRefresh(client, &config)
+
+	err = callbackProvider.SubmitClientCallResult(context.Background(), provider.ClientCallResult{
+		FlowID:    "flow-1",
+		SessionID: "session-1",
+		MessageID: "message-1",
+		RunID:     "run-1",
+		CallID:    "call-1",
+		Success:   true,
+		Result:    map[string]any{"ok": true},
+	})
+	if err != nil {
+		t.Fatalf("SubmitClientCallResult failed: %v", err)
+	}
+	if callbackCalls != 2 {
+		t.Fatalf("expected one failed callback and one retry, got %d calls", callbackCalls)
+	}
+	if config.AccessToken != "access-1" || config.PersistentToken != "persist-2" {
+		t.Fatalf("expected in-memory config refreshed, got %#v", config)
 	}
 	reloaded, err := manager.Load()
 	if err != nil {

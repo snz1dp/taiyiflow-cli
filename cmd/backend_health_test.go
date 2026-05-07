@@ -37,38 +37,38 @@ func TestInspectBackendStatusTreatsAuthenticationErrorAsAvailable(t *testing.T) 
 
 func TestNormalizeStreamEventError(t *testing.T) {
 	t.Run("user canceled", func(t *testing.T) {
-		err := normalizeStreamEventError("读取 SSE 失败: context canceled")
+		err := normalizeStreamEventError("读取流失败: context canceled")
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("expected context.Canceled, got %v", err)
 		}
 	})
 
 	t.Run("stream timeout", func(t *testing.T) {
-		err := normalizeStreamEventError("读取 SSE 失败: context deadline exceeded (Client.Timeout or context cancellation while reading body)")
+		err := normalizeStreamEventError("读取流失败: context deadline exceeded (Client.Timeout or context cancellation while reading body)")
 		if !errors.Is(err, errStreamReadTimeout) {
 			t.Fatalf("expected stream read timeout marker, got %v", err)
 		}
-		if got := err.Error(); !strings.Contains(got, "读取流式响应超时，连接可能已中断") {
+		if got := err.Error(); !strings.Contains(got, "流式读取超时，连接可能已中断") {
 			t.Fatalf("unexpected timeout message: %q", got)
 		}
 	})
 
 	t.Run("backend idle timeout", func(t *testing.T) {
-		err := normalizeStreamEventError("读取 SSE 失败: backend idle timeout after 2m0s without SSE activity")
+		err := normalizeStreamEventError("读取流失败: backend idle timeout after 2m0s without SSE activity")
 		if !errors.Is(err, errStreamBackendIdleTimeout) {
 			t.Fatalf("expected backend idle timeout marker, got %v", err)
 		}
-		if got := err.Error(); !strings.Contains(got, "后端长时间未返回输出，流式请求已超时") {
+		if got := err.Error(); !strings.Contains(got, "后台输出超时，流式请求已超时") {
 			t.Fatalf("unexpected backend idle timeout message: %q", got)
 		}
 	})
 
 	t.Run("stream disconnected", func(t *testing.T) {
-		err := normalizeStreamEventError("读取 SSE 失败: read tcp 127.0.0.1:1->127.0.0.1:2: connection reset by peer")
+		err := normalizeStreamEventError("读取流失败: read tcp 127.0.0.1:1->127.0.0.1:2: connection reset by peer")
 		if !errors.Is(err, errStreamDisconnected) {
 			t.Fatalf("expected stream disconnected marker, got %v", err)
 		}
-		if got := err.Error(); !strings.Contains(got, "流式连接已中断，请稍后重试") {
+		if got := err.Error(); !strings.Contains(got, "流式连接已断开，请稍后重试") {
 			t.Fatalf("unexpected disconnect message: %q", got)
 		}
 	})

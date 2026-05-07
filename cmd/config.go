@@ -197,6 +197,12 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("stream_idle_timeout_seconds 仅支持大于等于 0 的整数秒，0 表示禁用")
 		}
 		config.StreamIdleTimeoutSeconds = seconds
+	case "stream_retry_attempts":
+		attempts, err := strconv.Atoi(trimmedValue)
+		if err != nil || attempts < 0 || attempts > internalconfig.MaxStreamRetryAttempts {
+			return fmt.Errorf("stream_retry_attempts 仅支持 0-%d 的整数，0 表示不重试", internalconfig.MaxStreamRetryAttempts)
+		}
+		config.StreamRetryAttempts = attempts
 	case "qr_wait_timeout_seconds":
 		seconds, err := strconv.Atoi(trimmedValue)
 		if err != nil || seconds < 0 {
@@ -291,6 +297,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.CommandTimeoutSeconds = defaults.CommandTimeoutSeconds
 	case "stream_idle_timeout_seconds":
 		config.StreamIdleTimeoutSeconds = defaults.StreamIdleTimeoutSeconds
+	case "stream_retry_attempts":
+		config.StreamRetryAttempts = defaults.StreamRetryAttempts
 	case "qr_wait_timeout_seconds":
 		config.QRWaitTimeoutSeconds = defaults.QRWaitTimeoutSeconds
 	case "agent_auto_loop_enabled":
@@ -337,6 +345,8 @@ func normalizeConfigKey(key string) string {
 		return "http_timeout_seconds"
 	case "stream_idle_timeout":
 		return "stream_idle_timeout_seconds"
+	case "stream_retry", "stream_retry_count", "stream_retry_times", "stream_retry_attempt", "stream_retries":
+		return "stream_retry_attempts"
 	case "qr_wait_timeout", "qrcode_wait_timeout", "qr_login_wait_timeout":
 		return "qr_wait_timeout_seconds"
 	case "agent_auto_continue_enabled", "agent_autoloop_enabled", "agent_auto_loop":
@@ -387,6 +397,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("写入确认策略: %s", fallbackConfigValue(config.WriteConfirmationPolicy, internalconfig.Default().WriteConfirmationPolicy)),
 		fmt.Sprintf("命令执行超时: %d 秒", config.CommandTimeoutSeconds),
 		fmt.Sprintf("流式空闲超时: %d 秒", config.StreamIdleTimeoutSeconds),
+		fmt.Sprintf("流失败自动重试次数: %d", config.StreamRetryAttempts),
 		fmt.Sprintf("扫码等待超时: %d 秒", config.QRWaitTimeoutSeconds),
 		fmt.Sprintf("输出语言: %s", fallbackConfigValue(config.OutputLanguage, internalconfig.Default().OutputLanguage)),
 		fmt.Sprintf("审计日志: %t", config.AuditEnabled),

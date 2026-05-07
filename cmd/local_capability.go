@@ -5,8 +5,49 @@ import (
 	"fmt"
 	"strings"
 
+	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
+	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 )
+
+type callbackAuthRefreshProvider struct {
+	provider.Provider
+	app    *App
+	client *providerclient.Client
+	config *internalconfig.Config
+}
+
+func (p *callbackAuthRefreshProvider) SubmitClientCallResult(ctx context.Context, result provider.ClientCallResult) error {
+	err := p.Provider.SubmitClientCallResult(ctx, result)
+	if err == nil || !isAuthenticationError(err) || p.app == nil || p.client == nil || p.config == nil {
+		return err
+	}
+
+	updatedConfig, changed, refreshErr := p.app.tryPersistentLogin(ctx, p.client, *p.config)
+	if refreshErr != nil {
+		return fmt.Errorf("%w；自动刷新登录失败: %v", err, refreshErr)
+	}
+	if !changed || strings.TrimSpace(updatedConfig.AccessToken) == strings.TrimSpace(p.config.AccessToken) {
+		return err
+	}
+	*p.config = updatedConfig
+	return p.Provider.SubmitClientCallResult(ctx, result)
+}
+
+func (a *App) providerWithCallbackAuthRefresh(providerClient provider.Provider, config *internalconfig.Config) provider.Provider {
+	if existing, ok := providerClient.(*callbackAuthRefreshProvider); ok {
+		existing.config = config
+		return existing
+	}
+	client, ok := providerClient.(*providerclient.Client)
+	if !ok || a == nil || a.configManager == nil || config == nil {
+		return providerClient
+	}
+	if strings.TrimSpace(config.PersistentToken) == "" {
+		return providerClient
+	}
+	return &callbackAuthRefreshProvider{Provider: providerClient, app: a, client: client, config: config}
+}
 
 func modeAllowsBuiltIn(mode string) bool {
 	return normalizeRequestMode(mode) == provider.RequestTypeAgent
