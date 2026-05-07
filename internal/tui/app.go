@@ -52,6 +52,16 @@ type Snapshot struct {
 	SessionTitle               string
 	History                    []HistoryEntry
 	WelcomeMessage             string
+	SubHead                    string
+	Questions                  []string
+	InternetSearchSupported    bool
+	InternetSearchEnabled      bool
+	InternetSearchDefault      bool
+	KnowledgeSearchSupported   bool
+	KnowledgeBases             []KnowledgeBaseItem
+	SelectedKnowledgeBases     []string
+	FileCapabilities           []FileCapability
+	InputFiles                 []string
 	RequestStats               *RequestMetrics
 }
 
@@ -80,6 +90,20 @@ type SessionPickerState struct {
 	Page       int
 	TotalPages int
 	Items      []SessionItem
+}
+
+type KnowledgeBaseItem struct {
+	Code        string
+	Name        string
+	Description string
+	Type        string
+	Selected    bool
+}
+
+type KnowledgePickerState struct {
+	Title string
+	Hint  string
+	Items []KnowledgeBaseItem
 }
 
 type SkillReferenceItem struct {
@@ -170,6 +194,12 @@ type ApprovalPickerState struct {
 	Title   string
 	Hint    string
 	Options []ApprovalOption
+}
+
+type FileCapability struct {
+	Key     string
+	Label   string
+	Enabled bool
 }
 
 type ConfigFormValues struct {
@@ -325,7 +355,11 @@ type Event struct {
 
 type Request struct {
 	Input            string
+	InputFiles       []string
 	FlowID           string
+	InternetSearch   bool
+	KnowledgeScopes  []string
+	KnowledgeDocs    []string
 	RunID            string
 	RequestMode      string
 	ReasoningEnabled bool
@@ -408,20 +442,21 @@ type ToolPanelAction struct {
 }
 
 type LocalCommandResult struct {
-	Handled        bool
-	ClearHistory   bool
-	Events         []Event
-	FooterHint     string
-	LoginForm      *LoginFormState
-	SessionPicker  *SessionPickerState
-	SkillsPicker   *SkillsPickerState
-	TasksPicker    *TasksPickerState
-	ApprovalPicker *ApprovalPickerState
-	ConfigForm     *ConfigFormState
-	Snapshot       *Snapshot
-	Flows          []FlowItem
-	RebuildEntries bool
-	QueuedInput    string
+	Handled         bool
+	ClearHistory    bool
+	Events          []Event
+	FooterHint      string
+	LoginForm       *LoginFormState
+	SessionPicker   *SessionPickerState
+	KnowledgePicker *KnowledgePickerState
+	SkillsPicker    *SkillsPickerState
+	TasksPicker     *TasksPickerState
+	ApprovalPicker  *ApprovalPickerState
+	ConfigForm      *ConfigFormState
+	Snapshot        *Snapshot
+	Flows           []FlowItem
+	RebuildEntries  bool
+	QueuedInput     string
 }
 
 type Runner func(ctx context.Context, request Request, emit func(Event), confirm func(ConfirmRequest) bool) error
@@ -577,6 +612,7 @@ type model struct {
 	quitting               bool
 	showFlowPicker         bool
 	sessionPicker          *SessionPickerState
+	knowledgePicker        *KnowledgePickerState
 	skillsPicker           *SkillsPickerState
 	tasksPicker            *TasksPickerState
 	taskActionPicker       *TaskActionPickerState
@@ -585,6 +621,7 @@ type model struct {
 	loginForm              *loginFormState
 	flowCursor             int
 	sessionCursor          int
+	knowledgeCursor        int
 	skillsCursor           int
 	tasksCursor            int
 	taskActionCursor       int
@@ -819,6 +856,9 @@ var (
 var slashCommands = []slashCommand{
 	{Trigger: "/new", Completion: "/new", Description: "重置当前智能体的本地会话"},
 	{Trigger: "/clear", Completion: "/clear", Description: "清空当前界面消息"},
+	{Trigger: "/internet", Completion: "/internet ", Description: "查看或切换当前对话的联网搜索"},
+	{Trigger: "/knowledge", Completion: "/knowledge ", Description: "查看或切换当前对话的知识库范围"},
+	{Trigger: "/files", Completion: "/files", Description: "查看当前对话附带的文件状态"},
 	{Trigger: "/session", Completion: "/session", Description: "显示当前会话状态"},
 	{Trigger: "/reasoning", Completion: "/reasoning ", Description: "切换思考模式，支持 on、off、default、status"},
 	{Trigger: "/agent", Completion: "/agent ", Description: "切换为执行模式，或直接发送一个执行请求"},
@@ -1180,6 +1220,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.approvalPicker != nil {
 			return m.handleApprovalPickerKey(typed)
 		}
+		if m.knowledgePicker != nil {
+			return m.handleKnowledgePickerKey(typed)
+		}
 		if m.tasksPicker != nil {
 			return m.handleTasksPickerKey(typed)
 		}
@@ -1309,7 +1352,7 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		runID := newRequestRunID()
 		m.startRequestStats(input, runID)
 		m.syncViewport()
-		request := Request{Input: input, FlowID: m.snapshot.DefaultFlow, RunID: runID, RequestMode: requestModeKey(m.snapshot.RequestMode), ReasoningEnabled: m.snapshot.ReasoningEnabled}
+		request := m.buildRequest(input, runID)
 		requestCtx, cancel := context.WithCancel(m.ctx)
 		m.requestCancel = cancel
 		return m, tea.Batch(m.transitionProgress(progressSending), startStream(requestCtx, request, m.runner, m.eventCh))
@@ -1871,6 +1914,41 @@ func (m model) handleSessionPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m model) handleKnowledgePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.knowledgePicker == nil {
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc", "q", "ctrl+c":
+		m.closeKnowledgePicker()
+		return m, nil
+	case "up", "k":
+		if m.knowledgeCursor > 0 {
+			m.knowledgeCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.knowledgeCursor < len(m.knowledgePicker.Items)-1 {
+			m.knowledgeCursor++
+		}
+		return m, nil
+	case "tab":
+		if len(m.knowledgePicker.Items) > 0 {
+			m.knowledgeCursor = (m.knowledgeCursor + 1) % len(m.knowledgePicker.Items)
+		}
+		return m, nil
+	case "enter":
+		if len(m.knowledgePicker.Items) == 0 {
+			m.closeKnowledgePicker()
+			return m, nil
+		}
+		selected := m.knowledgePicker.Items[m.knowledgeCursor]
+		return m, tea.Batch(m.transitionProgress(progressExecuting), executeLocalCommandCmd(m.ctx, m.snapshot, buildKnowledgePickerCommand("select", selected.Code), m.localCommand))
+	default:
+		return m, nil
+	}
+}
+
 func (m model) handleSkillsPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.skillsPicker == nil {
 		return m, nil
@@ -2297,7 +2375,7 @@ func (m *model) startQueuedRequest() tea.Cmd {
 	runID := newRequestRunID()
 	m.startRequestStats(queued, runID)
 	m.syncViewport()
-	request := Request{Input: queued, FlowID: m.snapshot.DefaultFlow, RunID: runID, RequestMode: requestModeKey(m.snapshot.RequestMode), ReasoningEnabled: m.snapshot.ReasoningEnabled}
+	request := m.buildRequest(queued, runID)
 	requestCtx, cancel := context.WithCancel(m.ctx)
 	m.requestCancel = cancel
 	return tea.Batch(m.transitionProgress(progressSending), startStream(requestCtx, request, m.runner, m.eventCh))
@@ -2438,7 +2516,7 @@ func (m model) View() string {
 	bodyParts := []string{}
 	history := m.renderHistoryPane()
 	inputView := m.input.View()
-	if m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.skillsPicker != nil || m.tasksPicker != nil || m.taskActionPicker != nil || m.approvalPicker != nil {
+	if m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.knowledgePicker != nil || m.skillsPicker != nil || m.tasksPicker != nil || m.taskActionPicker != nil || m.approvalPicker != nil {
 		inputView = hintStyle.Render("当前有未处理的弹层，请先完成操作。")
 	} else if commandHints := m.renderSlashCommandHints(); commandHints != "" {
 		inputView = lipgloss.JoinVertical(lipgloss.Left, inputView, "", commandHints)
@@ -2737,6 +2815,9 @@ func (m model) renderOverlay() string {
 	} else if m.tasksPicker != nil {
 		width = minInt(m.contentWidth-6, 100)
 		content = m.renderTasksPicker()
+	} else if m.knowledgePicker != nil {
+		width = minInt(m.contentWidth-6, 92)
+		content = m.renderKnowledgePicker()
 	} else if m.skillsPicker != nil {
 		width = minInt(m.contentWidth-6, 100)
 		content = m.renderSkillsPicker()
@@ -3624,6 +3705,47 @@ func (m model) renderTaskActionPicker() string {
 	return strings.Join(lines, "\n")
 }
 
+func (m model) renderKnowledgePicker() string {
+	if m.knowledgePicker == nil {
+		return ""
+	}
+	lines := []string{
+		m.knowledgePicker.Title,
+		fallback(strings.TrimSpace(m.knowledgePicker.Hint), "使用方向键选择，Enter 确认，Esc 关闭。"),
+		"",
+	}
+	if len(m.knowledgePicker.Items) == 0 {
+		lines = append(lines, hintStyle.Render("当前没有可选知识库。"))
+		return strings.Join(lines, "\n")
+	}
+	for index, item := range m.knowledgePicker.Items {
+		line := fmt.Sprintf("%s  %s", flowCursor(index == m.knowledgeCursor), fallback(strings.TrimSpace(item.Name), item.Code))
+		meta := []string{}
+		if strings.TrimSpace(item.Code) != "" {
+			meta = append(meta, item.Code)
+		}
+		if strings.TrimSpace(item.Type) != "" {
+			meta = append(meta, item.Type)
+		}
+		if item.Selected {
+			meta = append(meta, "已选")
+		}
+		if len(meta) > 0 {
+			line += "  " + strings.Join(meta, "  ")
+		}
+		if strings.TrimSpace(item.Description) != "" {
+			line += "\n   " + item.Description
+		}
+		if index == m.knowledgeCursor {
+			line = selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-16))
+		} else {
+			line = commandHintStyle.Render(trimForWidth(line, m.contentWidth-16))
+		}
+		lines = append(lines, markOverlayFocus(line, index == m.knowledgeCursor))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func buildTaskActionPicker(item TaskItem) *TaskActionPickerState {
 	options := []TaskActionItem{
 		{Label: "查看结构化输出", Description: "读取 stdout、stderr、退出码等结构化信息。", Command: "/tasks output " + item.ID},
@@ -3742,6 +3864,9 @@ func (m model) statusBarSegments(maxWidth int) []string {
 	segments = append(segments, statusSegment{text: requestModeStatus(m.snapshot.RequestMode, compact), priority: 1})
 	segments = append(segments, statusSegment{text: approvalModeStatus(m.snapshot.ApprovalMode, compact), priority: 1})
 	segments = append(segments, statusSegment{text: reasoningStatus(m.snapshot.ReasoningEnabled, compact), priority: 1})
+	if capabilitySegment := chatCapabilityStatus(m.snapshot, compact); capabilitySegment != "" {
+		segments = append(segments, statusSegment{text: capabilitySegment, priority: 2})
+	}
 	if userSegment := currentUserStatus(m.snapshot.CurrentUserName, compact); userSegment != "" {
 		segments = append(segments, statusSegment{text: userSegment, priority: 4})
 	}
@@ -3759,6 +3884,37 @@ func (m model) statusBarSegments(maxWidth int) []string {
 		segments = append(segments, statusSegment{text: requestSegment, priority: 5})
 	}
 	return fitStatusSegments(segments, maxWidth)
+}
+
+func chatCapabilityStatus(snapshot Snapshot, compact bool) string {
+	parts := []string{}
+	if snapshot.InternetSearchSupported {
+		label := "联网关"
+		if snapshot.InternetSearchEnabled {
+			label = "联网开"
+		}
+		if snapshot.InternetSearchDefault {
+			if compact {
+				label += "*"
+			} else {
+				label += "(默认)"
+			}
+		}
+		parts = append(parts, label)
+	}
+	if snapshot.KnowledgeSearchSupported {
+		if count := len(snapshot.SelectedKnowledgeBases); count > 0 {
+			parts = append(parts, fmt.Sprintf("知识库%d", count))
+		} else if len(snapshot.KnowledgeBases) > 0 {
+			parts = append(parts, "知识库自动")
+		} else {
+			parts = append(parts, "知识库空")
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " / ")
 }
 
 type statusSegment struct {
@@ -3856,7 +4012,7 @@ func (m model) backendUnavailableMessage() string {
 func welcomeCommandsLabel(snapshot Snapshot) []string {
 	labelValue := "可用命令: "
 	if snapshot.BackendAvailable {
-		return []string{labelValue + "/agents /login /config /tasks /skills /reasoning /session /new /exit"}
+		return []string{labelValue + "/agents /internet /knowledge /files /login /config /tasks /skills /reasoning /session /new /exit"}
 	}
 	return []string{labelValue + "/login /config /tasks /skills /reasoning /help /clear /exit"}
 }
@@ -4149,6 +4305,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		m.resetOverlayScroll()
 		m.sessionPicker = result.SessionPicker
 		m.sessionCursor = 0
+		m.knowledgePicker = nil
 		m.skillsPicker = nil
 		m.tasksPicker = nil
 		m.taskActionPicker = nil
@@ -4161,9 +4318,22 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		m.approvalPicker = result.ApprovalPicker
 		m.approvalCursor = 0
 		m.sessionPicker = nil
+		m.knowledgePicker = nil
 		m.skillsPicker = nil
 		m.tasksPicker = nil
 		m.taskActionPicker = nil
+		m.configForm = nil
+		m.input.Blur()
+	}
+	if result.KnowledgePicker != nil {
+		m.resetOverlayScroll()
+		m.knowledgePicker = result.KnowledgePicker
+		m.knowledgeCursor = 0
+		m.sessionPicker = nil
+		m.skillsPicker = nil
+		m.tasksPicker = nil
+		m.taskActionPicker = nil
+		m.approvalPicker = nil
 		m.configForm = nil
 		m.input.Blur()
 	}
@@ -4172,6 +4342,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		m.skillsPicker = result.SkillsPicker
 		m.skillsCursor = 0
 		m.sessionPicker = nil
+		m.knowledgePicker = nil
 		m.tasksPicker = nil
 		m.taskActionPicker = nil
 		m.approvalPicker = nil
@@ -4184,6 +4355,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		m.tasksCursor = 0
 		m.taskActionPicker = nil
 		m.sessionPicker = nil
+		m.knowledgePicker = nil
 		m.skillsPicker = nil
 		m.approvalPicker = nil
 		m.configForm = nil
@@ -4207,7 +4379,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 }
 
 func (m model) showSlashCommandHints() bool {
-	if m.pendingConfirm != nil || m.toolPanel != nil || m.loginForm != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.skillsPicker != nil || m.tasksPicker != nil || m.taskActionPicker != nil || m.approvalPicker != nil || m.isBusy() {
+	if m.pendingConfirm != nil || m.toolPanel != nil || m.loginForm != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.knowledgePicker != nil || m.skillsPicker != nil || m.tasksPicker != nil || m.taskActionPicker != nil || m.approvalPicker != nil || m.isBusy() {
 		return false
 	}
 	trimmed := strings.TrimSpace(m.input.Value())
@@ -4298,6 +4470,24 @@ func (m *model) applySelectedSlashCommand() bool {
 	return true
 }
 
+func (m model) buildRequest(input string, runID string) Request {
+	knowledgeScopes := append([]string(nil), m.snapshot.SelectedKnowledgeBases...)
+	if m.snapshot.KnowledgeSearchSupported && len(m.snapshot.KnowledgeBases) > 0 && len(knowledgeScopes) == 0 {
+		knowledgeScopes = []string{"all"}
+	}
+	request := Request{
+		Input:            input,
+		InputFiles:       append([]string(nil), m.snapshot.InputFiles...),
+		FlowID:           m.snapshot.DefaultFlow,
+		InternetSearch:   m.snapshot.InternetSearchEnabled,
+		KnowledgeScopes:  knowledgeScopes,
+		RunID:            runID,
+		RequestMode:      requestModeKey(m.snapshot.RequestMode),
+		ReasoningEnabled: m.snapshot.ReasoningEnabled,
+	}
+	return request
+}
+
 func waitForStream(eventCh chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		return <-eventCh
@@ -4378,6 +4568,12 @@ func (m *model) closeSessionPicker() {
 	m.input.Focus()
 }
 
+func (m *model) closeKnowledgePicker() {
+	m.knowledgePicker = nil
+	m.knowledgeCursor = 0
+	m.input.Focus()
+}
+
 func (m *model) closeSkillsPicker() {
 	m.skillsPicker = nil
 	m.skillsCursor = 0
@@ -4427,6 +4623,14 @@ func buildSkillsPickerCommand(action string, slug string, query string) string {
 	return strings.Join(parts, " ")
 }
 
+func buildKnowledgePickerCommand(action string, code string) string {
+	parts := []string{"/knowledge-picker", strings.TrimSpace(action)}
+	if strings.TrimSpace(code) != "" {
+		parts = append(parts, strings.TrimSpace(code))
+	}
+	return strings.Join(parts, " ")
+}
+
 func (m *model) closeTasksPicker() {
 	m.tasksPicker = nil
 	m.tasksCursor = 0
@@ -4467,7 +4671,7 @@ func (m *model) closeToolPanel() {
 	m.resetOverlayScroll()
 	m.toolPanelViewport.SetContent("")
 	m.toolPanelViewport.GotoTop()
-	if m.skillsPicker == nil && m.tasksPicker == nil && m.taskActionPicker == nil && m.sessionPicker == nil && m.approvalPicker == nil && m.loginForm == nil && m.configForm == nil && !m.showFlowPicker {
+	if m.skillsPicker == nil && m.knowledgePicker == nil && m.tasksPicker == nil && m.taskActionPicker == nil && m.sessionPicker == nil && m.approvalPicker == nil && m.loginForm == nil && m.configForm == nil && !m.showFlowPicker {
 		m.input.Focus()
 	} else {
 		m.input.Blur()
@@ -5785,8 +5989,8 @@ func activeConfigFormValue(form *configFormState) string {
 
 func buildInitialEntries(snapshot Snapshot) []entry {
 	entries := []entry{}
-	if strings.TrimSpace(snapshot.WelcomeMessage) != "" {
-		entries = append(entries, entry{role: "welcome", content: strings.TrimSpace(snapshot.WelcomeMessage)})
+	if welcome := buildWelcomeContent(snapshot); welcome != "" {
+		entries = append(entries, entry{role: "welcome", content: welcome})
 	}
 	entries = append(entries, buildBackendStatusEntries(snapshot)...)
 	for _, item := range snapshot.History {
@@ -5796,7 +6000,7 @@ func buildInitialEntries(snapshot Snapshot) []entry {
 		entries = append(entries, entry{role: item.Role, content: item.Content})
 	}
 	if len(entries) == 0 {
-		entries = append(entries, entry{role: "welcome", content: strings.TrimSpace(snapshot.WelcomeMessage)})
+		entries = append(entries, entry{role: "welcome", content: buildWelcomeContent(snapshot)})
 	}
 	return entries
 }
@@ -5819,11 +6023,40 @@ func shouldReplaceEntriesOnSnapshotRefresh(current []entry, snapshot Snapshot) b
 
 func buildWelcomeEntries(snapshot Snapshot) []entry {
 	entries := []entry{}
-	if strings.TrimSpace(snapshot.WelcomeMessage) != "" {
-		entries = append(entries, entry{role: "welcome", content: strings.TrimSpace(snapshot.WelcomeMessage)})
+	if welcome := buildWelcomeContent(snapshot); welcome != "" {
+		entries = append(entries, entry{role: "welcome", content: welcome})
 	}
 	entries = append(entries, buildBackendStatusEntries(snapshot)...)
 	return entries
+}
+
+func buildWelcomeContent(snapshot Snapshot) string {
+	lines := []string{}
+	if welcome := strings.TrimSpace(snapshot.WelcomeMessage); welcome != "" {
+		lines = append(lines, welcome)
+	}
+	if subHead := strings.TrimSpace(snapshot.SubHead); subHead != "" {
+		lines = append(lines, subHead)
+	}
+	questions := []string{}
+	for _, question := range snapshot.Questions {
+		trimmed := strings.TrimSpace(question)
+		if trimmed != "" {
+			questions = append(questions, trimmed)
+		}
+	}
+	if len(questions) > 0 {
+		lines = append(lines, "示例问题:\n"+strings.Join(numberedLines(questions), "\n"))
+	}
+	return strings.Join(lines, "\n\n")
+}
+
+func numberedLines(values []string) []string {
+	result := make([]string, 0, len(values))
+	for index, value := range values {
+		result = append(result, fmt.Sprintf("%d. %s", index+1, value))
+	}
+	return result
 }
 
 func (m model) shouldPinHistoryTop() bool {
@@ -6485,6 +6718,12 @@ func isExecutableSlashCommandInput(input string) bool {
 	switch {
 	case strings.EqualFold(trimmed, "/agents"):
 		return true
+	case strings.EqualFold(trimmed, "/internet"):
+		return true
+	case strings.EqualFold(trimmed, "/knowledge"):
+		return true
+	case strings.EqualFold(trimmed, "/files"):
+		return true
 	case strings.EqualFold(trimmed, "/ask"):
 		return true
 	case strings.EqualFold(trimmed, "/plan"):
@@ -6517,6 +6756,12 @@ func isExecutableSlashCommandInput(input string) bool {
 		return true
 	case strings.EqualFold(trimmed, "/skills"):
 		return true
+	case strings.HasPrefix(strings.ToLower(trimmed), "/internet "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/internet ")) != ""
+	case strings.HasPrefix(strings.ToLower(trimmed), "/knowledge "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/knowledge ")) != ""
+	case strings.HasPrefix(strings.ToLower(trimmed), "/files "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/files ")) != ""
 	case strings.HasPrefix(strings.ToLower(trimmed), "/reasoning "):
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/reasoning ")) != ""
 	case strings.HasPrefix(strings.ToLower(trimmed), "/skills "):

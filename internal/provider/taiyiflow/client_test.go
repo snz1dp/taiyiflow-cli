@@ -250,7 +250,7 @@ func TestGetMetadataParsesMaxInputTokens(t *testing.T) {
 			return
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(writer, `{"id":"demo-flow","name":"Demo Flow","description":"测试流程","welcome_message":"hi","max_input_tokens":200000,"enabled":true,"is_chat":true}`)
+		fmt.Fprint(writer, `{"id":"demo-flow","name":"Demo Flow","description":"测试流程","welcome_message":"hi","max_input_tokens":200000,"enabled":true,"is_chat":true,"features":["internet_search","knowledge-search","custom_feature"]}`)
 	}))
 	defer server.Close()
 
@@ -264,6 +264,39 @@ func TestGetMetadataParsesMaxInputTokens(t *testing.T) {
 	}
 	if metadata.MaxInputTokens != 200000 {
 		t.Fatalf("expected max_input_tokens=200000, got %#v", metadata)
+	}
+	if !metadata.Capabilities.InternetSearch || !metadata.Capabilities.KnowledgeSearch {
+		t.Fatalf("expected metadata capabilities to normalize known features, got %#v", metadata.Capabilities)
+	}
+	if len(metadata.Capabilities.UnknownFeatures) != 1 || metadata.Capabilities.UnknownFeatures[0] != "custom_feature" {
+		t.Fatalf("expected unknown feature to be preserved, got %#v", metadata.Capabilities)
+	}
+}
+
+func TestListKnowledgeBasesParsesResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/taiyi/composer/api/v1/agents/knowledge/bases" {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.URL.Query().Get("filter") != "demo" {
+			t.Fatalf("expected filter query to be forwarded, got %q", request.URL.RawQuery)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"total":1,"offset":0,"data":[{"id":"kb-1","code":"kb_demo","display_name":"演示知识库","type":"personal","description":"测试知识库"}]}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	list, err := client.ListKnowledgeBases(context.Background(), "demo", 0, 20)
+	if err != nil {
+		t.Fatalf("expected ListKnowledgeBases to succeed, got %v", err)
+	}
+	if list == nil || len(list.Items) != 1 {
+		t.Fatalf("expected one knowledge base, got %#v", list)
+	}
+	if list.Items[0].Code != "kb_demo" || list.Items[0].Name != "演示知识库" {
+		t.Fatalf("unexpected knowledge base payload: %#v", list.Items[0])
 	}
 }
 

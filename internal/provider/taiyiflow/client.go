@@ -148,6 +148,21 @@ type flowListResponse struct {
 	Data   []flowItemResponse `json:"data"`
 }
 
+type knowledgeBaseResponse struct {
+	ID          string `json:"id"`
+	Code        string `json:"code"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Type        string `json:"type"`
+	Description string `json:"description"`
+}
+
+type knowledgeBasePageResponse struct {
+	Total  int                     `json:"total"`
+	Offset int                     `json:"offset"`
+	Data   []knowledgeBaseResponse `json:"data"`
+}
+
 type sessionItemResponse struct {
 	ID          string `json:"id"`
 	SessionName string `json:"session_name"`
@@ -462,6 +477,63 @@ func (c *Client) ListSessions(ctx context.Context, flowID string, offset, limit 
 	}, nil
 }
 
+func (c *Client) ListKnowledgeBases(ctx context.Context, filter string, offset, limit int) (*provider.KnowledgeBaseList, error) {
+	endpoint, err := url.Parse(c.apiURL("/agents/knowledge/bases"))
+	if err != nil {
+		return nil, fmt.Errorf("构造 knowledge bases 请求地址失败: %w", err)
+	}
+
+	query := endpoint.Query()
+	if strings.TrimSpace(filter) != "" {
+		query.Set("filter", strings.TrimSpace(filter))
+	}
+	if offset > 0 {
+		query.Set("offset", strconv.Itoa(offset))
+	}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	endpoint.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("获取知识库列表失败", resp)
+	}
+
+	var payload knowledgeBasePageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析知识库列表响应失败: %w", err)
+	}
+
+	items := make([]provider.KnowledgeBaseSummary, 0, len(payload.Data))
+	for _, item := range payload.Data {
+		items = append(items, provider.KnowledgeBaseSummary{
+			ID:          strings.TrimSpace(item.ID),
+			Code:        strings.TrimSpace(item.Code),
+			Name:        firstNonEmpty(strings.TrimSpace(item.DisplayName), firstNonEmpty(strings.TrimSpace(item.Name), strings.TrimSpace(item.Code))),
+			Type:        strings.TrimSpace(item.Type),
+			Description: strings.TrimSpace(item.Description),
+		})
+	}
+
+	return &provider.KnowledgeBaseList{
+		Total:  payload.Total,
+		Offset: payload.Offset,
+		Items:  items,
+	}, nil
+}
+
 func (c *Client) ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*provider.SessionMessageList, error) {
 	flowID = strings.TrimSpace(flowID)
 	sessionID = strings.TrimSpace(sessionID)
@@ -629,6 +701,7 @@ func (c *Client) GetMetadata(ctx context.Context, flowID string) (*provider.Meta
 		SubHead:        payload.SubHead,
 		Questions:      payload.Questions,
 		Features:       payload.Features,
+		Capabilities:   provider.NormalizeMetadataFeatures(payload.Features),
 	}, nil
 }
 

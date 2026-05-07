@@ -56,11 +56,6 @@ type verificationImageRenderData struct {
 	Height    int
 }
 
-type qrWaitCommand struct {
-	Ticket   string
-	Remember bool
-}
-
 type loginChannelCapabilities struct {
 	SupportsQRCode bool
 	ChannelNames   []string
@@ -1354,13 +1349,6 @@ func trimVerificationImageBlankLines(lines []string) []string {
 	return lines[start:end]
 }
 
-func minInt(left int, right int) int {
-	if left < right {
-		return left
-	}
-	return right
-}
-
 func (a *App) executeTUIQRWait(
 	ctx context.Context,
 	providerClient *providerclient.Client,
@@ -1463,32 +1451,6 @@ func parsePasswordLoginCommand(command string) (passwordLoginCommand, error) {
 	}
 	if parsed.Username == "" || parsed.Password == "" {
 		return passwordLoginCommand{}, fmt.Errorf("username 和 password 不能为空")
-	}
-	return parsed, nil
-}
-
-func parseQRWaitCommand(command string) (qrWaitCommand, error) {
-	fields := strings.Fields(strings.TrimSpace(command))
-	if len(fields) < 4 {
-		return qrWaitCommand{}, fmt.Errorf("用法: /login qr wait <ticket> [remember=on|off]")
-	}
-	parsed := qrWaitCommand{Ticket: strings.TrimSpace(fields[3]), Remember: true}
-	for _, field := range fields[4:] {
-		key, value, ok := strings.Cut(field, "=")
-		if !ok {
-			return qrWaitCommand{}, fmt.Errorf("登录选项格式错误: %s", field)
-		}
-		if strings.ToLower(strings.TrimSpace(key)) != "remember" {
-			return qrWaitCommand{}, fmt.Errorf("不支持的扫码登录选项: %s", key)
-		}
-		remember, err := parseLoginRememberFlag(value)
-		if err != nil {
-			return qrWaitCommand{}, err
-		}
-		parsed.Remember = remember
-	}
-	if parsed.Ticket == "" {
-		return qrWaitCommand{}, fmt.Errorf("ticket 不能为空")
 	}
 	return parsed, nil
 }

@@ -326,10 +326,28 @@ type stubSnapshotProvider struct {
 	*stubProvider
 	currentUser    *provider.CurrentUser
 	currentUserErr error
+	metadata       *provider.Metadata
+	metadataErr    error
+	knowledgeBases *provider.KnowledgeBaseList
+	knowledgeErr   error
 }
 
 func (s stubSnapshotProvider) GetCurrentUserInfo(context.Context) (*provider.CurrentUser, error) {
 	return s.currentUser, s.currentUserErr
+}
+
+func (s stubSnapshotProvider) GetMetadata(context.Context, string) (*provider.Metadata, error) {
+	if s.metadata != nil || s.metadataErr != nil {
+		return s.metadata, s.metadataErr
+	}
+	return s.stubProvider.GetMetadata(context.Background(), "")
+}
+
+func (s stubSnapshotProvider) ListKnowledgeBases(context.Context, string, int, int) (*provider.KnowledgeBaseList, error) {
+	if s.knowledgeBases != nil || s.knowledgeErr != nil {
+		return s.knowledgeBases, s.knowledgeErr
+	}
+	return s.stubProvider.ListKnowledgeBases(context.Background(), "", 0, 0)
 }
 
 func TestBuildTUISnapshotMarksAuthRequired(t *testing.T) {
@@ -429,6 +447,12 @@ func TestPrepareInitialTUIAuthenticationRefreshesAccessTokenBeforeInitialSnapsho
 func TestBuildTUIHelpLinesUsesLoginOverlayWording(t *testing.T) {
 	lines := buildTUIHelpLines(internaltui.Snapshot{BackendAvailable: true})
 	joined := strings.Join(lines, "\n")
+	if strings.Contains(joined, "/chat") {
+		t.Fatalf("expected help text to remove /chat, got %q", joined)
+	}
+	if !strings.Contains(joined, "/internet [on|off|status]") || !strings.Contains(joined, "/knowledge 打开知识库范围选择器") || !strings.Contains(joined, "/files 查看当前对话附带的文件状态") {
+		t.Fatalf("expected help text to include split dialogue commands, got %q", joined)
+	}
 	if !strings.Contains(joined, "/login 打开登录表单") {
 		t.Fatalf("expected help text to describe /login as overlay entry, got %q", joined)
 	}
@@ -446,6 +470,94 @@ func TestBuildTUIHelpLinesUsesLoginOverlayWording(t *testing.T) {
 	}
 	if strings.Contains(readonlyJoined, "查看登录状态") {
 		t.Fatalf("expected readonly help text to stop using legacy status wording, got %q", readonlyJoined)
+	}
+}
+
+func TestBuildTUISnapshotMapsMetadataChatCapabilities(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	providerWithMetadata := &stubSnapshotProvider{
+		stubProvider: &stubProvider{},
+		metadata: &provider.Metadata{
+			WelcomeMessage: "欢迎使用",
+			SubHead:        "支持联网与知识库",
+			Questions:      []string{"问题一", "问题二"},
+			Capabilities: provider.ChatCapabilities{
+				InternetSearch: true,
+				KnowledgeSearch: true,
+			},
+		},
+		knowledgeBases: &provider.KnowledgeBaseList{Items: []provider.KnowledgeBaseSummary{{Code: "kb-a", Name: "知识库A"}}},
+	}
+	snapshot, err := app.buildTUISnapshot(context.Background(), providerWithMetadata, internalconfig.Default(), "flow-1", backendStatus{Available: true})
+	if err != nil {
+		t.Fatalf("buildTUISnapshot failed: %v", err)
+	}
+	if snapshot.WelcomeMessage != "欢迎使用" || snapshot.SubHead != "支持联网与知识库" {
+		t.Fatalf("expected metadata welcome fields to map, got %#v", snapshot)
+	}
+	if len(snapshot.Questions) != 2 {
+		t.Fatalf("expected metadata questions to map, got %#v", snapshot.Questions)
+	}
+	if !snapshot.InternetSearchSupported || !snapshot.InternetSearchEnabled || !snapshot.InternetSearchDefault {
+		t.Fatalf("expected internet search capability to map, got %#v", snapshot)
+	}
+	if !snapshot.KnowledgeSearchSupported || len(snapshot.KnowledgeBases) != 1 || snapshot.KnowledgeBases[0].Code != "kb-a" {
+		t.Fatalf("expected knowledge capability to map, got %#v", snapshot)
+	}
+}
+
+func TestExecuteTUIKnowledgeCommandSwitchesToAuto(t *testing.T) {
+	snapshot := internaltui.Snapshot{
+		KnowledgeSearchSupported: true,
+		KnowledgeBases: []internaltui.KnowledgeBaseItem{{Code: "kb-a", Name: "知识库A", Selected: true}},
+		SelectedKnowledgeBases: []string{"kb-a"},
+	}
+	result, err := executeTUIKnowledgeCommand("/knowledge auto", snapshot)
+	if err != nil {
+		t.Fatalf("executeTUIKnowledgeCommand failed: %v", err)
+	}
+	if result.Snapshot == nil || len(result.Snapshot.SelectedKnowledgeBases) != 0 {
+		t.Fatalf("expected knowledge selection switched to auto, got %#v", result.Snapshot)
+	}
+	if result.Snapshot.KnowledgeBases[0].Selected {
+		t.Fatalf("expected picker selection flag cleared, got %#v", result.Snapshot.KnowledgeBases)
+	}
+	if len(result.Events) != 1 || !strings.Contains(result.Events[0].Text, "auto（自动）") {
+		t.Fatalf("expected auto status note, got %#v", result.Events)
+	}
+}
+
+func TestExecuteTUIKnowledgeCommandOpensPickerForRootCommand(t *testing.T) {
+	snapshot := internaltui.Snapshot{
+		KnowledgeSearchSupported: true,
+		KnowledgeBases: []internaltui.KnowledgeBaseItem{{Code: "kb-a", Name: "知识库A"}},
+	}
+	result, err := executeTUIKnowledgeCommand("/knowledge", snapshot)
+	if err != nil {
+		t.Fatalf("executeTUIKnowledgeCommand failed: %v", err)
+	}
+	if !result.Handled || result.KnowledgePicker == nil {
+		t.Fatalf("expected knowledge picker result, got %#v", result)
+	}
+	if result.KnowledgePicker.Title != "知识库范围(knowledge)" {
+		t.Fatalf("unexpected picker title: %#v", result.KnowledgePicker)
+	}
+	if len(result.KnowledgePicker.Items) != 1 || result.KnowledgePicker.Items[0].Code != "kb-a" {
+		t.Fatalf("unexpected picker items: %#v", result.KnowledgePicker.Items)
+	}
+	if len(result.Events) != 0 {
+		t.Fatalf("expected no extra events when opening picker, got %#v", result.Events)
+	}
+	}
+
+func TestExecuteTUIInternetCommandTogglesState(t *testing.T) {
+	snapshot := internaltui.Snapshot{InternetSearchSupported: true}
+	result, err := executeTUIInternetCommand("/internet on", snapshot)
+	if err != nil {
+		t.Fatalf("executeTUIInternetCommand failed: %v", err)
+	}
+	if result.Snapshot == nil || !result.Snapshot.InternetSearchEnabled {
+		t.Fatalf("expected internet search enabled, got %#v", result.Snapshot)
 	}
 }
 

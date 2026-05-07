@@ -25,6 +25,12 @@ const (
 	RequestTypePlan                       = "plan"
 	RequestTypeAgent                      = "agent"
 	DeviceTypeCLI                         = "cli"
+	FeatureInternetSearch                 = "internet_search"
+	FeatureKnowledgeSearch                = "knowledge_search"
+	FeatureImageUnderstanding            = "image_understanding"
+	FeatureAudioUnderstanding            = "audio_understanding"
+	FeatureVideoUnderstanding            = "video_understanding"
+	FeatureDocumentUnderstanding         = "document_understanding"
 )
 
 func NormalizeRequestType(value string) string {
@@ -105,6 +111,31 @@ type StreamSession struct {
 	SessionID string
 }
 
+type ChatCapabilities struct {
+	Features               []string
+	UnknownFeatures        []string
+	InternetSearch         bool
+	KnowledgeSearch        bool
+	ImageUnderstanding     bool
+	AudioUnderstanding     bool
+	VideoUnderstanding     bool
+	DocumentUnderstanding  bool
+}
+
+type KnowledgeBaseSummary struct {
+	ID          string
+	Code        string
+	Name        string
+	Type        string
+	Description string
+}
+
+type KnowledgeBaseList struct {
+	Total  int
+	Offset int
+	Items  []KnowledgeBaseSummary
+}
+
 type Metadata struct {
 	ID             string
 	Name           string
@@ -116,6 +147,53 @@ type Metadata struct {
 	SubHead        string
 	Questions      []string
 	Features       []string
+	Capabilities   ChatCapabilities
+}
+
+func NormalizeMetadataFeatures(features []string) ChatCapabilities {
+	capabilities := ChatCapabilities{}
+	known := map[string]struct{}{}
+	unknown := map[string]struct{}{}
+	for _, feature := range features {
+		canonical := canonicalFeatureName(feature)
+		if canonical == "" {
+			continue
+		}
+		switch canonical {
+		case FeatureInternetSearch:
+			capabilities.InternetSearch = true
+		case FeatureKnowledgeSearch:
+			capabilities.KnowledgeSearch = true
+		case FeatureImageUnderstanding:
+			capabilities.ImageUnderstanding = true
+		case FeatureAudioUnderstanding:
+			capabilities.AudioUnderstanding = true
+		case FeatureVideoUnderstanding:
+			capabilities.VideoUnderstanding = true
+		case FeatureDocumentUnderstanding:
+			capabilities.DocumentUnderstanding = true
+		default:
+			if _, exists := unknown[canonical]; exists {
+				continue
+			}
+			unknown[canonical] = struct{}{}
+			capabilities.UnknownFeatures = append(capabilities.UnknownFeatures, canonical)
+			continue
+		}
+		if _, exists := known[canonical]; exists {
+			continue
+		}
+		known[canonical] = struct{}{}
+		capabilities.Features = append(capabilities.Features, canonical)
+	}
+	return capabilities
+}
+
+func canonicalFeatureName(value string) string {
+	canonical := strings.ToLower(strings.TrimSpace(value))
+	canonical = strings.ReplaceAll(canonical, "-", "_")
+	canonical = strings.ReplaceAll(canonical, " ", "_")
+	return canonical
 }
 
 type ServiceVersion struct {
@@ -241,6 +319,7 @@ type ClientCallResult struct {
 type Provider interface {
 	Name() string
 	ListFlows(ctx context.Context, filter string, agentType string, offset, limit int) (*FlowList, error)
+	ListKnowledgeBases(ctx context.Context, filter string, offset, limit int) (*KnowledgeBaseList, error)
 	ListSessions(ctx context.Context, flowID string, offset, limit int) (*SessionList, error)
 	ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*SessionMessageList, error)
 	GetVersionInfo(ctx context.Context) (*ServiceVersion, error)

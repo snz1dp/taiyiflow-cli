@@ -120,6 +120,32 @@ func TestVisibleSlashCommandsListsAgentBeforeAgents(t *testing.T) {
 	}
 }
 
+func TestIsExecutableSlashCommandInputUsesSplitDialogueCommands(t *testing.T) {
+	if isExecutableSlashCommandInput("/chat") {
+		t.Fatalf("expected /chat to be removed from executable commands")
+	}
+	if !isExecutableSlashCommandInput("/internet on") {
+		t.Fatalf("expected /internet on to be executable")
+	}
+	if !isExecutableSlashCommandInput("/knowledge auto") {
+		t.Fatalf("expected /knowledge auto to be executable")
+	}
+	if !isExecutableSlashCommandInput("/files") {
+		t.Fatalf("expected /files to be executable")
+	}
+}
+
+func TestBuildRequestUsesAutoKnowledgeScopeWhenNoneSelected(t *testing.T) {
+	request := model{snapshot: Snapshot{
+		DefaultFlow:              "flow-1",
+		KnowledgeSearchSupported: true,
+		KnowledgeBases:           []KnowledgeBaseItem{{Code: "kb-a", Name: "知识库A"}},
+	}}.buildRequest("你好", "run-1")
+	if len(request.KnowledgeScopes) != 1 || request.KnowledgeScopes[0] != "all" {
+		t.Fatalf("expected auto knowledge scope to map to all, got %#v", request.KnowledgeScopes)
+	}
+}
+
 func TestVisibleSlashCommandsOmitsPermissionsCommand(t *testing.T) {
 	input := textarea.New()
 	input.SetValue("/p")

@@ -37,6 +37,10 @@ func (s stubProvider) ListFlows(context.Context, string, string, int, int) (*pro
 	return &provider.FlowList{}, nil
 }
 
+func (s stubProvider) ListKnowledgeBases(context.Context, string, int, int) (*provider.KnowledgeBaseList, error) {
+	return &provider.KnowledgeBaseList{}, nil
+}
+
 func (s stubProvider) ListSessions(context.Context, string, int, int) (*provider.SessionList, error) {
 	return nil, nil
 }

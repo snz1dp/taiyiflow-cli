@@ -26,6 +26,7 @@ import (
 var bracketErrorCodePattern = regexp.MustCompile(`^\[[A-Z0-9_]+\]\s*`)
 
 const skillsPickerCommandPrefix = "/skills-picker"
+const knowledgePickerCommandPrefix = "/knowledge-picker"
 
 func (a *App) prepareInitialTUIAuthentication(
 	ctx context.Context,
@@ -101,6 +102,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				FlowID:                 currentFlow,
 				Input:                  request.Input,
 				InputType:              "any",
+				InputFiles:             append([]string(nil), request.InputFiles...),
+				InternetSearch:         request.InternetSearch,
+				KnowledgeScopes:        append([]string(nil), request.KnowledgeScopes...),
+				KnowledgeDocs:          append([]string(nil), request.KnowledgeDocs...),
 				OutputType:             "any",
 				SessionID:              sessionState.SessionID,
 				RunID:                  request.RunID,
@@ -339,6 +344,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if err != nil {
 			return tui.Snapshot{}, nil, err
 		}
+		if strings.TrimSpace(snapshot.DefaultFlow) == strings.TrimSpace(current.DefaultFlow) {
+			snapshot = preserveTUIChatState(current, snapshot)
+		}
 		providerClient = refreshedClient
 		config = updatedConfig
 		workdir = resolveLocalWorkdir(updatedConfig.Workdir)
@@ -370,7 +378,11 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if err := a.configManager.Save(updatedConfig); err != nil {
 			return tui.Snapshot{}, err
 		}
-		return a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, updatedConfig.DefaultFlow, backendStatus{Available: true})
+		updatedSnapshot, err := a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, updatedConfig.DefaultFlow, backendStatus{Available: true})
+		if err != nil {
+			return tui.Snapshot{}, err
+		}
+		return updatedSnapshot, nil
 	}
 
 	sessionChange := func(changeCtx context.Context, current tui.Snapshot, sessionID string) (tui.Snapshot, error) {
@@ -402,7 +414,11 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if err != nil {
 			return tui.Snapshot{}, err
 		}
-		return a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, flowID, backendStatus{Available: true})
+		updatedSnapshot, err := a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, flowID, backendStatus{Available: true})
+		if err != nil {
+			return tui.Snapshot{}, err
+		}
+		return preserveTUIChatState(current, updatedSnapshot), nil
 	}
 
 	approvalChange := func(changeCtx context.Context, mode string) (tui.Snapshot, error) {
@@ -414,7 +430,11 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if err := a.configManager.Save(updatedConfig); err != nil {
 			return tui.Snapshot{}, err
 		}
-		return a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, updatedConfig.DefaultFlow, backendStatus{Available: true})
+		updatedSnapshot, err := a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, updatedConfig.DefaultFlow, backendStatus{Available: true})
+		if err != nil {
+			return tui.Snapshot{}, err
+		}
+		return updatedSnapshot, nil
 	}
 
 	configFormSubmit := func(changeCtx context.Context, snapshot tui.Snapshot, submission tui.ConfigFormSubmission) (tui.LocalCommandResult, error) {
@@ -495,6 +515,14 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: pickerErr.Error()}}}, nil
 			}
 			return tui.LocalCommandResult{Handled: true, SkillsPicker: picker}, nil
+		case strings.EqualFold(trimmed, "/internet") || strings.HasPrefix(strings.ToLower(trimmed), "/internet "):
+			return executeTUIInternetCommand(trimmed, snapshot)
+		case strings.EqualFold(trimmed, "/knowledge") || strings.HasPrefix(strings.ToLower(trimmed), "/knowledge "):
+			return executeTUIKnowledgeCommand(trimmed, snapshot)
+		case strings.EqualFold(trimmed, "/files") || strings.HasPrefix(strings.ToLower(trimmed), "/files "):
+			return executeTUIFilesCommand(trimmed, snapshot)
+		case strings.EqualFold(trimmed, knowledgePickerCommandPrefix) || strings.HasPrefix(strings.ToLower(trimmed), knowledgePickerCommandPrefix+" "):
+			return executeTUIKnowledgePickerCommand(trimmed, snapshot)
 		case strings.EqualFold(trimmed, "/skills help"):
 			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: skillsSlashUsage()}}}, nil
 		case strings.EqualFold(trimmed, "/reasoning") || strings.HasPrefix(strings.ToLower(trimmed), "/reasoning "):
@@ -799,6 +827,9 @@ func buildTUIHelpLines(snapshot tui.Snapshot) []string {
 		"可用命令:",
 		"/new 重置当前智能体的本地会话",
 		"/clear 清空当前界面消息",
+		"/internet [on|off|status] 查看或切换当前对话的联网搜索",
+		"/knowledge 打开知识库范围选择器；/knowledge status 查看当前状态；/knowledge auto 切回自动",
+		"/files 查看当前对话附带的文件状态",
 		"/review [路径] 发起当前工作区或指定路径的代码审查",
 		"/agent 或 /agent <任务> 切换执行模式",
 		"/ask 或 /ask <问题> 切换问答模式",
@@ -895,13 +926,19 @@ func (a *App) buildTUISnapshot(
 
 	metadata, err := providerClient.GetMetadata(ctx, flowID)
 	if err == nil {
-		snapshot.WelcomeMessage = metadata.WelcomeMessage
+		applyMetadataToTUISnapshot(&snapshot, metadata)
 		applyMetadataContextWindowBudget(&snapshot, metadata.MaxInputTokens)
 		if strings.TrimSpace(metadata.Name) != "" {
 			snapshot.DefaultFlowLabel = metadata.Name
 			sessionState.FlowDisplayName = strings.TrimSpace(metadata.Name)
 		}
+		if snapshot.KnowledgeSearchSupported {
+			if knowledgeBases, listErr := providerClient.ListKnowledgeBases(ctx, "", 0, 100); listErr == nil {
+				snapshot.KnowledgeBases = buildTUIKnowledgeBaseItems(knowledgeBases, nil)
+			}
+		}
 	}
+	snapshot = preserveTUIChatState(tui.Snapshot{}, snapshot)
 	if strings.TrimSpace(sessionState.FlowDisplayName) == "" {
 		sessionState.FlowDisplayName = strings.TrimSpace(snapshot.DefaultFlowLabel)
 	}
@@ -2338,6 +2375,271 @@ func (a *App) executeTUIReasoningCommand(command string, snapshot tui.Snapshot) 
 	updatedSnapshot.ReasoningOverride = updatedState.ReasoningOverride
 	updatedSnapshot.ReasoningEnabled = resolveReasoningEnabled(config, updatedState.ReasoningOverride)
 	return output, &updatedSnapshot, nil
+}
+
+func executeTUIInternetCommand(command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(command)))
+	if len(fields) == 0 {
+		return tui.LocalCommandResult{}, nil
+	}
+	if len(fields) == 1 || (len(fields) == 2 && fields[1] == "status") {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: renderTUIInternetStatus(snapshot)}}}, nil
+	}
+	if !snapshot.InternetSearchSupported {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "当前智能体未启用联网搜索能力。"}}}, nil
+	}
+	updatedSnapshot := snapshot
+	switch fields[1] {
+	case "on":
+		updatedSnapshot.InternetSearchEnabled = true
+		return tui.LocalCommandResult{Handled: true, Snapshot: &updatedSnapshot, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: "已开启联网搜索。"}}}, nil
+	case "off":
+		updatedSnapshot.InternetSearchEnabled = false
+		return tui.LocalCommandResult{Handled: true, Snapshot: &updatedSnapshot, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: "已关闭联网搜索。"}}}, nil
+	default:
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "用法: /internet [on|off|status]"}}}, nil
+	}
+}
+
+func executeTUIKnowledgeCommand(command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(command)))
+	if len(fields) == 0 {
+		return tui.LocalCommandResult{}, nil
+	}
+	if !snapshot.KnowledgeSearchSupported {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "当前智能体未启用知识库检索能力。"}}}, nil
+	}
+	if len(fields) == 1 {
+		picker := buildTUIKnowledgePickerState(snapshot)
+		if picker == nil {
+			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: renderTUIKnowledgeStatus(snapshot)}}}, nil
+		}
+		return tui.LocalCommandResult{Handled: true, KnowledgePicker: picker}, nil
+	}
+	switch fields[1] {
+	case "status":
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: renderTUIKnowledgeStatus(snapshot)}}}, nil
+	case "auto", "clear":
+		updatedSnapshot := snapshot
+		updatedSnapshot.SelectedKnowledgeBases = nil
+		markKnowledgeBaseSelection(&updatedSnapshot)
+		return tui.LocalCommandResult{Handled: true, Snapshot: &updatedSnapshot, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: "已将知识库范围切换为 auto（自动）。"}}}, nil
+	case "pick", "select":
+		picker := buildTUIKnowledgePickerState(snapshot)
+		if picker == nil {
+			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: renderTUIKnowledgeStatus(snapshot)}}}, nil
+		}
+		return tui.LocalCommandResult{Handled: true, KnowledgePicker: picker}, nil
+	default:
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "用法: /knowledge [status|auto]，或直接输入 /knowledge 打开选择器"}}}, nil
+	}
+}
+
+func executeTUIFilesCommand(command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(command)))
+	if len(fields) <= 1 || (len(fields) == 2 && fields[1] == "status") {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: renderTUIChatFilesStatus(snapshot)}}}, nil
+	}
+	return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "用法: /files"}}}, nil
+}
+
+func executeTUIKnowledgePickerCommand(command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) != 3 || !strings.EqualFold(fields[1], "select") {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "用法: /knowledge-picker select <知识库编码>"}}}, nil
+	}
+	code := strings.TrimSpace(fields[2])
+	if code == "" {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "知识库编码不能为空。"}}}, nil
+	}
+	updatedSnapshot := snapshot
+	selected := map[string]struct{}{}
+	for _, item := range snapshot.SelectedKnowledgeBases {
+		selected[strings.TrimSpace(item)] = struct{}{}
+	}
+	if _, exists := selected[code]; exists {
+		delete(selected, code)
+	} else {
+		selected[code] = struct{}{}
+	}
+	updatedSnapshot.SelectedKnowledgeBases = sortedKnowledgeCodes(selected, updatedSnapshot.KnowledgeBases)
+	markKnowledgeBaseSelection(&updatedSnapshot)
+	message := fmt.Sprintf("已更新知识库范围：%s", strings.Join(updatedSnapshot.SelectedKnowledgeBases, ", "))
+	if len(updatedSnapshot.SelectedKnowledgeBases) == 0 {
+		message = "已将知识库范围切换为 auto（自动）。"
+	}
+	return tui.LocalCommandResult{Handled: true, Snapshot: &updatedSnapshot, KnowledgePicker: buildTUIKnowledgePickerState(updatedSnapshot), Events: []tui.Event{{Kind: tui.EventSystemNote, Text: message}}}, nil
+}
+
+func applyMetadataToTUISnapshot(snapshot *tui.Snapshot, metadata *provider.Metadata) {
+	if snapshot == nil || metadata == nil {
+		return
+	}
+	snapshot.WelcomeMessage = strings.TrimSpace(metadata.WelcomeMessage)
+	snapshot.SubHead = strings.TrimSpace(metadata.SubHead)
+	snapshot.Questions = compactNonEmptyStrings(metadata.Questions)
+	capabilities := metadata.Capabilities
+	if len(capabilities.Features) == 0 && len(metadata.Features) > 0 {
+		capabilities = provider.NormalizeMetadataFeatures(metadata.Features)
+	}
+	snapshot.InternetSearchSupported = capabilities.InternetSearch
+	snapshot.InternetSearchEnabled = capabilities.InternetSearch
+	snapshot.InternetSearchDefault = capabilities.InternetSearch
+	snapshot.KnowledgeSearchSupported = capabilities.KnowledgeSearch
+	if !snapshot.KnowledgeSearchSupported {
+		snapshot.KnowledgeBases = nil
+		snapshot.SelectedKnowledgeBases = nil
+	}
+}
+
+func preserveTUIChatState(previous tui.Snapshot, next tui.Snapshot) tui.Snapshot {
+	if next.InternetSearchSupported {
+		if previous.InternetSearchSupported {
+			next.InternetSearchEnabled = previous.InternetSearchEnabled
+		}
+	} else {
+		next.InternetSearchEnabled = false
+	}
+	next.InputFiles = append([]string(nil), previous.InputFiles...)
+	if next.KnowledgeSearchSupported {
+		selected := map[string]struct{}{}
+		for _, code := range previous.SelectedKnowledgeBases {
+			trimmed := strings.TrimSpace(code)
+			if trimmed != "" {
+				selected[trimmed] = struct{}{}
+			}
+		}
+		next.SelectedKnowledgeBases = sortedKnowledgeCodes(selected, next.KnowledgeBases)
+		markKnowledgeBaseSelection(&next)
+	} else {
+		next.SelectedKnowledgeBases = nil
+	}
+	return next
+}
+
+func buildTUIKnowledgeBaseItems(list *provider.KnowledgeBaseList, selected map[string]struct{}) []tui.KnowledgeBaseItem {
+	if list == nil || len(list.Items) == 0 {
+		return nil
+	}
+	items := make([]tui.KnowledgeBaseItem, 0, len(list.Items))
+	for _, item := range list.Items {
+		code := strings.TrimSpace(item.Code)
+		if code == "" {
+			code = strings.TrimSpace(item.ID)
+		}
+		if code == "" {
+			continue
+		}
+		_, isSelected := selected[code]
+		items = append(items, tui.KnowledgeBaseItem{
+			Code:        code,
+			Name:        firstNonEmpty(strings.TrimSpace(item.Name), code),
+			Description: strings.TrimSpace(item.Description),
+			Type:        strings.TrimSpace(item.Type),
+			Selected:    isSelected,
+		})
+	}
+	sort.SliceStable(items, func(i int, j int) bool {
+		return items[i].Name < items[j].Name
+	})
+	return items
+}
+
+func buildTUIKnowledgePickerState(snapshot tui.Snapshot) *tui.KnowledgePickerState {
+	if len(snapshot.KnowledgeBases) == 0 {
+		return nil
+	}
+	items := append([]tui.KnowledgeBaseItem(nil), snapshot.KnowledgeBases...)
+	return &tui.KnowledgePickerState{
+		Title: "知识库范围(knowledge)",
+		Hint:  "使用方向键选择，Enter 切换当前知识库是否纳入本次对话范围。",
+		Items: items,
+	}
+}
+
+func markKnowledgeBaseSelection(snapshot *tui.Snapshot) {
+	if snapshot == nil {
+		return
+	}
+	selected := map[string]struct{}{}
+	for _, code := range snapshot.SelectedKnowledgeBases {
+		trimmed := strings.TrimSpace(code)
+		if trimmed != "" {
+			selected[trimmed] = struct{}{}
+		}
+	}
+	for index := range snapshot.KnowledgeBases {
+		_, ok := selected[strings.TrimSpace(snapshot.KnowledgeBases[index].Code)]
+		snapshot.KnowledgeBases[index].Selected = ok
+	}
+}
+
+func sortedKnowledgeCodes(selected map[string]struct{}, items []tui.KnowledgeBaseItem) []string {
+	ordered := []string{}
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		code := strings.TrimSpace(item.Code)
+		if code == "" {
+			continue
+		}
+		if _, ok := selected[code]; ok {
+			ordered = append(ordered, code)
+			seen[code] = struct{}{}
+		}
+	}
+	for code := range selected {
+		if _, ok := seen[code]; ok {
+			continue
+		}
+		ordered = append(ordered, code)
+	}
+	sort.Strings(ordered)
+	return ordered
+}
+
+func renderTUIInternetStatus(snapshot tui.Snapshot) string {
+	if !snapshot.InternetSearchSupported {
+		return "联网搜索: 当前智能体未启用"
+	}
+	state := "关闭"
+	if snapshot.InternetSearchEnabled {
+		state = "开启"
+	}
+	if snapshot.InternetSearchDefault {
+		state += "（默认）"
+	}
+	return "联网搜索: " + state
+}
+
+func renderTUIKnowledgeStatus(snapshot tui.Snapshot) string {
+	if !snapshot.KnowledgeSearchSupported {
+		return "知识库范围: 当前智能体未启用"
+	}
+	if len(snapshot.SelectedKnowledgeBases) > 0 {
+		return "知识库范围: " + strings.Join(snapshot.SelectedKnowledgeBases, ", ")
+	}
+	if len(snapshot.KnowledgeBases) > 0 {
+		return fmt.Sprintf("知识库范围: auto（自动，可选 %d 个，使用 /knowledge 打开选择器）", len(snapshot.KnowledgeBases))
+	}
+	return "知识库范围: 当前没有可选知识库"
+}
+
+func renderTUIChatFilesStatus(snapshot tui.Snapshot) string {
+	if len(snapshot.InputFiles) == 0 {
+		return "文件输入: 当前未附带文件"
+	}
+	return fmt.Sprintf("文件输入: 已附带 %d 个文件", len(snapshot.InputFiles))
+}
+
+func compactNonEmptyStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }
 
 func totalPages(total int, pageSize int) int {

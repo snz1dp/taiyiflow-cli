@@ -1075,6 +1075,9 @@ func TestSubmitTUILoginFormPasswordSMSUsesAjaxLogon(t *testing.T) {
 	if secondResult.LoginForm != nil {
 		t.Fatalf("expected verify login to succeed, got %#v", secondResult)
 	}
+	if firstResult.LoginForm.VerifyType != loginVerifyTypeSMS {
+		t.Fatalf("expected sms verify type, got %#v", firstResult.LoginForm)
+	}
 	if ajaxLogonCalls != 2 {
 		t.Fatalf("expected sms verification to submit through ajax_logon twice, got %d calls", ajaxLogonCalls)
 	}
@@ -1089,6 +1092,142 @@ func TestSubmitTUILoginFormPasswordSMSUsesAjaxLogon(t *testing.T) {
 	}
 	if secondAjaxLogonCode != "123456" {
 		t.Fatalf("expected second ajax_logon to submit sms code, got %q", secondAjaxLogonCode)
+	}
+}
+
+func TestSubmitTUILoginFormPasswordMailUsesAjaxLogon(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(cryptorand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key failed: %v", err)
+	}
+	publicKeyDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal public key failed: %v", err)
+	}
+	publicKeyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicKeyDER}))
+	ajaxLogonCalls := 0
+	verifyLoginCalls := 0
+	var secondAjaxLogonTicket string
+	var secondAjaxLogonPasswordTicket string
+	var secondAjaxLogonCode string
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/xeai/oauth/api/password_token":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
+		case "/xeai/ajax_logon":
+			ajaxLogonCalls++
+			query := request.URL.Query()
+			if got := query.Get("password_ticket"); got != "password-ticket-1" {
+				t.Fatalf("unexpected ajax_logon password_ticket: %q", got)
+			}
+			encryptedPassword, decodeErr := base64.StdEncoding.DecodeString(query.Get("password0"))
+			if decodeErr != nil {
+				t.Fatalf("decode encrypted password failed: %v", decodeErr)
+			}
+			password, decryptErr := rsa.DecryptPKCS1v15(nil, privateKey, encryptedPassword)
+			if decryptErr != nil {
+				t.Fatalf("decrypt password failed: %v", decryptErr)
+			}
+			if string(password) != "secret-123" {
+				t.Fatalf("unexpected decrypted password: %q", string(password))
+			}
+			if ajaxLogonCalls == 1 {
+				if got := query.Get("ticket"); got != "" {
+					t.Fatalf("unexpected first ajax_logon ticket: %q", got)
+				}
+				writer.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(writer, `{"code":405,"message":"需要短信验证码","data":{"ticket":"stale-ticket-1","type":"sms","hint":"请输入短信验证码","target":"138****0000"}}`)
+				return
+			}
+			secondAjaxLogonTicket = query.Get("ticket")
+			secondAjaxLogonPasswordTicket = query.Get("password_ticket")
+			secondAjaxLogonCode = query.Get("code")
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
+		case "/xeai/ajax_logon/verify_token":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"verify-ticket-1","type":"sms","hint":"请输入短信验证码","target":"138****0000"}}`)
+		case "/xeai/ajax_logon/verify_login":
+			verifyLoginCalls++
+			t.Fatalf("expected sms verification to stop using /ajax_logon/verify_login, got %q", request.URL.String())
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	app := &App{configManager: manager}
+	firstResult, err := app.submitTUILoginForm(context.Background(), buildProviderClient(config), tui.Snapshot{BackendAvailable: true, AuthRequired: true}, tui.LoginFormSubmission{
+		Mode:     "password",
+		Username: "zhangsan",
+		Password: "secret-123",
+		Remember: false,
+	}, nil)
+	if err != nil {
+		t.Fatalf("first submitTUILoginForm failed: %v", err)
+	}
+	if firstResult.LoginForm == nil {
+		t.Fatalf("expected verify challenge login form, got %#v", firstResult)
+	}
+	if firstResult.LoginForm.PasswordTicket != "password-ticket-1" {
+		t.Fatalf("expected login form to preserve password ticket, got %#v", firstResult.LoginForm)
+	}
+	if firstResult.LoginForm.Ticket != "verify-ticket-1" {
+		t.Fatalf("expected login form to store verify ticket separately, got %#v", firstResult.LoginForm)
+	}
+	if firstResult.LoginForm.VerifyHint != "请输入短信验证码" {
+		t.Fatalf("expected login form to preserve sms verify hint, got %#v", firstResult.LoginForm)
+	}
+
+	secondResult, err := app.submitTUILoginForm(context.Background(), buildProviderClient(config), tui.Snapshot{BackendAvailable: true, AuthRequired: true}, tui.LoginFormSubmission{
+		Mode:              "password",
+		Username:          firstResult.LoginForm.Username,
+		Password:          firstResult.LoginForm.Password,
+		PasswordTicket:    firstResult.LoginForm.PasswordTicket,
+		Remember:          false,
+		VerifyType:        firstResult.LoginForm.VerifyType,
+		VerifyHint:        firstResult.LoginForm.VerifyHint,
+		VerifyTarget:      firstResult.LoginForm.VerifyTarget,
+		Ticket:            firstResult.LoginForm.Ticket,
+		Code:              "123456",
+		PasswordPublicKey: firstResult.LoginForm.PasswordPublicKey,
+	}, nil)
+	if err != nil {
+		t.Fatalf("second submitTUILoginForm failed: %v", err)
+	}
+	if secondResult.LoginForm != nil {
+		t.Fatalf("expected verify login to succeed, got %#v", secondResult)
+	}
+	if firstResult.LoginForm.VerifyType != loginVerifyTypeMail {
+		t.Fatalf("expected mail verify type, got %#v", firstResult.LoginForm)
+	}
+	if ajaxLogonCalls != 2 {
+		t.Fatalf("expected mail verification to submit through ajax_logon twice, got %d calls", ajaxLogonCalls)
+	}
+	if verifyLoginCalls != 0 {
+		t.Fatalf("expected mail verification not to call verify_login, got %d calls", verifyLoginCalls)
+	}
+	if secondAjaxLogonTicket != "verify-ticket-1" {
+		t.Fatalf("expected second ajax_logon to use verify ticket, got %q", secondAjaxLogonTicket)
+	}
+	if secondAjaxLogonPasswordTicket != "password-ticket-1" {
+		t.Fatalf("expected second ajax_logon to preserve password ticket, got %q", secondAjaxLogonPasswordTicket)
+	}
+	if secondAjaxLogonCode != "123456" {
+		t.Fatalf("expected second ajax_logon to submit mail code, got %q", secondAjaxLogonCode)
 	}
 }
 
