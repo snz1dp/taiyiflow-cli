@@ -3908,24 +3908,12 @@ func chatCapabilityStatus(snapshot Snapshot, compact bool) string {
 		if count := len(snapshot.SelectedKnowledgeBases); count > 0 {
 			parts = append(parts, fmt.Sprintf("知识库%d", count))
 		} else if len(snapshot.KnowledgeBases) > 0 {
-			parts = append(parts, "知识库自动")
+			parts = append(parts, "自动选择知识库")
 		} else {
-			parts = append(parts, "知识库空")
+			parts = append(parts, "无知识库")
 		}
 	} else if snapshot.KnowledgeSystemEnabled {
 		parts = append(parts, "知识库可用")
-	}
-	if snapshot.MCPToolsSupported {
-		parts = append(parts, "MCP")
-	}
-	if snapshot.TextToSpeechSupported {
-		parts = append(parts, "TTS")
-	}
-	if snapshot.SpeechToTextSupported {
-		parts = append(parts, "STT")
-	}
-	if snapshot.HumanAIDialogueSupported {
-		parts = append(parts, "语音对话")
 	}
 	if len(parts) == 0 {
 		return ""
