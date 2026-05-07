@@ -326,6 +326,8 @@ type stubSnapshotProvider struct {
 	*stubProvider
 	currentUser    *provider.CurrentUser
 	currentUserErr error
+	serviceConfig  *provider.ServiceConfig
+	serviceErr     error
 	metadata       *provider.Metadata
 	metadataErr    error
 	knowledgeBases *provider.KnowledgeBaseList
@@ -341,6 +343,13 @@ func (s stubSnapshotProvider) GetMetadata(context.Context, string) (*provider.Me
 		return s.metadata, s.metadataErr
 	}
 	return s.stubProvider.GetMetadata(context.Background(), "")
+}
+
+func (s stubSnapshotProvider) GetServiceConfig(context.Context) (*provider.ServiceConfig, error) {
+	if s.serviceConfig != nil || s.serviceErr != nil {
+		return s.serviceConfig, s.serviceErr
+	}
+	return s.stubProvider.GetServiceConfig(context.Background())
 }
 
 func (s stubSnapshotProvider) ListKnowledgeBases(context.Context, string, int, int) (*provider.KnowledgeBaseList, error) {
@@ -367,7 +376,7 @@ func TestBuildTUISnapshotMarksAuthRequired(t *testing.T) {
 
 func TestBuildInitialTUISnapshotMarksAuthRequired(t *testing.T) {
 	app := &App{}
-	snapshot, err := app.buildInitialTUISnapshot(internalconfig.Default(), "", backendStatus{Available: true, AuthRequired: true, Reason: "请重新登录太乙智启服务"})
+	snapshot, err := app.buildInitialTUISnapshot(internalconfig.Default(), "", backendStatus{Available: true, AuthRequired: true, Reason: "请重新登录太乙智启服务"}, nil)
 	if err != nil {
 		t.Fatalf("buildInitialTUISnapshot failed: %v", err)
 	}
@@ -430,7 +439,7 @@ func TestPrepareInitialTUIAuthenticationRefreshesAccessTokenBeforeInitialSnapsho
 	providerClient := buildProviderClient(config)
 	updatedConfig := app.prepareInitialTUIAuthentication(context.Background(), providerClient, config)
 	backend := app.inspectBackendStatus(context.Background(), providerClient, updatedConfig.BackendBaseURL)
-	snapshot, err := app.buildInitialTUISnapshot(updatedConfig, "", backend)
+	snapshot, err := app.buildInitialTUISnapshot(updatedConfig, "", backend, nil)
 	if err != nil {
 		t.Fatalf("buildInitialTUISnapshot failed: %v", err)
 	}
@@ -477,13 +486,22 @@ func TestBuildTUISnapshotMapsMetadataChatCapabilities(t *testing.T) {
 	app := newTestAppWithSessionStore(t)
 	providerWithMetadata := &stubSnapshotProvider{
 		stubProvider: &stubProvider{},
+		serviceConfig: &provider.ServiceConfig{
+			FeatureFlags:      provider.ServiceFeatureFlags{TextToSpeech: true, SpeechToText: true, HumanAIDialogue: true},
+			MaxFileSizeUpload: 100,
+			DocExts:           []string{"pdf", "docx"},
+			MilvusEnabled:     true,
+		},
 		metadata: &provider.Metadata{
 			WelcomeMessage: "欢迎使用",
 			SubHead:        "支持联网与知识库",
 			Questions:      []string{"问题一", "问题二"},
 			Capabilities: provider.ChatCapabilities{
-				InternetSearch: true,
-				KnowledgeSearch: true,
+				InternetSearch:         true,
+				SupportKnowledge:       true,
+				SupportMCPTools:        true,
+				SupportHumanAIDialogue: true,
+				DocumentUnderstanding:  true,
 			},
 		},
 		knowledgeBases: &provider.KnowledgeBaseList{Items: []provider.KnowledgeBaseSummary{{Code: "kb-a", Name: "知识库A"}}},
@@ -504,13 +522,55 @@ func TestBuildTUISnapshotMapsMetadataChatCapabilities(t *testing.T) {
 	if !snapshot.KnowledgeSearchSupported || len(snapshot.KnowledgeBases) != 1 || snapshot.KnowledgeBases[0].Code != "kb-a" {
 		t.Fatalf("expected knowledge capability to map, got %#v", snapshot)
 	}
+	if !snapshot.KnowledgeSystemEnabled || !snapshot.MCPToolsSupported || !snapshot.TextToSpeechSupported || !snapshot.SpeechToTextSupported || !snapshot.HumanAIDialogueSupported {
+		t.Fatalf("expected service and metadata capabilities to map, got %#v", snapshot)
+	}
+	if snapshot.MaxFileSizeUploadMB != 100 || len(snapshot.SupportedDocumentExts) != 2 {
+		t.Fatalf("expected upload limits and doc extensions to map, got %#v", snapshot)
+	}
+	if len(snapshot.FileCapabilities) != 1 || snapshot.FileCapabilities[0].Key != provider.FeatureDocumentUnderstanding {
+		t.Fatalf("expected document file capability to map, got %#v", snapshot.FileCapabilities)
+	}
+}
+
+func TestRenderTUIChatFilesStatusIncludesServiceConfig(t *testing.T) {
+	snapshot := internaltui.Snapshot{
+		MaxFileSizeUploadMB:   100,
+		SupportedDocumentExts: []string{"pdf", "docx"},
+		FileCapabilities:      []internaltui.FileCapability{{Key: provider.FeatureDocumentUnderstanding, Label: "文档理解", Enabled: true}},
+	}
+	status := renderTUIChatFilesStatus(snapshot)
+	for _, expected := range []string{"文件输入: 当前未附带文件", "上传上限: 100 MB", ".pdf", ".docx", "文档理解"} {
+		if !strings.Contains(status, expected) {
+			t.Fatalf("expected files status to contain %q, got %q", expected, status)
+		}
+	}
+}
+
+func TestHumanAIDialogueRequiresServiceAndMetadataSupport(t *testing.T) {
+	snapshot := internaltui.Snapshot{}
+	applyServiceConfigToTUISnapshot(&snapshot, &provider.ServiceConfig{FeatureFlags: provider.ServiceFeatureFlags{HumanAIDialogue: true}})
+	if snapshot.HumanAIDialogueSupported {
+		t.Fatalf("expected service flag alone not to enable human AI dialogue, got %#v", snapshot)
+	}
+
+	snapshot = internaltui.Snapshot{}
+	applyMetadataToTUISnapshot(&snapshot, &provider.Metadata{Capabilities: provider.ChatCapabilities{SupportHumanAIDialogue: true}})
+	if snapshot.HumanAIDialogueSupported {
+		t.Fatalf("expected metadata feature alone not to enable human AI dialogue, got %#v", snapshot)
+	}
+
+	applyServiceConfigToTUISnapshot(&snapshot, &provider.ServiceConfig{FeatureFlags: provider.ServiceFeatureFlags{HumanAIDialogue: true}})
+	if !snapshot.HumanAIDialogueSupported {
+		t.Fatalf("expected service flag and metadata feature to enable human AI dialogue, got %#v", snapshot)
+	}
 }
 
 func TestExecuteTUIKnowledgeCommandSwitchesToAuto(t *testing.T) {
 	snapshot := internaltui.Snapshot{
 		KnowledgeSearchSupported: true,
-		KnowledgeBases: []internaltui.KnowledgeBaseItem{{Code: "kb-a", Name: "知识库A", Selected: true}},
-		SelectedKnowledgeBases: []string{"kb-a"},
+		KnowledgeBases:           []internaltui.KnowledgeBaseItem{{Code: "kb-a", Name: "知识库A", Selected: true}},
+		SelectedKnowledgeBases:   []string{"kb-a"},
 	}
 	result, err := executeTUIKnowledgeCommand("/knowledge auto", snapshot)
 	if err != nil {
@@ -530,7 +590,7 @@ func TestExecuteTUIKnowledgeCommandSwitchesToAuto(t *testing.T) {
 func TestExecuteTUIKnowledgeCommandOpensPickerForRootCommand(t *testing.T) {
 	snapshot := internaltui.Snapshot{
 		KnowledgeSearchSupported: true,
-		KnowledgeBases: []internaltui.KnowledgeBaseItem{{Code: "kb-a", Name: "知识库A"}},
+		KnowledgeBases:           []internaltui.KnowledgeBaseItem{{Code: "kb-a", Name: "知识库A"}},
 	}
 	result, err := executeTUIKnowledgeCommand("/knowledge", snapshot)
 	if err != nil {
@@ -548,7 +608,7 @@ func TestExecuteTUIKnowledgeCommandOpensPickerForRootCommand(t *testing.T) {
 	if len(result.Events) != 0 {
 		t.Fatalf("expected no extra events when opening picker, got %#v", result.Events)
 	}
-	}
+}
 
 func TestExecuteTUIInternetCommandTogglesState(t *testing.T) {
 	snapshot := internaltui.Snapshot{InternetSearchSupported: true}

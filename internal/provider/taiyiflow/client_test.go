@@ -250,7 +250,7 @@ func TestGetMetadataParsesMaxInputTokens(t *testing.T) {
 			return
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(writer, `{"id":"demo-flow","name":"Demo Flow","description":"测试流程","welcome_message":"hi","max_input_tokens":200000,"enabled":true,"is_chat":true,"features":["internet_search","knowledge-search","custom_feature"]}`)
+		fmt.Fprint(writer, `{"id":"demo-flow","name":"Demo Flow","description":"测试流程","welcome_message":"hi","max_input_tokens":200000,"enabled":true,"is_chat":true,"features":["internet_search","support_knowledge","support_mcp_tools","support_human_ai_dialogue","custom_feature"]}`)
 	}))
 	defer server.Close()
 
@@ -265,11 +265,41 @@ func TestGetMetadataParsesMaxInputTokens(t *testing.T) {
 	if metadata.MaxInputTokens != 200000 {
 		t.Fatalf("expected max_input_tokens=200000, got %#v", metadata)
 	}
-	if !metadata.Capabilities.InternetSearch || !metadata.Capabilities.KnowledgeSearch {
+	if !metadata.Capabilities.InternetSearch || !metadata.Capabilities.KnowledgeSearch || !metadata.Capabilities.SupportKnowledge || !metadata.Capabilities.SupportMCPTools || !metadata.Capabilities.SupportHumanAIDialogue {
 		t.Fatalf("expected metadata capabilities to normalize known features, got %#v", metadata.Capabilities)
 	}
 	if len(metadata.Capabilities.UnknownFeatures) != 1 || metadata.Capabilities.UnknownFeatures[0] != "custom_feature" {
 		t.Fatalf("expected unknown feature to be preserved, got %#v", metadata.Capabilities)
+	}
+}
+
+func TestGetServiceConfigParsesResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/taiyi/composer/api/v1/config" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"feature_flags":{"text_to_speech":true,"speech_to_text":true,"human_ai_dialogue":true},"max_file_size_upload":100,"doc_exts":[".pdf","PDF","docx",""],"milvus_enabled":true,"default_flow_id":" flow-1 "}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	config, err := client.GetServiceConfig(context.Background())
+	if err != nil {
+		t.Fatalf("expected GetServiceConfig to succeed, got %v", err)
+	}
+	if config == nil {
+		t.Fatal("expected service config response")
+	}
+	if !config.FeatureFlags.TextToSpeech || !config.FeatureFlags.SpeechToText || !config.FeatureFlags.HumanAIDialogue {
+		t.Fatalf("expected feature flags to map, got %#v", config.FeatureFlags)
+	}
+	if config.MaxFileSizeUpload != 100 || !config.MilvusEnabled || config.DefaultFlowID != "flow-1" {
+		t.Fatalf("unexpected service config values: %#v", config)
+	}
+	if len(config.DocExts) != 2 || config.DocExts[0] != "pdf" || config.DocExts[1] != "docx" {
+		t.Fatalf("expected normalized doc extensions, got %#v", config.DocExts)
 	}
 }
 

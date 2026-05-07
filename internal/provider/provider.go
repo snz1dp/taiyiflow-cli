@@ -9,28 +9,31 @@ import (
 type StreamEventType string
 
 const (
-	EventMessage          StreamEventType = "message"
-	EventError            StreamEventType = "error"
-	EventClose            StreamEventType = "close"
-	EventCompression      StreamEventType = "compression"
-	EventCompressionStart StreamEventType = "compression_start"
-	EventCompressionEnd   StreamEventType = "compression_end"
-	EventBytes            StreamEventType = "bytes"
-	EventCustom           StreamEventType = "custom"
-	EventToolCall         StreamEventType = "tool_call"
-	EventBuiltIn          StreamEventType = "built_in"
-	EventClientTool       StreamEventType = "client_tool"
-	EventMCPTool          StreamEventType = "mcp_tool"
-	RequestTypeAsk                        = "ask"
-	RequestTypePlan                       = "plan"
-	RequestTypeAgent                      = "agent"
-	DeviceTypeCLI                         = "cli"
-	FeatureInternetSearch                 = "internet_search"
-	FeatureKnowledgeSearch                = "knowledge_search"
-	FeatureImageUnderstanding            = "image_understanding"
-	FeatureAudioUnderstanding            = "audio_understanding"
-	FeatureVideoUnderstanding            = "video_understanding"
-	FeatureDocumentUnderstanding         = "document_understanding"
+	EventMessage                  StreamEventType = "message"
+	EventError                    StreamEventType = "error"
+	EventClose                    StreamEventType = "close"
+	EventCompression              StreamEventType = "compression"
+	EventCompressionStart         StreamEventType = "compression_start"
+	EventCompressionEnd           StreamEventType = "compression_end"
+	EventBytes                    StreamEventType = "bytes"
+	EventCustom                   StreamEventType = "custom"
+	EventToolCall                 StreamEventType = "tool_call"
+	EventBuiltIn                  StreamEventType = "built_in"
+	EventClientTool               StreamEventType = "client_tool"
+	EventMCPTool                  StreamEventType = "mcp_tool"
+	RequestTypeAsk                                = "ask"
+	RequestTypePlan                               = "plan"
+	RequestTypeAgent                              = "agent"
+	DeviceTypeCLI                                 = "cli"
+	FeatureInternetSearch                         = "internet_search"
+	FeatureKnowledgeSearch                        = "knowledge_search"
+	FeatureImageUnderstanding                     = "image_understanding"
+	FeatureAudioUnderstanding                     = "audio_understanding"
+	FeatureVideoUnderstanding                     = "video_understanding"
+	FeatureDocumentUnderstanding                  = "document_understanding"
+	FeatureSupportKnowledge                       = "support_knowledge"
+	FeatureSupportMCPTools                        = "support_mcp_tools"
+	FeatureSupportHumanAIDialogue                 = "support_human_ai_dialogue"
 )
 
 func NormalizeRequestType(value string) string {
@@ -116,10 +119,27 @@ type ChatCapabilities struct {
 	UnknownFeatures        []string
 	InternetSearch         bool
 	KnowledgeSearch        bool
+	SupportKnowledge       bool
+	SupportMCPTools        bool
+	SupportHumanAIDialogue bool
 	ImageUnderstanding     bool
 	AudioUnderstanding     bool
 	VideoUnderstanding     bool
 	DocumentUnderstanding  bool
+}
+
+type ServiceFeatureFlags struct {
+	TextToSpeech    bool
+	SpeechToText    bool
+	HumanAIDialogue bool
+}
+
+type ServiceConfig struct {
+	FeatureFlags      ServiceFeatureFlags
+	MaxFileSizeUpload int
+	DocExts           []string
+	MilvusEnabled     bool
+	DefaultFlowID     string
 }
 
 type KnowledgeBaseSummary struct {
@@ -164,6 +184,13 @@ func NormalizeMetadataFeatures(features []string) ChatCapabilities {
 			capabilities.InternetSearch = true
 		case FeatureKnowledgeSearch:
 			capabilities.KnowledgeSearch = true
+		case FeatureSupportKnowledge:
+			capabilities.SupportKnowledge = true
+			capabilities.KnowledgeSearch = true
+		case FeatureSupportMCPTools:
+			capabilities.SupportMCPTools = true
+		case FeatureSupportHumanAIDialogue:
+			capabilities.SupportHumanAIDialogue = true
 		case FeatureImageUnderstanding:
 			capabilities.ImageUnderstanding = true
 		case FeatureAudioUnderstanding:
@@ -323,6 +350,7 @@ type Provider interface {
 	ListSessions(ctx context.Context, flowID string, offset, limit int) (*SessionList, error)
 	ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*SessionMessageList, error)
 	GetVersionInfo(ctx context.Context) (*ServiceVersion, error)
+	GetServiceConfig(ctx context.Context) (*ServiceConfig, error)
 	GetCurrentUserInfo(ctx context.Context) (*CurrentUser, error)
 	GetMetadata(ctx context.Context, flowID string) (*Metadata, error)
 	ResolveSkillPreview(ctx context.Context, request SkillResolveRequest) (*SkillResolvePreview, error)

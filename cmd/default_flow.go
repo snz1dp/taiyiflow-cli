@@ -13,6 +13,16 @@ func (a *App) ensureDefaultFlow(ctx context.Context, client *providerclient.Clie
 		return config, nil
 	}
 
+	if serviceConfig, err := client.GetServiceConfig(ctx); err == nil && serviceConfig != nil {
+		if defaultFlowID := strings.TrimSpace(serviceConfig.DefaultFlowID); defaultFlowID != "" {
+			config.DefaultFlow = defaultFlowID
+			if err := a.configManager.Save(config); err != nil {
+				return config, err
+			}
+			return config, nil
+		}
+	}
+
 	flows, err := client.ListFlows(ctx, "", "chat", 0, 100)
 	if err != nil || len(flows.Items) == 0 {
 		return config, nil

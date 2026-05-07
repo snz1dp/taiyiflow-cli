@@ -118,8 +118,24 @@ type metadataResponse struct {
 	// audio_understanding
 	// video_understanding
 	// document_understanding
+	// support_knowledge
 	// support_mcp_tools
+	// support_human_ai_dialogue
 	Features []string `json:"features"`
+}
+
+type serviceFeatureFlagsResponse struct {
+	TextToSpeech    bool `json:"text_to_speech"`
+	SpeechToText    bool `json:"speech_to_text"`
+	HumanAIDialogue bool `json:"human_ai_dialogue"`
+}
+
+type serviceConfigResponse struct {
+	FeatureFlags      serviceFeatureFlagsResponse `json:"feature_flags"`
+	MaxFileSizeUpload int                         `json:"max_file_size_upload"`
+	DocExts           []string                    `json:"doc_exts"`
+	MilvusEnabled     bool                        `json:"milvus_enabled"`
+	DefaultFlowID     string                      `json:"default_flow_id"`
 }
 
 type versionInfoResponse struct {
@@ -664,6 +680,56 @@ func (c *Client) GetCurrentUserInfo(ctx context.Context) (*provider.CurrentUser,
 		UserID:    strings.TrimSpace(payload.UserID),
 		UserName:  strings.TrimSpace(payload.UserName),
 		UserScope: strings.TrimSpace(payload.UserScope),
+	}, nil
+}
+
+func (c *Client) GetServiceConfig(ctx context.Context) (*provider.ServiceConfig, error) {
+	endpoint := c.apiURL("/config")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求服务端配置失败: %w", err)
+	}
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求服务端配置失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("获取服务端配置失败", resp)
+	}
+
+	var payload serviceConfigResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析服务端配置失败: %w", err)
+	}
+
+	docExts := make([]string, 0, len(payload.DocExts))
+	seenDocExts := map[string]struct{}{}
+	for _, item := range payload.DocExts {
+		trimmed := strings.Trim(strings.ToLower(strings.TrimSpace(item)), ".")
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seenDocExts[trimmed]; exists {
+			continue
+		}
+		seenDocExts[trimmed] = struct{}{}
+		docExts = append(docExts, trimmed)
+	}
+
+	return &provider.ServiceConfig{
+		FeatureFlags: provider.ServiceFeatureFlags{
+			TextToSpeech:    payload.FeatureFlags.TextToSpeech,
+			SpeechToText:    payload.FeatureFlags.SpeechToText,
+			HumanAIDialogue: payload.FeatureFlags.HumanAIDialogue,
+		},
+		MaxFileSizeUpload: payload.MaxFileSizeUpload,
+		DocExts:           docExts,
+		MilvusEnabled:     payload.MilvusEnabled,
+		DefaultFlowID:     strings.TrimSpace(payload.DefaultFlowID),
 	}, nil
 }
 

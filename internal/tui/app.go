@@ -30,39 +30,48 @@ import (
 )
 
 type Snapshot struct {
-	Version                    string
-	BackendURL                 string
-	BackendAvailable           bool
-	BackendStatusReason        string
-	ServerPackage              string
-	ServerVersion              string
-	AuthRequired               bool
-	AuthStatusReason           string
-	CurrentUserName            string
-	DefaultFlow                string
-	DefaultFlowLabel           string
-	Workdir                    string
-	ContextDir                 string
-	RequestMode                string
-	ApprovalMode               string
-	ReasoningEnabled           bool
-	ReasoningOverride          string
-	SessionSandboxEscapePolicy string
-	SessionID                  string
-	SessionTitle               string
-	History                    []HistoryEntry
-	WelcomeMessage             string
-	SubHead                    string
-	Questions                  []string
-	InternetSearchSupported    bool
-	InternetSearchEnabled      bool
-	InternetSearchDefault      bool
-	KnowledgeSearchSupported   bool
-	KnowledgeBases             []KnowledgeBaseItem
-	SelectedKnowledgeBases     []string
-	FileCapabilities           []FileCapability
-	InputFiles                 []string
-	RequestStats               *RequestMetrics
+	Version                      string
+	BackendURL                   string
+	BackendAvailable             bool
+	BackendStatusReason          string
+	ServerPackage                string
+	ServerVersion                string
+	AuthRequired                 bool
+	AuthStatusReason             string
+	CurrentUserName              string
+	DefaultFlow                  string
+	DefaultFlowLabel             string
+	Workdir                      string
+	ContextDir                   string
+	RequestMode                  string
+	ApprovalMode                 string
+	ReasoningEnabled             bool
+	ReasoningOverride            string
+	SessionSandboxEscapePolicy   string
+	SessionID                    string
+	SessionTitle                 string
+	History                      []HistoryEntry
+	WelcomeMessage               string
+	SubHead                      string
+	Questions                    []string
+	InternetSearchSupported      bool
+	InternetSearchEnabled        bool
+	InternetSearchDefault        bool
+	KnowledgeSearchSupported     bool
+	KnowledgeSystemEnabled       bool
+	MCPToolsSupported            bool
+	TextToSpeechSupported        bool
+	SpeechToTextSupported        bool
+	HumanAIDialogueSystemEnabled bool
+	HumanAIDialogueFlowSupported bool
+	HumanAIDialogueSupported     bool
+	KnowledgeBases               []KnowledgeBaseItem
+	SelectedKnowledgeBases       []string
+	MaxFileSizeUploadMB          int
+	SupportedDocumentExts        []string
+	FileCapabilities             []FileCapability
+	InputFiles                   []string
+	RequestStats                 *RequestMetrics
 }
 
 type HistoryEntry struct {
@@ -3903,6 +3912,20 @@ func chatCapabilityStatus(snapshot Snapshot, compact bool) string {
 		} else {
 			parts = append(parts, "知识库空")
 		}
+	} else if snapshot.KnowledgeSystemEnabled {
+		parts = append(parts, "知识库可用")
+	}
+	if snapshot.MCPToolsSupported {
+		parts = append(parts, "MCP")
+	}
+	if snapshot.TextToSpeechSupported {
+		parts = append(parts, "TTS")
+	}
+	if snapshot.SpeechToTextSupported {
+		parts = append(parts, "STT")
+	}
+	if snapshot.HumanAIDialogueSupported {
+		parts = append(parts, "语音对话")
 	}
 	if len(parts) == 0 {
 		return ""

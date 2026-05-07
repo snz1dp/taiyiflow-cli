@@ -53,6 +53,10 @@ func (s stubProvider) GetVersionInfo(context.Context) (*provider.ServiceVersion,
 	return nil, nil
 }
 
+func (s stubProvider) GetServiceConfig(context.Context) (*provider.ServiceConfig, error) {
+	return &provider.ServiceConfig{}, nil
+}
+
 func (s stubProvider) GetCurrentUserInfo(context.Context) (*provider.CurrentUser, error) {
 	return nil, nil
 }
@@ -178,6 +182,141 @@ func TestResolveTaskRequestModeDefaultsToAgent(t *testing.T) {
 func TestResolveTaskRequestModeRejectsInvalidValue(t *testing.T) {
 	if _, err := resolveTaskRequestMode("invalid"); err == nil {
 		t.Fatal("expected invalid task request mode to return error")
+	}
+}
+
+func TestEnsureDefaultFlowUsesServiceConfigDefaultFlowID(t *testing.T) {
+	flowListCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/taiyi/composer/api/v1/config":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"default_flow_id":"flow-from-config"}`)
+		case "/taiyi/composer/api/v1/agents/flows":
+			flowListCalled = true
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"total":1,"offset":0,"data":[{"id":"flow-from-list","name":"列表流程"}]}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.DefaultFlow = ""
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	app := &App{configManager: manager}
+	client := buildProviderClient(config)
+	updatedConfig, err := app.ensureDefaultFlow(context.Background(), client, config)
+	if err != nil {
+		t.Fatalf("ensureDefaultFlow failed: %v", err)
+	}
+	if updatedConfig.DefaultFlow != "flow-from-config" {
+		t.Fatalf("expected service default flow, got %#v", updatedConfig.DefaultFlow)
+	}
+	if flowListCalled {
+		t.Fatal("expected flow list fallback not to be called when /config has default_flow_id")
+	}
+	reloaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("reload config failed: %v", err)
+	}
+	if reloaded.DefaultFlow != "flow-from-config" {
+		t.Fatalf("expected service default flow to persist, got %#v", reloaded.DefaultFlow)
+	}
+}
+
+func TestRunTaskOnceRefreshesPersistentLoginBeforeStream(t *testing.T) {
+	streamCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/taiyi/composer/api/v1/users/whoami/userinfo":
+			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusUnauthorized)
+				fmt.Fprint(writer, `{"code":401,"message":"unauthorized"}`)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
+		case "/xeai/sso/salt":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"salt-ticket","value":"salt-value"}}`)
+		case "/xeai/sso":
+			if got := request.URL.Query().Get("persistent_token"); got != "persist-1" {
+				t.Fatalf("unexpected persistent token: %q", got)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","persistent_token":"persist-2","idle_duration":3600,"scope":"employee"}}`)
+		case "/taiyi/composer/api/v1/version":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"package":"taiyiflow","main_version":"1.0.0"}`)
+		case "/taiyi/composer/api/v1/config":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"default_flow_id":"flow-1"}`)
+		case "/taiyi/composer/api/v1/run/flow-1/stream":
+			streamCalled = true
+			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusUnauthorized)
+				fmt.Fprintf(writer, `{"detail":"unexpected auth %s"}`, got)
+				return
+			}
+			writer.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(writer, "event: close\ndata: {}\n\n")
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.AccessToken = "expired-access"
+	config.PersistentToken = "persist-1"
+	config.DeviceID = "device-1"
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	store, err := agent.NewSessionStore()
+	if err != nil {
+		t.Fatalf("new session store failed: %v", err)
+	}
+	app := &App{
+		configManager: manager,
+		sessionStore:  store,
+		stdout:        io.Discard,
+		stderr:        io.Discard,
+		stdin:         strings.NewReader(""),
+		runtime:       clientruntime.NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard),
+	}
+
+	if err := app.runTaskOnce(context.Background(), rootOptions{}, "测试任务"); err != nil {
+		t.Fatalf("runTaskOnce failed: %v", err)
+	}
+	if !streamCalled {
+		t.Fatal("expected stream endpoint to be called")
+	}
+	reloaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("reload config failed: %v", err)
+	}
+	if reloaded.AccessToken != "access-1" || reloaded.PersistentToken != "persist-2" {
+		t.Fatalf("expected refreshed auth state to persist, got %#v", reloaded)
 	}
 }
 

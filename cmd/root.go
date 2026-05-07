@@ -168,6 +168,10 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 		return err
 	}
 	providerClient := buildProviderClient(config)
+	config, _, err = a.ensureProviderAuthenticated(ctx, providerClient, config)
+	if err != nil {
+		return err
+	}
 	if err := a.ensureBackendAvailable(ctx, providerClient, config.BackendBaseURL); err != nil {
 		return err
 	}
@@ -404,6 +408,10 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 		return err
 	}
 	providerClient := buildProviderClient(config)
+	config, _, err = a.ensureProviderAuthenticated(ctx, providerClient, config)
+	if err != nil {
+		return err
+	}
 	if err := a.ensureBackendAvailable(ctx, providerClient, config.BackendBaseURL); err != nil {
 		return err
 	}

@@ -51,8 +51,18 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	providerClient := buildProviderClient(config)
 	config = a.prepareInitialTUIAuthentication(ctx, providerClient, config)
 	backend := a.inspectBackendStatus(ctx, providerClient, config.BackendBaseURL)
+	if backend.Available {
+		config, err = a.ensureDefaultFlow(ctx, providerClient, config)
+		if err != nil {
+			return err
+		}
+	}
 	workdir := resolveLocalWorkdir(config.Workdir)
-	snapshot, err := a.buildInitialTUISnapshot(config, strings.TrimSpace(config.DefaultFlow), backend)
+	var serviceConfig *provider.ServiceConfig
+	if backend.Available {
+		serviceConfig, _ = providerClient.GetServiceConfig(ctx)
+	}
+	snapshot, err := a.buildInitialTUISnapshot(config, strings.TrimSpace(config.DefaultFlow), backend, serviceConfig)
 	if err != nil {
 		return err
 	}
@@ -766,6 +776,7 @@ func (a *App) buildInitialTUISnapshot(
 	config internalconfig.Config,
 	flowID string,
 	backend backendStatus,
+	serviceConfig *provider.ServiceConfig,
 ) (tui.Snapshot, error) {
 	snapshot := tui.Snapshot{
 		Version:             buildinfo.Version,
@@ -784,6 +795,7 @@ func (a *App) buildInitialTUISnapshot(
 		snapshot.AuthRequired = true
 		snapshot.AuthStatusReason = formatAuthRequiredStatusReason(backend.Reason)
 	}
+	applyServiceConfigToTUISnapshot(&snapshot, serviceConfig)
 	if strings.TrimSpace(flowID) == "" {
 		return snapshot, nil
 	}
@@ -898,6 +910,9 @@ func (a *App) buildTUISnapshot(
 	} else if err != nil && isAuthenticationError(err) {
 		snapshot.AuthRequired = true
 		snapshot.AuthStatusReason = formatAuthRequiredStatusReason(explainBackendFailure(err))
+	}
+	if serviceConfig, err := providerClient.GetServiceConfig(ctx); err == nil {
+		applyServiceConfigToTUISnapshot(&snapshot, serviceConfig)
 	}
 	if strings.TrimSpace(flowID) == "" {
 		return snapshot, nil
@@ -2485,11 +2500,51 @@ func applyMetadataToTUISnapshot(snapshot *tui.Snapshot, metadata *provider.Metad
 	snapshot.InternetSearchSupported = capabilities.InternetSearch
 	snapshot.InternetSearchEnabled = capabilities.InternetSearch
 	snapshot.InternetSearchDefault = capabilities.InternetSearch
-	snapshot.KnowledgeSearchSupported = capabilities.KnowledgeSearch
+	snapshot.KnowledgeSearchSupported = capabilities.SupportKnowledge || capabilities.KnowledgeSearch
+	snapshot.MCPToolsSupported = capabilities.SupportMCPTools
+	snapshot.HumanAIDialogueFlowSupported = capabilities.SupportHumanAIDialogue
+	refreshHumanAIDialogueSupport(snapshot)
+	snapshot.FileCapabilities = buildTUIFileCapabilities(capabilities)
 	if !snapshot.KnowledgeSearchSupported {
 		snapshot.KnowledgeBases = nil
 		snapshot.SelectedKnowledgeBases = nil
 	}
+}
+
+func applyServiceConfigToTUISnapshot(snapshot *tui.Snapshot, serviceConfig *provider.ServiceConfig) {
+	if snapshot == nil || serviceConfig == nil {
+		return
+	}
+	snapshot.MaxFileSizeUploadMB = serviceConfig.MaxFileSizeUpload
+	snapshot.SupportedDocumentExts = compactNonEmptyStrings(serviceConfig.DocExts)
+	snapshot.KnowledgeSystemEnabled = serviceConfig.MilvusEnabled
+	snapshot.TextToSpeechSupported = serviceConfig.FeatureFlags.TextToSpeech
+	snapshot.SpeechToTextSupported = serviceConfig.FeatureFlags.SpeechToText
+	snapshot.HumanAIDialogueSystemEnabled = serviceConfig.FeatureFlags.HumanAIDialogue
+	refreshHumanAIDialogueSupport(snapshot)
+}
+
+func refreshHumanAIDialogueSupport(snapshot *tui.Snapshot) {
+	if snapshot == nil {
+		return
+	}
+	snapshot.HumanAIDialogueSupported = snapshot.HumanAIDialogueSystemEnabled && snapshot.HumanAIDialogueFlowSupported
+}
+
+func buildTUIFileCapabilities(capabilities provider.ChatCapabilities) []tui.FileCapability {
+	items := []tui.FileCapability{
+		{Key: provider.FeatureImageUnderstanding, Label: "图片理解", Enabled: capabilities.ImageUnderstanding},
+		{Key: provider.FeatureAudioUnderstanding, Label: "音频理解", Enabled: capabilities.AudioUnderstanding},
+		{Key: provider.FeatureVideoUnderstanding, Label: "视频理解", Enabled: capabilities.VideoUnderstanding},
+		{Key: provider.FeatureDocumentUnderstanding, Label: "文档理解", Enabled: capabilities.DocumentUnderstanding},
+	}
+	result := make([]tui.FileCapability, 0, len(items))
+	for _, item := range items {
+		if item.Enabled {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func preserveTUIChatState(previous tui.Snapshot, next tui.Snapshot) tui.Snapshot {
@@ -2625,10 +2680,49 @@ func renderTUIKnowledgeStatus(snapshot tui.Snapshot) string {
 }
 
 func renderTUIChatFilesStatus(snapshot tui.Snapshot) string {
+	lines := []string{}
 	if len(snapshot.InputFiles) == 0 {
-		return "文件输入: 当前未附带文件"
+		lines = append(lines, "文件输入: 当前未附带文件")
+	} else {
+		lines = append(lines, fmt.Sprintf("文件输入: 已附带 %d 个文件", len(snapshot.InputFiles)))
 	}
-	return fmt.Sprintf("文件输入: 已附带 %d 个文件", len(snapshot.InputFiles))
+	if snapshot.MaxFileSizeUploadMB > 0 {
+		lines = append(lines, fmt.Sprintf("上传上限: %d MB", snapshot.MaxFileSizeUploadMB))
+	}
+	if len(snapshot.SupportedDocumentExts) > 0 {
+		lines = append(lines, "支持扩展: "+formatDocumentExts(snapshot.SupportedDocumentExts, 16))
+	}
+	if len(snapshot.FileCapabilities) > 0 {
+		labels := make([]string, 0, len(snapshot.FileCapabilities))
+		for _, item := range snapshot.FileCapabilities {
+			if item.Enabled && strings.TrimSpace(item.Label) != "" {
+				labels = append(labels, strings.TrimSpace(item.Label))
+			}
+		}
+		if len(labels) > 0 {
+			lines = append(lines, "理解能力: "+strings.Join(labels, "、"))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatDocumentExts(values []string, limit int) string {
+	if limit < 1 || len(values) <= limit {
+		return strings.Join(prefixDocumentExts(values), ", ")
+	}
+	shown := prefixDocumentExts(values[:limit])
+	return fmt.Sprintf("%s 等 %d 种", strings.Join(shown, ", "), len(values))
+}
+
+func prefixDocumentExts(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.Trim(strings.ToLower(strings.TrimSpace(value)), ".")
+		if trimmed != "" {
+			result = append(result, "."+trimmed)
+		}
+	}
+	return result
 }
 
 func compactNonEmptyStrings(values []string) []string {
