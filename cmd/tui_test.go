@@ -653,6 +653,17 @@ func TestBuildTUICompressionProgressTextReturnsPayloadText(t *testing.T) {
 	}
 }
 
+func TestBuildTUICompressionProgressTextSkipsZeroTokenNoop(t *testing.T) {
+	text := buildTUICompressionProgressText(map[string]any{
+		"text":          "上下文压缩完成：0K -> 0K",
+		"before_tokens": 0,
+		"after_tokens":  0,
+	})
+	if text != "" {
+		t.Fatalf("expected zero-token compression progress hidden, got %q", text)
+	}
+}
+
 func TestBuildTUICompressionMetricsAcceptsCompressionEndPayload(t *testing.T) {
 	metrics := buildTUICompressionMetrics(map[string]any{
 		"count":             1,

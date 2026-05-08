@@ -12,7 +12,7 @@ func buildCompressionProgressText(payload map[string]any) string {
 	beforeTokens := compressionPayloadIntValue(payload, "before_tokens")
 	afterTokens := compressionPayloadIntValue(payload, "after_tokens")
 	if beforeTokens <= 0 && afterTokens <= 0 {
-		return text
+		return ""
 	}
 	if stage == "start" || strings.Contains(text, "开始进行上下文压缩") {
 		return text

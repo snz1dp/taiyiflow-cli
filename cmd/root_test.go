@@ -1223,7 +1223,7 @@ func TestStreamTaskShowsCompressionLifecycleOnlyWhenStreamEventsEnabled(t *testi
 	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
 
 	stream := make(chan provider.StreamEvent, 3)
-	stream <- provider.StreamEvent{Type: provider.EventCompressionStart, Data: map[string]any{"text": "开始进行上下文压缩：history_trim / history_message_limit"}}
+	stream <- provider.StreamEvent{Type: provider.EventCompressionStart, Data: map[string]any{"text": "开始进行上下文压缩：history_trim / history_message_limit", "before_tokens": 320, "after_tokens": 160}}
 	stream <- provider.StreamEvent{Type: provider.EventCompressionEnd, Data: map[string]any{"text": "上下文压缩完成：320 -> 160", "before_tokens": 320, "after_tokens": 160}}
 	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
 	close(stream)
@@ -1249,7 +1249,7 @@ func TestStreamTaskShowsCompressionLifecycleOnlyWhenStreamEventsEnabled(t *testi
 	stdout.Reset()
 	stderr.Reset()
 	stream = make(chan provider.StreamEvent, 3)
-	stream <- provider.StreamEvent{Type: provider.EventCompressionStart, Data: map[string]any{"text": "开始进行上下文压缩：history_trim / history_message_limit"}}
+	stream <- provider.StreamEvent{Type: provider.EventCompressionStart, Data: map[string]any{"text": "开始进行上下文压缩：history_trim / history_message_limit", "before_tokens": 320, "after_tokens": 160}}
 	stream <- provider.StreamEvent{Type: provider.EventCompressionEnd, Data: map[string]any{"text": "上下文压缩完成：320 -> 160", "before_tokens": 320, "after_tokens": 160}}
 	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
 	close(stream)
