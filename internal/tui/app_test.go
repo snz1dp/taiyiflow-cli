@@ -1745,7 +1745,9 @@ func TestContextUsageSegmentShowsCurrentRoundUsage(t *testing.T) {
 					MaxInputTokens:           8192,
 					CurrentRoundInputTokens:  2048,
 					NextRoundAvailableTokens: 6144,
-					ShortTermContextTokens:   3072,
+					ContextUsageTokens:       3072,
+					DirectMessageTokens:      2048,
+					CompressedHistoryTokens:  1024,
 				},
 			},
 		},
@@ -1758,7 +1760,7 @@ func TestContextUsageSegmentShowsCurrentRoundUsage(t *testing.T) {
 	if !strings.Contains(got, "可用 6K") {
 		t.Fatalf("expected available context tokens in context segment, got %q", got)
 	}
-	if !strings.Contains(got, "历史 3K") {
+	if !strings.Contains(got, "历史 3K（直传 2K / 压缩 1K）") {
 		t.Fatalf("expected short-term history in context segment, got %q", got)
 	}
 }
@@ -1796,7 +1798,9 @@ func TestInputContextUsageHintShowsCurrentUsageDetails(t *testing.T) {
 					MaxInputTokens:           8192,
 					CurrentRoundInputTokens:  2048,
 					NextRoundAvailableTokens: 6144,
-					ShortTermContextTokens:   3072,
+					ContextUsageTokens:       3072,
+					DirectMessageTokens:      2048,
+					CompressedHistoryTokens:  1024,
 					HistoryMessageCount:      12,
 				},
 			},
@@ -1806,6 +1810,9 @@ func TestInputContextUsageHintShowsCurrentUsageDetails(t *testing.T) {
 	got := model.inputContextUsageHint()
 	if !strings.Contains(got, "共8K剩6K可用") {
 		t.Fatalf("expected compact availability summary in input hint, got %q", got)
+	}
+	if !strings.Contains(got, "历史 3K（直传 2K / 压缩 1K）") {
+		t.Fatalf("expected history split summary in input hint, got %q", got)
 	}
 	if strings.Contains(got, "共12条消息") {
 		t.Fatalf("expected history message count hidden to save width, got %q", got)
@@ -1824,6 +1831,9 @@ func TestInputContextUsageHintShowsProjectedUsageWhileTyping(t *testing.T) {
 					MaxInputTokens:           8192,
 					CurrentRoundInputTokens:  2048,
 					NextRoundAvailableTokens: 6144,
+					ContextUsageTokens:       3072,
+					DirectMessageTokens:      2048,
+					CompressedHistoryTokens:  1024,
 				},
 			},
 		},
@@ -1836,8 +1846,8 @@ func TestInputContextUsageHintShowsProjectedUsageWhileTyping(t *testing.T) {
 	if !strings.Contains(got, "共8K剩6K可用") {
 		t.Fatalf("expected compact availability summary in input hint, got %q", got)
 	}
-	if got != "共8K剩6K可用" {
-		t.Fatalf("expected next-round availability rate in input hint, got %q", got)
+	if !strings.Contains(got, "历史 3K（直传 2K / 压缩 1K）") {
+		t.Fatalf("expected history split summary in input hint, got %q", got)
 	}
 }
 

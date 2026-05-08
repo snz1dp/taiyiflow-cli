@@ -275,7 +275,7 @@ func TestGetSessionContextWindowParsesResponse(t *testing.T) {
 			return
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(writer, `{"flow_id":"demo-flow","session_id":"session-123","context_window":{"max_input_tokens":8192,"short_term_context_tokens":3072,"current_round_input_tokens":3072,"next_round_available_tokens":5120,"current_round_available_tokens":5120,"history_message_count":14,"prepared_message_count":14,"high_watermark_ratio":0.85,"compression_target_ratio":0.6,"high_watermark_tokens":6963,"compression_target_tokens":4915},"latest_compression":{"trigger_reason":"input_max_tokens_exceeded","compression_strategy":"token_truncate","target_type":"history_messages","before_tokens":9200,"target_tokens":8192,"after_tokens":6000,"remaining_tokens":2192,"compression_ratio":0.65,"reserved_history_tokens":512},"source_updated_at":"2026-04-23T12:00:00Z","source":"history_rebuild"}`)
+		fmt.Fprint(writer, `{"flow_id":"demo-flow","session_id":"session-123","context_window":{"max_input_tokens":8192,"context_usage_tokens":3072,"direct_message_tokens":2048,"compressed_history_tokens":1024,"current_round_input_tokens":3072,"next_round_available_tokens":5120,"current_round_available_tokens":5120,"history_message_count":14,"prepared_message_count":14,"high_watermark_ratio":0.85,"compression_target_ratio":0.6,"high_watermark_tokens":6963,"compression_target_tokens":4915},"latest_compression":{"trigger_reason":"input_max_tokens_exceeded","compression_strategy":"token_truncate","target_type":"history_messages","before_tokens":9200,"target_tokens":8192,"after_tokens":6000,"remaining_tokens":2192,"compression_ratio":0.65,"reserved_history_tokens":512},"source_updated_at":"2026-04-23T12:00:00Z","source":"history_rebuild"}`)
 	}))
 	defer server.Close()
 
@@ -289,6 +289,9 @@ func TestGetSessionContextWindowParsesResponse(t *testing.T) {
 	}
 	if preview.ContextWindow.CurrentRoundInputTokens != 3072 {
 		t.Fatalf("expected session context payload to be preserved, got %#v", preview.ContextWindow)
+	}
+	if preview.ContextWindow.ContextUsageTokens != 3072 || preview.ContextWindow.DirectMessageTokens != 2048 || preview.ContextWindow.CompressedHistoryTokens != 1024 {
+		t.Fatalf("expected context usage split fields to be parsed, got %#v", preview.ContextWindow)
 	}
 	if preview.ContextWindow.HighWatermarkRatio != 0.85 || preview.ContextWindow.CompressionTargetRatio != 0.6 {
 		t.Fatalf("expected watermark ratios to be parsed, got %#v", preview.ContextWindow)

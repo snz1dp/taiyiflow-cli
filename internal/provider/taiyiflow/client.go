@@ -257,7 +257,9 @@ type compressionRecordResponse struct {
 
 type sessionContextWindowResponse struct {
 	MaxInputTokens              int     `json:"max_input_tokens"`
-	ShortTermContextTokens      int     `json:"short_term_context_tokens"`
+	ContextUsageTokens          int     `json:"context_usage_tokens"`
+	DirectMessageTokens         int     `json:"direct_message_tokens"`
+	CompressedHistoryTokens     int     `json:"compressed_history_tokens"`
 	CurrentRoundInputTokens     int     `json:"current_round_input_tokens"`
 	NextRoundAvailableTokens    int     `json:"next_round_available_tokens"`
 	CurrentRoundAvailableTokens int     `json:"current_round_available_tokens"`
@@ -1068,7 +1070,9 @@ func (c *Client) GetSessionContextWindow(ctx context.Context, flowID string, ses
 	if payload.ContextWindow != nil {
 		preview.ContextWindow = &provider.ContextWindowUsage{
 			MaxInputTokens:              payload.ContextWindow.MaxInputTokens,
-			ShortTermContextTokens:      payload.ContextWindow.ShortTermContextTokens,
+			ContextUsageTokens:          payload.ContextWindow.ContextUsageTokens,
+			DirectMessageTokens:         payload.ContextWindow.DirectMessageTokens,
+			CompressedHistoryTokens:     payload.ContextWindow.CompressedHistoryTokens,
 			CurrentRoundInputTokens:     payload.ContextWindow.CurrentRoundInputTokens,
 			NextRoundAvailableTokens:    payload.ContextWindow.NextRoundAvailableTokens,
 			CurrentRoundAvailableTokens: payload.ContextWindow.CurrentRoundAvailableTokens,
@@ -1287,7 +1291,9 @@ func parseTokenUsage(payload map[string]any) *provider.TokenUsage {
 	if contextWindow, ok := payload["context_window"].(map[string]any); ok {
 		usage.ContextWindow = &provider.ContextWindowUsage{
 			MaxInputTokens:              intValue(contextWindow["max_input_tokens"]),
-			ShortTermContextTokens:      intValue(contextWindow["short_term_context_tokens"]),
+			ContextUsageTokens:          intValue(contextWindow["context_usage_tokens"]),
+			DirectMessageTokens:         intValue(contextWindow["direct_message_tokens"]),
+			CompressedHistoryTokens:     intValue(contextWindow["compressed_history_tokens"]),
 			CurrentRoundInputTokens:     intValue(contextWindow["current_round_input_tokens"]),
 			NextRoundAvailableTokens:    intValue(contextWindow["next_round_available_tokens"]),
 			CurrentRoundAvailableTokens: intValue(contextWindow["current_round_available_tokens"]),

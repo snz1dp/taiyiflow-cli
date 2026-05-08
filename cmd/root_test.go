@@ -634,6 +634,79 @@ func TestCallbackAuthRefreshProviderRetriesSubmitAfterUnauthorized(t *testing.T)
 	}
 }
 
+func TestCallbackAuthRefreshProviderRetriesStreamAfterUnauthorized(t *testing.T) {
+	streamCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/taiyi/composer/api/v1/run/flow-1/stream":
+			streamCalls++
+			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusUnauthorized)
+				fmt.Fprint(writer, `{"message":"未登录或会话令牌已失效","code":401}`)
+				return
+			}
+			writer.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(writer, "event: close\ndata: {}\n\n")
+		case "/xeai/sso/salt":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"salt-ticket","value":"salt-value"}}`)
+		case "/xeai/sso":
+			if got := request.URL.Query().Get("persistent_token"); got != "persist-1" {
+				t.Fatalf("unexpected persistent token: %q", got)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","persistent_token":"persist-2","idle_duration":3600,"scope":"employee"}}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.AccessToken = "expired-access"
+	config.PersistentToken = "persist-1"
+	config.DeviceID = "device-1"
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	app := &App{configManager: manager}
+	client := buildProviderClient(config)
+	callbackProvider := app.providerWithCallbackAuthRefresh(client, &config)
+
+	stream, _, err := callbackProvider.Stream(context.Background(), provider.StreamRequest{
+		FlowID:      "flow-1",
+		Input:       "测试任务",
+		InputType:   "any",
+		OutputType:  "any",
+		RequestType: provider.RequestTypeAgent,
+	})
+	if err != nil {
+		t.Fatalf("Stream failed: %v", err)
+	}
+	for range stream {
+	}
+	if streamCalls != 2 {
+		t.Fatalf("expected one failed stream and one retry, got %d calls", streamCalls)
+	}
+	if config.AccessToken != "access-1" || config.PersistentToken != "persist-2" {
+		t.Fatalf("expected in-memory config refreshed, got %#v", config)
+	}
+	reloaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("reload config failed: %v", err)
+	}
+	if reloaded.AccessToken != "access-1" || reloaded.PersistentToken != "persist-2" {
+		t.Fatalf("expected refreshed auth state to persist, got %#v", reloaded)
+	}
+}
+
 func TestRunInteractiveSessionConfigCommandPersistsAgentAutoLoopOverrides(t *testing.T) {
 	app := newTestAppWithSessionStore(t)
 	workdir := t.TempDir()
@@ -1274,6 +1347,85 @@ func TestStreamTaskShowsCompressionLifecycleOnlyWhenStreamEventsEnabled(t *testi
 	}
 	if !strings.Contains(output, "[上下文压缩]: 上下文压缩完成：0.3K -> 0.2K") {
 		t.Fatalf("expected compression end event in output, got %q", output)
+	}
+}
+
+func TestStreamTaskDoesNotAccumulateOrdinaryStreamEventsAcrossRequests(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	providerStub := &sequenceStreamProvider{
+		streams: []<-chan provider.StreamEvent{
+			streamWithEvents(
+				provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "第一轮输出-片段一"}},
+				provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "，片段二"}},
+				provider.StreamEvent{Type: provider.EventToolCall, Data: map[string]any{"text": "read_file"}},
+				provider.StreamEvent{Type: provider.EventCompressionStart, Data: map[string]any{"text": "开始进行上下文压缩：history_trim / history_message_limit", "before_tokens": 320, "after_tokens": 160}},
+				provider.StreamEvent{Type: provider.EventCompression, Data: map[string]any{"before_tokens": 320, "after_tokens": 160}},
+				provider.StreamEvent{Type: provider.EventCompressionEnd, Data: map[string]any{"text": "上下文压缩完成：320 -> 160", "before_tokens": 320, "after_tokens": 160}},
+				provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}},
+			),
+			streamWithEvents(
+				provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "第二轮输出仍然成功"}},
+				provider.StreamEvent{Type: provider.EventCompression, Data: map[string]any{"before_tokens": 160, "after_tokens": 160}},
+				provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}},
+			),
+		},
+	}
+
+	state := agent.SessionState{RequestMode: provider.RequestTypeAgent}
+	var err error
+	state, err = app.streamTask(
+		context.Background(),
+		providerStub,
+		internalconfig.Config{},
+		"demo-flow",
+		"first task",
+		state,
+		"",
+		true,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("first streamTask failed: %v", err)
+	}
+
+	_, err = app.streamTask(
+		context.Background(),
+		providerStub,
+		internalconfig.Config{},
+		"demo-flow",
+		"second task",
+		state,
+		"",
+		true,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("second streamTask failed: %v", err)
+	}
+	if providerStub.calls != 2 {
+		t.Fatalf("expected two independent stream requests, got %d", providerStub.calls)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "第一轮输出-片段一，片段二") {
+		t.Fatalf("expected first streamed response to be rendered, got %q", output)
+	}
+	if !strings.Contains(output, "[工具调用]: read_file") {
+		t.Fatalf("expected tool call event to stay observable, got %q", output)
+	}
+	if !strings.Contains(output, "[上下文压缩]: 开始进行上下文压缩：history_trim / history_message_limit") {
+		t.Fatalf("expected compression progress to stay observable, got %q", output)
+	}
+	if !strings.Contains(output, "第二轮输出仍然成功") {
+		t.Fatalf("expected subsequent user request to complete, got %q", output)
+	}
+	if strings.Contains(strings.ToLower(output), "max iterations") || strings.Contains(output, "最大循环") {
+		t.Fatalf("expected ordinary stream events not to surface max loop termination, got %q", output)
 	}
 }
 

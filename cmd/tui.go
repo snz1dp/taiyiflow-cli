@@ -111,7 +111,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if skillErr != nil {
 				return skillErr
 			}
-			stream, streamSession, streamErr := providerClient.Stream(runCtx, provider.StreamRequest{
+			stream, streamSession, streamErr := callbackProvider.Stream(runCtx, provider.StreamRequest{
 				FlowID:                 currentFlow,
 				Input:                  request.Input,
 				InputType:              "any",
@@ -1152,7 +1152,9 @@ func loadSessionContextMetrics(ctx context.Context, providerClient provider.Prov
 		TokenUsage: &tui.TokenUsage{
 			ContextWindow: &tui.ContextWindow{
 				MaxInputTokens:              preview.ContextWindow.MaxInputTokens,
-				ShortTermContextTokens:      preview.ContextWindow.ShortTermContextTokens,
+				ContextUsageTokens:          preview.ContextWindow.ContextUsageTokens,
+				DirectMessageTokens:         preview.ContextWindow.DirectMessageTokens,
+				CompressedHistoryTokens:     preview.ContextWindow.CompressedHistoryTokens,
 				CurrentRoundInputTokens:     preview.ContextWindow.CurrentRoundInputTokens,
 				NextRoundAvailableTokens:    preview.ContextWindow.NextRoundAvailableTokens,
 				CurrentRoundAvailableTokens: preview.ContextWindow.CurrentRoundAvailableTokens,
@@ -1983,7 +1985,9 @@ func buildTUIRequestMetrics(runID string, stats *provider.RunStats) *tui.Request
 		if stats.TokenUsage.ContextWindow != nil {
 			metrics.TokenUsage.ContextWindow = &tui.ContextWindow{
 				MaxInputTokens:              stats.TokenUsage.ContextWindow.MaxInputTokens,
-				ShortTermContextTokens:      stats.TokenUsage.ContextWindow.ShortTermContextTokens,
+				ContextUsageTokens:          stats.TokenUsage.ContextWindow.ContextUsageTokens,
+				DirectMessageTokens:         stats.TokenUsage.ContextWindow.DirectMessageTokens,
+				CompressedHistoryTokens:     stats.TokenUsage.ContextWindow.CompressedHistoryTokens,
 				CurrentRoundInputTokens:     stats.TokenUsage.ContextWindow.CurrentRoundInputTokens,
 				NextRoundAvailableTokens:    stats.TokenUsage.ContextWindow.NextRoundAvailableTokens,
 				CurrentRoundAvailableTokens: stats.TokenUsage.ContextWindow.CurrentRoundAvailableTokens,

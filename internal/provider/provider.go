@@ -238,7 +238,9 @@ type CurrentUser struct {
 
 type ContextWindowUsage struct {
 	MaxInputTokens              int
-	ShortTermContextTokens      int
+	ContextUsageTokens          int
+	DirectMessageTokens         int
+	CompressedHistoryTokens     int
 	CurrentRoundInputTokens     int
 	NextRoundAvailableTokens    int
 	CurrentRoundAvailableTokens int

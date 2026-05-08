@@ -377,7 +377,9 @@ type Request struct {
 
 type ContextWindow struct {
 	MaxInputTokens              int
-	ShortTermContextTokens      int
+	ContextUsageTokens          int
+	DirectMessageTokens         int
+	CompressedHistoryTokens     int
 	CurrentRoundInputTokens     int
 	NextRoundAvailableTokens    int
 	CurrentRoundAvailableTokens int
@@ -6390,8 +6392,8 @@ func (m model) contextUsageSegment(compact bool) string {
 		if available > 0 {
 			parts = append(parts, fmt.Sprintf("可用 %s", formatCompactInt(available)))
 		}
-		if contextWindow.ShortTermContextTokens > 0 {
-			parts = append(parts, fmt.Sprintf("历史 %s", formatCompactInt(contextWindow.ShortTermContextTokens)))
+		if historyUsage := formatContextHistoryUsage(contextWindow); historyUsage != "" {
+			parts = append(parts, historyUsage)
 		}
 		if watermarkWarning := formatContextWatermarkWarning(contextWindow); watermarkWarning != "" {
 			parts = append(parts, watermarkWarning)
@@ -6464,6 +6466,9 @@ func (m model) inputContextUsageHint() string {
 	if watermarkWarning := formatContextWatermarkWarning(contextWindow); watermarkWarning != "" {
 		parts = append(parts, watermarkWarning)
 	}
+	if historyUsage := formatContextHistoryUsage(contextWindow); historyUsage != "" {
+		parts = append(parts, historyUsage)
+	}
 	if len(parts) > 0 {
 		return strings.Join(parts, " · ")
 	}
@@ -6485,6 +6490,24 @@ func formatContextAvailabilityRate(available int, maxTokens int) string {
 		available = maxTokens
 	}
 	return fmt.Sprintf("共%s剩%s可用", formatCompactInt(maxTokens), formatCompactInt(available))
+}
+
+func formatContextHistoryUsage(contextWindow *ContextWindow) string {
+	if contextWindow == nil || contextWindow.ContextUsageTokens <= 0 {
+		return ""
+	}
+	historyUsage := fmt.Sprintf("历史 %s", formatCompactInt(contextWindow.ContextUsageTokens))
+	breakdown := make([]string, 0, 2)
+	if contextWindow.DirectMessageTokens > 0 {
+		breakdown = append(breakdown, fmt.Sprintf("直传 %s", formatCompactInt(contextWindow.DirectMessageTokens)))
+	}
+	if contextWindow.CompressedHistoryTokens > 0 {
+		breakdown = append(breakdown, fmt.Sprintf("压缩 %s", formatCompactInt(contextWindow.CompressedHistoryTokens)))
+	}
+	if len(breakdown) == 0 {
+		return historyUsage
+	}
+	return historyUsage + "（" + strings.Join(breakdown, " / ") + "）"
 }
 
 func resolveContextAvailableTokens(contextWindow *ContextWindow) int {

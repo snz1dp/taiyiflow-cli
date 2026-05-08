@@ -17,6 +17,23 @@ type callbackAuthRefreshProvider struct {
 	config *internalconfig.Config
 }
 
+func (p *callbackAuthRefreshProvider) Stream(ctx context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
+	stream, session, err := p.Provider.Stream(ctx, request)
+	if err == nil || !isAuthenticationError(err) || p.app == nil || p.client == nil || p.config == nil {
+		return stream, session, err
+	}
+
+	updatedConfig, _, refreshErr := p.app.tryPersistentLogin(ctx, p.client, *p.config)
+	if refreshErr != nil {
+		return nil, nil, fmt.Errorf("%w；自动刷新登录失败: %v", err, refreshErr)
+	}
+	if strings.TrimSpace(updatedConfig.AccessToken) == "" {
+		return nil, nil, err
+	}
+	*p.config = updatedConfig
+	return p.Provider.Stream(ctx, request)
+}
+
 func (p *callbackAuthRefreshProvider) SubmitClientCallResult(ctx context.Context, result provider.ClientCallResult) error {
 	err := p.Provider.SubmitClientCallResult(ctx, result)
 	if err == nil || !isAuthenticationError(err) || p.app == nil || p.client == nil || p.config == nil {
@@ -27,9 +44,10 @@ func (p *callbackAuthRefreshProvider) SubmitClientCallResult(ctx context.Context
 	if refreshErr != nil {
 		return fmt.Errorf("%w；自动刷新登录失败: %v", err, refreshErr)
 	}
-	if !changed || strings.TrimSpace(updatedConfig.AccessToken) == strings.TrimSpace(p.config.AccessToken) {
+	if strings.TrimSpace(updatedConfig.AccessToken) == "" {
 		return err
 	}
+	_ = changed
 	*p.config = updatedConfig
 	return p.Provider.SubmitClientCallResult(ctx, result)
 }
