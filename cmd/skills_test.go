@@ -90,6 +90,10 @@ func TestLoadSkillPayloadUsesContextDirWorkspaceSkills(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected packages type: %T", packages)
 	}
+	resolvedSkillDir, resolveErr := filepath.EvalSymlinks(skillDir)
+	if resolveErr != nil {
+		resolvedSkillDir = skillDir
+	}
 	found := false
 	for _, pkg := range payload {
 		skillsPayload, ok := pkg["skills"].([]map[string]any)
@@ -98,6 +102,9 @@ func TestLoadSkillPayloadUsesContextDirWorkspaceSkills(t *testing.T) {
 		}
 		for _, item := range skillsPayload {
 			if item["name"] == "Context Review" {
+				if item["skill_dir"] != resolvedSkillDir {
+					t.Fatalf("expected skill_dir %q, got %#v", skillDir, item)
+				}
 				found = true
 				break
 			}

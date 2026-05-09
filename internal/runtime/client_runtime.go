@@ -432,33 +432,6 @@ func (r *ClientRuntime) searchFiles(
 	return r.searchFilesLocal(ctx, config, arguments)
 }
 
-func matchesSearchGlob(path string, baseDir string, glob string) bool {
-	if strings.TrimSpace(glob) == "" {
-		return true
-	}
-
-	cleanPath := filepath.Clean(path)
-	relativePath, err := filepath.Rel(baseDir, cleanPath)
-	if err != nil {
-		relativePath = cleanPath
-	}
-
-	normalizedPath := filepath.ToSlash(relativePath)
-	normalizedGlob := filepath.ToSlash(strings.TrimSpace(glob))
-
-	matched, err := filepath.Match(normalizedGlob, normalizedPath)
-	if err == nil && matched {
-		return true
-	}
-
-	if !strings.Contains(normalizedGlob, "/") {
-		matched, err = filepath.Match(normalizedGlob, filepath.Base(normalizedPath))
-		return err == nil && matched
-	}
-
-	return false
-}
-
 type commandArguments struct {
 	Mode             string
 	RawCommand       string

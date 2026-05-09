@@ -399,11 +399,6 @@ func normalizeTodoStatusValue(value any) string {
 	}
 }
 
-func loadRuntimeSessionState(payload map[string]any, config internalconfig.Config) (agent.SessionState, error) {
-	_, state, err := loadSessionStoreAndState(payload, config)
-	return state, err
-}
-
 func loadSessionStoreAndState(payload map[string]any, config internalconfig.Config) (*agent.SessionStore, agent.SessionState, error) {
 	flowID := strings.TrimSpace(stringValue(payload["flow_id"]))
 	if flowID == "" {

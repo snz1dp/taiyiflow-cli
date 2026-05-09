@@ -159,8 +159,9 @@ func TestNormalizeAgentAutoLoopMaxRounds(t *testing.T) {
 	}{
 		{input: DefaultAgentAutoLoopMaxRounds, expected: DefaultAgentAutoLoopMaxRounds},
 		{input: 5, expected: 5},
-		{input: 0, expected: DefaultAgentAutoLoopMaxRounds},
+		{input: 0, expected: 0},
 		{input: -1, expected: DefaultAgentAutoLoopMaxRounds},
+		{input: MaxAgentAutoLoopMaxRounds + 1, expected: MaxAgentAutoLoopMaxRounds},
 	}
 	for _, item := range cases {
 		if got := NormalizeAgentAutoLoopMaxRounds(item.input); got != item.expected {

@@ -150,6 +150,9 @@ func TestIsExecutableSlashCommandInputUsesSplitDialogueCommands(t *testing.T) {
 	if isExecutableSlashCommandInput("/chat") {
 		t.Fatalf("expected /chat to be removed from executable commands")
 	}
+	if !isExecutableSlashCommandInput("/about") {
+		t.Fatalf("expected /about to be executable")
+	}
 	if !isExecutableSlashCommandInput("/internet on") {
 		t.Fatalf("expected /internet on to be executable")
 	}
@@ -304,6 +307,69 @@ func TestEnterExecutesLoginSlashCommandImmediately(t *testing.T) {
 	}
 }
 
+func TestReliableMultilineShortcutsInsertNewline(t *testing.T) {
+	testCases := []struct {
+		name string
+		msg  tea.KeyMsg
+	}{
+		{name: "alt enter", msg: tea.KeyMsg{Type: tea.KeyEnter, Alt: true}},
+		{name: "ctrl j", msg: tea.KeyMsg{Type: tea.KeyCtrlJ}},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			input := textarea.New()
+			input.SetValue("第一行")
+
+			appModel := model{
+				snapshot: Snapshot{BackendAvailable: true},
+				input:    input,
+			}
+
+			updatedModel, cmd := appModel.handleMainKey(testCase.msg)
+			if cmd != nil {
+				t.Fatalf("expected newline shortcut not to start command, got %#v", cmd)
+			}
+			updated := updatedModel.(model)
+			if got := updated.input.Value(); got != "第一行\n" {
+				t.Fatalf("expected newline to be inserted, got %q", got)
+			}
+		})
+	}
+}
+
+func TestBackspaceShrinksInputHeightAfterDeletingTrailingNewline(t *testing.T) {
+	input := textarea.New()
+	input.Prompt = "> "
+	input.SetValue("第一行\n")
+	input.Focus()
+
+	appModel := model{
+		ready:        true,
+		width:        100,
+		height:       20,
+		contentWidth: 92,
+		snapshot:     Snapshot{BackendAvailable: true},
+		input:        input,
+	}
+	appModel.syncLayout()
+	if got := appModel.input.Height(); got != 2 {
+		t.Fatalf("expected initial multiline height 2, got %d", got)
+	}
+
+	updatedModel, cmd := appModel.handleMainKey(tea.KeyMsg{Type: tea.KeyBackspace})
+	updated := updatedModel.(model)
+	if got := updated.input.Value(); got != "第一行" {
+		t.Fatalf("expected trailing newline removed, got %q", got)
+	}
+	if got := updated.input.Height(); got != 1 {
+		t.Fatalf("expected input height to shrink to 1 after deleting newline, got %d", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected textarea update to keep returning its internal cursor command")
+	}
+}
+
 func TestFitOverlayContentKeepsFocusedConfigFieldVisible(t *testing.T) {
 	state := newConfigFormState(ConfigFormState{
 		Title: "配置设置",
@@ -396,14 +462,14 @@ func TestConfigFormSaveErrorStaysInConfigOverlay(t *testing.T) {
 	}
 }
 
-func TestRenderConfigFormUsesSelectorForAgentAutoLoopEnabled(t *testing.T) {
+func TestRenderConfigFormUsesTextInputForAgentAutoLoopMaxRounds(t *testing.T) {
 	state := newConfigFormState(ConfigFormState{
 		Title: "配置设置",
 		Values: ConfigFormValues{
-			AgentAutoLoopEnabled: "false",
+			AgentAutoLoopMaxRounds: "0",
 		},
 	})
-	state.cursor = configFieldAgentAutoLoopEnabled
+	state.cursor = configFieldAgentAutoLoopMaxRounds
 
 	model := model{
 		contentWidth: 80,
@@ -411,32 +477,35 @@ func TestRenderConfigFormUsesSelectorForAgentAutoLoopEnabled(t *testing.T) {
 	}
 
 	rendered := sanitizeTerminalText(model.renderConfigForm())
-	if !strings.Contains(rendered, "(*) 关闭") {
-		t.Fatalf("expected selected auto loop choice rendered, got %q", rendered)
+	if !strings.Contains(rendered, "智能体自动续跑最大轮数") {
+		t.Fatalf("expected max rounds field rendered, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "恢复默认(default)") || !strings.Contains(rendered, "开启(t") || !strings.Contains(rendered, "关闭") {
-		t.Fatalf("expected chinese(english) hint for auto loop field, got %q", rendered)
+	if !strings.Contains(rendered, "填写 0-100 的整数，0 表示禁用") {
+		t.Fatalf("expected numeric hint for max rounds field, got %q", rendered)
 	}
-	if strings.Contains(rendered, "填写 true 或 false") {
-		t.Fatalf("expected auto loop field to stop using manual true/false input hint, got %q", rendered)
+	if strings.Contains(rendered, "智能体自动续跑默认开关") || strings.Contains(rendered, "恢复默认(default)") {
+		t.Fatalf("expected auto loop toggle field removed, got %q", rendered)
 	}
-	if isConfigTextField(configFieldAgentAutoLoopEnabled) {
-		t.Fatal("expected auto loop field to use selector instead of text input")
+	if !isConfigTextField(configFieldAgentAutoLoopMaxRounds) {
+		t.Fatal("expected max rounds field to use text input")
 	}
 }
 
-func TestHandleConfigFormKeyMovesAgentAutoLoopSelector(t *testing.T) {
-	state := newConfigFormState(ConfigFormState{
-		Values: ConfigFormValues{
-			AgentAutoLoopEnabled: "false",
-		},
-	})
-	state.cursor = configFieldAgentAutoLoopEnabled
+func TestConfigFormValuesFromInputsReadsAgentAutoLoopMaxRoundsAtShiftedIndex(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{})
+	state.inputs[15].SetValue("0")
+	state.inputs[16].SetValue("zh-CN")
+	state.inputs[20].SetValue("https://mirror-cn.clawhub.com")
 
-	updatedModel, _ := (model{configForm: state}).handleConfigFormKey(tea.KeyMsg{Type: tea.KeyRight})
-	updated := updatedModel.(model)
-	if updated.configForm.agentAutoLoopCursor != 0 {
-		t.Fatalf("expected selector to move to restore-default choice, got %d", updated.configForm.agentAutoLoopCursor)
+	values := configFormValuesFromInputs(state.inputs)
+	if values.AgentAutoLoopMaxRounds != "0" {
+		t.Fatalf("expected max rounds from input index 15, got %q", values.AgentAutoLoopMaxRounds)
+	}
+	if values.OutputLanguage != "zh-CN" {
+		t.Fatalf("expected output language from input index 16, got %q", values.OutputLanguage)
+	}
+	if values.SkillsRegistryURL != "https://mirror-cn.clawhub.com" {
+		t.Fatalf("expected registry url from input index 20, got %q", values.SkillsRegistryURL)
 	}
 }
 
@@ -490,6 +559,43 @@ func TestRenderOverlayUsesFullscreenForLoginForm(t *testing.T) {
 	}
 	if lipgloss.Height(rendered) != 28 {
 		t.Fatalf("expected login overlay to use full height, got %d", lipgloss.Height(rendered))
+	}
+}
+
+func TestRenderOverlayUsesWiderConfirmOverlay(t *testing.T) {
+	appModel := model{
+		width:        140,
+		height:       30,
+		contentWidth: 132,
+		pendingConfirm: &confirmState{
+			request: ConfirmRequest{
+				Title:       "写入比较摘要(write summary)待确认",
+				PreviewTitle: "比较预览(compare preview)",
+				PreviewBody:  "--- notes.txt\n+++ notes.txt\n@@\n-old\n+new",
+				ApproveLabel: "确认本次写入",
+				RejectLabel:  "取消本次写入",
+			},
+		},
+	}
+
+	rendered := appModel.renderOverlay()
+	if lipgloss.Width(rendered) <= 120 {
+		t.Fatalf("expected confirm overlay wider than previous 112-column cap, got %d", lipgloss.Width(rendered))
+	}
+}
+
+func TestCurrentInputHeightCapsAtThirtyPercentOfViewport(t *testing.T) {
+	appModel := model{
+		width:        100,
+		height:       20,
+		contentWidth: 92,
+		input:        textarea.New(),
+	}
+	appModel.input.Prompt = "> "
+	appModel.input.SetValue(strings.Repeat("很长的输入内容\n", 20))
+
+	if got := appModel.currentInputHeight(); got != 6 {
+		t.Fatalf("expected input height capped at 30%% of viewport, got %d", got)
 	}
 }
 

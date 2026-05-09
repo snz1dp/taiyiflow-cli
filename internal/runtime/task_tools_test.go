@@ -452,8 +452,87 @@ func TestSkillReturnsInvocationPayload(t *testing.T) {
 	if result["root_dir"].(string) != skillDir {
 		t.Fatalf("unexpected skill root_dir: %#v", result)
 	}
+	if result["skill_dir"].(string) != filepath.Join(skillDir, "reviewer") {
+		t.Fatalf("unexpected skill skill_dir: %#v", result)
+	}
 	if result["relative_dir"].(string) != "reviewer" {
 		t.Fatalf("unexpected skill relative_dir: %#v", result)
+	}
+}
+
+func TestReadFileResolvesRelativePathInsideSkillDirectory(t *testing.T) {
+	workdir := t.TempDir()
+	skillRoot := t.TempDir()
+	skillPackageDir := filepath.Join(skillRoot, "reviewer")
+	if err := os.MkdirAll(filepath.Join(skillPackageDir, "docs"), 0o755); err != nil {
+		t.Fatalf("mkdir skill docs failed: %v", err)
+	}
+	content := "---\nname: Code Review\ndescription: 审查变更\n---\n\n读取技能参考文件。\n"
+	if err := os.WriteFile(filepath.Join(skillPackageDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillPackageDir, "docs", "reference.md"), []byte("skill local reference\n"), 0o644); err != nil {
+		t.Fatalf("write reference failed: %v", err)
+	}
+
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: workdir, ApprovalMode: "auto"}
+	configValue.Skills.Directory = skillRoot
+
+	result, err := runtimeClient.readFile(configValue, map[string]any{"path": "docs/reference.md"})
+	if err != nil {
+		t.Fatalf("readFile failed: %v", err)
+	}
+	if strings.TrimSpace(stringValue(result["content"])) != "skill local reference" {
+		t.Fatalf("expected skill-local reference content, got %#v", result)
+	}
+	resolvedReferencePath, resolveErr := filepath.EvalSymlinks(filepath.Join(skillPackageDir, "docs", "reference.md"))
+	if resolveErr != nil {
+		resolvedReferencePath = filepath.Join(skillPackageDir, "docs", "reference.md")
+	}
+	if result["path"] != resolvedReferencePath {
+		t.Fatalf("expected resolved path inside skill directory, got %#v", result)
+	}
+}
+
+func TestShellExecResolvesSkillAliasAsWorkingDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell test uses POSIX shell")
+	}
+	workdir := t.TempDir()
+	skillRoot := t.TempDir()
+	skillPackageDir := filepath.Join(skillRoot, "qq-email-summary")
+	if err := os.MkdirAll(filepath.Join(skillPackageDir, "scripts"), 0o755); err != nil {
+		t.Fatalf("mkdir skill scripts failed: %v", err)
+	}
+	content := "---\nname: email-summary\ndescription: 邮件摘要\n---\n\n运行技能目录内脚本。\n"
+	if err := os.WriteFile(filepath.Join(skillPackageDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillPackageDir, "scripts", "run.js"), []byte("console.log('ok')\n"), 0o644); err != nil {
+		t.Fatalf("write script failed: %v", err)
+	}
+
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: workdir, ApprovalMode: "auto"}
+	configValue.Skills.Directory = skillRoot
+
+	result, err := runtimeClient.shellExec(context.Background(), configValue, map[string]any{
+		"raw_command":        "pwd",
+		"working_directory": "email-summary",
+	})
+	if err != nil {
+		t.Fatalf("shellExec failed: %v", err)
+	}
+	resolvedSkillDir, resolveErr := filepath.EvalSymlinks(skillPackageDir)
+	if resolveErr != nil {
+		resolvedSkillDir = skillPackageDir
+	}
+	if strings.TrimSpace(stringValue(result["stdout"])) != resolvedSkillDir {
+		t.Fatalf("expected cwd to resolve to skill directory %q, got %#v", resolvedSkillDir, result)
+	}
+	if result["cwd"] != resolvedSkillDir {
+		t.Fatalf("expected result cwd %q, got %#v", resolvedSkillDir, result)
 	}
 }
 

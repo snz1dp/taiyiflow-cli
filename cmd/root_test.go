@@ -707,20 +707,12 @@ func TestCallbackAuthRefreshProviderRetriesStreamAfterUnauthorized(t *testing.T)
 	}
 }
 
-func TestRunInteractiveSessionConfigCommandPersistsAgentAutoLoopOverrides(t *testing.T) {
+func TestRunInteractiveSessionConfigCommandPersistsAgentAutoLoopMaxRoundsOverride(t *testing.T) {
 	app := newTestAppWithSessionStore(t)
 	workdir := t.TempDir()
 	state := agent.SessionState{FlowID: "demo-flow", Workdir: workdir, RequestMode: provider.RequestTypeAgent}
 
-	output, err := app.runInteractiveSessionConfigCommand("/config session set agent_auto_loop_enabled off", &state)
-	if err != nil {
-		t.Fatalf("set agent_auto_loop_enabled failed: %v", err)
-	}
-	if output != "已设置会话智能体自动续跑开关: off" {
-		t.Fatalf("unexpected output: %q", output)
-	}
-
-	output, err = app.runInteractiveSessionConfigCommand("/config session set agent_auto_loop_max_rounds 5", &state)
+	output, err := app.runInteractiveSessionConfigCommand("/config session set agent_auto_loop_max_rounds 5", &state)
 	if err != nil {
 		t.Fatalf("set agent_auto_loop_max_rounds failed: %v", err)
 	}
@@ -732,34 +724,32 @@ func TestRunInteractiveSessionConfigCommandPersistsAgentAutoLoopOverrides(t *tes
 	if err != nil {
 		t.Fatalf("prepareSession failed: %v", err)
 	}
-	if loaded.AgentAutoLoopEnabledOverride != "off" {
-		t.Fatalf("expected saved auto loop enabled override off, got %q", loaded.AgentAutoLoopEnabledOverride)
-	}
-	if loaded.AgentAutoLoopMaxRoundsOverride != 5 {
-		t.Fatalf("expected saved auto loop max rounds override 5, got %d", loaded.AgentAutoLoopMaxRoundsOverride)
+	if loaded.AgentAutoLoopMaxRoundsOverride == nil || *loaded.AgentAutoLoopMaxRoundsOverride != 5 {
+		t.Fatalf("expected saved auto loop max rounds override 5, got %#v", loaded.AgentAutoLoopMaxRoundsOverride)
 	}
 
-	output, err = app.runInteractiveSessionConfigCommand("/config session unset agent_auto_loop_enabled", &state)
+	output, err = app.runInteractiveSessionConfigCommand("/config session set agent_auto_loop_max_rounds 0", &state)
 	if err != nil {
-		t.Fatalf("unset agent_auto_loop_enabled failed: %v", err)
+		t.Fatalf("set agent_auto_loop_max_rounds 0 failed: %v", err)
 	}
-	if output != "已清空会话智能体自动续跑开关，恢复继承全局配置" {
+	if output != "已设置会话智能体自动续跑最大轮数: 0" {
 		t.Fatalf("unexpected output: %q", output)
 	}
-	if state.AgentAutoLoopEnabledOverride != "" {
-		t.Fatalf("expected in-memory auto loop enabled override cleared, got %q", state.AgentAutoLoopEnabledOverride)
+	if state.AgentAutoLoopMaxRoundsOverride == nil || *state.AgentAutoLoopMaxRoundsOverride != 0 {
+		t.Fatalf("expected in-memory auto loop max rounds override 0, got %#v", state.AgentAutoLoopMaxRoundsOverride)
 	}
 }
 
-func TestResolveAgentAutoLoopEnabledPreservesFalseOverride(t *testing.T) {
+func TestResolveAgentAutoLoopEnabledDerivedFromMaxRounds(t *testing.T) {
 	config := internalconfig.Default()
-	config.AgentAutoLoopEnabled = true
-	resolved := resolveAgentAutoLoopEnabled(config, agent.SessionState{AgentAutoLoopEnabledOverride: "off"}, provider.RequestTypeAgent)
+	config.AgentAutoLoopMaxRounds = 5
+	zero := 0
+	resolved := resolveAgentAutoLoopEnabled(config, agent.SessionState{AgentAutoLoopMaxRoundsOverride: &zero}, provider.RequestTypeAgent)
 	if resolved == nil {
-		t.Fatal("expected explicit智能体auto loop override to be sent")
+		t.Fatal("expected explicit auto loop state to be sent")
 	}
 	if *resolved {
-		t.Fatal("expected false override to win over global config")
+		t.Fatal("expected zero max rounds to disable auto loop")
 	}
 }
 

@@ -43,6 +43,21 @@ type Skill struct {
 	Enabled bool
 }
 
+func SkillDir(item Skill) string {
+	if path := strings.TrimSpace(item.Path); path != "" {
+		return filepath.Clean(filepath.Dir(path))
+	}
+	rootDir := strings.TrimSpace(item.RootDir)
+	relativeDir := strings.TrimSpace(item.RelativeDir)
+	if rootDir != "" && relativeDir != "" {
+		return filepath.Clean(filepath.Join(rootDir, filepath.FromSlash(relativeDir)))
+	}
+	if rootDir != "" {
+		return filepath.Clean(rootDir)
+	}
+	return ""
+}
+
 func ResolveDirectory(config internalconfig.Config) (string, error) {
 	directories, err := ResolveDirectories(config)
 	if err != nil {
@@ -249,6 +264,7 @@ func Summaries(items []Skill) []map[string]any {
 			"files":         item.Files,
 			"summary":       item.Summary,
 			"path":          item.Path,
+			"skill_dir":     SkillDir(item),
 			"root_dir":      item.RootDir,
 			"source":        item.Source,
 			"relative_dir":  item.RelativeDir,
@@ -312,6 +328,7 @@ func ClientPackages(items []Skill, rootDir string) any {
 			"content":       item.Body,
 			"markdown":      renderClientSkillMarkdown(item),
 			"path":          item.Path,
+			"skill_dir":     SkillDir(item),
 			"root_dir":      item.RootDir,
 			"source":        item.Source,
 			"relative_dir":  item.RelativeDir,

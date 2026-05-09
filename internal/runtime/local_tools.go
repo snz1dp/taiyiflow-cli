@@ -389,14 +389,14 @@ func RequiresClientToolConfirmation(config internalconfig.Config, payload map[st
 	if strings.TrimSpace(config.ApprovalMode) == "readonly" && mutatingClientTool(toolName) {
 		return false
 	}
+	if isWriteConfirmationTool(toolName) {
+		return internalconfig.NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy) == internalconfig.WriteConfirmationPolicyConfirm
+	}
 	if action, matched := evaluatePermissionAction(config, toolName, commandPreview(arguments)); matched {
 		return action == "ask"
 	}
 	if toolName == "skill" {
 		return internalconfig.NormalizeSkillReviewPolicy(config.SkillReviewPolicy) == internalconfig.SkillReviewPolicyConfirm
-	}
-	if isWriteConfirmationTool(toolName) {
-		return internalconfig.NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy) == internalconfig.WriteConfirmationPolicyConfirm
 	}
 	return shouldConfirmMutatingTool(config, toolName)
 }
@@ -409,6 +409,28 @@ func PreviewClientToolCall(payload map[string]any) string {
 
 func (r *ClientRuntime) authorizeClientTool(toolName string, arguments map[string]any, config internalconfig.Config) error {
 	mode := strings.TrimSpace(config.ApprovalMode)
+	if isWriteConfirmationTool(toolName) {
+		if mode == "readonly" {
+			return newToolError("PERMISSION_DENIED", "当前审批模式为只读，拒绝执行 %s", canonicalClientToolName(toolName))
+		}
+		if action, matched := evaluatePermissionAction(config, toolName, commandPreview(arguments)); matched && action == "deny" {
+			return newToolError("PERMISSION_DENIED", "命中权限规则，拒绝执行 %s", canonicalClientToolName(toolName))
+		}
+		if internalconfig.NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy) != internalconfig.WriteConfirmationPolicyConfirm {
+			return nil
+		}
+		if mode == "auto" {
+			return nil
+		}
+		approved, err := r.confirmClientTool(toolName, arguments)
+		if err != nil {
+			return err
+		}
+		if !approved {
+			return newToolError("PERMISSION_DENIED", "用户拒绝执行 %s", canonicalClientToolName(toolName))
+		}
+		return nil
+	}
 	if action, matched := evaluatePermissionAction(config, toolName, commandPreview(arguments)); matched {
 		switch action {
 		case "deny":
@@ -434,25 +456,6 @@ func (r *ClientRuntime) authorizeClientTool(toolName string, arguments map[strin
 	}
 	if canonicalClientToolName(toolName) == "skill" {
 		if internalconfig.NormalizeSkillReviewPolicy(config.SkillReviewPolicy) != internalconfig.SkillReviewPolicyConfirm {
-			return nil
-		}
-		if mode == "auto" {
-			return nil
-		}
-		approved, err := r.confirmClientTool(toolName, arguments)
-		if err != nil {
-			return err
-		}
-		if !approved {
-			return newToolError("PERMISSION_DENIED", "用户拒绝执行 %s", canonicalClientToolName(toolName))
-		}
-		return nil
-	}
-	if isWriteConfirmationTool(toolName) {
-		if mode == "readonly" {
-			return newToolError("PERMISSION_DENIED", "当前审批模式为只读，拒绝执行 %s", canonicalClientToolName(toolName))
-		}
-		if internalconfig.NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy) != internalconfig.WriteConfirmationPolicyConfirm {
 			return nil
 		}
 		if mode == "auto" {
@@ -691,6 +694,7 @@ func (r *ClientRuntime) skill(config internalconfig.Config, arguments map[string
 		"prompt":       item.Body,
 		"markdown":     skills.Markdown(*item),
 		"path":         item.Path,
+		"skill_dir":    skills.SkillDir(*item),
 		"root_dir":     item.RootDir,
 		"source":       item.Source,
 		"relative_dir": item.RelativeDir,
@@ -1030,25 +1034,6 @@ func matchGlobSegments(patternSegments []string, pathSegments []string) bool {
 		return false
 	}
 	return matchGlobSegments(patternSegments[1:], pathSegments[1:])
-}
-
-func normalizeSkillList(items []string) []string {
-	seen := map[string]string{}
-	for _, item := range items {
-		trimmed := strings.TrimSpace(item)
-		if trimmed == "" {
-			continue
-		}
-		seen[strings.ToLower(trimmed)] = trimmed
-	}
-	keys := make([]string, 0, len(seen))
-	for _, value := range seen {
-		keys = append(keys, value)
-	}
-	sort.Slice(keys, func(left, right int) bool {
-		return strings.ToLower(keys[left]) < strings.ToLower(keys[right])
-	})
-	return keys
 }
 
 func splitLines(content string) []string {

@@ -31,7 +31,8 @@ const (
 	DefaultStreamRetryAttempts      = 0
 	MaxStreamRetryAttempts          = 3
 	DefaultQRWaitTimeoutSeconds     = 120
-	DefaultAgentAutoLoopMaxRounds   = 10
+	DefaultAgentAutoLoopMaxRounds   = 0
+	MaxAgentAutoLoopMaxRounds       = 100
 	encryptedConfigValuePrefix      = "enc:v1:"
 	SandboxEscapePolicyConfirm      = "confirm"
 	SandboxEscapePolicyDeny         = "deny"
@@ -251,8 +252,11 @@ func NormalizeQRWaitTimeoutSeconds(value int) int {
 }
 
 func NormalizeAgentAutoLoopMaxRounds(value int) int {
-	if value < 1 {
+	if value < 0 {
 		return DefaultAgentAutoLoopMaxRounds
+	}
+	if value > MaxAgentAutoLoopMaxRounds {
+		return MaxAgentAutoLoopMaxRounds
 	}
 	return value
 }

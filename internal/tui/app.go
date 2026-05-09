@@ -227,7 +227,6 @@ type ConfigFormValues struct {
 	StreamIdleTimeoutSeconds string
 	StreamRetryAttempts      string
 	QRWaitTimeoutSeconds     string
-	AgentAutoLoopEnabled     string
 	AgentAutoLoopMaxRounds   string
 	OutputLanguage           string
 	SkillsInstallScope       string
@@ -670,7 +669,6 @@ type configFormState struct {
 	skillReviewCursor       int
 	writeConfirmationCursor int
 	reasoningCursor         int
-	agentAutoLoopCursor     int
 	skillsCursor            int
 	skillsAutoInstallCursor int
 	skillsFreeTextCursor    int
@@ -729,7 +727,6 @@ const (
 	configFieldStreamIdleTimeout
 	configFieldStreamRetryAttempts
 	configFieldQRWaitTimeout
-	configFieldAgentAutoLoopEnabled
 	configFieldAgentAutoLoopMaxRounds
 	configFieldOutputLanguage
 	configFieldSkillsInstallScope
@@ -742,13 +739,6 @@ const (
 const (
 	loginFormModePassword = "password"
 	loginFormModeQR       = "qr"
-)
-
-const (
-	loginVerifyTypeKaptcha = loginprompt.VerifyTypeKaptcha
-	loginVerifyTypeSMS     = loginprompt.VerifyTypeSMS
-	loginVerifyTypeMail    = loginprompt.VerifyTypeMail
-	loginVerifyTypeTOTP    = loginprompt.VerifyTypeTOTP
 )
 
 const (
@@ -885,6 +875,7 @@ var slashCommands = []slashCommand{
 	{Trigger: "/tasks", Completion: "/tasks ", Description: "查看、捕获、停止或清理本地后台任务"},
 	{Trigger: "/skills", Completion: "/skills ", Description: "列出本地技能，浏览远程仓库技能，并执行搜索、安装、更新或删除"},
 	{Trigger: "/sessions", Completion: "/sessions ", Description: "列出当前智能体的服务端会话，可附页码"},
+	{Trigger: "/about", Completion: "/about", Description: "显示当前客户端版本、组织与后端对接说明"},
 	{Trigger: "/login", Completion: "/login ", Description: "查看、登录或退出当前账号状态"},
 	{Trigger: "/help", Completion: "/help", Description: "显示可用命令帮助"},
 	{Trigger: "/config", Completion: "/config ", Description: "查看或更新系统全局配置"},
@@ -894,7 +885,7 @@ var slashCommands = []slashCommand{
 func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, refreshSnapshot SnapshotRefreshHandler, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, configFormSubmit ConfigFormSubmitHandler, loginFormSubmit LoginFormSubmitHandler, localCommand LocalCommandHandler, startupCommand string) error {
 	inputModel := textarea.New()
 	if snapshot.BackendAvailable {
-		inputModel.Placeholder = "输入内容后回车发送"
+		inputModel.Placeholder = multilineInputPlaceholder(os.Environ())
 	} else {
 		inputModel.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/tasks、/skills、/reasoning、/help、/clear、/exit"
 	}
@@ -918,6 +909,11 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 	toolPanelViewportModel.Style = lipgloss.NewStyle()
 
 	progressModel := progress.New(progress.WithDefaultGradient())
+	programOptions := []tea.ProgramOption{tea.WithAltScreen()}
+	if keyboardOptions, cleanupKeyboard := programKeyboardOptions(os.Stdin, os.Stdout, os.Environ()); len(keyboardOptions) > 0 {
+		programOptions = append(programOptions, keyboardOptions...)
+		defer cleanupKeyboard()
+	}
 
 	initialEntries := buildInitialEntries(snapshot)
 	initialRequestStats := cloneRequestMetrics(snapshot.RequestStats)
@@ -944,7 +940,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 		requestStats:      initialRequestStats,
 		flowCursor:        currentFlowIndex(flows, snapshot.DefaultFlow),
 		startupCommand:    resolveInitialStartupCommand(snapshot, startupCommand),
-	}, tea.WithAltScreen())
+	}, programOptions...)
 	finalModel, err := program.Run()
 	if err == nil {
 		if finalState, ok := finalModel.(model); ok && finalState.quitting {
@@ -1369,10 +1365,15 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	wasShowingCommandHints := m.showSlashCommandHints()
+	previousInputValue := m.input.Value()
+	previousInputHeight := m.currentInputHeight()
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	if !wasShowingCommandHints && m.showSlashCommandHints() {
 		m.commandCursor = 0
+	}
+	if m.ready && (m.input.Value() != previousInputValue || m.currentInputHeight() != previousInputHeight) {
+		m.syncLayout()
 	}
 	m.clampSlashCommandCursor()
 	return m, cmd
@@ -1638,10 +1639,6 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveConfigReasoningCursor(-1)
 			return m, nil
 		}
-		if m.configForm.cursor == configFieldAgentAutoLoopEnabled {
-			m.moveConfigAgentAutoLoopCursor(-1)
-			return m, nil
-		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
 			m.moveConfigSkillsCursor(-1)
 			return m, nil
@@ -1677,10 +1674,6 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldReasoningMode {
 			m.moveConfigReasoningCursor(1)
-			return m, nil
-		}
-		if m.configForm.cursor == configFieldAgentAutoLoopEnabled {
-			m.moveConfigAgentAutoLoopCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
@@ -1732,10 +1725,6 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldReasoningMode {
 			m.moveConfigReasoningCursor(1)
-			return m, nil
-		}
-		if m.configForm.cursor == configFieldAgentAutoLoopEnabled {
-			m.moveConfigAgentAutoLoopCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
@@ -2826,7 +2815,7 @@ func (m model) renderOverlay() string {
 	width := 0
 	fullScreenLogin := false
 	if m.pendingConfirm != nil {
-		width = minInt(m.contentWidth-4, 112)
+		width = m.confirmOverlayWidth()
 		content = m.renderConfirmOverlay()
 	} else if m.toolPanel != nil {
 		width = minInt(m.contentWidth-6, 96)
@@ -2893,7 +2882,7 @@ func (m model) renderConfirmOverlay() string {
 		lines = append(lines, request.PreviewTitle)
 	}
 	if strings.TrimSpace(request.PreviewBody) != "" {
-		lines = append(lines, hardWrapText(request.PreviewBody, maxInt(24, minInt(m.contentWidth-14, 104))))
+		lines = append(lines, hardWrapText(request.PreviewBody, m.confirmPreviewWrapWidth()))
 	}
 	renderedOptions := make([]string, 0, len(options))
 	for index, option := range options {
@@ -2912,6 +2901,22 @@ func (m model) renderConfirmOverlay() string {
 	}
 	lines = append(lines, "", markOverlayFocus(optionsLine, true), hint)
 	return strings.Join(lines, "\n\n")
+}
+
+func (m model) confirmOverlayWidth() int {
+	width := minInt(m.width-4, maxInt(72, m.contentWidth))
+	if width < 24 {
+		width = 24
+	}
+	return width
+}
+
+func (m model) confirmPreviewWrapWidth() int {
+	width := m.confirmOverlayWidth() - overlayStyle.GetHorizontalFrameSize() - 6
+	if width < 24 {
+		width = 24
+	}
+	return width
 }
 
 func confirmHintForOptionCount(optionCount int) string {
@@ -3234,8 +3239,6 @@ func (m model) renderConfigForm() string {
 			lines = append(lines, m.renderConfigWriteConfirmationField())
 		case configFieldReasoningMode:
 			lines = append(lines, m.renderConfigReasoningField())
-		case configFieldAgentAutoLoopEnabled:
-			lines = append(lines, m.renderConfigAgentAutoLoopField())
 		case configFieldSkillsInstallScope:
 			lines = append(lines, m.renderConfigSkillsInstallScopeField())
 		case configFieldSkillsAutoInstallPolicy:
@@ -3405,29 +3408,6 @@ func (m model) renderConfigReasoningField() string {
 		}
 		item := marker + " " + option.Label
 		if m.configForm.cursor == configFieldReasoningMode && selected {
-			parts = append(parts, selectedFlowStyle.Render(item))
-		} else if selected {
-			parts = append(parts, valueStyle.Render(item))
-		} else {
-			parts = append(parts, commandHintStyle.Render(item))
-		}
-	}
-	return strings.Join(parts, "  ")
-}
-
-func (m model) renderConfigAgentAutoLoopField() string {
-	if m.configForm == nil {
-		return ""
-	}
-	parts := make([]string, 0, len(configAgentAutoLoopChoices()))
-	for index, option := range configAgentAutoLoopChoices() {
-		selected := index == m.configForm.agentAutoLoopCursor
-		marker := "( )"
-		if selected {
-			marker = "(*)"
-		}
-		item := marker + " " + option.Label
-		if m.configForm.cursor == configFieldAgentAutoLoopEnabled && selected {
 			parts = append(parts, selectedFlowStyle.Render(item))
 		} else if selected {
 			parts = append(parts, valueStyle.Render(item))
@@ -5046,10 +5026,6 @@ func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
 	if m.configForm.reasoningCursor >= 0 && m.configForm.reasoningCursor < len(reasoningChoices) {
 		submission.Values.ReasoningEnabled = reasoningChoices[m.configForm.reasoningCursor].Value == "on"
 	}
-	agentAutoLoopChoices := configAgentAutoLoopChoices()
-	if m.configForm.agentAutoLoopCursor >= 0 && m.configForm.agentAutoLoopCursor < len(agentAutoLoopChoices) {
-		submission.Values.AgentAutoLoopEnabled = strings.TrimSpace(agentAutoLoopChoices[m.configForm.agentAutoLoopCursor].Value)
-	}
 	skillsChoices := configSkillsInstallScopeChoices()
 	if m.configForm.skillsCursor >= 0 && m.configForm.skillsCursor < len(skillsChoices) {
 		submission.Values.SkillsInstallScope = strings.TrimSpace(skillsChoices[m.configForm.skillsCursor].Value)
@@ -5146,7 +5122,6 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 		skillReviewCursor:       configChoiceIndex(configSkillReviewChoices(), values.SkillReviewPolicy),
 		writeConfirmationCursor: configChoiceIndex(configWriteConfirmationChoices(), values.WriteConfirmationPolicy),
 		reasoningCursor:         configChoiceIndex(configReasoningChoices(), reasoningChoiceValue(values.ReasoningEnabled)),
-		agentAutoLoopCursor:     configChoiceIndex(configAgentAutoLoopChoices(), values.AgentAutoLoopEnabled),
 		skillsCursor:            configChoiceIndex(configSkillsInstallScopeChoices(), values.SkillsInstallScope),
 		skillsAutoInstallCursor: configChoiceIndex(configSkillsAutoInstallChoices(), values.SkillsAutoInstallPolicy),
 		skillsFreeTextCursor:    configChoiceIndex(configSkillsFreeTextSearchChoices(), boolChoiceValue(values.SkillsFreeTextSearch)),
@@ -5606,8 +5581,7 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "流式空闲超时（秒）", placeholder: "300", description: "大于等于 0 的整数秒，0 表示禁用流式空闲超时。"},
 		{label: "流失败自动重试次数", placeholder: "0", description: "流连接异常后的自动重试次数，范围 0-3；0 表示不自动重试。"},
 		{label: "扫码等待超时（秒）", placeholder: "30", description: "二维码登录在自动轮询时使用该默认值；大于等于 0 的整数秒，0 表示持续等待直到手动取消。"},
-		{label: "智能体自动续跑默认开关", placeholder: "", description: "仅对智能体模式生效；左右键或空格切换恢复默认(default)、开启(true)、关闭(false)。"},
-		{label: "智能体自动续跑最大轮数", placeholder: "3", description: "仅对智能体模式生效；填写大于等于 1 的整数。"},
+		{label: "智能体自动续跑最大轮数", placeholder: "0", description: "仅对智能体模式生效；填写 0-100 的整数，0 表示禁用。"},
 		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
 		{label: "技能安装位置", placeholder: "", description: "左右键或空格切换用户目录(user)或工作区(workspace)。"},
 		{label: "技能自动补装策略", placeholder: "", description: "左右键或空格切换关闭(off)、确认(confirm)、自动安装(allow)。默认建议使用确认(confirm)。"},
@@ -5649,18 +5623,16 @@ func configFormFieldValue(index int, values ConfigFormValues) string {
 	case 14:
 		return strings.TrimSpace(values.QRWaitTimeoutSeconds)
 	case 15:
-		return ""
-	case 16:
 		return strings.TrimSpace(values.AgentAutoLoopMaxRounds)
-	case 17:
+	case 16:
 		return strings.TrimSpace(values.OutputLanguage)
+	case 17:
+		return ""
 	case 18:
 		return ""
 	case 19:
 		return ""
 	case 20:
-		return ""
-	case 21:
 		return strings.TrimSpace(values.SkillsRegistryURL)
 	default:
 		return ""
@@ -5699,14 +5671,14 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 	if len(inputs) > 14 {
 		values.QRWaitTimeoutSeconds = strings.TrimSpace(inputs[14].Value())
 	}
+	if len(inputs) > 15 {
+		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[15].Value())
+	}
 	if len(inputs) > 16 {
-		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[16].Value())
+		values.OutputLanguage = strings.TrimSpace(inputs[16].Value())
 	}
-	if len(inputs) > 17 {
-		values.OutputLanguage = strings.TrimSpace(inputs[17].Value())
-	}
-	if len(inputs) > 21 {
-		values.SkillsRegistryURL = strings.TrimSpace(inputs[21].Value())
+	if len(inputs) > 20 {
+		values.SkillsRegistryURL = strings.TrimSpace(inputs[20].Value())
 	}
 	return values
 }
@@ -5752,8 +5724,6 @@ func configFieldKey(index int) string {
 		return "stream_retry_attempts"
 	case configFieldQRWaitTimeout:
 		return "qr_wait_timeout_seconds"
-	case configFieldAgentAutoLoopEnabled:
-		return "agent_auto_loop_enabled"
 	case configFieldAgentAutoLoopMaxRounds:
 		return "agent_auto_loop_max_rounds"
 	case configFieldOutputLanguage:
@@ -5871,21 +5841,6 @@ func (m *model) moveConfigReasoningCursor(delta int) {
 	}
 	m.syncLayout()
 }
-
-func (m *model) moveConfigAgentAutoLoopCursor(delta int) {
-	choices := configAgentAutoLoopChoices()
-	if m.configForm == nil || len(choices) == 0 {
-		return
-	}
-	m.configForm.agentAutoLoopCursor += delta
-	if m.configForm.agentAutoLoopCursor < 0 {
-		m.configForm.agentAutoLoopCursor = len(choices) - 1
-	} else if m.configForm.agentAutoLoopCursor >= len(choices) {
-		m.configForm.agentAutoLoopCursor = 0
-	}
-	m.syncLayout()
-}
-
 func (m *model) moveConfigSkillsCursor(delta int) {
 	choices := configSkillsInstallScopeChoices()
 	if m.configForm == nil || len(choices) == 0 {
@@ -5930,14 +5885,6 @@ func (m *model) moveConfigSkillsFreeTextCursor(delta int) {
 
 func configReasoningChoices() []ConfigChoice {
 	return []ConfigChoice{{Value: "off", Label: "关闭"}, {Value: "on", Label: "开启"}}
-}
-
-func configAgentAutoLoopChoices() []ConfigChoice {
-	return []ConfigChoice{
-		{Value: "", Label: "恢复默认", Description: "清空显式配置，恢复默认值。"},
-		{Value: "true", Label: "开启", Description: "默认开启智能体自动续跑。"},
-		{Value: "false", Label: "关闭", Description: "默认关闭智能体自动续跑。"},
-	}
 }
 
 func reasoningChoiceValue(enabled bool) string {
@@ -6180,7 +6127,7 @@ func (m *model) syncInputPlaceholder() {
 			m.input.Placeholder = "服务端已连接但未登录，登录表单已自动打开；也可手动执行 /login"
 			return
 		}
-		m.input.Placeholder = "输入内容后回车发送"
+		m.input.Placeholder = multilineInputPlaceholder(os.Environ())
 		return
 	}
 	m.input.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/tasks、/skills、/reasoning、/help、/clear、/exit"
@@ -6283,7 +6230,18 @@ func (m model) serverVersionLabel() string {
 }
 
 func (m model) currentInputHeight() int {
-	return inputHeightForValue(m.input.Value(), m.input.Prompt, m.contentWidth-10)
+	return inputHeightForValue(m.input.Value(), m.input.Prompt, m.contentWidth-10, m.maxInputHeight())
+}
+
+func (m model) maxInputHeight() int {
+	if m.height <= 0 {
+		return 6
+	}
+	maxHeight := m.height * 3 / 10
+	if maxHeight < 1 {
+		maxHeight = 1
+	}
+	return maxHeight
 }
 
 func snapshotServerVersion(snapshot Snapshot) string {
@@ -6300,10 +6258,13 @@ func snapshotServerVersion(snapshot Snapshot) string {
 	return version
 }
 
-func inputHeightForValue(value string, prompt string, inputWidth int) int {
+func inputHeightForValue(value string, prompt string, inputWidth int, maxHeight int) int {
 	availableWidth := inputWidth - lipgloss.Width(prompt) - 2
 	if availableWidth < 12 {
 		availableWidth = 12
+	}
+	if maxHeight < 1 {
+		maxHeight = 1
 	}
 	trimmed := value
 	if trimmed == "" {
@@ -6322,8 +6283,8 @@ func inputHeightForValue(value string, prompt string, inputWidth int) int {
 	if visualLines < 1 {
 		visualLines = 1
 	}
-	if visualLines > 6 {
-		visualLines = 6
+	if visualLines > maxHeight {
+		visualLines = maxHeight
 	}
 	return visualLines
 }
@@ -6885,6 +6846,8 @@ func isExecutableSlashCommandInput(input string) bool {
 		value, err := strconv.Atoi(page)
 		return err == nil && value >= 1
 	case strings.EqualFold(trimmed, "/help"):
+		return true
+	case strings.EqualFold(trimmed, "/about"):
 		return true
 	case strings.EqualFold(trimmed, "/clear"):
 		return true

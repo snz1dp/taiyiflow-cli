@@ -724,7 +724,7 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 			StreamIdleTimeoutSeconds: "300",
 			StreamRetryAttempts:      "2",
 			QRWaitTimeoutSeconds:     "90",
-			AgentAutoLoopEnabled:     "false",
+			AgentAutoLoopMaxRounds:   "0",
 			OutputLanguage:           "zh-CN",
 			SkillsInstallScope:       "workspace",
 			SkillsAutoInstallPolicy:  "allow",
@@ -780,8 +780,8 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	if updated.StreamRetryAttempts != 2 {
 		t.Fatalf("expected stream retry attempts saved, got %#v", updated.StreamRetryAttempts)
 	}
-	if updated.AgentAutoLoopEnabled {
-		t.Fatalf("expected agent auto loop switch saved as false, got %#v", updated.AgentAutoLoopEnabled)
+	if updated.AgentAutoLoopMaxRounds != 0 {
+		t.Fatalf("expected agent auto loop max rounds saved as 0, got %#v", updated.AgentAutoLoopMaxRounds)
 	}
 
 	reloaded, err := manager.Load()
@@ -803,8 +803,8 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	if reloaded.StreamRetryAttempts != 2 {
 		t.Fatalf("expected persisted stream retry attempts, got %#v", reloaded.StreamRetryAttempts)
 	}
-	if reloaded.AgentAutoLoopEnabled {
-		t.Fatalf("expected persisted auto loop switch false, got %#v", reloaded.AgentAutoLoopEnabled)
+	if reloaded.AgentAutoLoopMaxRounds != 0 {
+		t.Fatalf("expected persisted auto loop max rounds 0, got %#v", reloaded.AgentAutoLoopMaxRounds)
 	}
 	if got := formatPermissionRulesInline(reloaded.PermissionRules); got != "tool:shell_exec=deny; shell:git status=allow" {
 		t.Fatalf("unexpected formatted rules: %q", got)
@@ -856,6 +856,34 @@ func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T)
 	}
 	if !writeRequest.DisableDefaultAlwaysApprove {
 		t.Fatalf("expected write request to disable always approve, got %#v", writeRequest)
+	}
+	if !strings.Contains(writeRequest.PreviewBody, "--- notes.txt") || !strings.Contains(writeRequest.PreviewBody, "+++ notes.txt") || !strings.Contains(writeRequest.PreviewBody, "+hello world") {
+		t.Fatalf("expected write preview to render unified diff, got %#v", writeRequest.PreviewBody)
+	}
+	if strings.Contains(writeRequest.PreviewBody, "内容摘要") {
+		t.Fatalf("expected write preview to stop using summary format, got %#v", writeRequest.PreviewBody)
+	}
+
+	editRequest := buildTUIClientToolConfirmRequest(config, workspaceDir, map[string]any{
+		"function": map[string]any{
+			"name": "file_edit",
+			"arguments": map[string]any{
+				"path":                   "notes.txt",
+				"old_string":             "before line",
+				"new_string":             "after line",
+				"expected_sha256_before": "abc123",
+			},
+		},
+	}, nil, nil)
+	if !strings.Contains(editRequest.PreviewBody, "@@ expected_sha256_before=abc123 @@") || !strings.Contains(editRequest.PreviewBody, "-before line") || !strings.Contains(editRequest.PreviewBody, "+after line") {
+		t.Fatalf("expected file_edit preview to render diff body, got %#v", editRequest.PreviewBody)
+	}
+}
+
+func TestBuildTUIHelpLinesIncludesAboutEntry(t *testing.T) {
+	lines := buildTUIHelpLines(internaltui.Snapshot{BackendAvailable: true})
+	if !strings.Contains(strings.Join(lines, "\n"), "/about 显示当前客户端版本") {
+		t.Fatalf("expected /about in help lines, got %q", strings.Join(lines, "\n"))
 	}
 }
 

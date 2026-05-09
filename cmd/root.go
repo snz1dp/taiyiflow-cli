@@ -103,6 +103,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	switch args[0] {
 	case "task":
 		return a.runTask(ctx, args[1:])
+	case "about":
+		return a.runAbout(args[1:])
 	case "login":
 		return a.runLogin(ctx, args[1:])
 	case "skills":
@@ -316,6 +318,9 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 		case line == "/help":
 			a.printInteractiveUsage(ctx, providerClient, flowDisplayName, flowID, sessionState)
 			continue
+		case line == "/about":
+			fmt.Fprintln(a.stdout, renderAboutText())
+			continue
 		case line == "/clear":
 			a.clearInteractiveScreen()
 			continue
@@ -334,7 +339,6 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 				Workdir:                        workdir,
 				RequestMode:                    provider.RequestTypeAgent,
 				ContextDir:                     workdir,
-				AgentAutoLoopEnabledOverride:   sessionState.AgentAutoLoopEnabledOverride,
 				AgentAutoLoopMaxRoundsOverride: sessionState.AgentAutoLoopMaxRoundsOverride,
 				SandboxEscapePolicyOverride:    sessionState.SandboxEscapePolicyOverride,
 			}
@@ -378,7 +382,6 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 					Workdir:                        workdir,
 					RequestMode:                    firstNonEmpty(sessionState.RequestMode, provider.RequestTypeAgent),
 					ContextDir:                     resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir)),
-					AgentAutoLoopEnabledOverride:   sessionState.AgentAutoLoopEnabledOverride,
 					AgentAutoLoopMaxRoundsOverride: sessionState.AgentAutoLoopMaxRoundsOverride,
 					SandboxEscapePolicyOverride:    sessionState.SandboxEscapePolicyOverride,
 					SkillReviewPolicyOverride:      sessionState.SkillReviewPolicyOverride,
@@ -944,6 +947,7 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli agents [list|current|use] [参数]")
 	fmt.Fprintf(a.stdout, "  %s\n", skillsCommandSynopsis())
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli about")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli version")
 	fmt.Fprintf(a.stdout, "当前版本: %s\n", buildinfo.Version)
 }
@@ -953,7 +957,8 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 	fmt.Fprintln(a.stdout, "  /agent    切换为执行模式，可写成 /agent <任务>")
 	fmt.Fprintln(a.stdout, "  /agents   显示智能体切换说明")
 	fmt.Fprintln(a.stdout, "  /config   查看或更新服务端与权限配置")
-	fmt.Fprintln(a.stdout, "  /config session [show|set|unset] external_resource_access_policy [值]   查看或设置会话外部资源访问策略")
+	fmt.Fprintln(a.stdout, "  /config session [show|set|unset] external_resource_access_policy|agent_auto_loop_max_rounds [值]   查看或设置会话级运行策略")
+	fmt.Fprintln(a.stdout, "  /about    显示当前客户端版本、组织与后端对接说明")
 	fmt.Fprintln(a.stdout, "  /review   发起代码审查，可写成 /review [路径或范围说明]")
 	fmt.Fprintln(a.stdout, "  /tasks    查看后台任务，可写成 /tasks [list|output|capture|stop|remove] <task_id> 或 /tasks cleanup")
 	fmt.Fprintln(a.stdout, "  /skills   管理本地技能与远程仓库技能，可写成 /skills [list|view|search|view-remote|install|remove|update|source|enable|disable|help]")
@@ -1088,15 +1093,15 @@ func (a *App) runInteractiveConfigCommand(command string) error {
 func (a *App) runInteractiveSessionConfigCommand(command string, state *agent.SessionState) (string, error) {
 	args := parseSlashConfigArgs(command)
 	if len(args) < 2 || strings.ToLower(strings.TrimSpace(args[0])) != "session" {
-		return "", fmt.Errorf("用法: /config session [show|set|unset] <external_resource_access_policy|agent_auto_loop_enabled|agent_auto_loop_max_rounds> [value]")
+		return "", fmt.Errorf("用法: /config session [show|set|unset] <external_resource_access_policy|agent_auto_loop_max_rounds> [value]")
 	}
 	action := strings.ToLower(strings.TrimSpace(args[1]))
 	key := ""
 	if len(args) >= 3 {
 		key = normalizeConfigKey(args[2])
 	}
-	if key != "" && key != "external_resource_access_policy" && key != "agent_auto_loop_enabled" && key != "agent_auto_loop_max_rounds" {
-		return "", fmt.Errorf("会话配置仅支持 external_resource_access_policy、agent_auto_loop_enabled、agent_auto_loop_max_rounds")
+	if key != "" && key != "external_resource_access_policy" && key != "agent_auto_loop_max_rounds" {
+		return "", fmt.Errorf("会话配置仅支持 external_resource_access_policy、agent_auto_loop_max_rounds")
 	}
 	switch action {
 	case "show":
@@ -1107,35 +1112,24 @@ func (a *App) runInteractiveSessionConfigCommand(command string, state *agent.Se
 			}
 			return fmt.Sprintf("会话外部资源访问策略: %s", value), nil
 		}
-		if key == "agent_auto_loop_enabled" {
-			value := strings.TrimSpace(state.AgentAutoLoopEnabledOverride)
-			if value == "" {
-				value = "<继承全局配置>"
-			}
-			return fmt.Sprintf("会话智能体自动续跑开关: %s", value), nil
-		}
 		if key == "agent_auto_loop_max_rounds" {
-			if state.AgentAutoLoopMaxRoundsOverride < 1 {
+			if state.AgentAutoLoopMaxRoundsOverride == nil {
 				return "会话智能体自动续跑最大轮数: <继承全局配置>", nil
 			}
-			return fmt.Sprintf("会话智能体自动续跑最大轮数: %d", state.AgentAutoLoopMaxRoundsOverride), nil
+			return fmt.Sprintf("会话智能体自动续跑最大轮数: %d", *state.AgentAutoLoopMaxRoundsOverride), nil
 		}
 		policy := strings.TrimSpace(state.SandboxEscapePolicyOverride)
 		if policy == "" {
 			policy = "<继承全局配置>"
 		}
-		autoLoop := strings.TrimSpace(state.AgentAutoLoopEnabledOverride)
-		if autoLoop == "" {
-			autoLoop = "<继承全局配置>"
-		}
 		maxRounds := "<继承全局配置>"
-		if state.AgentAutoLoopMaxRoundsOverride > 0 {
-			maxRounds = strconv.Itoa(state.AgentAutoLoopMaxRoundsOverride)
+		if state.AgentAutoLoopMaxRoundsOverride != nil {
+			maxRounds = strconv.Itoa(*state.AgentAutoLoopMaxRoundsOverride)
 		}
-		return fmt.Sprintf("会话外部资源访问策略: %s\n会话智能体自动续跑开关: %s\n会话智能体自动续跑最大轮数: %s", policy, autoLoop, maxRounds), nil
+		return fmt.Sprintf("会话外部资源访问策略: %s\n会话智能体自动续跑最大轮数: %s", policy, maxRounds), nil
 	case "set":
 		if len(args) < 4 {
-			return "", fmt.Errorf("用法: /config session set <external_resource_access_policy|agent_auto_loop_enabled|agent_auto_loop_max_rounds> <value>")
+			return "", fmt.Errorf("用法: /config session set <external_resource_access_policy|agent_auto_loop_max_rounds> <value>")
 		}
 		switch key {
 		case "external_resource_access_policy":
@@ -1144,20 +1138,14 @@ func (a *App) runInteractiveSessionConfigCommand(command string, state *agent.Se
 				return "", fmt.Errorf("external_resource_access_policy 仅支持 confirm、deny、allow")
 			}
 			state.SandboxEscapePolicyOverride = policy
-		case "agent_auto_loop_enabled":
-			override := normalizeAgentAutoLoopEnabledOverride(args[3])
-			if override == "" {
-				return "", fmt.Errorf("agent_auto_loop_enabled 仅支持 on、off、true、false")
-			}
-			state.AgentAutoLoopEnabledOverride = override
 		case "agent_auto_loop_max_rounds":
 			rounds, err := strconv.Atoi(strings.TrimSpace(args[3]))
-			if err != nil || rounds < 1 {
-				return "", fmt.Errorf("agent_auto_loop_max_rounds 仅支持大于等于 1 的整数")
+			if err != nil || rounds < 0 || rounds > internalconfig.MaxAgentAutoLoopMaxRounds {
+				return "", fmt.Errorf("agent_auto_loop_max_rounds 仅支持 0-%d 的整数，0 表示禁用", internalconfig.MaxAgentAutoLoopMaxRounds)
 			}
-			state.AgentAutoLoopMaxRoundsOverride = rounds
+			state.AgentAutoLoopMaxRoundsOverride = &rounds
 		default:
-			return "", fmt.Errorf("用法: /config session set <external_resource_access_policy|agent_auto_loop_enabled|agent_auto_loop_max_rounds> <value>")
+			return "", fmt.Errorf("用法: /config session set <external_resource_access_policy|agent_auto_loop_max_rounds> <value>")
 		}
 		if err := a.sessionStore.Save(*state); err != nil {
 			return "", err
@@ -1165,21 +1153,17 @@ func (a *App) runInteractiveSessionConfigCommand(command string, state *agent.Se
 		switch key {
 		case "external_resource_access_policy":
 			return fmt.Sprintf("已设置会话外部资源访问策略: %s", state.SandboxEscapePolicyOverride), nil
-		case "agent_auto_loop_enabled":
-			return fmt.Sprintf("已设置会话智能体自动续跑开关: %s", state.AgentAutoLoopEnabledOverride), nil
 		default:
-			return fmt.Sprintf("已设置会话智能体自动续跑最大轮数: %d", state.AgentAutoLoopMaxRoundsOverride), nil
+			return fmt.Sprintf("已设置会话智能体自动续跑最大轮数: %d", *state.AgentAutoLoopMaxRoundsOverride), nil
 		}
 	case "unset", "clear":
 		switch key {
 		case "external_resource_access_policy":
 			state.SandboxEscapePolicyOverride = ""
-		case "agent_auto_loop_enabled":
-			state.AgentAutoLoopEnabledOverride = ""
 		case "agent_auto_loop_max_rounds":
-			state.AgentAutoLoopMaxRoundsOverride = 0
+			state.AgentAutoLoopMaxRoundsOverride = nil
 		default:
-			return "", fmt.Errorf("用法: /config session unset <external_resource_access_policy|agent_auto_loop_enabled|agent_auto_loop_max_rounds>")
+			return "", fmt.Errorf("用法: /config session unset <external_resource_access_policy|agent_auto_loop_max_rounds>")
 		}
 		if err := a.sessionStore.Save(*state); err != nil {
 			return "", err
@@ -1187,24 +1171,11 @@ func (a *App) runInteractiveSessionConfigCommand(command string, state *agent.Se
 		switch key {
 		case "external_resource_access_policy":
 			return "已清空会话外部资源访问策略，恢复继承全局配置", nil
-		case "agent_auto_loop_enabled":
-			return "已清空会话智能体自动续跑开关，恢复继承全局配置", nil
 		default:
 			return "已清空会话智能体自动续跑最大轮数，恢复继承全局配置", nil
 		}
 	default:
 		return "", fmt.Errorf("会话配置操作仅支持 show、set、unset")
-	}
-}
-
-func normalizeAgentAutoLoopEnabledOverride(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "on", "true", "enable", "enabled":
-		return "on"
-	case "off", "false", "disable", "disabled":
-		return "off"
-	default:
-		return ""
 	}
 }
 

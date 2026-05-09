@@ -15,6 +15,7 @@
 - 主语言：Go
 - 首版联调基线：../taiyiflow/src/backend/base
 - 默认界面：Bubble Tea TUI
+- 版本信息入口：`./taiyiflow-cli about`、交互式 `/about`、TUI `/about`
 
 ## 技能（Skill）
 
@@ -44,6 +45,8 @@
 
 - 长时间闲置后的首次普通 CLI 请求与 TUI 对话请求，都会优先尝试使用本地 `persistent_token` 自动续期；续期成功后会直接重放原始 stream 请求，只有续期失败或本地凭据缺失时才回落到重新登录。
 - 智能体“最大循环”边界只约束单次请求内的 agent/tool 迭代，不跨用户轮次累计；普通文本分片、上下文压缩进度事件和统计刷新事件不会被计入同一终止条件。
+- 文件写入审查由 `write_confirmation_policy` 单独控制；设置为 `direct` 时，`write_file` 与 `file_edit` 会直接执行，不再弹出写入审查窗口。
+- `agent_auto_loop_max_rounds` 支持 `0-100`；其中 `0` 表示禁用智能体自动续跑。
 
 ## 配置示例
 
@@ -59,6 +62,8 @@
 
 ```bash
 ./taiyiflow-cli config set external_resource_access_policy deny
+./taiyiflow-cli config set write_confirmation_policy direct
+./taiyiflow-cli config set agent_auto_loop_max_rounds 0
 ./taiyiflow-cli config show
 ```
 

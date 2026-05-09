@@ -333,6 +333,24 @@ func TestRequiresClientToolConfirmationRespectsSkillAndWritePolicies(t *testing.
 	if RequiresClientToolConfirmation(directConfig, writePayload) {
 		t.Fatal("expected direct write policy to skip confirmation")
 	}
+
+	askRuleConfig := confirmConfig
+	askRuleConfig.PermissionRules = []internalconfig.PermissionRule{{Action: "ask", ToolName: "write_file"}}
+	if !RequiresClientToolConfirmation(askRuleConfig, writePayload) {
+		t.Fatal("expected write confirmation policy to keep write review despite ask rule")
+	}
+
+	allowRuleConfig := confirmConfig
+	allowRuleConfig.PermissionRules = []internalconfig.PermissionRule{{Action: "allow", ToolName: "write_file"}}
+	if !RequiresClientToolConfirmation(allowRuleConfig, writePayload) {
+		t.Fatal("expected write confirmation policy to keep write review despite allow rule")
+	}
+
+	directAskRuleConfig := directConfig
+	directAskRuleConfig.PermissionRules = []internalconfig.PermissionRule{{Action: "ask", ToolName: "write_file"}}
+	if RequiresClientToolConfirmation(directAskRuleConfig, writePayload) {
+		t.Fatal("expected direct write policy to bypass write review despite ask rule")
+	}
 }
 
 func TestSetStreamEventLogsEnabledSuppressesBracketLogs(t *testing.T) {
@@ -475,6 +493,31 @@ func TestExecuteClientToolPayloadAutoModeBypassesAskRuleForFileEdit(t *testing.T
 	}
 	if !strings.Contains(string(content), "after") {
 		t.Fatalf("expected file_edit to be applied, got %q", string(content))
+	}
+}
+
+func TestExecuteClientToolPayloadConfirmModeIgnoresAllowRuleForWriteReview(t *testing.T) {
+	tempDir := t.TempDir()
+	runtimeClient := NewClientRuntime(strings.NewReader("n\n"), io.Discard, io.Discard)
+	config := internalconfig.Config{
+		Workdir:                  tempDir,
+		ApprovalMode:             "confirm",
+		WriteConfirmationPolicy:  internalconfig.WriteConfirmationPolicyConfirm,
+		PermissionRules:          []internalconfig.PermissionRule{{Action: "allow", ToolName: "write_file"}},
+	}
+	_, _, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": "write_file",
+			"arguments": map[string]any{
+				"path":    "notes.txt",
+				"content": "blocked",
+				"mode":    "create",
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "用户拒绝执行") {
+		t.Fatalf("expected write review confirmation to remain active despite allow rule, got %v", err)
 	}
 }
 

@@ -431,7 +431,6 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			Workdir:                        current.Workdir,
 			RequestMode:                    normalizeRequestMode(firstNonEmpty(current.RequestMode, loadedState.RequestMode)),
 			ContextDir:                     resolveLocalWorkdir(firstNonEmpty(loadedState.ContextDir, current.Workdir)),
-			AgentAutoLoopEnabledOverride:   loadedState.AgentAutoLoopEnabledOverride,
 			AgentAutoLoopMaxRoundsOverride: loadedState.AgentAutoLoopMaxRoundsOverride,
 			SandboxEscapePolicyOverride:    loadedState.SandboxEscapePolicyOverride,
 			SkillReviewPolicyOverride:      loadedState.SkillReviewPolicyOverride,
@@ -498,6 +497,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				Handled: true,
 				Events:  []tui.Event{{Kind: tui.EventSystemNote, Text: strings.Join(buildTUIHelpLines(snapshot), "\n")}},
 			}, nil
+		case trimmed == "/about":
+			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: renderAboutText()}}}, nil
 		case trimmed == "/config" || strings.EqualFold(trimmed, "/config show"):
 			formState, err := a.buildTUIConfigFormState(commandCtx, providerClient, snapshot)
 			if err != nil {
@@ -640,7 +641,6 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						RequestMode:                    mode,
 						ContextDir:                     updatedSnapshot.ContextDir,
 						ReasoningOverride:              currentSessionState.ReasoningOverride,
-						AgentAutoLoopEnabledOverride:   currentSessionState.AgentAutoLoopEnabledOverride,
 						AgentAutoLoopMaxRoundsOverride: currentSessionState.AgentAutoLoopMaxRoundsOverride,
 						SandboxEscapePolicyOverride:    currentSessionState.SandboxEscapePolicyOverride,
 						SkillReviewPolicyOverride:      currentSessionState.SkillReviewPolicyOverride,
@@ -844,6 +844,7 @@ func buildTUIHelpLines(snapshot tui.Snapshot) []string {
 			"当前处于只读模式。",
 			"原因: " + reason,
 			"可用命令:",
+			"/about 显示当前客户端版本、组织与后端对接说明",
 			"/login 打开登录表单",
 			"/clear 清空当前界面消息",
 			"/config 打开当前配置弹窗",
@@ -856,6 +857,7 @@ func buildTUIHelpLines(snapshot tui.Snapshot) []string {
 	}
 	return []string{
 		"可用命令:",
+		"/about 显示当前客户端版本、组织与后端对接说明",
 		"/new 重置当前智能体的本地会话",
 		"/clear 清空当前界面消息",
 		"/internet [on|off|status] 查看或切换当前对话的联网搜索",
@@ -1419,26 +1421,46 @@ func buildSkillReviewPreview(config internalconfig.Config, contextDir string, na
 func buildWriteConfirmationPreview(toolName string, arguments map[string]any) string {
 	path := fallbackString(stringMapValue(arguments, "path"), ".")
 	mode := fallbackString(stringMapValue(arguments, "mode"), "overwrite")
-	lines := []string{fmt.Sprintf("路径: %s", path)}
 	if toolName == "write_file" {
-		lines = append(lines, fmt.Sprintf("模式: %s", mode))
-		if content := trimText(stringMapValue(arguments, "content"), 240); content != "" {
-			lines = append(lines, fmt.Sprintf("内容摘要: %s", content))
+		lines := []string{
+			fmt.Sprintf("--- %s", path),
+			fmt.Sprintf("+++ %s", path),
+			fmt.Sprintf("@@ write_file mode=%s @@", mode),
 		}
-		return strings.Join(lines, "\n")
+		return strings.Join(truncatePreviewLines(appendDiffBlock(lines, "+", stringMapValue(arguments, "content")), 80), "\n")
 	}
-	oldString := trimText(stringMapValue(arguments, "old_string"), 120)
-	newString := trimText(stringMapValue(arguments, "new_string"), 120)
-	if oldString != "" {
-		lines = append(lines, fmt.Sprintf("编辑前: %s", oldString))
-	}
-	if newString != "" {
-		lines = append(lines, fmt.Sprintf("编辑后: %s", newString))
+	lines := []string{
+		fmt.Sprintf("--- %s", path),
+		fmt.Sprintf("+++ %s", path),
 	}
 	if expectedHash := strings.TrimSpace(stringMapValue(arguments, "expected_sha256_before")); expectedHash != "" {
-		lines = append(lines, fmt.Sprintf("编辑前摘要: %s", expectedHash))
+		lines = append(lines, fmt.Sprintf("@@ expected_sha256_before=%s @@", expectedHash))
+	} else {
+		lines = append(lines, "@@")
 	}
-	return strings.Join(lines, "\n")
+	lines = appendDiffBlock(lines, "-", stringMapValue(arguments, "old_string"))
+	lines = appendDiffBlock(lines, "+", stringMapValue(arguments, "new_string"))
+	return strings.Join(truncatePreviewLines(lines, 80), "\n")
+}
+
+func appendDiffBlock(lines []string, prefix string, body string) []string {
+	normalized := strings.ReplaceAll(body, "\r\n", "\n")
+	if normalized == "" {
+		return append(lines, prefix+"<empty>")
+	}
+	for _, line := range strings.Split(normalized, "\n") {
+		lines = append(lines, prefix+line)
+	}
+	return lines
+}
+
+func truncatePreviewLines(lines []string, maxLines int) []string {
+	if maxLines < 1 || len(lines) <= maxLines {
+		return lines
+	}
+	truncated := append([]string{}, lines[:maxLines]...)
+	truncated = append(truncated, fmt.Sprintf("... (%d more lines)", len(lines)-maxLines))
+	return truncated
 }
 
 func buildTUISandboxEscapeConfirmRequest(path string, alwaysApprove func(context.Context) error) tui.ConfirmRequest {
@@ -2164,7 +2186,6 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			StreamIdleTimeoutSeconds: strconv.Itoa(config.StreamIdleTimeoutSeconds),
 			StreamRetryAttempts:      strconv.Itoa(config.StreamRetryAttempts),
 			QRWaitTimeoutSeconds:     strconv.Itoa(config.QRWaitTimeoutSeconds),
-			AgentAutoLoopEnabled:     strconv.FormatBool(config.AgentAutoLoopEnabled),
 			AgentAutoLoopMaxRounds:   strconv.Itoa(config.AgentAutoLoopMaxRounds),
 			OutputLanguage:           strings.TrimSpace(config.OutputLanguage),
 			SkillsInstallScope:       internalconfig.NormalizeSkillInstallScope(config.Skills.InstallScope),
@@ -2262,12 +2283,6 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "qr_wait_timeout_seconds", Message: err.Error()}
 	}
 
-	if strings.TrimSpace(submission.Values.AgentAutoLoopEnabled) == "" {
-		config.AgentAutoLoopEnabled = internalconfig.Default().AgentAutoLoopEnabled
-	} else if err := assignConfigValue(&config, "agent_auto_loop_enabled", submission.Values.AgentAutoLoopEnabled); err != nil {
-		return internalconfig.Config{}, tui.ConfigFieldError{Field: "agent_auto_loop_enabled", Message: err.Error()}
-	}
-
 	if strings.TrimSpace(submission.Values.AgentAutoLoopMaxRounds) == "" {
 		config.AgentAutoLoopMaxRounds = internalconfig.Default().AgentAutoLoopMaxRounds
 	} else if err := assignConfigValue(&config, "agent_auto_loop_max_rounds", submission.Values.AgentAutoLoopMaxRounds); err != nil {
@@ -2323,13 +2338,7 @@ func resolveAgentAutoLoopEnabled(config internalconfig.Config, state agent.Sessi
 	if normalizeRequestMode(requestMode) != provider.RequestTypeAgent {
 		return nil
 	}
-	value := config.AgentAutoLoopEnabled
-	switch strings.ToLower(strings.TrimSpace(state.AgentAutoLoopEnabledOverride)) {
-	case "on":
-		value = true
-	case "off":
-		value = false
-	}
+	value := resolveAgentAutoLoopMaxRounds(config, state, requestMode) > 0
 	return &value
 }
 
@@ -2337,10 +2346,10 @@ func resolveAgentAutoLoopMaxRounds(config internalconfig.Config, state agent.Ses
 	if normalizeRequestMode(requestMode) != provider.RequestTypeAgent {
 		return 0
 	}
-	if state.AgentAutoLoopMaxRoundsOverride > 0 {
-		return state.AgentAutoLoopMaxRoundsOverride
+	if state.AgentAutoLoopMaxRoundsOverride != nil {
+		return internalconfig.NormalizeAgentAutoLoopMaxRounds(*state.AgentAutoLoopMaxRoundsOverride)
 	}
-	return config.AgentAutoLoopMaxRounds
+	return internalconfig.NormalizeAgentAutoLoopMaxRounds(config.AgentAutoLoopMaxRounds)
 }
 
 func reasoningStatusText(enabled bool) string {

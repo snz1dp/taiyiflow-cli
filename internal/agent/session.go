@@ -25,7 +25,7 @@ type SessionState struct {
 	ReasoningOverride              string     `json:"reasoning_override,omitempty"`
 	InternetSearchOverride         string     `json:"internet_search_override,omitempty"`
 	AgentAutoLoopEnabledOverride   string     `json:"agent_auto_loop_enabled_override,omitempty"`
-	AgentAutoLoopMaxRoundsOverride int        `json:"agent_auto_loop_max_rounds_override,omitempty"`
+	AgentAutoLoopMaxRoundsOverride *int       `json:"agent_auto_loop_max_rounds_override,omitempty"`
 	SandboxEscapePolicyOverride    string     `json:"sandbox_escape_policy_override,omitempty"`
 	SkillReviewPolicyOverride      string     `json:"skill_review_policy_override,omitempty"`
 	ApprovedSkillNames             []string   `json:"approved_skill_names,omitempty"`
@@ -278,11 +278,16 @@ func normalizeAgentAutoLoopEnabledOverride(value string) string {
 	}
 }
 
-func normalizeAgentAutoLoopMaxRoundsOverride(value int) int {
-	if value < 1 {
-		return 0
+
+func normalizeAgentAutoLoopMaxRoundsOverride(value *int) *int {
+	if value == nil {
+		return nil
 	}
-	return value
+	if *value < 0 {
+		return nil
+	}
+	normalized := internalconfig.NormalizeAgentAutoLoopMaxRounds(*value)
+	return &normalized
 }
 
 func normalizeTodoItems(items []TodoItem) []TodoItem {

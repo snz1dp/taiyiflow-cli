@@ -209,16 +209,10 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("qr_wait_timeout_seconds 仅支持大于等于 0 的整数秒，0 表示禁用")
 		}
 		config.QRWaitTimeoutSeconds = seconds
-	case "agent_auto_loop_enabled":
-		normalized := strings.ToLower(trimmedValue)
-		if normalized != "true" && normalized != "false" {
-			return fmt.Errorf("agent_auto_loop_enabled 仅支持 true 或 false")
-		}
-		config.AgentAutoLoopEnabled = normalized == "true"
 	case "agent_auto_loop_max_rounds":
 		rounds, err := strconv.Atoi(trimmedValue)
-		if err != nil || rounds < 1 {
-			return fmt.Errorf("agent_auto_loop_max_rounds 仅支持大于等于 1 的整数")
+		if err != nil || rounds < 0 || rounds > internalconfig.MaxAgentAutoLoopMaxRounds {
+			return fmt.Errorf("agent_auto_loop_max_rounds 仅支持 0-%d 的整数，0 表示禁用", internalconfig.MaxAgentAutoLoopMaxRounds)
 		}
 		config.AgentAutoLoopMaxRounds = rounds
 	case "output_language":
@@ -301,8 +295,6 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.StreamRetryAttempts = defaults.StreamRetryAttempts
 	case "qr_wait_timeout_seconds":
 		config.QRWaitTimeoutSeconds = defaults.QRWaitTimeoutSeconds
-	case "agent_auto_loop_enabled":
-		config.AgentAutoLoopEnabled = defaults.AgentAutoLoopEnabled
 	case "agent_auto_loop_max_rounds":
 		config.AgentAutoLoopMaxRounds = defaults.AgentAutoLoopMaxRounds
 	case "output_language":
@@ -349,8 +341,6 @@ func normalizeConfigKey(key string) string {
 		return "stream_retry_attempts"
 	case "qr_wait_timeout", "qrcode_wait_timeout", "qr_login_wait_timeout":
 		return "qr_wait_timeout_seconds"
-	case "agent_auto_continue_enabled", "agent_autoloop_enabled", "agent_auto_loop":
-		return "agent_auto_loop_enabled"
 	case "agent_auto_continue_max_rounds", "agent_autoloop_max_rounds", "agent_auto_loop_rounds":
 		return "agent_auto_loop_max_rounds"
 	case "skills_directory":
@@ -399,6 +389,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("流式空闲超时: %d 秒", config.StreamIdleTimeoutSeconds),
 		fmt.Sprintf("流失败自动重试次数: %d", config.StreamRetryAttempts),
 		fmt.Sprintf("扫码等待超时: %d 秒", config.QRWaitTimeoutSeconds),
+		fmt.Sprintf("智能体自动续跑最大轮数: %d（0 表示禁用）", config.AgentAutoLoopMaxRounds),
 		fmt.Sprintf("输出语言: %s", fallbackConfigValue(config.OutputLanguage, internalconfig.Default().OutputLanguage)),
 		fmt.Sprintf("审计日志: %t", config.AuditEnabled),
 		fmt.Sprintf("技能安装位置: %s", skillInstallScopeLabel(config)),

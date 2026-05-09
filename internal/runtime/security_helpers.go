@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
 )
 
 type sandboxEscapeError struct {
@@ -30,51 +31,72 @@ func isSandboxEscapeError(err error) (sandboxEscapeError, bool) {
 	return sandboxEscapeError{}, false
 }
 
-func resolveAllowedDirectory(config internalconfig.Config, requested string) (string, error) {
-	resolved, err := resolveAllowedPath(config, requested, false)
-	if err != nil {
-		return "", err
-	}
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return "", newToolError("EXECUTION_FAILED", "“%s”目录不存在", resolved)
-	}
-	if !info.IsDir() {
-		return "", newToolError("PARAM_ERROR", "“%s”是一个文件", resolved)
-	}
-	return resolved, nil
-}
 
 func (r *ClientRuntime) resolveAllowedDirectoryWithPolicy(config internalconfig.Config, requested string) (string, error) {
 	resolved, err := r.resolveAllowedPathWithPolicy(config, requested, false)
+	if err == nil {
+		info, statErr := os.Stat(resolved)
+		if statErr == nil {
+			if info.IsDir() {
+				return resolved, nil
+			}
+			return "", newToolError("PARAM_ERROR", "“%s”是一个文件", resolved)
+		}
+	}
+	if fallback, ok := resolveSkillScopedPath(config, requested, true, false); ok {
+		resolvedFallback, fallbackErr := r.resolveAllowedPathWithPolicy(config, fallback, false)
+		if fallbackErr == nil {
+			info, statErr := os.Stat(resolvedFallback)
+			if statErr == nil {
+				if info.IsDir() {
+					return resolvedFallback, nil
+				}
+				return "", newToolError("PARAM_ERROR", "“%s”是一个文件", resolvedFallback)
+			}
+		}
+	}
 	if err != nil {
 		return "", err
 	}
-	info, statErr := os.Stat(resolved)
-	if statErr != nil {
-		return "", newToolError("EXECUTION_FAILED", "“%s”目录不存在", resolved)
-	}
-	if !info.IsDir() {
-		return "", newToolError("PARAM_ERROR", "“%s”是一个文件", resolved)
-	}
-	return resolved, nil
+	return "", newToolError("EXECUTION_FAILED", "“%s”目录不存在", resolved)
 }
 
 func (r *ClientRuntime) resolveAllowedFilePathWithPolicy(config internalconfig.Config, requested string, allowCreate bool) (string, error) {
 	resolved, err := r.resolveAllowedPathWithPolicy(config, requested, allowCreate)
+	if err == nil {
+		if allowCreate {
+			return resolved, nil
+		}
+		info, statErr := os.Stat(resolved)
+		if statErr == nil {
+			if info.IsDir() {
+				return "", newToolError("PARAM_ERROR", "“%s”是一个目录", resolved)
+			}
+			return resolved, nil
+		}
+	}
+	if fallback, ok := resolveSkillScopedPath(config, requested, false, allowCreate); ok {
+		resolvedFallback, fallbackErr := r.resolveAllowedPathWithPolicy(config, fallback, allowCreate)
+		if fallbackErr == nil {
+			if allowCreate {
+				return resolvedFallback, nil
+			}
+			info, statErr := os.Stat(resolvedFallback)
+			if statErr == nil {
+				if info.IsDir() {
+					return "", newToolError("PARAM_ERROR", "“%s”是一个目录", resolvedFallback)
+				}
+				return resolvedFallback, nil
+			}
+		}
+	}
 	if err != nil {
 		return "", err
 	}
-	if !allowCreate {
-		info, statErr := os.Stat(resolved)
-		if statErr != nil {
-			return "", newToolError("EXECUTION_FAILED", "“%s”文件不存在", resolved)
-		}
-		if info.IsDir() {
-			return "", newToolError("PARAM_ERROR", "“%s”是一个目录", resolved)
-		}
+	if allowCreate {
+		return resolved, nil
 	}
-	return resolved, nil
+	return "", newToolError("EXECUTION_FAILED", "“%s”文件不存在", resolved)
 }
 
 func (r *ClientRuntime) resolveAllowedPathWithPolicy(config internalconfig.Config, requested string, allowCreate bool) (string, error) {
@@ -200,30 +222,177 @@ func resolveAllowedPath(config internalconfig.Config, requested string, allowCre
 }
 
 func resolveSandboxRoots(config internalconfig.Config, baseDir string) ([]string, error) {
-	roots := []string{baseDir}
-	for _, item := range config.SandboxRoots {
-		trimmed := strings.TrimSpace(item)
+	roots := []string{}
+	seen := map[string]struct{}{}
+	appendRoot := func(root string) error {
+		trimmed := strings.TrimSpace(root)
 		if trimmed == "" {
-			continue
+			return nil
 		}
-		root, err := expandTildePath(trimmed)
+		expanded, err := expandTildePath(trimmed)
 		if err != nil {
-			return nil, newToolError("PARAM_ERROR", "解析可访问外部资源目录失败: %v", err)
+			return newToolError("PARAM_ERROR", "解析可访问外部资源目录失败: %v", err)
 		}
-		if !filepath.IsAbs(root) {
-			root = filepath.Join(baseDir, root)
+		if !filepath.IsAbs(expanded) {
+			expanded = filepath.Join(baseDir, expanded)
 		}
-		resolved, err := filepath.Abs(root)
+		resolved, err := filepath.Abs(expanded)
 		if err != nil {
-			return nil, newToolError("PARAM_ERROR", "解析可访问外部资源目录失败: %v", err)
+			return newToolError("PARAM_ERROR", "解析可访问外部资源目录失败: %v", err)
 		}
 		resolved, err = resolveWithExistingParent(resolved)
 		if err != nil {
-			return nil, newToolError("PARAM_ERROR", "解析可访问外部资源目录路径失败: %v", err)
+			return newToolError("PARAM_ERROR", "解析可访问外部资源目录路径失败: %v", err)
 		}
+		if _, ok := seen[resolved]; ok {
+			return nil
+		}
+		seen[resolved] = struct{}{}
 		roots = append(roots, resolved)
+		return nil
+	}
+	if err := appendRoot(baseDir); err != nil {
+		return nil, err
+	}
+	for _, item := range config.SandboxRoots {
+		if err := appendRoot(item); err != nil {
+			return nil, err
+		}
+	}
+	if items, _, err := skills.Discover(config); err == nil {
+		for _, item := range items {
+			if err := appendRoot(strings.TrimSpace(item.RootDir)); err != nil {
+				return nil, err
+			}
+			if err := appendRoot(skillDirectory(item)); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return roots, nil
+}
+
+func resolveSkillScopedPath(config internalconfig.Config, requested string, wantDirectory bool, allowCreate bool) (string, bool) {
+	trimmed := strings.TrimSpace(requested)
+	if trimmed == "" {
+		return "", false
+	}
+	expanded, err := expandTildePath(trimmed)
+	if err != nil || filepath.IsAbs(expanded) {
+		return "", false
+	}
+	items, _, err := skills.Discover(config)
+	if err != nil || len(items) == 0 {
+		return "", false
+	}
+	requestedPath := filepath.ToSlash(expanded)
+	segments := strings.Split(requestedPath, "/")
+	seen := map[string]struct{}{}
+	matches := []string{}
+	for _, item := range items {
+		skillDir := skillDirectory(item)
+		if skillDir == "" {
+			continue
+		}
+		for _, candidate := range skillPathCandidates(item, skillDir, requestedPath, segments) {
+			candidate = filepath.Clean(candidate)
+			if _, ok := seen[candidate]; ok {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			if skillPathCandidateMatches(candidate, wantDirectory, allowCreate) {
+				matches = append(matches, candidate)
+			}
+		}
+	}
+	if len(matches) != 1 {
+		return "", false
+	}
+	return matches[0], true
+}
+
+func skillPathCandidates(item skills.Skill, skillDir string, requestedPath string, segments []string) []string {
+	candidates := []string{filepath.Join(skillDir, filepath.FromSlash(requestedPath))}
+	if rest, ok := stripSkillAliasFromPath(item, segments); ok {
+		candidate := skillDir
+		if rest != "" {
+			candidate = filepath.Join(skillDir, filepath.FromSlash(rest))
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates
+}
+
+func stripSkillAliasFromPath(item skills.Skill, segments []string) (string, bool) {
+	if len(segments) == 0 {
+		return "", false
+	}
+	first := strings.TrimSpace(segments[0])
+	if first == "" {
+		return "", false
+	}
+	for _, alias := range skillAliases(item) {
+		if strings.EqualFold(alias, first) {
+			return strings.Join(segments[1:], "/"), true
+		}
+	}
+	return "", false
+}
+
+func skillAliases(item skills.Skill) []string {
+	values := []string{}
+	seen := map[string]struct{}{}
+	for _, candidate := range []string{
+		strings.TrimSpace(item.Name),
+		filepath.Base(strings.TrimSpace(item.RelativeDir)),
+		filepath.Base(filepath.Dir(strings.TrimSpace(item.Path))),
+	} {
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed == "" || trimmed == "." || strings.Contains(trimmed, "/") || strings.Contains(trimmed, `\\`) {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		values = append(values, trimmed)
+	}
+	return values
+}
+
+func skillDirectory(item skills.Skill) string {
+	if path := strings.TrimSpace(item.Path); path != "" {
+		return filepath.Clean(filepath.Dir(path))
+	}
+	rootDir := strings.TrimSpace(item.RootDir)
+	relativeDir := strings.TrimSpace(item.RelativeDir)
+	if rootDir != "" && relativeDir != "" {
+		return filepath.Clean(filepath.Join(rootDir, filepath.FromSlash(relativeDir)))
+	}
+	if rootDir != "" {
+		return filepath.Clean(rootDir)
+	}
+	return ""
+}
+
+func skillPathCandidateMatches(candidate string, wantDirectory bool, allowCreate bool) bool {
+	if allowCreate {
+		parent := candidate
+		if !wantDirectory {
+			parent = filepath.Dir(candidate)
+		}
+		_, err := resolveWithExistingParent(parent)
+		return err == nil
+	}
+	info, err := os.Stat(candidate)
+	if err != nil {
+		return false
+	}
+	if wantDirectory {
+		return info.IsDir()
+	}
+	return !info.IsDir()
 }
 
 func expandTildePath(path string) (string, error) {
