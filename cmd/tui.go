@@ -277,14 +277,14 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 							execConfig.ApprovalMode = "auto"
 						}
 						toolName, result, toolErr := runtimeClient.ExecuteClientToolPayload(runCtx, execConfig, event.Data)
-						emitTUIClientToolResultEvents(emit, toolName, result, toolErr)
+						emitTUIClientToolResultEvents(emit, execConfig, toolName, result, toolErr)
 						if err := runtimeClient.SubmitClientToolCallback(runCtx, callbackProvider, event.Data, result, toolErr); err != nil {
 							return err
 						}
 						continue
 					}
 					toolName, result, toolErr := runtimeClient.ExecuteClientToolPayload(runCtx, localConfig, event.Data)
-					emitTUIClientToolResultEvents(emit, toolName, result, toolErr)
+					emitTUIClientToolResultEvents(emit, localConfig, toolName, result, toolErr)
 					if err := runtimeClient.SubmitClientToolCallback(runCtx, callbackProvider, event.Data, result, toolErr); err != nil {
 						return err
 					}
@@ -1383,6 +1383,7 @@ func buildTUIClientToolConfirmRequest(
 		request.Detail = "该工具会修改本地文件，是否允许本次写入？"
 		request.PreviewTitle = "比较摘要(compare summary)"
 		request.PreviewBody = buildWriteConfirmationPreview(strings.TrimSpace(toolName), arguments)
+		request.Expanded = true
 		request.ApproveLabel = "确认本次写入"
 		request.RejectLabel = "取消本次写入"
 		request.Hint = "Y 确认本次写入，N 取消本次写入；方向键或 Tab 选择，Enter 确认。"
@@ -1554,7 +1555,7 @@ func appendApprovedSkillName(state *agent.SessionState, name string) {
 	state.ApprovedSkillNames = append(state.ApprovedSkillNames, trimmed)
 }
 
-func emitTUIClientToolResultEvents(emit func(tui.Event), toolName string, result any, toolErr error) {
+func emitTUIClientToolResultEvents(emit func(tui.Event), config internalconfig.Config, toolName string, result any, toolErr error) {
 	if toolErr != nil {
 		emit(tui.Event{Kind: tui.EventErrorNote, Text: errorText(toolErr)})
 	}
@@ -1577,7 +1578,21 @@ func emitTUIClientToolResultEvents(emit func(tui.Event), toolName string, result
 		if statusText := buildToolPanelStatusText(panel, ""); statusText != "" {
 			emit(tui.Event{Kind: tui.EventSystemNote, Text: statusText})
 		}
-		emit(tui.Event{Kind: tui.EventToolPanel, Panel: panel})
+		if shouldOpenTUIClientToolPanel(config, toolName, toolErr) {
+			emit(tui.Event{Kind: tui.EventToolPanel, Panel: panel})
+		}
+	}
+}
+
+func shouldOpenTUIClientToolPanel(config internalconfig.Config, toolName string, toolErr error) bool {
+	if toolErr != nil {
+		return true
+	}
+	switch strings.TrimSpace(toolName) {
+	case "file_edit", "write_file":
+		return internalconfig.NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy) != internalconfig.WriteConfirmationPolicyDirect
+	default:
+		return true
 	}
 }
 

@@ -569,7 +569,8 @@ func TestRenderOverlayUsesWiderConfirmOverlay(t *testing.T) {
 		contentWidth: 132,
 		pendingConfirm: &confirmState{
 			request: ConfirmRequest{
-				Title:       "写入比较摘要(write summary)待确认",
+				Title:        "写入比较摘要(write summary)待确认",
+				Expanded:     true,
 				PreviewTitle: "比较预览(compare preview)",
 				PreviewBody:  "--- notes.txt\n+++ notes.txt\n@@\n-old\n+new",
 				ApproveLabel: "确认本次写入",
@@ -579,8 +580,99 @@ func TestRenderOverlayUsesWiderConfirmOverlay(t *testing.T) {
 	}
 
 	rendered := appModel.renderOverlay()
-	if lipgloss.Width(rendered) <= 120 {
-		t.Fatalf("expected confirm overlay wider than previous 112-column cap, got %d", lipgloss.Width(rendered))
+	if lipgloss.Width(rendered) != 140 {
+		t.Fatalf("expected expanded confirm overlay to use full width, got %d", lipgloss.Width(rendered))
+	}
+	if lipgloss.Height(rendered) != 30 {
+		t.Fatalf("expected expanded confirm overlay to use full height, got %d", lipgloss.Height(rendered))
+	}
+}
+
+func TestRenderConfirmOverlayShowsVisibleActionButtons(t *testing.T) {
+	appModel := model{
+		width:        120,
+		height:       24,
+		contentWidth: 112,
+		pendingConfirm: &confirmState{
+			request: ConfirmRequest{
+				Title:        "写入比较摘要(write summary)待确认",
+				PreviewTitle: "比较预览(compare preview)",
+				PreviewBody:  "--- notes.txt\n+++ notes.txt\n@@\n-old\n+new",
+				ApproveLabel: "确认本次写入",
+				RejectLabel:  "取消本次写入",
+			},
+			cursor: 0,
+		},
+	}
+
+	rendered := sanitizeTerminalText(appModel.renderConfirmOverlay())
+	if !strings.Contains(rendered, "Y 确认本次写入") || !strings.Contains(rendered, "N 取消本次写入") {
+		t.Fatalf("expected confirm overlay to render explicit action buttons, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "操作(actions)") {
+		t.Fatalf("expected confirm overlay to render action section, got %q", rendered)
+	}
+}
+
+func TestRenderConfirmPreviewBodyHighlightsUnifiedDiff(t *testing.T) {
+	appModel := model{
+		width:        120,
+		height:       24,
+		contentWidth: 112,
+		pendingConfirm: &confirmState{request: ConfirmRequest{Expanded: true}},
+	}
+
+	rendered := appModel.renderConfirmPreviewBody("--- notes.txt\n+++ notes.txt\n@@ expected_sha256_before=abc123 @@\n-before line\n+after line")
+	sanitized := sanitizeTerminalText(rendered)
+	if strings.Contains(sanitized, "---\n notes.txt") || strings.Contains(sanitized, "+\nafter line") {
+		t.Fatalf("expected unified diff lines to stay intact in preview, got %q", sanitized)
+	}
+	if !strings.Contains(sanitized, "-before line") || !strings.Contains(sanitized, "+after line") {
+		t.Fatalf("expected diff preview to keep unified diff content, got %q", sanitized)
+	}
+}
+
+
+func TestRenderInlineStyledDiffPairHighlightsChangedRunes(t *testing.T) {
+	removeRendered, addRendered := renderInlineStyledDiffPair("-before line", "+before value")
+	sanitized := sanitizeTerminalText(removeRendered + "\n" + addRendered)
+	if !strings.Contains(sanitized, "-before line") || !strings.Contains(sanitized, "+before value") {
+		t.Fatalf("expected inline diff render to preserve visible content, got %q", sanitized)
+	}
+	pair := computeInlineDiffPair("before line", "before value")
+	if pair.CommonPrefix != "before " || pair.OldChanged != "lin" || pair.NewChanged != "valu" || pair.CommonSuffix != "e" {
+		t.Fatalf("unexpected inline diff pair: %#v", pair)
+	}
+}
+
+func TestRenderInlineDiffBlockUsesLCSAnchorsForInsertedMiddleLine(t *testing.T) {
+	rendered := renderInlineDiffBlock(
+		[]string{"-before line", "-shared tail", "-last old"},
+		[]string{"+before value", "+inserted only", "+shared tail", "+last new"},
+		120,
+	)
+	got := make([]string, 0, len(rendered))
+	for _, line := range rendered {
+		got = append(got, sanitizeTerminalText(line))
+	}
+	expected := []string{
+		"-before line",
+		"+before value",
+		"+inserted only",
+		"-shared tail",
+		"+shared tail",
+		"-last old",
+		"+last new",
+	}
+	if strings.Join(got, "\n") != strings.Join(expected, "\n") {
+		t.Fatalf("expected LCS anchors to preserve middle insertion alignment, got %#v", got)
+	}
+	anchors := computeInlineDiffLineAnchors(
+		[]string{"-before line", "-shared tail", "-last old"},
+		[]string{"+before value", "+inserted only", "+shared tail", "+last new"},
+	)
+	if len(anchors) != 1 || anchors[0].RemoveIndex != 1 || anchors[0].AddIndex != 2 {
+		t.Fatalf("unexpected inline diff anchors: %#v", anchors)
 	}
 }
 

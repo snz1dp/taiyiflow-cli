@@ -625,7 +625,7 @@ func TestEmitTUIClientToolResultEventsEmitsStatusNoteBeforePanel(t *testing.T) {
 	events := []internaltui.Event{}
 	emitTUIClientToolResultEvents(func(event internaltui.Event) {
 		events = append(events, event)
-	}, "lsp_query", map[string]any{
+	}, internalconfig.Default(), "lsp_query", map[string]any{
 		"operation": "find_references",
 		"items": []any{
 			map[string]any{"name": "symbol", "path": "internal/tui/app.go"},
@@ -685,7 +685,7 @@ func TestEmitTUIClientToolResultEventsSkipsPanelForSkill(t *testing.T) {
 	events := []internaltui.Event{}
 	emitTUIClientToolResultEvents(func(event internaltui.Event) {
 		events = append(events, event)
-	}, "skill", map[string]any{
+	}, internalconfig.Default(), "skill", map[string]any{
 		"name":   "Context Review",
 		"prompt": "技能主体内容",
 	}, nil)
@@ -694,6 +694,53 @@ func TestEmitTUIClientToolResultEventsSkipsPanelForSkill(t *testing.T) {
 	}
 	if events[0].Kind != internaltui.EventSystemNote || !strings.Contains(events[0].Text, "技能已装载：Context Review") {
 		t.Fatalf("expected skill load note without panel, got %#v", events)
+	}
+}
+
+func TestEmitTUIClientToolResultEventsSkipsSuccessfulFileEditPanelInDirectMode(t *testing.T) {
+	config := internalconfig.Default()
+	config.WriteConfirmationPolicy = internalconfig.WriteConfirmationPolicyDirect
+	events := []internaltui.Event{}
+	emitTUIClientToolResultEvents(func(event internaltui.Event) {
+		events = append(events, event)
+	}, config, "file_edit", map[string]any{
+		"path":          "notes.txt",
+		"replacements":  1,
+		"preview_before": "before",
+		"preview_after":  "after",
+		"sha256_before":  "old-hash",
+		"sha256_after":   "new-hash",
+	}, nil)
+	if len(events) != 1 {
+		t.Fatalf("expected only status note for direct file_edit success, got %#v", events)
+	}
+	if events[0].Kind != internaltui.EventSystemNote || !strings.Contains(events[0].Text, "结果已生成：file_edit notes.txt 替换 1 处") {
+		t.Fatalf("expected status note without tool panel, got %#v", events)
+	}
+}
+
+func TestEmitTUIClientToolResultEventsKeepsFileEditFailurePanelInDirectMode(t *testing.T) {
+	config := internalconfig.Default()
+	config.WriteConfirmationPolicy = internalconfig.WriteConfirmationPolicyDirect
+	events := []internaltui.Event{}
+	emitTUIClientToolResultEvents(func(event internaltui.Event) {
+		events = append(events, event)
+	}, config, "file_edit", map[string]any{
+		"path":          "notes.txt",
+		"status":        "patch_conflict",
+		"sha256_before": "old-hash",
+	}, errors.New("PATCH_CONFLICT"))
+	if len(events) != 3 {
+		t.Fatalf("expected error note, status note and panel for direct file_edit failure, got %#v", events)
+	}
+	if events[0].Kind != internaltui.EventErrorNote {
+		t.Fatalf("expected error note first, got %#v", events)
+	}
+	if events[1].Kind != internaltui.EventSystemNote {
+		t.Fatalf("expected status note second, got %#v", events)
+	}
+	if events[2].Kind != internaltui.EventToolPanel || events[2].Panel == nil {
+		t.Fatalf("expected failure panel to remain available, got %#v", events)
 	}
 }
 
@@ -838,6 +885,9 @@ func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T)
 	if skillRequest.ApproveLabel != "本次允许" || skillRequest.RejectLabel != "本次拒绝" || skillRequest.AlwaysApproveLabel != "始终允许此技能" || skillRequest.AllowAllLabel != "允许全部技能" {
 		t.Fatalf("unexpected skill request labels: %#v", skillRequest)
 	}
+	if skillRequest.Expanded {
+		t.Fatalf("expected skill request to keep normal overlay size, got %#v", skillRequest)
+	}
 	if !strings.Contains(skillRequest.PreviewBody, "相对目录: context-review") {
 		t.Fatalf("expected skill preview to include relative dir, got %#v", skillRequest.PreviewBody)
 	}
@@ -856,6 +906,9 @@ func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T)
 	}
 	if !writeRequest.DisableDefaultAlwaysApprove {
 		t.Fatalf("expected write request to disable always approve, got %#v", writeRequest)
+	}
+	if !writeRequest.Expanded {
+		t.Fatalf("expected write request to use expanded review overlay, got %#v", writeRequest)
 	}
 	if !strings.Contains(writeRequest.PreviewBody, "--- notes.txt") || !strings.Contains(writeRequest.PreviewBody, "+++ notes.txt") || !strings.Contains(writeRequest.PreviewBody, "+hello world") {
 		t.Fatalf("expected write preview to render unified diff, got %#v", writeRequest.PreviewBody)
@@ -877,6 +930,9 @@ func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T)
 	}, nil, nil)
 	if !strings.Contains(editRequest.PreviewBody, "@@ expected_sha256_before=abc123 @@") || !strings.Contains(editRequest.PreviewBody, "-before line") || !strings.Contains(editRequest.PreviewBody, "+after line") {
 		t.Fatalf("expected file_edit preview to render diff body, got %#v", editRequest.PreviewBody)
+	}
+	if !editRequest.Expanded {
+		t.Fatalf("expected file_edit request to use expanded review overlay, got %#v", editRequest)
 	}
 }
 

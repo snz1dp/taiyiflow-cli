@@ -427,6 +427,7 @@ type ConfirmRequest struct {
 	Detail                      string
 	PreviewTitle                string
 	PreviewBody                 string
+	Expanded                    bool
 	Hint                        string
 	ApproveLabel                string
 	RejectLabel                 string
@@ -768,6 +769,33 @@ var (
 	labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#81C784"))
 	valueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#E8F5E9"))
 	hintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#A5D6A7"))
+
+	confirmButtonStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#2E7D32")).
+			Foreground(lipgloss.Color("#C8E6C9")).
+			Padding(0, 1)
+
+	confirmButtonSelectedStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#A5D6A7")).
+			Background(lipgloss.Color("#2E7D32")).
+			Foreground(lipgloss.Color("#F1F8E9")).
+			Bold(true).
+			Padding(0, 1)
+
+	confirmDiffFileStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#80CBC4"))
+	confirmDiffHunkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFE082")).Bold(true)
+	confirmDiffAddStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#A5D6A7"))
+	confirmDiffRemoveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	confirmDiffAddInlineStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#F1F8E9")).
+			Background(lipgloss.Color("#2E7D32")).
+			Bold(true)
+	confirmDiffRemoveInlineStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFF8E1")).
+			Background(lipgloss.Color("#B71C1C")).
+			Bold(true)
 
 	assistantStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F1F8E9"))
 
@@ -2814,9 +2842,11 @@ func (m model) renderOverlay() string {
 	content := ""
 	width := 0
 	fullScreenLogin := false
+	expandedConfirm := false
 	if m.pendingConfirm != nil {
 		width = m.confirmOverlayWidth()
 		content = m.renderConfirmOverlay()
+		expandedConfirm = m.confirmOverlayExpanded()
 	} else if m.toolPanel != nil {
 		width = minInt(m.contentWidth-6, 96)
 		content = m.renderToolPanel()
@@ -2851,7 +2881,7 @@ func (m model) renderOverlay() string {
 	if content == "" {
 		return ""
 	}
-	if fullScreenLogin {
+	if fullScreenLogin || expandedConfirm {
 		innerWidth := m.width - 2
 		if innerWidth < 20 {
 			innerWidth = 20
@@ -2871,44 +2901,52 @@ func (m model) renderOverlay() string {
 func (m model) renderConfirmOverlay() string {
 	request := m.pendingConfirm.request
 	options := m.confirmOptions()
-	lines := []string{request.Title}
+	previewWidth := m.confirmPreviewWrapWidth()
+	lines := []string{headerBarStyle.Render(trimForWidth(fallback(strings.TrimSpace(request.Title), "待确认"), previewWidth))}
 	if strings.TrimSpace(request.Command) != "" {
-		lines = append(lines, "命令: "+request.Command)
+		lines = append(lines, "", labelStyle.Render("命令(command)"), valueStyle.Render(hardWrapText(strings.TrimSpace(request.Command), previewWidth)))
 	}
 	if strings.TrimSpace(request.Detail) != "" {
-		lines = append(lines, request.Detail)
+		lines = append(lines, "", hintStyle.Render(hardWrapText(strings.TrimSpace(request.Detail), previewWidth)))
 	}
 	if strings.TrimSpace(request.PreviewTitle) != "" {
-		lines = append(lines, request.PreviewTitle)
+		lines = append(lines, "", labelStyle.Render(trimForWidth(strings.TrimSpace(request.PreviewTitle), previewWidth)))
 	}
 	if strings.TrimSpace(request.PreviewBody) != "" {
-		lines = append(lines, hardWrapText(request.PreviewBody, m.confirmPreviewWrapWidth()))
+		lines = append(lines, m.renderConfirmPreviewBody(request.PreviewBody))
 	}
-	renderedOptions := make([]string, 0, len(options))
-	for index, option := range options {
-		renderedOptions = append(renderedOptions, m.renderOverlayOption("[ "+option.label+" ]", m.pendingConfirm.cursor == index))
-	}
-	optionsLine := ""
-	if len(renderedOptions) > 0 {
-		optionsLine = renderedOptions[0]
-		for _, option := range renderedOptions[1:] {
-			optionsLine = lipgloss.JoinHorizontal(lipgloss.Left, optionsLine, "  ", option)
+	buttonRows, focusRow := m.renderConfirmButtonRows(options, previewWidth)
+	if len(buttonRows) > 0 {
+		lines = append(lines, "", labelStyle.Render("操作(actions)"))
+		for index, row := range buttonRows {
+			lines = append(lines, markOverlayFocus(row, index == focusRow))
 		}
 	}
 	hint := strings.TrimSpace(request.Hint)
 	if hint == "" {
 		hint = confirmHintForOptionCount(len(options))
 	}
-	lines = append(lines, "", markOverlayFocus(optionsLine, true), hint)
-	return strings.Join(lines, "\n\n")
+	lines = append(lines, "", hintStyle.Render(hardWrapText(hint, previewWidth)))
+	return strings.Join(lines, "\n")
 }
 
 func (m model) confirmOverlayWidth() int {
+	if m.confirmOverlayExpanded() {
+		width := m.width - 2
+		if width < 24 {
+			width = 24
+		}
+		return width
+	}
 	width := minInt(m.width-4, maxInt(72, m.contentWidth))
 	if width < 24 {
 		width = 24
 	}
 	return width
+}
+
+func (m model) confirmOverlayExpanded() bool {
+	return m.pendingConfirm != nil && m.pendingConfirm.request.Expanded
 }
 
 func (m model) confirmPreviewWrapWidth() int {
@@ -2928,6 +2966,344 @@ func confirmHintForOptionCount(optionCount int) string {
 	default:
 		return "Y 允许本次，N 本次拒绝；方向键或 Tab 选择，Enter 确认。"
 	}
+}
+
+func (m model) renderConfirmPreviewBody(content string) string {
+	if !looksLikeUnifiedDiffPreview(content) {
+		return hardWrapText(content, m.confirmPreviewWrapWidth())
+	}
+	return m.renderUnifiedDiffPreview(content)
+}
+
+func looksLikeUnifiedDiffPreview(content string) bool {
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	hasOld := false
+	hasNew := false
+	for _, line := range lines {
+		if strings.HasPrefix(line, "--- ") {
+			hasOld = true
+		}
+		if strings.HasPrefix(line, "+++ ") {
+			hasNew = true
+		}
+		if strings.HasPrefix(line, "@@") {
+			return true
+		}
+	}
+	return hasOld && hasNew
+}
+
+func (m model) renderUnifiedDiffPreview(content string) string {
+	width := m.confirmPreviewWrapWidth()
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	rendered := make([]string, 0, len(lines))
+	for index := 0; index < len(lines); {
+		line := lines[index]
+		kind := classifyUnifiedDiffLine(line)
+		switch kind {
+		case "remove":
+			removes := []string{}
+			for index < len(lines) && classifyUnifiedDiffLine(lines[index]) == "remove" {
+				removes = append(removes, lines[index])
+				index++
+			}
+			adds := []string{}
+			lookahead := index
+			for lookahead < len(lines) && classifyUnifiedDiffLine(lines[lookahead]) == "add" {
+				adds = append(adds, lines[lookahead])
+				lookahead++
+			}
+			if len(adds) == 0 {
+				for _, item := range removes {
+					rendered = append(rendered, styleUnifiedDiffLine("remove", trimForWidth(item, width)))
+				}
+				continue
+			}
+			rendered = append(rendered, renderInlineDiffBlock(removes, adds, width)...)
+			index = lookahead
+		case "add":
+			rendered = append(rendered, styleUnifiedDiffLine(kind, trimForWidth(line, width)))
+			index++
+		default:
+			rendered = append(rendered, styleUnifiedDiffLine(kind, trimForWidth(line, width)))
+			index++
+		}
+	}
+	return strings.Join(rendered, "\n")
+}
+
+type inlineDiffPair struct {
+	CommonPrefix string
+	OldChanged   string
+	NewChanged   string
+	CommonSuffix string
+}
+
+type inlineDiffLineAnchor struct {
+	RemoveIndex int
+	AddIndex    int
+}
+
+func renderInlineDiffBlock(removes []string, adds []string, width int) []string {
+	trimmedRemoves := make([]string, 0, len(removes))
+	for _, line := range removes {
+		trimmedRemoves = append(trimmedRemoves, trimForWidth(line, width))
+	}
+	trimmedAdds := make([]string, 0, len(adds))
+	for _, line := range adds {
+		trimmedAdds = append(trimmedAdds, trimForWidth(line, width))
+	}
+
+	anchors := computeInlineDiffLineAnchors(trimmedRemoves, trimmedAdds)
+	rendered := make([]string, 0, len(trimmedRemoves)+len(trimmedAdds))
+	removeStart := 0
+	addStart := 0
+	for _, anchor := range anchors {
+		rendered = append(rendered, renderSequentialInlineDiffRange(trimmedRemoves[removeStart:anchor.RemoveIndex], trimmedAdds[addStart:anchor.AddIndex])...)
+		rendered = append(rendered, renderSequentialInlineDiffRange(trimmedRemoves[anchor.RemoveIndex:anchor.RemoveIndex+1], trimmedAdds[anchor.AddIndex:anchor.AddIndex+1])...)
+		removeStart = anchor.RemoveIndex + 1
+		addStart = anchor.AddIndex + 1
+	}
+	rendered = append(rendered, renderSequentialInlineDiffRange(trimmedRemoves[removeStart:], trimmedAdds[addStart:])...)
+	return rendered
+}
+
+func renderSequentialInlineDiffRange(trimmedRemoves []string, trimmedAdds []string) []string {
+	pairedCount := minInt(len(trimmedRemoves), len(trimmedAdds))
+	rendered := make([]string, 0, len(trimmedRemoves)+len(trimmedAdds))
+	removeRendered := make([]string, len(trimmedRemoves))
+	addRendered := make([]string, len(trimmedAdds))
+	for index := 0; index < pairedCount; index++ {
+		removeRendered[index], addRendered[index] = renderInlineStyledDiffPair(trimmedRemoves[index], trimmedAdds[index])
+	}
+	for index, line := range trimmedRemoves {
+		if index < pairedCount {
+			rendered = append(rendered, removeRendered[index])
+			continue
+		}
+		rendered = append(rendered, styleUnifiedDiffLine("remove", line))
+	}
+	for index, line := range trimmedAdds {
+		if index < pairedCount {
+			rendered = append(rendered, addRendered[index])
+			continue
+		}
+		rendered = append(rendered, styleUnifiedDiffLine("add", line))
+	}
+	return rendered
+}
+
+func computeInlineDiffLineAnchors(trimmedRemoves []string, trimmedAdds []string) []inlineDiffLineAnchor {
+	removeBodies := make([]string, 0, len(trimmedRemoves))
+	for _, line := range trimmedRemoves {
+		removeBodies = append(removeBodies, strings.TrimPrefix(line, "-"))
+	}
+	addBodies := make([]string, 0, len(trimmedAdds))
+	for _, line := range trimmedAdds {
+		addBodies = append(addBodies, strings.TrimPrefix(line, "+"))
+	}
+	if len(removeBodies) == 0 || len(addBodies) == 0 {
+		return nil
+	}
+	dp := make([][]int, len(removeBodies)+1)
+	for index := range dp {
+		dp[index] = make([]int, len(addBodies)+1)
+	}
+	for removeIndex := len(removeBodies) - 1; removeIndex >= 0; removeIndex-- {
+		for addIndex := len(addBodies) - 1; addIndex >= 0; addIndex-- {
+			if removeBodies[removeIndex] == addBodies[addIndex] {
+				dp[removeIndex][addIndex] = dp[removeIndex+1][addIndex+1] + 1
+				continue
+			}
+			if dp[removeIndex+1][addIndex] >= dp[removeIndex][addIndex+1] {
+				dp[removeIndex][addIndex] = dp[removeIndex+1][addIndex]
+			} else {
+				dp[removeIndex][addIndex] = dp[removeIndex][addIndex+1]
+			}
+		}
+	}
+	anchors := make([]inlineDiffLineAnchor, 0, minInt(len(removeBodies), len(addBodies)))
+	for removeIndex, addIndex := 0, 0; removeIndex < len(removeBodies) && addIndex < len(addBodies); {
+		if removeBodies[removeIndex] == addBodies[addIndex] {
+			anchors = append(anchors, inlineDiffLineAnchor{RemoveIndex: removeIndex, AddIndex: addIndex})
+			removeIndex++
+			addIndex++
+			continue
+		}
+		if dp[removeIndex+1][addIndex] >= dp[removeIndex][addIndex+1] {
+			removeIndex++
+		} else {
+			addIndex++
+		}
+	}
+	return anchors
+}
+
+func renderInlineStyledDiffPair(removeLine string, addLine string) (string, string) {
+	removeBody := strings.TrimPrefix(removeLine, "-")
+	addBody := strings.TrimPrefix(addLine, "+")
+	pair := computeInlineDiffPair(removeBody, addBody)
+	return renderInlineStyledDiffLine("-", pair.CommonPrefix, pair.OldChanged, pair.CommonSuffix, false), renderInlineStyledDiffLine("+", pair.CommonPrefix, pair.NewChanged, pair.CommonSuffix, true)
+}
+
+func computeInlineDiffPair(oldText string, newText string) inlineDiffPair {
+	oldRunes := []rune(oldText)
+	newRunes := []rune(newText)
+	prefixLength := 0
+	for prefixLength < len(oldRunes) && prefixLength < len(newRunes) && oldRunes[prefixLength] == newRunes[prefixLength] {
+		prefixLength++
+	}
+	oldRemaining := len(oldRunes) - prefixLength
+	newRemaining := len(newRunes) - prefixLength
+	suffixLength := 0
+	for suffixLength < oldRemaining && suffixLength < newRemaining && oldRunes[len(oldRunes)-1-suffixLength] == newRunes[len(newRunes)-1-suffixLength] {
+		suffixLength++
+	}
+	oldChangedEnd := len(oldRunes) - suffixLength
+	newChangedEnd := len(newRunes) - suffixLength
+	if oldChangedEnd < prefixLength {
+		oldChangedEnd = prefixLength
+	}
+	if newChangedEnd < prefixLength {
+		newChangedEnd = prefixLength
+	}
+	commonSuffix := ""
+	if suffixLength > 0 {
+		commonSuffix = string(oldRunes[len(oldRunes)-suffixLength:])
+	}
+	return inlineDiffPair{
+		CommonPrefix: string(oldRunes[:prefixLength]),
+		OldChanged:   string(oldRunes[prefixLength:oldChangedEnd]),
+		NewChanged:   string(newRunes[prefixLength:newChangedEnd]),
+		CommonSuffix: commonSuffix,
+	}
+}
+
+func renderInlineStyledDiffLine(prefix string, commonPrefix string, changed string, commonSuffix string, added bool) string {
+	baseStyle := confirmDiffRemoveStyle
+	changedStyle := confirmDiffRemoveInlineStyle
+	if added {
+		baseStyle = confirmDiffAddStyle
+		changedStyle = confirmDiffAddInlineStyle
+	}
+	if commonPrefix == "" && commonSuffix == "" {
+		if changed == "" {
+			return baseStyle.Render(prefix)
+		}
+		return lipgloss.JoinHorizontal(lipgloss.Left, baseStyle.Render(prefix), changedStyle.Render(changed))
+	}
+	parts := []string{baseStyle.Render(prefix)}
+	if commonPrefix != "" {
+		parts = append(parts, baseStyle.Render(commonPrefix))
+	}
+	if changed != "" {
+		parts = append(parts, changedStyle.Render(changed))
+	}
+	if commonSuffix != "" {
+		parts = append(parts, baseStyle.Render(commonSuffix))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Left, parts...)
+}
+
+func classifyUnifiedDiffLine(line string) string {
+	switch {
+	case strings.HasPrefix(line, "--- "), strings.HasPrefix(line, "+++ "):
+		return "file"
+	case strings.HasPrefix(line, "@@"):
+		return "hunk"
+	case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
+		return "add"
+	case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
+		return "remove"
+	case strings.HasPrefix(line, "... ("):
+		return "meta"
+	default:
+		return "context"
+	}
+}
+
+func styleUnifiedDiffLine(kind string, line string) string {
+	switch kind {
+	case "file":
+		return confirmDiffFileStyle.Render(line)
+	case "hunk":
+		return confirmDiffHunkStyle.Render(line)
+	case "add":
+		return confirmDiffAddStyle.Render(line)
+	case "remove":
+		return confirmDiffRemoveStyle.Render(line)
+	case "meta":
+		return hintStyle.Render(line)
+	default:
+		return valueStyle.Render(line)
+	}
+}
+
+func (m model) renderConfirmButtonRows(options []confirmOption, width int) ([]string, int) {
+	rows := []string{}
+	currentRow := ""
+	currentRowHasFocus := false
+	focusRow := 0
+	for index, option := range options {
+		button := m.renderConfirmButton(option, index, len(options), m.pendingConfirm != nil && m.pendingConfirm.cursor == index)
+		if currentRow == "" {
+			currentRow = button
+			currentRowHasFocus = m.pendingConfirm != nil && m.pendingConfirm.cursor == index
+			continue
+		}
+		if lipgloss.Width(currentRow)+2+lipgloss.Width(button) > width {
+			if currentRowHasFocus {
+				focusRow = len(rows)
+			}
+			rows = append(rows, currentRow)
+			currentRow = button
+			currentRowHasFocus = m.pendingConfirm != nil && m.pendingConfirm.cursor == index
+			continue
+		}
+		currentRow = lipgloss.JoinHorizontal(lipgloss.Left, currentRow, "  ", button)
+		if m.pendingConfirm != nil && m.pendingConfirm.cursor == index {
+			currentRowHasFocus = true
+		}
+	}
+	if currentRow != "" {
+		if currentRowHasFocus {
+			focusRow = len(rows)
+		}
+		rows = append(rows, currentRow)
+	}
+	return rows, focusRow
+}
+
+func (m model) renderConfirmButton(option confirmOption, index int, optionCount int, selected bool) string {
+	label := option.label
+	if shortcut := confirmOptionShortcut(index, optionCount); shortcut != "" {
+		label = shortcut + " " + label
+	}
+	if selected {
+		return confirmButtonSelectedStyle.Render(label)
+	}
+	return confirmButtonStyle.Render(label)
+}
+
+func confirmOptionShortcut(index int, optionCount int) string {
+	switch optionCount {
+	case 4:
+		shortcuts := []string{"Y", "N", "S", "A"}
+		if index >= 0 && index < len(shortcuts) {
+			return shortcuts[index]
+		}
+	case 3:
+		shortcuts := []string{"Y", "N", "A"}
+		if index >= 0 && index < len(shortcuts) {
+			return shortcuts[index]
+		}
+	default:
+		shortcuts := []string{"Y", "N"}
+		if index >= 0 && index < len(shortcuts) {
+			return shortcuts[index]
+		}
+	}
+	return ""
 }
 
 func (m model) renderToolPanel() string {
@@ -4878,7 +5254,7 @@ func (m model) overlayPageStep() int {
 
 func (m model) overlayVisibleLineLimit() int {
 	limit := m.height - overlayStyle.GetVerticalFrameSize() - 6
-	if m.loginForm != nil {
+	if m.loginForm != nil || m.confirmOverlayExpanded() {
 		limit = m.height - overlayStyle.GetVerticalFrameSize() - 2
 	}
 	if limit < 5 {
