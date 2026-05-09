@@ -212,27 +212,28 @@ type FileCapability struct {
 }
 
 type ConfigFormValues struct {
-	BackendBaseURL           string
-	DefaultFlow              string
-	ApprovalMode             string
-	SandboxEscapePolicy      string
-	SkillReviewPolicy        string
-	WriteConfirmationPolicy  string
-	SandboxRoots             string
-	PermissionRules          string
-	ReasoningEnabled         bool
-	Workdir                  string
-	HTTPTimeoutSeconds       string
-	CommandTimeoutSeconds    string
-	StreamIdleTimeoutSeconds string
-	StreamRetryAttempts      string
-	QRWaitTimeoutSeconds     string
-	AgentAutoLoopMaxRounds   string
-	OutputLanguage           string
-	SkillsInstallScope       string
-	SkillsAutoInstallPolicy  string
-	SkillsFreeTextSearch     bool
-	SkillsRegistryURL        string
+	BackendBaseURL            string
+	DefaultFlow               string
+	ApprovalMode              string
+	SandboxEscapePolicy       string
+	SkillReviewPolicy         string
+	WriteConfirmationPolicy   string
+	SandboxRoots              string
+	PermissionRules           string
+	ReasoningEnabled          bool
+	Workdir                   string
+	HTTPTimeoutSeconds        string
+	CommandTimeoutSeconds     string
+	StreamIdleTimeoutSeconds  string
+	StreamRetryAttempts       string
+	CrossSessionMemoryEnabled bool
+	QRWaitTimeoutSeconds      string
+	AgentAutoLoopMaxRounds    string
+	OutputLanguage            string
+	SkillsInstallScope        string
+	SkillsAutoInstallPolicy   string
+	SkillsFreeTextSearch      bool
+	SkillsRegistryURL         string
 }
 
 type ConfigChoice struct {
@@ -654,27 +655,28 @@ type model struct {
 }
 
 type configFormState struct {
-	title                   string
-	hint                    string
-	statusText              string
-	statusIsError           bool
-	path                    string
-	submitText              string
-	inputs                  []textinput.Model
-	cursor                  int
-	flowOptions             []ConfigChoice
-	flowCursor              int
-	flowOpen                bool
-	approvalCursor          int
-	sandboxCursor           int
-	skillReviewCursor       int
-	writeConfirmationCursor int
-	reasoningCursor         int
-	skillsCursor            int
-	skillsAutoInstallCursor int
-	skillsFreeTextCursor    int
-	fieldErrorKey           string
-	fieldErrorText          string
+	title                    string
+	hint                     string
+	statusText               string
+	statusIsError            bool
+	path                     string
+	submitText               string
+	inputs                   []textinput.Model
+	cursor                   int
+	flowOptions              []ConfigChoice
+	flowCursor               int
+	flowOpen                 bool
+	approvalCursor           int
+	sandboxCursor            int
+	skillReviewCursor        int
+	writeConfirmationCursor  int
+	reasoningCursor          int
+	crossSessionMemoryCursor int
+	skillsCursor             int
+	skillsAutoInstallCursor  int
+	skillsFreeTextCursor     int
+	fieldErrorKey            string
+	fieldErrorText           string
 }
 
 type loginFormState struct {
@@ -727,6 +729,7 @@ const (
 	configFieldCommandTimeout
 	configFieldStreamIdleTimeout
 	configFieldStreamRetryAttempts
+	configFieldCrossSessionMemory
 	configFieldQRWaitTimeout
 	configFieldAgentAutoLoopMaxRounds
 	configFieldOutputLanguage
@@ -771,31 +774,31 @@ var (
 	hintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#A5D6A7"))
 
 	confirmButtonStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#2E7D32")).
-			Foreground(lipgloss.Color("#C8E6C9")).
-			Padding(0, 1)
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("#2E7D32")).
+				Foreground(lipgloss.Color("#C8E6C9")).
+				Padding(0, 1)
 
 	confirmButtonSelectedStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#A5D6A7")).
-			Background(lipgloss.Color("#2E7D32")).
-			Foreground(lipgloss.Color("#F1F8E9")).
-			Bold(true).
-			Padding(0, 1)
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("#A5D6A7")).
+					Background(lipgloss.Color("#2E7D32")).
+					Foreground(lipgloss.Color("#F1F8E9")).
+					Bold(true).
+					Padding(0, 1)
 
-	confirmDiffFileStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#80CBC4"))
-	confirmDiffHunkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFE082")).Bold(true)
-	confirmDiffAddStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#A5D6A7"))
-	confirmDiffRemoveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	confirmDiffFileStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#80CBC4"))
+	confirmDiffHunkStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFE082")).Bold(true)
+	confirmDiffAddStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#A5D6A7"))
+	confirmDiffRemoveStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	confirmDiffAddInlineStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#F1F8E9")).
-			Background(lipgloss.Color("#2E7D32")).
-			Bold(true)
+					Foreground(lipgloss.Color("#F1F8E9")).
+					Background(lipgloss.Color("#2E7D32")).
+					Bold(true)
 	confirmDiffRemoveInlineStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FFF8E1")).
-			Background(lipgloss.Color("#B71C1C")).
-			Bold(true)
+					Foreground(lipgloss.Color("#FFF8E1")).
+					Background(lipgloss.Color("#B71C1C")).
+					Bold(true)
 
 	assistantStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F1F8E9"))
 
@@ -1667,6 +1670,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveConfigReasoningCursor(-1)
 			return m, nil
 		}
+		if m.configForm.cursor == configFieldCrossSessionMemory {
+			m.moveConfigCrossSessionMemoryCursor(-1)
+			return m, nil
+		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
 			m.moveConfigSkillsCursor(-1)
 			return m, nil
@@ -1702,6 +1709,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldReasoningMode {
 			m.moveConfigReasoningCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldCrossSessionMemory {
+			m.moveConfigCrossSessionMemoryCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
@@ -1753,6 +1764,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldReasoningMode {
 			m.moveConfigReasoningCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldCrossSessionMemory {
+			m.moveConfigCrossSessionMemoryCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
@@ -3588,7 +3603,12 @@ func (m model) renderConfigForm() string {
 	}
 	lines = append(lines, "")
 
+	currentGroup := ""
 	for index, spec := range configFormFieldSpecs() {
+		if group := configFormFieldGroup(index); group != "" && group != currentGroup {
+			currentGroup = group
+			lines = append(lines, commandHintStyle.Render("["+group+"]"))
+		}
 		label := spec.label
 		if index == m.configForm.cursor {
 			label = selectedFlowStyle.Render(trimForWidth(label, m.contentWidth-16))
@@ -3615,6 +3635,8 @@ func (m model) renderConfigForm() string {
 			lines = append(lines, m.renderConfigWriteConfirmationField())
 		case configFieldReasoningMode:
 			lines = append(lines, m.renderConfigReasoningField())
+		case configFieldCrossSessionMemory:
+			lines = append(lines, m.renderConfigCrossSessionMemoryField())
 		case configFieldSkillsInstallScope:
 			lines = append(lines, m.renderConfigSkillsInstallScopeField())
 		case configFieldSkillsAutoInstallPolicy:
@@ -3784,6 +3806,29 @@ func (m model) renderConfigReasoningField() string {
 		}
 		item := marker + " " + option.Label
 		if m.configForm.cursor == configFieldReasoningMode && selected {
+			parts = append(parts, selectedFlowStyle.Render(item))
+		} else if selected {
+			parts = append(parts, valueStyle.Render(item))
+		} else {
+			parts = append(parts, commandHintStyle.Render(item))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m model) renderConfigCrossSessionMemoryField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(configCrossSessionMemoryChoices()))
+	for index, option := range configCrossSessionMemoryChoices() {
+		selected := index == m.configForm.crossSessionMemoryCursor
+		marker := "( )"
+		if selected {
+			marker = "(*)"
+		}
+		item := marker + " " + option.Label
+		if m.configForm.cursor == configFieldCrossSessionMemory && selected {
 			parts = append(parts, selectedFlowStyle.Render(item))
 		} else if selected {
 			parts = append(parts, valueStyle.Render(item))
@@ -5402,6 +5447,10 @@ func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
 	if m.configForm.reasoningCursor >= 0 && m.configForm.reasoningCursor < len(reasoningChoices) {
 		submission.Values.ReasoningEnabled = reasoningChoices[m.configForm.reasoningCursor].Value == "on"
 	}
+	crossSessionMemoryChoices := configCrossSessionMemoryChoices()
+	if m.configForm.crossSessionMemoryCursor >= 0 && m.configForm.crossSessionMemoryCursor < len(crossSessionMemoryChoices) {
+		submission.Values.CrossSessionMemoryEnabled = strings.TrimSpace(crossSessionMemoryChoices[m.configForm.crossSessionMemoryCursor].Value) == "true"
+	}
 	skillsChoices := configSkillsInstallScopeChoices()
 	if m.configForm.skillsCursor >= 0 && m.configForm.skillsCursor < len(skillsChoices) {
 		submission.Values.SkillsInstallScope = strings.TrimSpace(skillsChoices[m.configForm.skillsCursor].Value)
@@ -5481,26 +5530,27 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 	}
 	flowOptions := normalizeConfigFlowChoices(state.FlowOptions, values.DefaultFlow)
 	return &configFormState{
-		title:                   state.Title,
-		hint:                    state.Hint,
-		statusText:              state.StatusText,
-		statusIsError:           state.StatusIsError,
-		fieldErrorKey:           "",
-		fieldErrorText:          "",
-		path:                    state.Path,
-		submitText:              state.SubmitText,
-		inputs:                  models,
-		cursor:                  0,
-		flowOptions:             flowOptions,
-		flowCursor:              configChoiceIndex(flowOptions, values.DefaultFlow),
-		approvalCursor:          configChoiceIndex(configApprovalChoices(), values.ApprovalMode),
-		sandboxCursor:           configChoiceIndex(configSandboxChoices(), values.SandboxEscapePolicy),
-		skillReviewCursor:       configChoiceIndex(configSkillReviewChoices(), values.SkillReviewPolicy),
-		writeConfirmationCursor: configChoiceIndex(configWriteConfirmationChoices(), values.WriteConfirmationPolicy),
-		reasoningCursor:         configChoiceIndex(configReasoningChoices(), reasoningChoiceValue(values.ReasoningEnabled)),
-		skillsCursor:            configChoiceIndex(configSkillsInstallScopeChoices(), values.SkillsInstallScope),
-		skillsAutoInstallCursor: configChoiceIndex(configSkillsAutoInstallChoices(), values.SkillsAutoInstallPolicy),
-		skillsFreeTextCursor:    configChoiceIndex(configSkillsFreeTextSearchChoices(), boolChoiceValue(values.SkillsFreeTextSearch)),
+		title:                    state.Title,
+		hint:                     state.Hint,
+		statusText:               state.StatusText,
+		statusIsError:            state.StatusIsError,
+		fieldErrorKey:            "",
+		fieldErrorText:           "",
+		path:                     state.Path,
+		submitText:               state.SubmitText,
+		inputs:                   models,
+		cursor:                   0,
+		flowOptions:              flowOptions,
+		flowCursor:               configChoiceIndex(flowOptions, values.DefaultFlow),
+		approvalCursor:           configChoiceIndex(configApprovalChoices(), values.ApprovalMode),
+		sandboxCursor:            configChoiceIndex(configSandboxChoices(), values.SandboxEscapePolicy),
+		skillReviewCursor:        configChoiceIndex(configSkillReviewChoices(), values.SkillReviewPolicy),
+		writeConfirmationCursor:  configChoiceIndex(configWriteConfirmationChoices(), values.WriteConfirmationPolicy),
+		reasoningCursor:          configChoiceIndex(configReasoningChoices(), reasoningChoiceValue(values.ReasoningEnabled)),
+		crossSessionMemoryCursor: configChoiceIndex(configCrossSessionMemoryChoices(), boolChoiceValue(values.CrossSessionMemoryEnabled)),
+		skillsCursor:             configChoiceIndex(configSkillsInstallScopeChoices(), values.SkillsInstallScope),
+		skillsAutoInstallCursor:  configChoiceIndex(configSkillsAutoInstallChoices(), values.SkillsAutoInstallPolicy),
+		skillsFreeTextCursor:     configChoiceIndex(configSkillsFreeTextSearchChoices(), boolChoiceValue(values.SkillsFreeTextSearch)),
 	}
 }
 
@@ -5956,6 +6006,7 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "命令执行超时（秒）", placeholder: "30", description: "本地命令与语言服务查询在未显式传超时(timeout)时使用该默认值，范围 1-300 秒。"},
 		{label: "流式空闲超时（秒）", placeholder: "300", description: "大于等于 0 的整数秒，0 表示禁用流式空闲超时。"},
 		{label: "流失败自动重试次数", placeholder: "0", description: "流连接异常后的自动重试次数，范围 0-3；0 表示不自动重试。"},
+		{label: "跨会话记忆", placeholder: "", description: "左右键或空格切换是否允许后端启用跨会话记忆。命令行(CLI)参数可覆盖该系统配置。"},
 		{label: "扫码等待超时（秒）", placeholder: "30", description: "二维码登录在自动轮询时使用该默认值；大于等于 0 的整数秒，0 表示持续等待直到手动取消。"},
 		{label: "智能体自动续跑最大轮数", placeholder: "0", description: "仅对智能体模式生效；填写 0-100 的整数，0 表示禁用。"},
 		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
@@ -5963,6 +6014,23 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "技能自动补装策略", placeholder: "", description: "左右键或空格切换关闭(off)、确认(confirm)、自动安装(allow)。默认建议使用确认(confirm)。"},
 		{label: "自由文本技能搜索", placeholder: "", description: "左右键或空格切换是否允许按任务文本搜索远程技能候选。"},
 		{label: "技能仓库地址", placeholder: "https://mirror-cn.clawhub.com", description: "远程技能搜索、详情和安装默认使用该镜像站。"},
+	}
+}
+
+func configFormFieldGroup(index int) string {
+	switch index {
+	case configFieldBackendBaseURL, configFieldDefaultFlow:
+		return "服务端与智能体"
+	case configFieldApprovalMode, configFieldSandboxPolicy, configFieldSkillReviewPolicy, configFieldWriteConfirmationPolicy, configFieldSandboxRoots, configFieldPermissionRules:
+		return "权限与审查"
+	case configFieldReasoningMode, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldStreamRetryAttempts, configFieldCrossSessionMemory, configFieldQRWaitTimeout:
+		return "运行与超时"
+	case configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage:
+		return "会话与输出"
+	case configFieldSkillsInstallScope, configFieldSkillsAutoInstallPolicy, configFieldSkillsFreeTextSearch, configFieldSkillsRegistryURL:
+		return "技能配置"
+	default:
+		return ""
 	}
 }
 
@@ -5997,18 +6065,20 @@ func configFormFieldValue(index int, values ConfigFormValues) string {
 	case 13:
 		return strings.TrimSpace(values.StreamRetryAttempts)
 	case 14:
-		return strings.TrimSpace(values.QRWaitTimeoutSeconds)
-	case 15:
-		return strings.TrimSpace(values.AgentAutoLoopMaxRounds)
-	case 16:
-		return strings.TrimSpace(values.OutputLanguage)
-	case 17:
 		return ""
+	case 15:
+		return strings.TrimSpace(values.QRWaitTimeoutSeconds)
+	case 16:
+		return strings.TrimSpace(values.AgentAutoLoopMaxRounds)
+	case 17:
+		return strings.TrimSpace(values.OutputLanguage)
 	case 18:
 		return ""
 	case 19:
 		return ""
 	case 20:
+		return ""
+	case 21:
 		return strings.TrimSpace(values.SkillsRegistryURL)
 	default:
 		return ""
@@ -6044,17 +6114,17 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 	if len(inputs) > 13 {
 		values.StreamRetryAttempts = strings.TrimSpace(inputs[13].Value())
 	}
-	if len(inputs) > 14 {
-		values.QRWaitTimeoutSeconds = strings.TrimSpace(inputs[14].Value())
-	}
 	if len(inputs) > 15 {
-		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[15].Value())
+		values.QRWaitTimeoutSeconds = strings.TrimSpace(inputs[15].Value())
 	}
 	if len(inputs) > 16 {
-		values.OutputLanguage = strings.TrimSpace(inputs[16].Value())
+		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[16].Value())
 	}
-	if len(inputs) > 20 {
-		values.SkillsRegistryURL = strings.TrimSpace(inputs[20].Value())
+	if len(inputs) > 17 {
+		values.OutputLanguage = strings.TrimSpace(inputs[17].Value())
+	}
+	if len(inputs) > 21 {
+		values.SkillsRegistryURL = strings.TrimSpace(inputs[21].Value())
 	}
 	return values
 }
@@ -6098,6 +6168,8 @@ func configFieldKey(index int) string {
 		return "stream_idle_timeout_seconds"
 	case configFieldStreamRetryAttempts:
 		return "stream_retry_attempts"
+	case configFieldCrossSessionMemory:
+		return "cross_session_memory_enabled"
 	case configFieldQRWaitTimeout:
 		return "qr_wait_timeout_seconds"
 	case configFieldAgentAutoLoopMaxRounds:
@@ -6217,6 +6289,21 @@ func (m *model) moveConfigReasoningCursor(delta int) {
 	}
 	m.syncLayout()
 }
+
+func (m *model) moveConfigCrossSessionMemoryCursor(delta int) {
+	choices := configCrossSessionMemoryChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.crossSessionMemoryCursor += delta
+	if m.configForm.crossSessionMemoryCursor < 0 {
+		m.configForm.crossSessionMemoryCursor = len(choices) - 1
+	} else if m.configForm.crossSessionMemoryCursor >= len(choices) {
+		m.configForm.crossSessionMemoryCursor = 0
+	}
+	m.syncLayout()
+}
+
 func (m *model) moveConfigSkillsCursor(delta int) {
 	choices := configSkillsInstallScopeChoices()
 	if m.configForm == nil || len(choices) == 0 {
@@ -6261,6 +6348,10 @@ func (m *model) moveConfigSkillsFreeTextCursor(delta int) {
 
 func configReasoningChoices() []ConfigChoice {
 	return []ConfigChoice{{Value: "off", Label: "关闭"}, {Value: "on", Label: "开启"}}
+}
+
+func configCrossSessionMemoryChoices() []ConfigChoice {
+	return []ConfigChoice{{Value: "true", Label: "开启"}, {Value: "false", Label: "关闭"}}
 }
 
 func reasoningChoiceValue(enabled bool) string {

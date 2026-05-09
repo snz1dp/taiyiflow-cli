@@ -704,8 +704,8 @@ func TestEmitTUIClientToolResultEventsSkipsSuccessfulFileEditPanelInDirectMode(t
 	emitTUIClientToolResultEvents(func(event internaltui.Event) {
 		events = append(events, event)
 	}, config, "file_edit", map[string]any{
-		"path":          "notes.txt",
-		"replacements":  1,
+		"path":           "notes.txt",
+		"replacements":   1,
 		"preview_before": "before",
 		"preview_after":  "after",
 		"sha256_before":  "old-hash",
@@ -757,26 +757,27 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 
 	updated, err := app.applyConfigFormSubmission(internaltui.ConfigFormSubmission{
 		Values: internaltui.ConfigFormValues{
-			BackendBaseURL:           "http://localhost:7860",
-			ApprovalMode:             "auto",
-			SandboxEscapePolicy:      "allow",
-			SkillReviewPolicy:        "ignore",
-			WriteConfirmationPolicy:  "direct",
-			SandboxRoots:             "/tmp/a, /tmp/b",
-			PermissionRules:          "tool:shell_exec=deny; shell:git status=allow",
-			ReasoningEnabled:         true,
-			Workdir:                  "/workspace/demo",
-			HTTPTimeoutSeconds:       "75",
-			CommandTimeoutSeconds:    "45",
-			StreamIdleTimeoutSeconds: "300",
-			StreamRetryAttempts:      "2",
-			QRWaitTimeoutSeconds:     "90",
-			AgentAutoLoopMaxRounds:   "0",
-			OutputLanguage:           "zh-CN",
-			SkillsInstallScope:       "workspace",
-			SkillsAutoInstallPolicy:  "allow",
-			SkillsFreeTextSearch:     false,
-			SkillsRegistryURL:        "https://mirror-cn.clawhub.com",
+			BackendBaseURL:            "http://localhost:7860",
+			ApprovalMode:              "auto",
+			SandboxEscapePolicy:       "allow",
+			SkillReviewPolicy:         "ignore",
+			WriteConfirmationPolicy:   "direct",
+			SandboxRoots:              "/tmp/a, /tmp/b",
+			PermissionRules:           "tool:shell_exec=deny; shell:git status=allow",
+			ReasoningEnabled:          true,
+			Workdir:                   "/workspace/demo",
+			HTTPTimeoutSeconds:        "75",
+			CommandTimeoutSeconds:     "45",
+			StreamIdleTimeoutSeconds:  "300",
+			StreamRetryAttempts:       "2",
+			CrossSessionMemoryEnabled: true,
+			QRWaitTimeoutSeconds:      "90",
+			AgentAutoLoopMaxRounds:    "0",
+			OutputLanguage:            "zh-CN",
+			SkillsInstallScope:        "workspace",
+			SkillsAutoInstallPolicy:   "allow",
+			SkillsFreeTextSearch:      false,
+			SkillsRegistryURL:         "https://mirror-cn.clawhub.com",
 		},
 	})
 	if err != nil {
@@ -827,6 +828,9 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	if updated.StreamRetryAttempts != 2 {
 		t.Fatalf("expected stream retry attempts saved, got %#v", updated.StreamRetryAttempts)
 	}
+	if !updated.CrossSessionMemoryEnabled {
+		t.Fatalf("expected cross session memory saved, got %#v", updated.CrossSessionMemoryEnabled)
+	}
 	if updated.AgentAutoLoopMaxRounds != 0 {
 		t.Fatalf("expected agent auto loop max rounds saved as 0, got %#v", updated.AgentAutoLoopMaxRounds)
 	}
@@ -849,6 +853,9 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	}
 	if reloaded.StreamRetryAttempts != 2 {
 		t.Fatalf("expected persisted stream retry attempts, got %#v", reloaded.StreamRetryAttempts)
+	}
+	if !reloaded.CrossSessionMemoryEnabled {
+		t.Fatalf("expected persisted cross session memory, got %#v", reloaded.CrossSessionMemoryEnabled)
 	}
 	if reloaded.AgentAutoLoopMaxRounds != 0 {
 		t.Fatalf("expected persisted auto loop max rounds 0, got %#v", reloaded.AgentAutoLoopMaxRounds)

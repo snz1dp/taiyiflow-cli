@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -559,6 +560,129 @@ func TestRunTaskStreamRetryFlagOverridesSystemConfig(t *testing.T) {
 	if !strings.Contains(output, "正在自动重试（1/2）") || !strings.Contains(output, "正在自动重试（2/2）") {
 		t.Fatalf("expected retry progress from flag override, got %q", output)
 	}
+}
+
+func TestRunTaskCrossSessionMemoryConfigAndFlagPrecedence(t *testing.T) {
+	testCases := []struct {
+		name       string
+		configured bool
+		args       []string
+		expected   bool
+	}{
+		{name: "inherit configured true", configured: true, args: []string{"测试任务"}, expected: true},
+		{name: "flag true overrides configured false", configured: false, args: []string{"--cross-session-memory-enabled=true", "测试任务"}, expected: true},
+		{name: "flag false overrides configured true", configured: true, args: []string{"--cross-session-memory-enabled=false", "测试任务"}, expected: false},
+	}
+
+	for _, item := range testCases {
+		t.Run(item.name, func(t *testing.T) {
+			captured := runTaskAndCaptureStreamBody(t, item.configured, item.args)
+			value, ok := captured["cross_session_memory_enabled"].(bool)
+			if !ok {
+				t.Fatalf("expected cross_session_memory_enabled bool in request body, got %#v", captured["cross_session_memory_enabled"])
+			}
+			if value != item.expected {
+				t.Fatalf("expected cross_session_memory_enabled=%v, got %v", item.expected, value)
+			}
+		})
+	}
+}
+
+func TestStreamTaskInjectsEnvironmentHint(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	app.stdout = io.Discard
+	app.stderr = io.Discard
+	app.runtime = clientruntime.NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	workdir := t.TempDir()
+
+	stream := make(chan provider.StreamEvent, 1)
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	providerStub := &stubProvider{stream: stream}
+	_, err := app.streamTask(
+		context.Background(),
+		providerStub,
+		internalconfig.Config{Workdir: workdir},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent, ContextDir: workdir},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+	input := providerStub.lastRequest.Input
+	for _, expected := range []string{"<taiyiflow_environment>", "OS:", "ARCH:", "工作目录:", workdir, "命令执行目标: client", "command + args", "rawCommand", "fork/exec ... not supported", "demo task"} {
+		if !strings.Contains(input, expected) {
+			t.Fatalf("expected environment hint to contain %q, got %q", expected, input)
+		}
+	}
+	if !strings.HasSuffix(input, "demo task") {
+		t.Fatalf("expected original task to remain at end, got %q", input)
+	}
+}
+
+func runTaskAndCaptureStreamBody(t *testing.T, crossSessionMemoryEnabled bool, args []string) map[string]any {
+	t.Helper()
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/taiyi/composer/api/v1/users/whoami/userinfo":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
+		case "/taiyi/composer/api/v1/version":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"package":"taiyiflow","main_version":"1.0.0"}`)
+		case "/taiyi/composer/api/v1/config":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"default_flow_id":"flow-1"}`)
+		case "/taiyi/composer/api/v1/run/flow-1/stream":
+			if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode stream request failed: %v", err)
+			}
+			writer.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(writer, "event: close\ndata: {}\n\n")
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.AccessToken = "access-1"
+	config.CrossSessionMemoryEnabled = crossSessionMemoryEnabled
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	store, err := agent.NewSessionStore()
+	if err != nil {
+		t.Fatalf("new session store failed: %v", err)
+	}
+	var stdout bytes.Buffer
+	app := &App{
+		configManager: manager,
+		sessionStore:  store,
+		stdout:        &stdout,
+		stderr:        io.Discard,
+		stdin:         strings.NewReader(""),
+		runtime:       clientruntime.NewClientRuntime(strings.NewReader(""), &stdout, io.Discard),
+	}
+	if err := app.runTask(context.Background(), args); err != nil {
+		t.Fatalf("runTask failed: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("expected stream request body to be captured")
+	}
+	return captured
 }
 
 func TestCallbackAuthRefreshProviderRetriesSubmitAfterUnauthorized(t *testing.T) {

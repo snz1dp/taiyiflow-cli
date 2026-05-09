@@ -47,31 +47,32 @@ const (
 )
 
 type Config struct {
-	BackendBaseURL           string           `yaml:"backend_base_url"`
-	BackendAPIPrefix         string           `yaml:"backend_api_prefix,omitempty"`
-	AccessToken              string           `yaml:"access_token,omitempty"`
-	PersistentToken          string           `yaml:"persistent_token,omitempty"`
-	DeviceID                 string           `yaml:"device_id,omitempty"`
-	AuthUpdatedAt            string           `yaml:"auth_updated_at,omitempty"`
-	DefaultFlow              string           `yaml:"default_flow,omitempty"`
-	ApprovalMode             string           `yaml:"approval_mode"`
-	ReasoningEnabled         bool             `yaml:"reasoning_enabled,omitempty"`
-	Workdir                  string           `yaml:"workdir,omitempty"`
-	HTTPTimeoutSeconds       int              `yaml:"http_timeout_seconds,omitempty"`
-	SandboxEscapePolicy      string           `yaml:"sandbox_escape_policy,omitempty"`
-	CommandTimeoutSeconds    int              `yaml:"command_timeout_seconds,omitempty"`
-	StreamIdleTimeoutSeconds int              `yaml:"stream_idle_timeout_seconds,omitempty"`
-	StreamRetryAttempts      int              `yaml:"stream_retry_attempts,omitempty"`
-	QRWaitTimeoutSeconds     int              `yaml:"qr_wait_timeout_seconds,omitempty"`
-	AgentAutoLoopEnabled     bool             `yaml:"agent_auto_loop_enabled,omitempty"`
-	AgentAutoLoopMaxRounds   int              `yaml:"agent_auto_loop_max_rounds,omitempty"`
-	OutputLanguage           string           `yaml:"output_language"`
-	AuditEnabled             bool             `yaml:"audit_enabled,omitempty"`
-	SkillReviewPolicy        string           `yaml:"skill_review_policy,omitempty"`
-	WriteConfirmationPolicy  string           `yaml:"write_confirmation_policy,omitempty"`
-	SandboxRoots             []string         `yaml:"sandbox_roots,omitempty"`
-	PermissionRules          []PermissionRule `yaml:"permission_rules,omitempty"`
-	Skills                   SkillConfig      `yaml:"skills,omitempty"`
+	BackendBaseURL            string           `yaml:"backend_base_url"`
+	BackendAPIPrefix          string           `yaml:"backend_api_prefix,omitempty"`
+	AccessToken               string           `yaml:"access_token,omitempty"`
+	PersistentToken           string           `yaml:"persistent_token,omitempty"`
+	DeviceID                  string           `yaml:"device_id,omitempty"`
+	AuthUpdatedAt             string           `yaml:"auth_updated_at,omitempty"`
+	DefaultFlow               string           `yaml:"default_flow,omitempty"`
+	ApprovalMode              string           `yaml:"approval_mode"`
+	ReasoningEnabled          bool             `yaml:"reasoning_enabled,omitempty"`
+	Workdir                   string           `yaml:"workdir,omitempty"`
+	HTTPTimeoutSeconds        int              `yaml:"http_timeout_seconds,omitempty"`
+	SandboxEscapePolicy       string           `yaml:"sandbox_escape_policy,omitempty"`
+	CommandTimeoutSeconds     int              `yaml:"command_timeout_seconds,omitempty"`
+	StreamIdleTimeoutSeconds  int              `yaml:"stream_idle_timeout_seconds,omitempty"`
+	StreamRetryAttempts       int              `yaml:"stream_retry_attempts,omitempty"`
+	QRWaitTimeoutSeconds      int              `yaml:"qr_wait_timeout_seconds,omitempty"`
+	AgentAutoLoopEnabled      bool             `yaml:"agent_auto_loop_enabled,omitempty"`
+	AgentAutoLoopMaxRounds    int              `yaml:"agent_auto_loop_max_rounds,omitempty"`
+	CrossSessionMemoryEnabled bool             `yaml:"cross_session_memory_enabled,omitempty"`
+	OutputLanguage            string           `yaml:"output_language"`
+	AuditEnabled              bool             `yaml:"audit_enabled,omitempty"`
+	SkillReviewPolicy         string           `yaml:"skill_review_policy,omitempty"`
+	WriteConfirmationPolicy   string           `yaml:"write_confirmation_policy,omitempty"`
+	SandboxRoots              []string         `yaml:"sandbox_roots,omitempty"`
+	PermissionRules           []PermissionRule `yaml:"permission_rules,omitempty"`
+	Skills                    SkillConfig      `yaml:"skills,omitempty"`
 }
 
 type PermissionRule struct {
@@ -104,22 +105,23 @@ type Manager struct {
 
 func Default() Config {
 	return Config{
-		BackendBaseURL:           "https://snz1.cn",
-		BackendAPIPrefix:         DefaultBackendAPIPrefix,
-		ApprovalMode:             "confirm",
-		ReasoningEnabled:         false,
-		SandboxEscapePolicy:      SandboxEscapePolicyConfirm,
-		HTTPTimeoutSeconds:       DefaultHTTPTimeoutSeconds,
-		CommandTimeoutSeconds:    DefaultCommandTimeoutSeconds,
-		StreamIdleTimeoutSeconds: DefaultStreamIdleTimeoutSeconds,
-		StreamRetryAttempts:      DefaultStreamRetryAttempts,
-		QRWaitTimeoutSeconds:     DefaultQRWaitTimeoutSeconds,
-		AgentAutoLoopEnabled:     false,
-		AgentAutoLoopMaxRounds:   DefaultAgentAutoLoopMaxRounds,
-		OutputLanguage:           "zh-CN",
-		AuditEnabled:             false,
-		SkillReviewPolicy:        SkillReviewPolicyConfirm,
-		WriteConfirmationPolicy:  WriteConfirmationPolicyConfirm,
+		BackendBaseURL:            "https://snz1.cn",
+		BackendAPIPrefix:          DefaultBackendAPIPrefix,
+		ApprovalMode:              "confirm",
+		ReasoningEnabled:          false,
+		SandboxEscapePolicy:       SandboxEscapePolicyConfirm,
+		HTTPTimeoutSeconds:        DefaultHTTPTimeoutSeconds,
+		CommandTimeoutSeconds:     DefaultCommandTimeoutSeconds,
+		StreamIdleTimeoutSeconds:  DefaultStreamIdleTimeoutSeconds,
+		StreamRetryAttempts:       DefaultStreamRetryAttempts,
+		QRWaitTimeoutSeconds:      DefaultQRWaitTimeoutSeconds,
+		AgentAutoLoopEnabled:      false,
+		AgentAutoLoopMaxRounds:    DefaultAgentAutoLoopMaxRounds,
+		CrossSessionMemoryEnabled: false,
+		OutputLanguage:            "zh-CN",
+		AuditEnabled:              false,
+		SkillReviewPolicy:         SkillReviewPolicyConfirm,
+		WriteConfirmationPolicy:   WriteConfirmationPolicyConfirm,
 		Skills: SkillConfig{
 			InstallScope:          SkillInstallScopeUser,
 			AutoInstallPolicy:     SkillAutoInstallPolicyOff,

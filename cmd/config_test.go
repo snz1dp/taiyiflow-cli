@@ -53,6 +53,25 @@ func TestResetConfigValueStreamRetryAttempts(t *testing.T) {
 	}
 }
 
+func TestAssignAndResetConfigValueCrossSessionMemoryEnabled(t *testing.T) {
+	config := internalconfig.Default()
+	if err := assignConfigValue(&config, "cross-session-memory", "true"); err != nil {
+		t.Fatalf("assignConfigValue returned error: %v", err)
+	}
+	if !config.CrossSessionMemoryEnabled {
+		t.Fatal("expected cross session memory to be enabled")
+	}
+	if err := assignConfigValue(&config, "cross_session_memory_enabled", "maybe"); err == nil {
+		t.Fatal("expected invalid cross_session_memory_enabled value to fail")
+	}
+	if err := resetConfigValue(&config, "cross_session_memory_enabled"); err != nil {
+		t.Fatalf("resetConfigValue returned error: %v", err)
+	}
+	if config.CrossSessionMemoryEnabled != internalconfig.Default().CrossSessionMemoryEnabled {
+		t.Fatalf("expected default cross session memory %v, got %v", internalconfig.Default().CrossSessionMemoryEnabled, config.CrossSessionMemoryEnabled)
+	}
+}
+
 func TestAssignConfigValueCommandTimeoutSeconds(t *testing.T) {
 	config := internalconfig.Default()
 	if err := assignConfigValue(&config, "command_timeout_seconds", "45"); err != nil {
@@ -138,6 +157,9 @@ func TestRenderConfigSummaryUsesExternalResourceAccessPolicyLabel(t *testing.T) 
 	}
 	if !strings.Contains(summary, "技能自动补装策略:") || !strings.Contains(summary, "自由文本技能搜索:") {
 		t.Fatalf("expected skill auto install labels, got %q", summary)
+	}
+	if !strings.Contains(summary, "跨会话记忆: false") {
+		t.Fatalf("expected cross session memory label, got %q", summary)
 	}
 }
 

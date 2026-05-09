@@ -54,34 +54,35 @@ type StreamEvent struct {
 }
 
 type StreamRequest struct {
-	FlowID                 string
-	Input                  string
-	InputType              string
-	InputFiles             []string
-	InternetSearch         bool
-	KnowledgeScopes        []string
-	KnowledgeDocs          []string
-	OutputType             string
-	OutputComponent        string
-	SessionID              string
-	RunID                  string
-	RequestType            string
-	DeviceType             string
-	ClientContextDir       string
-	UserAgent              string
-	CommandExecutionTarget string
-	MaxIterations          int
-	AgentContinueWindows   int
-	AgentAutoLoopEnabled   *bool
-	AgentAutoLoopMaxRounds int
-	MessageID              string
-	RequestedSkillNames    []string
-	AgentInputs            map[string]any
-	ReasoningEnabled       bool
-	MasterFlowID           string
-	AvailableTools         []any
-	ClientMCPServers       map[string]any
-	ClientSkillPackages    any
+	FlowID                    string
+	Input                     string
+	InputType                 string
+	InputFiles                []string
+	InternetSearch            bool
+	KnowledgeScopes           []string
+	KnowledgeDocs             []string
+	OutputType                string
+	OutputComponent           string
+	SessionID                 string
+	RunID                     string
+	RequestType               string
+	DeviceType                string
+	ClientContextDir          string
+	UserAgent                 string
+	CommandExecutionTarget    string
+	MaxIterations             int
+	AgentContinueWindows      int
+	AgentAutoLoopEnabled      *bool
+	AgentAutoLoopMaxRounds    int
+	CrossSessionMemoryEnabled *bool
+	MessageID                 string
+	RequestedSkillNames       []string
+	AgentInputs               map[string]any
+	ReasoningEnabled          bool
+	MasterFlowID              string
+	AvailableTools            []any
+	ClientMCPServers          map[string]any
+	ClientSkillPackages       any
 }
 
 type SkillResolveRequest struct {

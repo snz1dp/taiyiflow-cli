@@ -158,6 +158,25 @@ func TestFileEditToolDefinitionMentionsRetryHintReuse(t *testing.T) {
 	t.Fatal("expected file_edit tool definition")
 }
 
+func TestShellExecToolDefinitionMentionsPlatformCompatibility(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	definitions := runtimeClient.clientToolDefinitionsForMode("agent")
+	for _, item := range definitions {
+		name, _ := item["name"].(string)
+		if name != "shell_exec" {
+			continue
+		}
+		description, _ := item["description"].(string)
+		for _, expected := range []string{"当前 OS", "command + args", "rawCommand", "fork/exec ... not supported"} {
+			if !strings.Contains(description, expected) {
+				t.Fatalf("expected shell_exec description to mention %q, got %q", expected, description)
+			}
+		}
+		return
+	}
+	t.Fatal("expected shell_exec tool definition")
+}
+
 func TestSandboxEscapeAlwaysApproveSkipsSubsequentConfirmations(t *testing.T) {
 	tempDir := t.TempDir()
 	outsideDir := t.TempDir()
@@ -500,10 +519,10 @@ func TestExecuteClientToolPayloadConfirmModeIgnoresAllowRuleForWriteReview(t *te
 	tempDir := t.TempDir()
 	runtimeClient := NewClientRuntime(strings.NewReader("n\n"), io.Discard, io.Discard)
 	config := internalconfig.Config{
-		Workdir:                  tempDir,
-		ApprovalMode:             "confirm",
-		WriteConfirmationPolicy:  internalconfig.WriteConfirmationPolicyConfirm,
-		PermissionRules:          []internalconfig.PermissionRule{{Action: "allow", ToolName: "write_file"}},
+		Workdir:                 tempDir,
+		ApprovalMode:            "confirm",
+		WriteConfirmationPolicy: internalconfig.WriteConfirmationPolicyConfirm,
+		PermissionRules:         []internalconfig.PermissionRule{{Action: "allow", ToolName: "write_file"}},
 	}
 	_, _, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
 		"server": map[string]any{"name": "local"},

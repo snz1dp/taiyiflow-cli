@@ -424,6 +424,34 @@ func TestRenderConfigFormHidesAccessTokenField(t *testing.T) {
 	}
 }
 
+func TestRenderConfigFormGroupsFieldsByCategory(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{
+		Title: "配置设置",
+	})
+
+	model := model{
+		contentWidth: 80,
+		configForm:   state,
+	}
+
+	rendered := sanitizeTerminalText(model.renderConfigForm())
+	categories := []string{"[服务端与智能体]", "[权限与审查]", "[运行与超时]", "[会话与输出]", "[技能配置]"}
+	lastIndex := -1
+	for _, category := range categories {
+		index := strings.Index(rendered, category)
+		if index < 0 {
+			t.Fatalf("expected config form to render category %q, got %q", category, rendered)
+		}
+		if index <= lastIndex {
+			t.Fatalf("expected category %q to appear after previous categories, got %q", category, rendered)
+		}
+		if strings.Count(rendered, category) != 1 {
+			t.Fatalf("expected category %q to render once, got %q", category, rendered)
+		}
+		lastIndex = index
+	}
+}
+
 func TestConfigFormSaveErrorStaysInConfigOverlay(t *testing.T) {
 	state := newConfigFormState(ConfigFormState{
 		Title: "配置设置",
@@ -491,21 +519,47 @@ func TestRenderConfigFormUsesTextInputForAgentAutoLoopMaxRounds(t *testing.T) {
 	}
 }
 
+func TestRenderConfigFormIncludesCrossSessionMemoryToggle(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{
+		Title: "配置设置",
+		Values: ConfigFormValues{
+			CrossSessionMemoryEnabled: true,
+		},
+	})
+	state.cursor = configFieldCrossSessionMemory
+
+	model := model{
+		contentWidth: 80,
+		configForm:   state,
+	}
+
+	rendered := sanitizeTerminalText(model.renderConfigForm())
+	if !strings.Contains(rendered, "跨会话记忆") || !strings.Contains(rendered, "后端启用跨会话记忆") {
+		t.Fatalf("expected cross session memory field rendered, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "(*) 开启") {
+		t.Fatalf("expected cross session memory enabled option selected, got %q", rendered)
+	}
+	if isConfigTextField(configFieldCrossSessionMemory) {
+		t.Fatal("expected cross session memory field to use toggle choices")
+	}
+}
+
 func TestConfigFormValuesFromInputsReadsAgentAutoLoopMaxRoundsAtShiftedIndex(t *testing.T) {
 	state := newConfigFormState(ConfigFormState{})
-	state.inputs[15].SetValue("0")
-	state.inputs[16].SetValue("zh-CN")
-	state.inputs[20].SetValue("https://mirror-cn.clawhub.com")
+	state.inputs[16].SetValue("0")
+	state.inputs[17].SetValue("zh-CN")
+	state.inputs[21].SetValue("https://mirror-cn.clawhub.com")
 
 	values := configFormValuesFromInputs(state.inputs)
 	if values.AgentAutoLoopMaxRounds != "0" {
-		t.Fatalf("expected max rounds from input index 15, got %q", values.AgentAutoLoopMaxRounds)
+		t.Fatalf("expected max rounds from input index 16, got %q", values.AgentAutoLoopMaxRounds)
 	}
 	if values.OutputLanguage != "zh-CN" {
-		t.Fatalf("expected output language from input index 16, got %q", values.OutputLanguage)
+		t.Fatalf("expected output language from input index 17, got %q", values.OutputLanguage)
 	}
 	if values.SkillsRegistryURL != "https://mirror-cn.clawhub.com" {
-		t.Fatalf("expected registry url from input index 20, got %q", values.SkillsRegistryURL)
+		t.Fatalf("expected registry url from input index 21, got %q", values.SkillsRegistryURL)
 	}
 }
 
@@ -616,9 +670,9 @@ func TestRenderConfirmOverlayShowsVisibleActionButtons(t *testing.T) {
 
 func TestRenderConfirmPreviewBodyHighlightsUnifiedDiff(t *testing.T) {
 	appModel := model{
-		width:        120,
-		height:       24,
-		contentWidth: 112,
+		width:          120,
+		height:         24,
+		contentWidth:   112,
 		pendingConfirm: &confirmState{request: ConfirmRequest{Expanded: true}},
 	}
 
@@ -631,7 +685,6 @@ func TestRenderConfirmPreviewBodyHighlightsUnifiedDiff(t *testing.T) {
 		t.Fatalf("expected diff preview to keep unified diff content, got %q", sanitized)
 	}
 }
-
 
 func TestRenderInlineStyledDiffPairHighlightsChangedRunes(t *testing.T) {
 	removeRendered, addRendered := renderInlineStyledDiffPair("-before line", "+before value")
@@ -2407,7 +2460,7 @@ func TestConfigFormValuesFromInputsIncludesHTTPTimeout(t *testing.T) {
 	state.inputs[11].SetValue("45")
 	state.inputs[12].SetValue("300")
 	state.inputs[13].SetValue("2")
-	state.inputs[14].SetValue("90")
+	state.inputs[15].SetValue("90")
 
 	values := configFormValuesFromInputs(state.inputs)
 	if values.HTTPTimeoutSeconds != "75" {

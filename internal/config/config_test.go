@@ -193,6 +193,27 @@ func TestDefaultConfigIncludesAgentAutoLoopDefaults(t *testing.T) {
 	if config.Skills.FreeTextSearchEnabled {
 		t.Fatal("expected default free text skill search to be disabled")
 	}
+	if config.CrossSessionMemoryEnabled {
+		t.Fatal("expected cross session memory to default to disabled")
+	}
+}
+
+func TestManagerLoadReadsCrossSessionMemoryEnabled(t *testing.T) {
+	tempDir := t.TempDir()
+	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
+
+	content := []byte("backend_base_url: http://localhost:4005\ncross_session_memory_enabled: true\n")
+	if err := os.WriteFile(manager.path, content, 0o644); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	if !loaded.CrossSessionMemoryEnabled {
+		t.Fatal("expected cross_session_memory_enabled to load as true")
+	}
 }
 
 func TestNormalizeBackendAPIPrefix(t *testing.T) {

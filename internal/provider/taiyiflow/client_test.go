@@ -570,6 +570,39 @@ func TestStreamIncludesAgentAutoLoopRequestFields(t *testing.T) {
 	}
 }
 
+func TestStreamIncludesCrossSessionMemoryRequestField(t *testing.T) {
+	var captured streamRequestBody
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
+			http.NotFound(writer, request)
+			return
+		}
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request body failed: %v", err)
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	enabled := false
+	stream, _, err := client.Stream(context.Background(), provider.StreamRequest{
+		FlowID:                    "demo-flow",
+		CrossSessionMemoryEnabled: &enabled,
+	})
+	if err != nil {
+		t.Fatalf("expected stream request to succeed, got %v", err)
+	}
+	for range stream {
+	}
+	if captured.CrossSessionMemoryEnabled == nil {
+		t.Fatal("expected cross_session_memory_enabled to be sent")
+	}
+	if *captured.CrossSessionMemoryEnabled {
+		t.Fatal("expected cross_session_memory_enabled to preserve false override")
+	}
+}
+
 func TestStreamRequestUsesInputValueWithoutPromptText(t *testing.T) {
 	var (
 		captured       streamRequestBody

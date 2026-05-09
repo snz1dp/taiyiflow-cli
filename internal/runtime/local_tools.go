@@ -192,7 +192,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "shell_exec",
-			"description":          "执行结构化本地 Shell 命令，支持前台执行或后台任务句柄返回。",
+			"description":          "执行结构化本地 Shell 命令，支持前台执行或后台任务句柄返回。根据当前 OS 选择可用命令，优先使用 command + args 结构化调用；只有需要管道、重定向或通配符时再使用 rawCommand。如遇到 fork/exec ... not supported，改用当前平台可执行文件或通过 shell 包装。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",

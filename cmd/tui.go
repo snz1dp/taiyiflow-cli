@@ -111,28 +111,31 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if skillErr != nil {
 				return skillErr
 			}
+			clientContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
+			commandExecutionTarget := "client"
 			stream, streamSession, streamErr := callbackProvider.Stream(runCtx, provider.StreamRequest{
-				FlowID:                 currentFlow,
-				Input:                  request.Input,
-				InputType:              "any",
-				InputFiles:             append([]string(nil), request.InputFiles...),
-				InternetSearch:         request.InternetSearch,
-				KnowledgeScopes:        append([]string(nil), request.KnowledgeScopes...),
-				KnowledgeDocs:          append([]string(nil), request.KnowledgeDocs...),
-				OutputType:             "any",
-				SessionID:              sessionState.SessionID,
-				RunID:                  request.RunID,
-				RequestType:            normalizeRequestMode(request.RequestMode),
-				ReasoningEnabled:       request.ReasoningEnabled,
-				AgentAutoLoopEnabled:   resolveAgentAutoLoopEnabled(config, sessionState, request.RequestMode),
-				AgentAutoLoopMaxRounds: resolveAgentAutoLoopMaxRounds(config, sessionState, request.RequestMode),
-				DeviceType:             provider.DeviceTypeCLI,
-				ClientContextDir:       resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir)),
-				CommandExecutionTarget: "client",
-				UserAgent:              buildCLIUserAgent(),
-				RequestedSkillNames:    requestedSkillNames,
-				ClientMCPServers:       quietRuntimeClient.ClientMCPServersForMode(request.RequestMode),
-				ClientSkillPackages:    clientSkillPackages,
+				FlowID:                    currentFlow,
+				Input:                     buildTaskInputWithEnvironmentHint(request.Input, clientContextDir, commandExecutionTarget),
+				InputType:                 "any",
+				InputFiles:                append([]string(nil), request.InputFiles...),
+				InternetSearch:            request.InternetSearch,
+				KnowledgeScopes:           append([]string(nil), request.KnowledgeScopes...),
+				KnowledgeDocs:             append([]string(nil), request.KnowledgeDocs...),
+				OutputType:                "any",
+				SessionID:                 sessionState.SessionID,
+				RunID:                     request.RunID,
+				RequestType:               normalizeRequestMode(request.RequestMode),
+				ReasoningEnabled:          request.ReasoningEnabled,
+				AgentAutoLoopEnabled:      resolveAgentAutoLoopEnabled(config, sessionState, request.RequestMode),
+				AgentAutoLoopMaxRounds:    resolveAgentAutoLoopMaxRounds(config, sessionState, request.RequestMode),
+				CrossSessionMemoryEnabled: boolPtr(config.CrossSessionMemoryEnabled),
+				DeviceType:                provider.DeviceTypeCLI,
+				ClientContextDir:          clientContextDir,
+				CommandExecutionTarget:    commandExecutionTarget,
+				UserAgent:                 buildCLIUserAgent(),
+				RequestedSkillNames:       requestedSkillNames,
+				ClientMCPServers:          quietRuntimeClient.ClientMCPServersForMode(request.RequestMode),
+				ClientSkillPackages:       clientSkillPackages,
 			})
 			if streamErr != nil {
 				if streamRetryCount < streamRetryLimit && shouldRetryStreamRequestError(streamErr) {
@@ -2186,27 +2189,28 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 		SubmitText:  "保存配置",
 		FlowOptions: flowOptions,
 		Values: tui.ConfigFormValues{
-			BackendBaseURL:           strings.TrimSpace(config.BackendBaseURL),
-			DefaultFlow:              strings.TrimSpace(config.DefaultFlow),
-			ApprovalMode:             strings.TrimSpace(config.ApprovalMode),
-			SandboxEscapePolicy:      strings.TrimSpace(config.SandboxEscapePolicy),
-			SkillReviewPolicy:        strings.TrimSpace(config.SkillReviewPolicy),
-			WriteConfirmationPolicy:  strings.TrimSpace(config.WriteConfirmationPolicy),
-			SandboxRoots:             formatSandboxRootsInline(config.SandboxRoots),
-			PermissionRules:          formatPermissionRulesInline(config.PermissionRules),
-			ReasoningEnabled:         config.ReasoningEnabled,
-			Workdir:                  strings.TrimSpace(config.Workdir),
-			HTTPTimeoutSeconds:       strconv.Itoa(config.HTTPTimeoutSeconds),
-			CommandTimeoutSeconds:    strconv.Itoa(config.CommandTimeoutSeconds),
-			StreamIdleTimeoutSeconds: strconv.Itoa(config.StreamIdleTimeoutSeconds),
-			StreamRetryAttempts:      strconv.Itoa(config.StreamRetryAttempts),
-			QRWaitTimeoutSeconds:     strconv.Itoa(config.QRWaitTimeoutSeconds),
-			AgentAutoLoopMaxRounds:   strconv.Itoa(config.AgentAutoLoopMaxRounds),
-			OutputLanguage:           strings.TrimSpace(config.OutputLanguage),
-			SkillsInstallScope:       internalconfig.NormalizeSkillInstallScope(config.Skills.InstallScope),
-			SkillsAutoInstallPolicy:  internalconfig.NormalizeSkillAutoInstallPolicy(config.Skills.AutoInstallPolicy),
-			SkillsFreeTextSearch:     config.Skills.FreeTextSearchEnabled,
-			SkillsRegistryURL:        strings.TrimSpace(config.Skills.RegistryURL),
+			BackendBaseURL:            strings.TrimSpace(config.BackendBaseURL),
+			DefaultFlow:               strings.TrimSpace(config.DefaultFlow),
+			ApprovalMode:              strings.TrimSpace(config.ApprovalMode),
+			SandboxEscapePolicy:       strings.TrimSpace(config.SandboxEscapePolicy),
+			SkillReviewPolicy:         strings.TrimSpace(config.SkillReviewPolicy),
+			WriteConfirmationPolicy:   strings.TrimSpace(config.WriteConfirmationPolicy),
+			SandboxRoots:              formatSandboxRootsInline(config.SandboxRoots),
+			PermissionRules:           formatPermissionRulesInline(config.PermissionRules),
+			ReasoningEnabled:          config.ReasoningEnabled,
+			Workdir:                   strings.TrimSpace(config.Workdir),
+			HTTPTimeoutSeconds:        strconv.Itoa(config.HTTPTimeoutSeconds),
+			CommandTimeoutSeconds:     strconv.Itoa(config.CommandTimeoutSeconds),
+			StreamIdleTimeoutSeconds:  strconv.Itoa(config.StreamIdleTimeoutSeconds),
+			StreamRetryAttempts:       strconv.Itoa(config.StreamRetryAttempts),
+			CrossSessionMemoryEnabled: config.CrossSessionMemoryEnabled,
+			QRWaitTimeoutSeconds:      strconv.Itoa(config.QRWaitTimeoutSeconds),
+			AgentAutoLoopMaxRounds:    strconv.Itoa(config.AgentAutoLoopMaxRounds),
+			OutputLanguage:            strings.TrimSpace(config.OutputLanguage),
+			SkillsInstallScope:        internalconfig.NormalizeSkillInstallScope(config.Skills.InstallScope),
+			SkillsAutoInstallPolicy:   internalconfig.NormalizeSkillAutoInstallPolicy(config.Skills.AutoInstallPolicy),
+			SkillsFreeTextSearch:      config.Skills.FreeTextSearchEnabled,
+			SkillsRegistryURL:         strings.TrimSpace(config.Skills.RegistryURL),
 		},
 	}, nil
 }
@@ -2290,6 +2294,10 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		config.StreamRetryAttempts = internalconfig.Default().StreamRetryAttempts
 	} else if err := assignConfigValue(&config, "stream_retry_attempts", submission.Values.StreamRetryAttempts); err != nil {
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "stream_retry_attempts", Message: err.Error()}
+	}
+
+	if err := assignConfigValue(&config, "cross_session_memory_enabled", strconv.FormatBool(submission.Values.CrossSessionMemoryEnabled)); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "cross_session_memory_enabled", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.QRWaitTimeoutSeconds) == "" {

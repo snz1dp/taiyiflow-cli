@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -46,17 +47,19 @@ type App struct {
 }
 
 type rootOptions struct {
-	Flow                string
-	RequestMode         string
-	ReasoningMode       string
-	InternetSearchMode  string
-	NewSession          bool
-	Continue            bool
-	ShowStreamEvents    bool
-	ShowThinking        bool
-	SandboxEscapePolicy string
-	StreamRetryAttempts int
-	StreamRetrySet      bool
+	Flow                      string
+	RequestMode               string
+	ReasoningMode             string
+	InternetSearchMode        string
+	NewSession                bool
+	Continue                  bool
+	ShowStreamEvents          bool
+	ShowThinking              bool
+	SandboxEscapePolicy       string
+	StreamRetryAttempts       int
+	StreamRetrySet            bool
+	CrossSessionMemoryEnabled bool
+	CrossSessionMemorySet     bool
 }
 
 type cliStreamRenderState struct {
@@ -140,9 +143,7 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 
 	var options rootOptions
 	flagSet.StringVar(&options.Flow, "agent", "", "指定要运行的智能体 ID 或名称")
-	flagSet.StringVar(&options.Flow, "flow", "", "兼容旧参数：指定要运行的智能体 ID 或名称")
 	flagSet.StringVar(&options.RequestMode, "mode", "", "task 请求模式（agent|ask|plan），默认 agent")
-	flagSet.StringVar(&options.RequestMode, "request-mode", "", "兼容别名：task 请求模式（agent|ask|plan），默认 agent")
 	flagSet.StringVar(&options.ReasoningMode, "reasoning", "", "思考模式（on|off），仅影响当前 task 会话")
 	flagSet.StringVar(&options.InternetSearchMode, "internet-search", "", "联网搜索（on|off），仅影响当前 task 会话")
 	flagSet.BoolVar(&options.NewSession, "new", false, "忽略已有会话并新建会话")
@@ -150,10 +151,8 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	flagSet.BoolVar(&options.ShowStreamEvents, "show-stream-events", false, "显示系统提示与工具调用等流式调试信息")
 	flagSet.BoolVar(&options.ShowThinking, "show-thinking", false, "显示思考内容（不输出 <think></think> 标签）")
 	flagSet.StringVar(&options.SandboxEscapePolicy, "external-resource-access-policy", "", "外部资源访问策略（confirm|deny|allow），仅影响当前命令")
-	flagSet.StringVar(&options.SandboxEscapePolicy, "sandbox-escape-policy", "", "兼容旧参数：外部资源访问策略（confirm|deny|allow），仅影响当前命令")
 	flagSet.IntVar(&options.StreamRetryAttempts, "stream-retry-attempts", 0, "流失败后自动重试次数（0-3），默认使用系统配置")
-	flagSet.IntVar(&options.StreamRetryAttempts, "retry-attempts", 0, "兼容别名：流失败后自动重试次数（0-3），默认使用系统配置")
-	flagSet.IntVar(&options.StreamRetryAttempts, "stream-retries", 0, "兼容别名：流失败后自动重试次数（0-3），默认使用系统配置")
+	flagSet.BoolVar(&options.CrossSessionMemoryEnabled, "cross-session-memory-enabled", false, "跨会话记忆（true|false），默认使用系统配置")
 
 	if err := flagSet.Parse(args); err != nil {
 		return err
@@ -162,6 +161,8 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 		switch flag.Name {
 		case "stream-retry-attempts", "retry-attempts", "stream-retries":
 			options.StreamRetrySet = true
+		case "cross-session-memory-enabled":
+			options.CrossSessionMemorySet = true
 		}
 	})
 	if options.StreamRetrySet && (options.StreamRetryAttempts < 0 || options.StreamRetryAttempts > internalconfig.MaxStreamRetryAttempts) {
@@ -202,6 +203,9 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	}
 	if options.StreamRetrySet {
 		config.StreamRetryAttempts = options.StreamRetryAttempts
+	}
+	if options.CrossSessionMemorySet {
+		config.CrossSessionMemoryEnabled = options.CrossSessionMemoryEnabled
 	}
 	providerClient := buildProviderClient(config)
 	config, _, err = a.ensureProviderAuthenticated(ctx, providerClient, config)
@@ -453,6 +457,9 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	if options.StreamRetrySet {
 		config.StreamRetryAttempts = options.StreamRetryAttempts
 	}
+	if options.CrossSessionMemorySet {
+		config.CrossSessionMemoryEnabled = options.CrossSessionMemoryEnabled
+	}
 	providerClient := buildProviderClient(config)
 	config, _, err = a.ensureProviderAuthenticated(ctx, providerClient, config)
 	if err != nil {
@@ -564,24 +571,27 @@ func (a *App) streamTaskWithSkillRetry(
 	if err != nil {
 		return sessionState, err
 	}
+	clientContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir))
+	commandExecutionTarget := "client"
 	stream, streamSession, err := providerClient.Stream(ctx, provider.StreamRequest{
-		FlowID:                 flowID,
-		Input:                  task,
-		InputType:              "any",
-		InternetSearch:         resolveInternetSearchEnabled(sessionState.InternetSearchOverride),
-		OutputType:             "any",
-		SessionID:              sessionState.SessionID,
-		RequestType:            normalizeRequestMode(sessionState.RequestMode),
-		ReasoningEnabled:       resolveReasoningEnabled(config, sessionState.ReasoningOverride),
-		AgentAutoLoopEnabled:   resolveAgentAutoLoopEnabled(config, sessionState, sessionState.RequestMode),
-		AgentAutoLoopMaxRounds: resolveAgentAutoLoopMaxRounds(config, sessionState, sessionState.RequestMode),
-		DeviceType:             provider.DeviceTypeCLI,
-		ClientContextDir:       resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir)),
-		CommandExecutionTarget: "client",
-		UserAgent:              buildCLIUserAgent(),
-		RequestedSkillNames:    requestedSkillNames,
-		ClientMCPServers:       a.runtime.ClientMCPServersForMode(sessionState.RequestMode),
-		ClientSkillPackages:    clientSkillPackages,
+		FlowID:                    flowID,
+		Input:                     buildTaskInputWithEnvironmentHint(task, clientContextDir, commandExecutionTarget),
+		InputType:                 "any",
+		InternetSearch:            resolveInternetSearchEnabled(sessionState.InternetSearchOverride),
+		OutputType:                "any",
+		SessionID:                 sessionState.SessionID,
+		RequestType:               normalizeRequestMode(sessionState.RequestMode),
+		ReasoningEnabled:          resolveReasoningEnabled(config, sessionState.ReasoningOverride),
+		AgentAutoLoopEnabled:      resolveAgentAutoLoopEnabled(config, sessionState, sessionState.RequestMode),
+		AgentAutoLoopMaxRounds:    resolveAgentAutoLoopMaxRounds(config, sessionState, sessionState.RequestMode),
+		CrossSessionMemoryEnabled: boolPtr(config.CrossSessionMemoryEnabled),
+		DeviceType:                provider.DeviceTypeCLI,
+		ClientContextDir:          clientContextDir,
+		CommandExecutionTarget:    commandExecutionTarget,
+		UserAgent:                 buildCLIUserAgent(),
+		RequestedSkillNames:       requestedSkillNames,
+		ClientMCPServers:          a.runtime.ClientMCPServersForMode(sessionState.RequestMode),
+		ClientSkillPackages:       clientSkillPackages,
 	})
 	if err != nil {
 		streamRetryLimit := internalconfig.NormalizeStreamRetryAttempts(config.StreamRetryAttempts)
@@ -941,7 +951,12 @@ func writeTerminalControlSequence(writer io.Writer, sequence string) bool {
 func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "用法:")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli")
-	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--mode MODE] [--reasoning REASONING] [--internet-search INTERNET_SEARCH] [--stream-retry-attempts N] [--new] [--continue] [--show-stream-events] [--show-thinking] [--external-resource-access-policy POLICY] [任务描述]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--mode agent|plan|ask]")
+	fmt.Fprintln(a.stdout, "                     [--reasoning on|off] [--internet-search on|off]")
+	fmt.Fprintln(a.stdout, "                     [--stream-retry-attempts 0-3] [--new] [--continue]")
+	fmt.Fprintln(a.stdout, "                     [--show-stream-events] [--show-thinking]")
+	fmt.Fprintln(a.stdout, "                     [--external-resource-access-policy allow|deny]")
+	fmt.Fprintln(a.stdout, "                     [任务描述]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli login [help|status|logout|password|qr]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli config [show|init|path|set|unset]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
@@ -1069,6 +1084,33 @@ func firstNonEmpty(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func boolPtr(value bool) *bool {
+	return &value
+}
+
+func buildTaskInputWithEnvironmentHint(task string, contextDir string, commandExecutionTarget string) string {
+	trimmedTask := strings.TrimSpace(task)
+	return strings.TrimSpace(buildTaskEnvironmentHint(contextDir, commandExecutionTarget)) + "\n\n" + trimmedTask
+}
+
+func buildTaskEnvironmentHint(contextDir string, commandExecutionTarget string) string {
+	resolvedContextDir := resolveLocalWorkdir(contextDir)
+	resolvedTarget := strings.TrimSpace(commandExecutionTarget)
+	if resolvedTarget == "" {
+		resolvedTarget = "client"
+	}
+	return strings.Join([]string{
+		"<taiyiflow_environment>",
+		fmt.Sprintf("OS: %s", runtime.GOOS),
+		fmt.Sprintf("ARCH: %s", runtime.GOARCH),
+		fmt.Sprintf("工作目录: %s", resolvedContextDir),
+		fmt.Sprintf("命令执行目标: %s", resolvedTarget),
+		"跨平台执行建议: 根据当前 OS/ARCH 选择命令；优先使用 shell_exec 的 command + args 结构化调用，只有需要管道、重定向或通配符时再使用 rawCommand。",
+		"fork/exec 回退建议: 如遇到 fork/exec ... not supported，通常表示可执行文件不适配当前 OS/ARCH 或脚本缺少可用解释器；请改用当前平台可执行命令或通过 shell 包装。",
+		"</taiyiflow_environment>",
+	}, "\n")
 }
 
 func splitAssistantMessage(payload map[string]any) bool {

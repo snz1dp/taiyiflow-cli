@@ -307,32 +307,33 @@ type skillResolvePreviewResponse struct {
 }
 
 type streamRequestBody struct {
-	InputValue             string         `json:"input_value,omitempty"`
-	InputType              string         `json:"input_type,omitempty"`
-	Files                  []string       `json:"files,omitempty"`
-	InternetSearch         bool           `json:"internet_search,omitempty"`
-	KnowledgeScopes        []string       `json:"knowledge_scopes,omitempty"`
-	KnowledgeDocs          []string       `json:"knowledge_docs,omitempty"`
-	OutputType             string         `json:"output_type,omitempty"`
-	OutputComponent        string         `json:"output_component,omitempty"`
-	SessionID              string         `json:"session_id,omitempty"`
-	RunID                  string         `json:"run_id,omitempty"`
-	RequestType            string         `json:"request_type,omitempty"`
-	DeviceType             string         `json:"device_type,omitempty"`
-	ClientContextDir       string         `json:"client_context_dir,omitempty"`
-	CommandExecutionTarget string         `json:"command_execution_target,omitempty"`
-	MaxIterations          int            `json:"max_iterations,omitempty"`
-	AgentContinueWindows   int            `json:"agent_continue_windows,omitempty"`
-	AgentAutoLoopEnabled   *bool          `json:"agent_auto_loop_enabled,omitempty"`
-	AgentAutoLoopMaxRounds int            `json:"agent_auto_loop_max_rounds,omitempty"`
-	MessageID              string         `json:"message_id,omitempty"`
-	RequestedSkillNames    []string       `json:"requested_skill_names,omitempty"`
-	AgentInputs            map[string]any `json:"agent_inputs,omitempty"`
-	Reasoning              bool           `json:"reasoning,omitempty"`
-	MasterFlowID           string         `json:"master_flow_id,omitempty"`
-	AvailableTools         []any          `json:"available_tools,omitempty"`
-	ClientMCPServers       map[string]any `json:"client_mcp_servers,omitempty"`
-	ClientSkillPackages    any            `json:"client_skill_packages,omitempty"`
+	InputValue                string         `json:"input_value,omitempty"`
+	InputType                 string         `json:"input_type,omitempty"`
+	Files                     []string       `json:"files,omitempty"`
+	InternetSearch            bool           `json:"internet_search,omitempty"`
+	KnowledgeScopes           []string       `json:"knowledge_scopes,omitempty"`
+	KnowledgeDocs             []string       `json:"knowledge_docs,omitempty"`
+	OutputType                string         `json:"output_type,omitempty"`
+	OutputComponent           string         `json:"output_component,omitempty"`
+	SessionID                 string         `json:"session_id,omitempty"`
+	RunID                     string         `json:"run_id,omitempty"`
+	RequestType               string         `json:"request_type,omitempty"`
+	DeviceType                string         `json:"device_type,omitempty"`
+	ClientContextDir          string         `json:"client_context_dir,omitempty"`
+	CommandExecutionTarget    string         `json:"command_execution_target,omitempty"`
+	MaxIterations             int            `json:"max_iterations,omitempty"`
+	AgentContinueWindows      int            `json:"agent_continue_windows,omitempty"`
+	AgentAutoLoopEnabled      *bool          `json:"agent_auto_loop_enabled,omitempty"`
+	AgentAutoLoopMaxRounds    int            `json:"agent_auto_loop_max_rounds,omitempty"`
+	CrossSessionMemoryEnabled *bool          `json:"cross_session_memory_enabled,omitempty"`
+	MessageID                 string         `json:"message_id,omitempty"`
+	RequestedSkillNames       []string       `json:"requested_skill_names,omitempty"`
+	AgentInputs               map[string]any `json:"agent_inputs,omitempty"`
+	Reasoning                 bool           `json:"reasoning,omitempty"`
+	MasterFlowID              string         `json:"master_flow_id,omitempty"`
+	AvailableTools            []any          `json:"available_tools,omitempty"`
+	ClientMCPServers          map[string]any `json:"client_mcp_servers,omitempty"`
+	ClientSkillPackages       any            `json:"client_skill_packages,omitempty"`
 }
 
 type clientCallResultBody struct {
@@ -874,32 +875,33 @@ func (c *Client) ResolveSkillPreview(ctx context.Context, request provider.Skill
 func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
 	endpoint := c.apiURL(fmt.Sprintf("/run/%s/stream", url.PathEscape(request.FlowID)))
 	body := streamRequestBody{
-		InputValue:             request.Input,
-		InputType:              firstNonEmpty(request.InputType, "any"),
-		Files:                  request.InputFiles,
-		InternetSearch:         request.InternetSearch,
-		KnowledgeScopes:        request.KnowledgeScopes,
-		KnowledgeDocs:          request.KnowledgeDocs,
-		OutputType:             firstNonEmpty(request.OutputType, "any"),
-		OutputComponent:        request.OutputComponent,
-		SessionID:              request.SessionID,
-		RunID:                  request.RunID,
-		RequestType:            provider.NormalizeRequestType(request.RequestType),
-		DeviceType:             firstNonEmpty(strings.TrimSpace(request.DeviceType), provider.DeviceTypeCLI),
-		ClientContextDir:       strings.TrimSpace(request.ClientContextDir),
-		CommandExecutionTarget: firstNonEmpty(request.CommandExecutionTarget, "client"),
-		MaxIterations:          request.MaxIterations,
-		AgentContinueWindows:   request.AgentContinueWindows,
-		AgentAutoLoopEnabled:   request.AgentAutoLoopEnabled,
-		AgentAutoLoopMaxRounds: request.AgentAutoLoopMaxRounds,
-		MessageID:              request.MessageID,
-		RequestedSkillNames:    request.RequestedSkillNames,
-		AgentInputs:            request.AgentInputs,
-		Reasoning:              request.ReasoningEnabled,
-		MasterFlowID:           request.MasterFlowID,
-		AvailableTools:         request.AvailableTools,
-		ClientMCPServers:       request.ClientMCPServers,
-		ClientSkillPackages:    request.ClientSkillPackages,
+		InputValue:                request.Input,
+		InputType:                 firstNonEmpty(request.InputType, "any"),
+		Files:                     request.InputFiles,
+		InternetSearch:            request.InternetSearch,
+		KnowledgeScopes:           request.KnowledgeScopes,
+		KnowledgeDocs:             request.KnowledgeDocs,
+		OutputType:                firstNonEmpty(request.OutputType, "any"),
+		OutputComponent:           request.OutputComponent,
+		SessionID:                 request.SessionID,
+		RunID:                     request.RunID,
+		RequestType:               provider.NormalizeRequestType(request.RequestType),
+		DeviceType:                firstNonEmpty(strings.TrimSpace(request.DeviceType), provider.DeviceTypeCLI),
+		ClientContextDir:          strings.TrimSpace(request.ClientContextDir),
+		CommandExecutionTarget:    firstNonEmpty(request.CommandExecutionTarget, "client"),
+		MaxIterations:             request.MaxIterations,
+		AgentContinueWindows:      request.AgentContinueWindows,
+		AgentAutoLoopEnabled:      request.AgentAutoLoopEnabled,
+		AgentAutoLoopMaxRounds:    request.AgentAutoLoopMaxRounds,
+		CrossSessionMemoryEnabled: request.CrossSessionMemoryEnabled,
+		MessageID:                 request.MessageID,
+		RequestedSkillNames:       request.RequestedSkillNames,
+		AgentInputs:               request.AgentInputs,
+		Reasoning:                 request.ReasoningEnabled,
+		MasterFlowID:              request.MasterFlowID,
+		AvailableTools:            request.AvailableTools,
+		ClientMCPServers:          request.ClientMCPServers,
+		ClientSkillPackages:       request.ClientSkillPackages,
 	}
 
 	content, err := json.Marshal(body)
