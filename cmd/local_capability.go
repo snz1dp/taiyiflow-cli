@@ -17,38 +17,175 @@ type callbackAuthRefreshProvider struct {
 	config *internalconfig.Config
 }
 
-func (p *callbackAuthRefreshProvider) Stream(ctx context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
-	stream, session, err := p.Provider.Stream(ctx, request)
+func (p *callbackAuthRefreshProvider) shouldRetryAfterAuthRefresh(ctx context.Context, err error) (bool, error) {
 	if err == nil || !isAuthenticationError(err) || p.app == nil || p.client == nil || p.config == nil {
-		return stream, session, err
+		return false, nil
 	}
 
 	updatedConfig, _, refreshErr := p.app.tryPersistentLogin(ctx, p.client, *p.config)
 	if refreshErr != nil {
-		return nil, nil, fmt.Errorf("%w；自动刷新登录失败: %v", err, refreshErr)
-	}
-	if strings.TrimSpace(updatedConfig.AccessToken) == "" {
-		return nil, nil, err
+		return false, fmt.Errorf("%w；自动刷新登录失败: %v", err, refreshErr)
 	}
 	*p.config = updatedConfig
+	if strings.TrimSpace(updatedConfig.AccessToken) == "" {
+		return false, nil
+	}
+	return true, nil
+}
+
+func (p *callbackAuthRefreshProvider) ListFlows(ctx context.Context, filter string, agentType string, offset, limit int) (*provider.FlowList, error) {
+	flows, err := p.Provider.ListFlows(ctx, filter, agentType, offset, limit)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return flows, err
+	}
+	return p.Provider.ListFlows(ctx, filter, agentType, offset, limit)
+}
+
+func (p *callbackAuthRefreshProvider) ListKnowledgeBases(ctx context.Context, filter string, offset, limit int) (*provider.KnowledgeBaseList, error) {
+	knowledgeBases, err := p.Provider.ListKnowledgeBases(ctx, filter, offset, limit)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return knowledgeBases, err
+	}
+	return p.Provider.ListKnowledgeBases(ctx, filter, offset, limit)
+}
+
+func (p *callbackAuthRefreshProvider) ListSessions(ctx context.Context, flowID string, offset, limit int) (*provider.SessionList, error) {
+	sessions, err := p.Provider.ListSessions(ctx, flowID, offset, limit)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return sessions, err
+	}
+	return p.Provider.ListSessions(ctx, flowID, offset, limit)
+}
+
+func (p *callbackAuthRefreshProvider) ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*provider.SessionMessageList, error) {
+	messages, err := p.Provider.ListSessionMessages(ctx, flowID, sessionID, offset, limit)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return messages, err
+	}
+	return p.Provider.ListSessionMessages(ctx, flowID, sessionID, offset, limit)
+}
+
+func (p *callbackAuthRefreshProvider) GetVersionInfo(ctx context.Context) (*provider.ServiceVersion, error) {
+	versionInfo, err := p.Provider.GetVersionInfo(ctx)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return versionInfo, err
+	}
+	return p.Provider.GetVersionInfo(ctx)
+}
+
+func (p *callbackAuthRefreshProvider) GetServiceConfig(ctx context.Context) (*provider.ServiceConfig, error) {
+	serviceConfig, err := p.Provider.GetServiceConfig(ctx)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return serviceConfig, err
+	}
+	return p.Provider.GetServiceConfig(ctx)
+}
+
+func (p *callbackAuthRefreshProvider) GetCurrentUserInfo(ctx context.Context) (*provider.CurrentUser, error) {
+	currentUser, err := p.Provider.GetCurrentUserInfo(ctx)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return currentUser, err
+	}
+	return p.Provider.GetCurrentUserInfo(ctx)
+}
+
+func (p *callbackAuthRefreshProvider) GetMetadata(ctx context.Context, flowID string) (*provider.Metadata, error) {
+	metadata, err := p.Provider.GetMetadata(ctx, flowID)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return metadata, err
+	}
+	return p.Provider.GetMetadata(ctx, flowID)
+}
+
+func (p *callbackAuthRefreshProvider) ResolveSkillPreview(ctx context.Context, request provider.SkillResolveRequest) (*provider.SkillResolvePreview, error) {
+	preview, err := p.Provider.ResolveSkillPreview(ctx, request)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return preview, err
+	}
+	return p.Provider.ResolveSkillPreview(ctx, request)
+}
+
+func (p *callbackAuthRefreshProvider) Stream(ctx context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
+	stream, session, err := p.Provider.Stream(ctx, request)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, nil, refreshErr
+	}
+	if !retry {
+		return stream, session, err
+	}
 	return p.Provider.Stream(ctx, request)
+}
+
+func (p *callbackAuthRefreshProvider) GetRunStats(ctx context.Context, flowID string, sessionID string, runID string) (*provider.RunStats, error) {
+	stats, err := p.Provider.GetRunStats(ctx, flowID, sessionID, runID)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return stats, err
+	}
+	return p.Provider.GetRunStats(ctx, flowID, sessionID, runID)
+}
+
+func (p *callbackAuthRefreshProvider) GetSessionContextWindow(ctx context.Context, flowID string, sessionID string) (*provider.SessionContextPreview, error) {
+	preview, err := p.Provider.GetSessionContextWindow(ctx, flowID, sessionID)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return preview, err
+	}
+	return p.Provider.GetSessionContextWindow(ctx, flowID, sessionID)
 }
 
 func (p *callbackAuthRefreshProvider) SubmitClientCallResult(ctx context.Context, result provider.ClientCallResult) error {
 	err := p.Provider.SubmitClientCallResult(ctx, result)
-	if err == nil || !isAuthenticationError(err) || p.app == nil || p.client == nil || p.config == nil {
-		return err
-	}
-
-	updatedConfig, changed, refreshErr := p.app.tryPersistentLogin(ctx, p.client, *p.config)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
 	if refreshErr != nil {
-		return fmt.Errorf("%w；自动刷新登录失败: %v", err, refreshErr)
+		return refreshErr
 	}
-	if strings.TrimSpace(updatedConfig.AccessToken) == "" {
+	if !retry {
 		return err
 	}
-	_ = changed
-	*p.config = updatedConfig
 	return p.Provider.SubmitClientCallResult(ctx, result)
 }
 

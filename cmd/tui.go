@@ -50,6 +50,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 
 	providerClient := buildProviderClient(config)
 	config = a.prepareInitialTUIAuthentication(ctx, providerClient, config)
+	authRefreshProvider := func() provider.Provider {
+		return a.providerWithCallbackAuthRefresh(providerClient, &config)
+	}
 	backend := a.inspectBackendStatus(ctx, providerClient, config.BackendBaseURL)
 	if backend.Available {
 		config, err = a.ensureDefaultFlow(ctx, providerClient, config)
@@ -60,7 +63,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	workdir := resolveLocalWorkdir(config.Workdir)
 	var serviceConfig *provider.ServiceConfig
 	if backend.Available {
-		serviceConfig, _ = providerClient.GetServiceConfig(ctx)
+		serviceConfig, _ = authRefreshProvider().GetServiceConfig(ctx)
 	}
 	snapshot, err := a.buildInitialTUISnapshot(config, strings.TrimSpace(config.DefaultFlow), backend, serviceConfig)
 	if err != nil {
@@ -340,7 +343,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}
 
 		if request.RunID != "" && strings.TrimSpace(sessionState.SessionID) != "" {
-			stats, statsErr := providerClient.GetRunStats(runCtx, currentFlow, sessionState.SessionID, request.RunID)
+			stats, statsErr := callbackProvider.GetRunStats(runCtx, currentFlow, sessionState.SessionID, request.RunID)
 			if statsErr == nil && stats != nil {
 				emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: buildTUIRequestMetrics(request.RunID, stats)})
 			}
@@ -371,8 +374,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			}
 		}
 
+		refreshedProvider := a.providerWithCallbackAuthRefresh(refreshedClient, &updatedConfig)
 		flowID := strings.TrimSpace(firstNonEmpty(updatedConfig.DefaultFlow, current.DefaultFlow))
-		snapshot, err := a.buildTUISnapshot(refreshCtx, refreshedClient, updatedConfig, flowID, backend)
+		snapshot, err := a.buildTUISnapshot(refreshCtx, refreshedProvider, updatedConfig, flowID, backend)
 		if err != nil {
 			return tui.Snapshot{}, nil, err
 		}
@@ -385,7 +389,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 
 		flowItems := []tui.FlowItem{}
 		if backend.Available {
-			flows, flowErr := refreshedClient.ListFlows(refreshCtx, "", "chat", 0, 100)
+			flows, flowErr := refreshedProvider.ListFlows(refreshCtx, "", "chat", 0, 100)
 			if flowErr == nil {
 				for _, item := range flows.Items {
 					flowItems = append(flowItems, tui.FlowItem{
@@ -397,6 +401,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				}
 			}
 		}
+		config = updatedConfig
 
 		return snapshot, flowItems, nil
 	}
@@ -410,10 +415,12 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if err := a.configManager.Save(updatedConfig); err != nil {
 			return tui.Snapshot{}, err
 		}
-		updatedSnapshot, err := a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, updatedConfig.DefaultFlow, backendStatus{Available: true})
+		updatedProvider := a.providerWithCallbackAuthRefresh(providerClient, &updatedConfig)
+		updatedSnapshot, err := a.buildTUISnapshot(changeCtx, updatedProvider, updatedConfig, updatedConfig.DefaultFlow, backendStatus{Available: true})
 		if err != nil {
 			return tui.Snapshot{}, err
 		}
+		config = updatedConfig
 		return updatedSnapshot, nil
 	}
 
@@ -445,10 +452,12 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if err != nil {
 			return tui.Snapshot{}, err
 		}
-		updatedSnapshot, err := a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, flowID, backendStatus{Available: true})
+		updatedProvider := a.providerWithCallbackAuthRefresh(providerClient, &updatedConfig)
+		updatedSnapshot, err := a.buildTUISnapshot(changeCtx, updatedProvider, updatedConfig, flowID, backendStatus{Available: true})
 		if err != nil {
 			return tui.Snapshot{}, err
 		}
+		config = updatedConfig
 		return preserveTUIChatState(current, updatedSnapshot), nil
 	}
 
@@ -461,10 +470,12 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		if err := a.configManager.Save(updatedConfig); err != nil {
 			return tui.Snapshot{}, err
 		}
-		updatedSnapshot, err := a.buildTUISnapshot(changeCtx, providerClient, updatedConfig, updatedConfig.DefaultFlow, backendStatus{Available: true})
+		updatedProvider := a.providerWithCallbackAuthRefresh(providerClient, &updatedConfig)
+		updatedSnapshot, err := a.buildTUISnapshot(changeCtx, updatedProvider, updatedConfig, updatedConfig.DefaultFlow, backendStatus{Available: true})
 		if err != nil {
 			return tui.Snapshot{}, err
 		}
+		config = updatedConfig
 		return updatedSnapshot, nil
 	}
 
@@ -494,6 +505,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 
 	localCommand := func(commandCtx context.Context, command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
 		trimmed := strings.TrimSpace(command)
+		commandProvider := authRefreshProvider()
 		switch {
 		case trimmed == "/help":
 			return tui.LocalCommandResult{
@@ -503,7 +515,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		case trimmed == "/about":
 			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: renderAboutText()}}}, nil
 		case trimmed == "/config" || strings.EqualFold(trimmed, "/config show"):
-			formState, err := a.buildTUIConfigFormState(commandCtx, providerClient, snapshot)
+			formState, err := a.buildTUIConfigFormState(commandCtx, commandProvider, snapshot)
 			if err != nil {
 				return tui.LocalCommandResult{}, err
 			}
@@ -695,7 +707,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			sessionID := strings.TrimSpace(snapshot.SessionID)
 			resolvedSnapshot := snapshot
 			if sessionID != "" && strings.TrimSpace(resolvedSnapshot.SessionTitle) == "" {
-				title, err := lookupSessionTitle(commandCtx, providerClient, snapshot.DefaultFlow, sessionID)
+				title, err := lookupSessionTitle(commandCtx, commandProvider, snapshot.DefaultFlow, sessionID)
 				if err == nil {
 					resolvedSnapshot.SessionTitle = strings.TrimSpace(title)
 				}
@@ -713,13 +725,13 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			}
 			const pageSize = 10
 			offset := (page - 1) * pageSize
-			sessions, err := providerClient.ListSessions(commandCtx, flowID, offset, pageSize)
+			sessions, err := commandProvider.ListSessions(commandCtx, flowID, offset, pageSize)
 			if err != nil {
 				return tui.LocalCommandResult{}, fmt.Errorf("%s", explainBackendFailure(err))
 			}
 			agentLabel := snapshot.DefaultFlowLabel
 			if strings.TrimSpace(agentLabel) == "" {
-				agentLabel = a.resolveFlowDisplayName(commandCtx, providerClient, flowID)
+				agentLabel = a.resolveFlowDisplayName(commandCtx, commandProvider, flowID)
 			}
 			if sessions == nil || len(sessions.Items) == 0 {
 				if sessions != nil && sessions.Total > 0 && page > 1 {

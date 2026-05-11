@@ -831,6 +831,74 @@ func TestCallbackAuthRefreshProviderRetriesStreamAfterUnauthorized(t *testing.T)
 	}
 }
 
+func TestCallbackAuthRefreshProviderRetriesListSessionsAfterUnauthorized(t *testing.T) {
+	sessionCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/taiyi/composer/api/v1/agents/flows/flow-1/sessions":
+			sessionCalls++
+			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusUnauthorized)
+				fmt.Fprint(writer, `{"message":"未登录或会话令牌已失效","code":401}`)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"total":1,"offset":0,"data":[{"id":"session-1","session_name":"会话一","created_at":"2026-05-11T08:00:00Z","updated_at":"2026-05-11T09:00:00Z","client_type":"cli"}]}`)
+		case "/xeai/sso/salt":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"salt-ticket","value":"salt-value"}}`)
+		case "/xeai/sso":
+			if got := request.URL.Query().Get("persistent_token"); got != "persist-1" {
+				t.Fatalf("unexpected persistent token: %q", got)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","persistent_token":"persist-2","idle_duration":3600,"scope":"employee"}}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.AccessToken = "expired-access"
+	config.PersistentToken = "persist-1"
+	config.DeviceID = "device-1"
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	app := &App{configManager: manager}
+	client := buildProviderClient(config)
+	callbackProvider := app.providerWithCallbackAuthRefresh(client, &config)
+
+	sessions, err := callbackProvider.ListSessions(context.Background(), "flow-1", 0, 10)
+	if err != nil {
+		t.Fatalf("ListSessions failed: %v", err)
+	}
+	if sessionCalls != 2 {
+		t.Fatalf("expected one failed sessions request and one retry, got %d calls", sessionCalls)
+	}
+	if sessions == nil || len(sessions.Items) != 1 || sessions.Items[0].ID != "session-1" {
+		t.Fatalf("unexpected sessions response: %#v", sessions)
+	}
+	if config.AccessToken != "access-1" || config.PersistentToken != "persist-2" {
+		t.Fatalf("expected in-memory config refreshed, got %#v", config)
+	}
+	reloaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("reload config failed: %v", err)
+	}
+	if reloaded.AccessToken != "access-1" || reloaded.PersistentToken != "persist-2" {
+		t.Fatalf("expected refreshed auth state to persist, got %#v", reloaded)
+	}
+}
+
 func TestRunInteractiveSessionConfigCommandPersistsAgentAutoLoopMaxRoundsOverride(t *testing.T) {
 	app := newTestAppWithSessionStore(t)
 	workdir := t.TempDir()
