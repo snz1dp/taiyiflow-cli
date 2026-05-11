@@ -649,3 +649,43 @@ func TestStreamRequestUsesInputValueWithoutPromptText(t *testing.T) {
 		t.Fatalf("expected request body not to include prompt_text, got %#v", capturedRawMap)
 	}
 }
+
+func TestStreamRequestIncludesTweaks(t *testing.T) {
+	var capturedRawMap map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
+			http.NotFound(writer, request)
+			return
+		}
+		if err := json.NewDecoder(request.Body).Decode(&capturedRawMap); err != nil {
+			t.Fatalf("decode raw request body failed: %v", err)
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	stream, _, err := client.Stream(context.Background(), provider.StreamRequest{
+		FlowID: "demo-flow",
+		Input:  "原始用户输入",
+		Tweaks: map[string]any{
+			"taiyiflow_environment": "<taiyiflow_environment>\n工作目录: /tmp/demo\n</taiyiflow_environment>",
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected stream request to succeed, got %v", err)
+	}
+	for range stream {
+	}
+
+	tweaksValue, ok := capturedRawMap["tweaks"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tweaks object in request body, got %#v", capturedRawMap["tweaks"])
+	}
+	if tweaksValue["taiyiflow_environment"] != "<taiyiflow_environment>\n工作目录: /tmp/demo\n</taiyiflow_environment>" {
+		t.Fatalf("unexpected taiyiflow_environment tweak: %#v", tweaksValue)
+	}
+	if capturedRawMap["input_value"] != "原始用户输入" {
+		t.Fatalf("expected input_value to remain original text, got %#v", capturedRawMap["input_value"])
+	}
+}

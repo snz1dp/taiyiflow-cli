@@ -575,8 +575,9 @@ func (a *App) streamTaskWithSkillRetry(
 	commandExecutionTarget := "client"
 	stream, streamSession, err := providerClient.Stream(ctx, provider.StreamRequest{
 		FlowID:                    flowID,
-		Input:                     buildTaskInputWithEnvironmentHint(task, clientContextDir, commandExecutionTarget),
+		Input:                     strings.TrimSpace(task),
 		InputType:                 "any",
+		Tweaks:                    buildTaskTweaks(clientContextDir, commandExecutionTarget),
 		InternetSearch:            resolveInternetSearchEnabled(sessionState.InternetSearchOverride),
 		OutputType:                "any",
 		SessionID:                 sessionState.SessionID,
@@ -1090,11 +1091,6 @@ func boolPtr(value bool) *bool {
 	return &value
 }
 
-func buildTaskInputWithEnvironmentHint(task string, contextDir string, commandExecutionTarget string) string {
-	trimmedTask := strings.TrimSpace(task)
-	return strings.TrimSpace(buildTaskEnvironmentHint(contextDir, commandExecutionTarget)) + "\n\n" + trimmedTask
-}
-
 func buildTaskEnvironmentHint(contextDir string, commandExecutionTarget string) string {
 	resolvedContextDir := resolveLocalWorkdir(contextDir)
 	resolvedTarget := strings.TrimSpace(commandExecutionTarget)
@@ -1111,6 +1107,12 @@ func buildTaskEnvironmentHint(contextDir string, commandExecutionTarget string) 
 		"fork/exec 回退建议: 如遇到 fork/exec ... not supported，通常表示可执行文件不适配当前 OS/ARCH 或脚本缺少可用解释器；请改用当前平台可执行命令或通过 shell 包装。",
 		"</taiyiflow_environment>",
 	}, "\n")
+}
+
+func buildTaskTweaks(contextDir string, commandExecutionTarget string) map[string]any {
+	return map[string]any{
+		"taiyiflow_environment": buildTaskEnvironmentHint(contextDir, commandExecutionTarget),
+	}
 }
 
 func splitAssistantMessage(payload map[string]any) bool {

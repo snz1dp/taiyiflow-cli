@@ -120,8 +120,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			commandExecutionTarget := "client"
 			stream, streamSession, streamErr := callbackProvider.Stream(runCtx, provider.StreamRequest{
 				FlowID:                    currentFlow,
-				Input:                     buildTaskInputWithEnvironmentHint(request.Input, clientContextDir, commandExecutionTarget),
+				Input:                     strings.TrimSpace(request.Input),
 				InputType:                 "any",
+				Tweaks:                    buildTaskTweaks(clientContextDir, commandExecutionTarget),
 				InputFiles:                append([]string(nil), request.InputFiles...),
 				InternetSearch:            request.InternetSearch,
 				KnowledgeScopes:           append([]string(nil), request.KnowledgeScopes...),

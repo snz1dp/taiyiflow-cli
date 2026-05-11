@@ -309,6 +309,7 @@ type skillResolvePreviewResponse struct {
 type streamRequestBody struct {
 	InputValue                string         `json:"input_value,omitempty"`
 	InputType                 string         `json:"input_type,omitempty"`
+	Tweaks                    map[string]any `json:"tweaks,omitempty"`
 	Files                     []string       `json:"files,omitempty"`
 	InternetSearch            bool           `json:"internet_search,omitempty"`
 	KnowledgeScopes           []string       `json:"knowledge_scopes,omitempty"`
@@ -877,6 +878,7 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 	body := streamRequestBody{
 		InputValue:                request.Input,
 		InputType:                 firstNonEmpty(request.InputType, "any"),
+		Tweaks:                    request.Tweaks,
 		Files:                     request.InputFiles,
 		InternetSearch:            request.InternetSearch,
 		KnowledgeScopes:           request.KnowledgeScopes,

@@ -57,6 +57,7 @@ type StreamRequest struct {
 	FlowID                    string
 	Input                     string
 	InputType                 string
+	Tweaks                    map[string]any
 	InputFiles                []string
 	InternetSearch            bool
 	KnowledgeScopes           []string

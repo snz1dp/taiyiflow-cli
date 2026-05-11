@@ -588,7 +588,7 @@ func TestRunTaskCrossSessionMemoryConfigAndFlagPrecedence(t *testing.T) {
 	}
 }
 
-func TestStreamTaskInjectsEnvironmentHint(t *testing.T) {
+func TestStreamTaskSendsEnvironmentInTweaks(t *testing.T) {
 	app := newTestAppWithSessionStore(t)
 	app.stdout = io.Discard
 	app.stderr = io.Discard
@@ -614,14 +614,23 @@ func TestStreamTaskInjectsEnvironmentHint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("streamTask failed: %v", err)
 	}
-	input := providerStub.lastRequest.Input
+	if providerStub.lastRequest.Input != "demo task" {
+		t.Fatalf("expected original task input to remain unchanged, got %q", providerStub.lastRequest.Input)
+	}
+	environmentHint, ok := providerStub.lastRequest.Tweaks["taiyiflow_environment"].(string)
+	if !ok {
+		t.Fatalf("expected taiyiflow_environment tweak string, got %#v", providerStub.lastRequest.Tweaks)
+	}
 	for _, expected := range []string{"<taiyiflow_environment>", "OS:", "ARCH:", "工作目录:", workdir, "命令执行目标: client", "command + args", "rawCommand", "fork/exec ... not supported", "demo task"} {
-		if !strings.Contains(input, expected) {
-			t.Fatalf("expected environment hint to contain %q, got %q", expected, input)
+		if expected == "demo task" {
+			continue
+		}
+		if !strings.Contains(environmentHint, expected) {
+			t.Fatalf("expected environment hint to contain %q, got %q", expected, environmentHint)
 		}
 	}
-	if !strings.HasSuffix(input, "demo task") {
-		t.Fatalf("expected original task to remain at end, got %q", input)
+	if strings.Contains(environmentHint, "demo task") {
+		t.Fatalf("expected task body to stay out of environment tweak, got %q", environmentHint)
 	}
 }
 
