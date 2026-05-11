@@ -1908,6 +1908,103 @@ func TestHandleSkillsPickerSearchEscClearsQueryAndRefreshesDefaultRemoteList(t *
 	}
 }
 
+func TestHandleSessionPickerSearchFiltersLoadedItems(t *testing.T) {
+	m := model{
+		input: textarea.New(),
+		sessionPicker: &SessionPickerState{
+			Title:      "会话列表",
+			Page:       1,
+			TotalPages: 2,
+			PageSize:   2,
+			Items: []SessionItem{
+				{ID: "session-1", Title: "alpha"},
+				{ID: "session-2", Title: "beta"},
+				{ID: "session-3", Title: "alpha prod"},
+			},
+		},
+	}
+
+	updatedModel, _ := m.handleSessionPickerKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	updated := updatedModel.(model)
+	if !updated.sessionPicker.SearchMode {
+		t.Fatalf("expected search mode to open, got %#v", updated.sessionPicker)
+	}
+
+	updatedModel, _ = updated.handleSessionPickerSearchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("alpha")})
+	updated = updatedModel.(model)
+	if updated.sessionPicker.SearchQuery != "alpha" {
+		t.Fatalf("expected query to update, got %#v", updated.sessionPicker)
+	}
+	visible := updated.visibleSessionPickerItems()
+	if len(visible) != 2 {
+		t.Fatalf("expected 2 visible items after filtering, got %#v", visible)
+	}
+	if visible[0].ID != "session-1" || visible[1].ID != "session-3" {
+		t.Fatalf("unexpected filtered items: %#v", visible)
+	}
+	rendered := updated.renderSessionPicker()
+	if !strings.Contains(rendered, "搜索: alpha_") {
+		t.Fatalf("expected rendered picker to show active query, got %q", rendered)
+	}
+	if strings.Contains(rendered, "beta") {
+		t.Fatalf("expected non-matching item to be hidden, got %q", rendered)
+	}
+	if updated.sessionPicker.TotalPages != 1 {
+		t.Fatalf("expected total pages to collapse after filtering, got %#v", updated.sessionPicker)
+	}
+}
+
+func TestHandleSessionPickerEnterUsesFilteredSelection(t *testing.T) {
+	capturedSessionID := ""
+	m := model{
+		ctx:      context.Background(),
+		snapshot: Snapshot{},
+		input:    textarea.New(),
+		sessionPicker: &SessionPickerState{
+			Title:       "会话列表",
+			Page:        1,
+			TotalPages:  2,
+			PageSize:    2,
+			SearchQuery: "prod",
+			Items: []SessionItem{
+				{ID: "session-1", Title: "alpha"},
+				{ID: "session-2", Title: "beta"},
+				{ID: "session-3", Title: "alpha prod"},
+			},
+		},
+		sessionChange: func(ctx context.Context, snapshot Snapshot, sessionID string) (Snapshot, error) {
+			capturedSessionID = sessionID
+			return snapshot, nil
+		},
+	}
+	m.syncSessionPickerPagination()
+
+	_, cmd := m.handleSessionPickerKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected session change command")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", cmd())
+	}
+	foundSessionChanged := false
+	for _, item := range batch {
+		if item == nil {
+			continue
+		}
+		if _, ok := item().(sessionChangedMsg); ok {
+			foundSessionChanged = true
+			break
+		}
+	}
+	if !foundSessionChanged {
+		t.Fatal("expected batch to include sessionChangedMsg")
+	}
+	if capturedSessionID != "session-3" {
+		t.Fatalf("expected filtered session to be selected, got %q", capturedSessionID)
+	}
+}
+
 func TestRenderSkillsPickerKeepsLongRemoteLinesWithinWidth(t *testing.T) {
 	m := model{
 		contentWidth: 40,

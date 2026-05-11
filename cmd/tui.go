@@ -27,6 +27,8 @@ var bracketErrorCodePattern = regexp.MustCompile(`^\[[A-Z0-9_]+\]\s*`)
 
 const skillsPickerCommandPrefix = "/skills-picker"
 const knowledgePickerCommandPrefix = "/knowledge-picker"
+const sessionPickerDisplayPageSize = 12
+const sessionPickerFetchBatchSize = 100
 
 func (a *App) prepareInitialTUIAuthentication(
 	ctx context.Context,
@@ -723,9 +725,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if flowID == "" {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "当前未选择智能体，无法获取服务端会话。"}}}, nil
 			}
-			const pageSize = 10
-			offset := (page - 1) * pageSize
-			sessions, err := commandProvider.ListSessions(commandCtx, flowID, offset, pageSize)
+			items, err := loadSessionPickerItems(commandCtx, commandProvider, flowID, snapshot.SessionID)
 			if err != nil {
 				return tui.LocalCommandResult{}, fmt.Errorf("%s", explainBackendFailure(err))
 			}
@@ -733,44 +733,24 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if strings.TrimSpace(agentLabel) == "" {
 				agentLabel = a.resolveFlowDisplayName(commandCtx, commandProvider, flowID)
 			}
-			if sessions == nil || len(sessions.Items) == 0 {
-				if sessions != nil && sessions.Total > 0 && page > 1 {
-					return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: fmt.Sprintf("页码超出范围，请输入 1 到 %d。", totalPages(sessions.Total, pageSize))}}}, nil
-				}
+			if len(items) == 0 {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: fmt.Sprintf("智能体 %s 当前没有服务端会话。", sanitizeFlowDisplay(agentLabel))}}}, nil
 			}
-			pages := totalPages(sessions.Total, pageSize)
+			pages := totalPages(len(items), sessionPickerDisplayPageSize)
 			if pages == 0 {
 				pages = 1
 			}
-			items := make([]tui.SessionItem, 0, len(sessions.Items))
-			for _, item := range sessions.Items {
-				name := strings.TrimSpace(item.Name)
-				if name == "" {
-					name = "<未命名会话>"
-				}
-				recentAt := item.UpdatedAt
-				if recentAt.IsZero() {
-					recentAt = item.CreatedAt
-				}
-				items = append(items, tui.SessionItem{
-					ID:           item.ID,
-					Title:        name,
-					RelativeTime: formatRelativeTimeChinese(recentAt),
-					IsCurrent:    strings.TrimSpace(snapshot.SessionID) != "" && item.ID == snapshot.SessionID,
-				})
-			}
-			hint := "使用方向键选择，左右键翻页，Enter 切换当前会话，Esc 关闭。"
-			if pages > 1 {
-				hint = fmt.Sprintf("使用方向键选择，左右键翻页。当前共 %d 页，当前页 %d。", pages, page)
+			if page > pages {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: fmt.Sprintf("页码超出范围，请输入 1 到 %d。", pages)}}}, nil
 			}
 			return tui.LocalCommandResult{
 				Handled: true,
 				SessionPicker: &tui.SessionPickerState{
 					Title:      fmt.Sprintf("会话列表(session list)（%s）", sanitizeFlowDisplay(agentLabel)),
-					Hint:       hint,
+					Hint:       fmt.Sprintf("已加载 %d 个会话，使用方向键选择，左右键翻页，/ 搜索已加载会话，Enter 切换当前会话，Esc 关闭。", len(items)),
 					Page:       page,
 					TotalPages: pages,
+					PageSize:   sessionPickerDisplayPageSize,
 					Items:      items,
 				},
 			}, nil
@@ -2161,6 +2141,52 @@ func parseSessionsPage(command string) (int, error) {
 		return 0, fmt.Errorf("/sessions 页码必须是大于等于 1 的数字")
 	}
 	return page, nil
+}
+
+func loadSessionPickerItems(ctx context.Context, providerClient provider.Provider, flowID string, currentSessionID string) ([]tui.SessionItem, error) {
+	sessions, err := providerClient.ListSessions(ctx, flowID, 0, sessionPickerFetchBatchSize)
+	if err != nil {
+		return nil, err
+	}
+	if sessions == nil || len(sessions.Items) == 0 {
+		return nil, nil
+	}
+	loaded := append([]provider.SessionSummary{}, sessions.Items...)
+	total := sessions.Total
+	if total < len(loaded) {
+		total = len(loaded)
+	}
+	for len(loaded) < total {
+		batch, batchErr := providerClient.ListSessions(ctx, flowID, len(loaded), sessionPickerFetchBatchSize)
+		if batchErr != nil {
+			return nil, batchErr
+		}
+		if batch == nil || len(batch.Items) == 0 {
+			break
+		}
+		loaded = append(loaded, batch.Items...)
+		if batch.Total > total {
+			total = batch.Total
+		}
+	}
+	items := make([]tui.SessionItem, 0, len(loaded))
+	for _, item := range loaded {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			name = "<未命名会话>"
+		}
+		recentAt := item.UpdatedAt
+		if recentAt.IsZero() {
+			recentAt = item.CreatedAt
+		}
+		items = append(items, tui.SessionItem{
+			ID:           item.ID,
+			Title:        name,
+			RelativeTime: formatRelativeTimeChinese(recentAt),
+			IsCurrent:    strings.TrimSpace(currentSessionID) != "" && item.ID == currentSessionID,
+		})
+	}
+	return items, nil
 }
 
 func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provider.Provider, snapshot tui.Snapshot) (*tui.ConfigFormState, error) {

@@ -98,6 +98,9 @@ type SessionPickerState struct {
 	Hint       string
 	Page       int
 	TotalPages int
+	PageSize   int
+	SearchQuery string
+	SearchMode bool
 	Items      []SessionItem
 }
 
@@ -1915,6 +1918,10 @@ func (m model) handleSessionPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.sessionPicker == nil {
 		return m, nil
 	}
+	m.syncSessionPickerPagination()
+	if m.sessionPicker.SearchMode {
+		return m.handleSessionPickerSearchKey(msg)
+	}
 	switch msg.String() {
 	case "esc", "q", "ctrl+c":
 		m.closeSessionPicker()
@@ -1931,28 +1938,156 @@ func (m model) handleSessionPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "left", "h", "pgup":
 		if m.sessionPicker.Page > 1 {
-			return m, m.loadSessionPickerPage(m.sessionPicker.Page - 1)
+			m.sessionPicker.Page--
+			m.sessionCursor = 0
+			m.syncSessionPickerPagination()
 		}
 		return m, nil
 	case "right", "l", "pgdown":
 		if m.sessionPicker.Page < m.sessionPicker.TotalPages {
-			return m, m.loadSessionPickerPage(m.sessionPicker.Page + 1)
+			m.sessionPicker.Page++
+			m.sessionCursor = 0
+			m.syncSessionPickerPagination()
 		}
 		return m, nil
+	case "/", "s":
+		m.sessionPicker.SearchMode = true
+		return m, nil
 	case "tab":
-		if len(m.sessionPicker.Items) > 0 {
-			m.sessionCursor = (m.sessionCursor + 1) % len(m.sessionPicker.Items)
+		visibleItems := m.visibleSessionPickerItems()
+		if len(visibleItems) > 0 {
+			m.sessionCursor = (m.sessionCursor + 1) % len(visibleItems)
 		}
 		return m, nil
 	case "enter":
-		if len(m.sessionPicker.Items) == 0 || m.sessionChange == nil {
+		visibleItems := m.visibleSessionPickerItems()
+		if len(visibleItems) == 0 || m.sessionChange == nil {
 			m.closeSessionPicker()
 			return m, nil
 		}
-		selected := m.sessionPicker.Items[m.sessionCursor]
+		selected := visibleItems[m.sessionCursor]
 		return m, tea.Batch(m.transitionProgress(progressSession), changeSessionCmd(m.ctx, m.snapshot, selected.ID, selected.Title, m.sessionChange))
 	default:
 		return m, nil
+	}
+}
+
+func (m model) handleSessionPickerSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.sessionPicker == nil {
+		return m, nil
+	}
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.sessionPicker.SearchMode = false
+		if strings.TrimSpace(m.sessionPicker.SearchQuery) != "" {
+			m.sessionPicker.SearchQuery = ""
+			m.sessionPicker.Page = 1
+			m.sessionCursor = 0
+		}
+		m.syncSessionPickerPagination()
+		return m, nil
+	case tea.KeyEnter:
+		m.sessionPicker.SearchMode = false
+		m.syncSessionPickerPagination()
+		return m, nil
+	case tea.KeyBackspace, tea.KeyCtrlH:
+		if m.sessionPicker.SearchQuery != "" {
+			_, size := utf8.DecodeLastRuneInString(m.sessionPicker.SearchQuery)
+			m.sessionPicker.SearchQuery = m.sessionPicker.SearchQuery[:len(m.sessionPicker.SearchQuery)-size]
+			m.sessionPicker.Page = 1
+			m.sessionCursor = 0
+			m.syncSessionPickerPagination()
+		}
+		return m, nil
+	case tea.KeyRunes:
+		m.sessionPicker.SearchQuery += msg.String()
+		m.sessionPicker.Page = 1
+		m.sessionCursor = 0
+		m.syncSessionPickerPagination()
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
+func (m model) filteredSessionPickerItems() []SessionItem {
+	if m.sessionPicker == nil {
+		return nil
+	}
+	query := strings.ToLower(strings.TrimSpace(m.sessionPicker.SearchQuery))
+	if query == "" {
+		return m.sessionPicker.Items
+	}
+	filtered := make([]SessionItem, 0, len(m.sessionPicker.Items))
+	for _, item := range m.sessionPicker.Items {
+		title := strings.ToLower(strings.TrimSpace(item.Title))
+		identifier := strings.ToLower(strings.TrimSpace(item.ID))
+		if strings.Contains(title, query) || strings.Contains(identifier, query) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func (m model) sessionPickerPageState() ([]SessionItem, int, int, int) {
+	const defaultSessionPickerPageSize = 12
+	if m.sessionPicker == nil {
+		return nil, 1, 1, defaultSessionPickerPageSize
+	}
+	pageSize := m.sessionPicker.PageSize
+	if pageSize < 1 {
+		pageSize = defaultSessionPickerPageSize
+	}
+	filtered := m.filteredSessionPickerItems()
+	pages := 0
+	if pageSize > 0 {
+		pages = (len(filtered) + pageSize - 1) / pageSize
+	}
+	if pages == 0 {
+		pages = 1
+	}
+	page := m.sessionPicker.Page
+	if page < 1 {
+		page = 1
+	}
+	if page > pages {
+		page = pages
+	}
+	return filtered, page, pages, pageSize
+}
+
+func (m model) visibleSessionPickerItems() []SessionItem {
+	filtered, page, _, pageSize := m.sessionPickerPageState()
+	start := (page - 1) * pageSize
+	if start < 0 || start >= len(filtered) {
+		return nil
+	}
+	end := minInt(start+pageSize, len(filtered))
+	return filtered[start:end]
+}
+
+func (m *model) syncSessionPickerPagination() {
+	if m.sessionPicker == nil {
+		return
+	}
+	filtered, page, pages, pageSize := m.sessionPickerPageState()
+	m.sessionPicker.Page = page
+	m.sessionPicker.TotalPages = pages
+	m.sessionPicker.PageSize = pageSize
+	visibleCount := 0
+	start := (page - 1) * pageSize
+	if start < len(filtered) {
+		visibleCount = minInt(pageSize, len(filtered)-start)
+	}
+	if visibleCount <= 0 {
+		m.sessionCursor = 0
+		return
+	}
+	if m.sessionCursor < 0 {
+		m.sessionCursor = 0
+	}
+	if m.sessionCursor >= visibleCount {
+		m.sessionCursor = visibleCount - 1
 	}
 }
 
@@ -2887,7 +3022,7 @@ func (m model) renderOverlay() string {
 		width = minInt(m.contentWidth-6, 100)
 		content = m.renderSkillsPicker()
 	} else if m.sessionPicker != nil {
-		width = minInt(m.contentWidth-6, 90)
+		width = minInt(m.contentWidth-6, 108)
 		content = m.renderSessionPicker()
 	} else if m.showFlowPicker {
 		width = minInt(m.contentWidth-6, 90)
@@ -3912,18 +4047,38 @@ func (m model) renderSessionPicker() string {
 	if m.sessionPicker == nil {
 		return ""
 	}
-	overlayWidth := maxInt(24, m.contentWidth-16)
+	filteredItems, page, totalPages, _ := m.sessionPickerPageState()
+	visibleItems := m.visibleSessionPickerItems()
+	overlayWidth := maxInt(32, minInt(m.contentWidth-10, 98))
 	lines := []string{
 		trimForWidth(m.sessionPicker.Title, overlayWidth),
-		trimForWidth(fallback(strings.TrimSpace(m.sessionPicker.Hint), "使用方向键选择，左右键翻页，Enter 切换当前会话，Esc 关闭。"), overlayWidth),
-		fmt.Sprintf("第 %d / %d 页", m.sessionPicker.Page, m.sessionPicker.TotalPages),
+		trimForWidth(fallback(strings.TrimSpace(m.sessionPicker.Hint), "使用方向键选择，左右键翻页，/ 搜索已加载会话，Enter 切换当前会话，Esc 关闭。"), overlayWidth),
+		trimForWidth(fmt.Sprintf("第 %d / %d 页  已加载 %d 个会话", page, totalPages, len(m.sessionPicker.Items)), overlayWidth),
 		"",
 	}
-	if len(m.sessionPicker.Items) == 0 {
-		lines = append(lines, hintStyle.Render("当前页没有会话。"))
+	query := strings.TrimSpace(m.sessionPicker.SearchQuery)
+	queryLabel := query
+	if queryLabel == "" {
+		queryLabel = "*"
+	}
+	searchLine := "搜索: " + queryLabel
+	if m.sessionPicker.SearchMode {
+		searchLine += "_"
+	}
+	lines = append(lines[:3], append([]string{trimForWidth(searchLine, overlayWidth)}, lines[3:]...)...)
+	if query != "" {
+		lines = append(lines, hintStyle.Render(trimForWidth(fmt.Sprintf("当前过滤命中 %d 个会话。", len(filteredItems)), overlayWidth)))
+		lines = append(lines, "")
+	}
+	if len(visibleItems) == 0 {
+		emptyMessage := "当前页没有会话。"
+		if query != "" {
+			emptyMessage = "没有匹配当前搜索的会话。"
+		}
+		lines = append(lines, hintStyle.Render(emptyMessage))
 		return strings.Join(lines, "\n")
 	}
-	for index, item := range m.sessionPicker.Items {
+	for index, item := range visibleItems {
 		line := fmt.Sprintf("%s  %s", flowCursor(index == m.sessionCursor), item.Title)
 		if strings.TrimSpace(item.RelativeTime) != "" {
 			line += "  " + item.RelativeTime
@@ -3932,9 +4087,9 @@ func (m model) renderSessionPicker() string {
 			line += "  [当前]"
 		}
 		if index == m.sessionCursor {
-			line = selectedFlowStyle.Render(trimForWidth(line, m.contentWidth-16))
+			line = selectedFlowStyle.Render(trimForWidth(line, overlayWidth))
 		} else {
-			line = commandHintStyle.Render(trimForWidth(line, m.contentWidth-16))
+			line = commandHintStyle.Render(trimForWidth(line, overlayWidth))
 		}
 		lines = append(lines, markOverlayFocus(line, index == m.sessionCursor))
 	}
@@ -4769,6 +4924,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		m.resetOverlayScroll()
 		m.sessionPicker = result.SessionPicker
 		m.sessionCursor = 0
+		m.syncSessionPickerPagination()
 		m.knowledgePicker = nil
 		m.skillsPicker = nil
 		m.tasksPicker = nil
