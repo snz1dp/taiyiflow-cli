@@ -3022,7 +3022,7 @@ func (m model) renderOverlay() string {
 		width = minInt(m.contentWidth-6, 100)
 		content = m.renderSkillsPicker()
 	} else if m.sessionPicker != nil {
-		width = minInt(m.contentWidth-6, 108)
+		width = m.sessionPickerOverlayWidth()
 		content = m.renderSessionPicker()
 	} else if m.showFlowPicker {
 		width = minInt(m.contentWidth-6, 90)
@@ -3046,6 +3046,22 @@ func (m model) renderOverlay() string {
 		width = 24
 	}
 	return overlayStyle.Width(width).Render(m.fitOverlayContent(content))
+}
+
+func (m model) sessionPickerOverlayWidth() int {
+	width := minInt(m.contentWidth-4, 130)
+	if width < 48 {
+		width = 48
+	}
+	return width
+}
+
+func (m model) sessionPickerContentWidth() int {
+	width := m.sessionPickerOverlayWidth() - overlayStyle.GetHorizontalFrameSize() - 2
+	if width < 40 {
+		width = 40
+	}
+	return width
 }
 
 func (m model) renderConfirmOverlay() string {
@@ -4049,7 +4065,7 @@ func (m model) renderSessionPicker() string {
 	}
 	filteredItems, page, totalPages, _ := m.sessionPickerPageState()
 	visibleItems := m.visibleSessionPickerItems()
-	overlayWidth := maxInt(32, minInt(m.contentWidth-10, 98))
+	overlayWidth := m.sessionPickerContentWidth()
 	lines := []string{
 		trimForWidth(m.sessionPicker.Title, overlayWidth),
 		trimForWidth(fallback(strings.TrimSpace(m.sessionPicker.Hint), "使用方向键选择，左右键翻页，/ 搜索已加载会话，Enter 切换当前会话，Esc 关闭。"), overlayWidth),
@@ -5457,6 +5473,8 @@ func (m model) overlayVisibleLineLimit() int {
 	limit := m.height - overlayStyle.GetVerticalFrameSize() - 6
 	if m.loginForm != nil || m.confirmOverlayExpanded() {
 		limit = m.height - overlayStyle.GetVerticalFrameSize() - 2
+	} else if m.sessionPicker != nil {
+		limit = m.height - overlayStyle.GetVerticalFrameSize() - 4
 	}
 	if limit < 5 {
 		limit = 5

@@ -27,7 +27,7 @@ var bracketErrorCodePattern = regexp.MustCompile(`^\[[A-Z0-9_]+\]\s*`)
 
 const skillsPickerCommandPrefix = "/skills-picker"
 const knowledgePickerCommandPrefix = "/knowledge-picker"
-const sessionPickerDisplayPageSize = 12
+const sessionPickerDisplayPageSize = 25
 const sessionPickerFetchBatchSize = 100
 
 func (a *App) prepareInitialTUIAuthentication(
@@ -2170,6 +2170,9 @@ func loadSessionPickerItems(ctx context.Context, providerClient provider.Provide
 			total = batch.Total
 		}
 	}
+	sort.SliceStable(loaded, func(left int, right int) bool {
+		return sessionSummaryRecentAt(loaded[left]).After(sessionSummaryRecentAt(loaded[right]))
+	})
 	items := make([]tui.SessionItem, 0, len(loaded))
 	for _, item := range loaded {
 		name := strings.TrimSpace(item.Name)
@@ -2188,6 +2191,13 @@ func loadSessionPickerItems(ctx context.Context, providerClient provider.Provide
 		})
 	}
 	return items, nil
+}
+
+func sessionSummaryRecentAt(item provider.SessionSummary) time.Time {
+	if !item.UpdatedAt.IsZero() {
+		return item.UpdatedAt
+	}
+	return item.CreatedAt
 }
 
 func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provider.Provider, snapshot tui.Snapshot) (*tui.ConfigFormState, error) {

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
@@ -38,6 +39,11 @@ type sequenceStreamProvider struct {
 	calls   int
 }
 
+type sessionListProvider struct {
+	stubProvider
+	responses map[int]*provider.SessionList
+}
+
 func (s *sequenceStreamProvider) Stream(_ context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
 	s.calls++
 	s.lastRequest = request
@@ -49,6 +55,13 @@ func (s *sequenceStreamProvider) Stream(_ context.Context, request provider.Stre
 	stream := s.streams[0]
 	s.streams = s.streams[1:]
 	return stream, nil, nil
+}
+
+func (s *sessionListProvider) ListSessions(_ context.Context, _ string, offset, limit int) (*provider.SessionList, error) {
+	if response, ok := s.responses[offset]; ok {
+		return response, nil
+	}
+	return &provider.SessionList{Total: 0, Offset: offset}, nil
 }
 
 func (s stubProvider) Name() string { return "stub" }
@@ -631,6 +644,43 @@ func TestStreamTaskSendsEnvironmentInTweaks(t *testing.T) {
 	}
 	if strings.Contains(environmentHint, "demo task") {
 		t.Fatalf("expected task body to stay out of environment tweak, got %q", environmentHint)
+	}
+}
+
+func TestLoadSessionPickerItemsSortsByRecentAtDesc(t *testing.T) {
+	now := time.Date(2026, time.May, 11, 12, 0, 0, 0, time.UTC)
+	providerStub := &sessionListProvider{responses: map[int]*provider.SessionList{
+		0: {
+			Total: 3,
+			Items: []provider.SessionSummary{
+				{ID: "session-old", Name: "old", UpdatedAt: now.Add(-2 * time.Hour), CreatedAt: now.Add(-24 * time.Hour)},
+				{ID: "session-new", Name: "new", UpdatedAt: now.Add(-1 * time.Hour), CreatedAt: now.Add(-25 * time.Hour)},
+			},
+		},
+		2: {
+			Total: 3,
+			Items: []provider.SessionSummary{
+				{ID: "session-mid", Name: "mid", UpdatedAt: now.Add(-90 * time.Minute), CreatedAt: now.Add(-26 * time.Hour)},
+			},
+		},
+	}}
+
+	items, err := loadSessionPickerItems(context.Background(), providerStub, "flow-1", "session-old")
+	if err != nil {
+		t.Fatalf("loadSessionPickerItems failed: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items, got %#v", items)
+	}
+	orderedIDs := []string{items[0].ID, items[1].ID, items[2].ID}
+	expectedIDs := []string{"session-new", "session-mid", "session-old"}
+	for index, expected := range expectedIDs {
+		if orderedIDs[index] != expected {
+			t.Fatalf("expected sorted session ids %v, got %v", expectedIDs, orderedIDs)
+		}
+	}
+	if !items[2].IsCurrent {
+		t.Fatalf("expected current session marker to be preserved, got %#v", items)
 	}
 }
 

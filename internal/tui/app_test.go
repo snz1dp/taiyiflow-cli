@@ -642,6 +642,44 @@ func TestRenderOverlayUsesWiderConfirmOverlay(t *testing.T) {
 	}
 }
 
+func TestRenderOverlayUsesLargeNonFullscreenSizeForSessionPicker(t *testing.T) {
+	items := make([]SessionItem, 0, 40)
+	for index := 0; index < 40; index++ {
+		items = append(items, SessionItem{
+			ID:           "session",
+			Title:        "最近会话",
+			RelativeTime: "1 分钟前",
+		})
+	}
+
+	appModel := model{
+		width:        120,
+		height:       32,
+		contentWidth: 112,
+		sessionPicker: &SessionPickerState{
+			Title:      "会话列表",
+			Hint:       "使用方向键选择",
+			Page:       1,
+			TotalPages: 1,
+				PageSize:   40,
+			Items:      items,
+		},
+	}
+
+	rendered := appModel.renderOverlay()
+	expectedWidth := appModel.sessionPickerOverlayWidth() + 2
+	if lipgloss.Width(rendered) != expectedWidth {
+		t.Fatalf("expected session picker overlay width %d, got %d", expectedWidth, lipgloss.Width(rendered))
+	}
+	expectedHeight := appModel.overlayVisibleLineLimit() + overlayStyle.GetVerticalFrameSize()
+	if lipgloss.Height(rendered) != expectedHeight {
+		t.Fatalf("expected session picker overlay height %d, got %d", expectedHeight, lipgloss.Height(rendered))
+	}
+	if lipgloss.Height(rendered) >= appModel.height {
+		t.Fatalf("expected session picker overlay to stay below full height, got %d", lipgloss.Height(rendered))
+	}
+}
+
 func TestRenderConfirmOverlayShowsVisibleActionButtons(t *testing.T) {
 	appModel := model{
 		width:        120,
