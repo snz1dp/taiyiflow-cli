@@ -94,14 +94,14 @@ type SessionItem struct {
 }
 
 type SessionPickerState struct {
-	Title      string
-	Hint       string
-	Page       int
-	TotalPages int
-	PageSize   int
+	Title       string
+	Hint        string
+	Page        int
+	TotalPages  int
+	PageSize    int
 	SearchQuery string
-	SearchMode bool
-	Items      []SessionItem
+	SearchMode  bool
+	Items       []SessionItem
 }
 
 type KnowledgeBaseItem struct {
@@ -5150,13 +5150,6 @@ func changeSessionCmd(ctx context.Context, snapshot Snapshot, sessionID string, 
 	}
 }
 
-func loadSessionPickerCmd(ctx context.Context, snapshot Snapshot, command string, handler LocalCommandHandler) tea.Cmd {
-	return func() tea.Msg {
-		result, err := handler(ctx, command, snapshot)
-		return sessionPickerLoadedMsg{result: result, err: err}
-	}
-}
-
 func changeApprovalModeCmd(ctx context.Context, mode string, handler ApprovalChangeHandler) tea.Cmd {
 	return func() tea.Msg {
 		snapshot, err := handler(ctx, mode)
@@ -5192,13 +5185,6 @@ func executeLocalCommandCmd(ctx context.Context, snapshot Snapshot, command stri
 		result, err := handler(ctx, command, snapshot)
 		return localCommandExecutedMsg{result: result, err: err}
 	}
-}
-
-func (m *model) loadSessionPickerPage(page int) tea.Cmd {
-	if m.localCommand == nil {
-		return nil
-	}
-	return loadSessionPickerCmd(m.ctx, m.snapshot, fmt.Sprintf("/sessions %d", page), m.localCommand)
 }
 
 func (m *model) closeSessionPicker() {
