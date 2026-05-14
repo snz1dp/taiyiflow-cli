@@ -75,8 +75,10 @@ type Snapshot struct {
 }
 
 type HistoryEntry struct {
-	Role    string
-	Content string
+	Role          string
+	Content       string
+	ThinkingText  string
+	ThinkingIndex int
 }
 
 type FlowItem struct {
@@ -341,6 +343,7 @@ type EventKind string
 
 const (
 	EventAssistantChunk EventKind = "assistant_chunk"
+	EventReasoningChunk EventKind = "reasoning_chunk"
 	EventProgressNote   EventKind = "progress_note"
 	EventSystemNote     EventKind = "system_note"
 	EventErrorNote      EventKind = "error_note"
@@ -492,8 +495,9 @@ type LocalCommandHandler func(ctx context.Context, command string, snapshot Snap
 type SnapshotRefreshHandler func(ctx context.Context, snapshot Snapshot) (Snapshot, []FlowItem, error)
 
 type entry struct {
-	role    string
-	content string
+	role      string
+	content   string
+	messageID string
 }
 
 type confirmState struct {
@@ -566,6 +570,7 @@ type qrCodeWaitTickMsg struct {
 }
 
 type backendRetryTickMsg struct{}
+type streamingIndicatorTickMsg struct{}
 
 type snapshotRefreshedMsg struct {
 	snapshot Snapshot
@@ -615,6 +620,8 @@ type model struct {
 	progress               progress.Model
 	markdown               *glamour.TermRenderer
 	state                  progressState
+		streamingIndicatorFrame  int
+		streamingIndicatorActive bool
 	activityHint           string
 	footerHint             string
 	currentToolLabel       string
@@ -817,6 +824,13 @@ var (
 				BorderLeft(true).
 				BorderForeground(lipgloss.Color("#AED581"))
 
+	reasoningMessageStyle = lipgloss.NewStyle().
+				BorderStyle(lipgloss.RoundedBorder()).
+				BorderLeft(true).
+				BorderForeground(lipgloss.Color("#FFB300")).
+				PaddingLeft(1).
+				Foreground(lipgloss.Color("#FFE082"))
+
 	systemMessageStyle = lipgloss.NewStyle().
 				BorderStyle(lipgloss.NormalBorder()).
 				BorderLeft(true).
@@ -898,7 +912,8 @@ var slashCommands = []slashCommand{
 	{Trigger: "/clear", Completion: "/clear", Description: "清空当前界面消息"},
 	{Trigger: "/internet", Completion: "/internet ", Description: "查看或切换当前对话的联网搜索"},
 	{Trigger: "/knowledge", Completion: "/knowledge ", Description: "查看或切换当前对话的知识库范围"},
-	{Trigger: "/files", Completion: "/files", Description: "查看当前对话附带的文件状态"},
+	{Trigger: "/upload", Completion: "/upload ", Description: "上传文件并附带到当前对话，可用 /upload status 查看状态"},
+	{Trigger: "/think", Completion: "/think ", Description: "查看历史消息中的思考内容，可用 /think 列表或 /think <编号> 查看详情"},
 	{Trigger: "/session", Completion: "/session", Description: "显示当前会话状态"},
 	{Trigger: "/reasoning", Completion: "/reasoning ", Description: "切换思考模式，支持 on、off、default、status"},
 	{Trigger: "/agent", Completion: "/agent ", Description: "切换为执行模式，或直接发送一个执行请求"},
@@ -1017,6 +1032,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, refreshSnapshotCmd(m.ctx, m.snapshot, m.refreshSnapshot)
+	case streamingIndicatorTickMsg:
+		if !m.shouldAnimateStreamingIndicator() || !m.streamingIndicatorActive {
+			return m, nil
+		}
+		m.streamingIndicatorFrame = (m.streamingIndicatorFrame + 1) % 4
+		m.syncViewport()
+		return m, m.scheduleStreamingIndicator()
 	case snapshotRefreshedMsg:
 		if typed.err != nil {
 			if !m.snapshot.BackendAvailable {
@@ -2396,7 +2418,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 			startNewAssistantEntry = true
 		}
 		if startNewAssistantEntry {
-			m.entries = append(m.entries, entry{role: "assistant", content: chunk})
+			m.entries = append(m.entries, entry{role: "assistant", content: chunk, messageID: messageID})
 		} else {
 			m.entries[len(m.entries)-1].content += chunk
 			m.footerHint = ""
@@ -2407,6 +2429,21 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		}
 		if stage == "end" || event.SplitAssistant {
 			m.splitNextAssistant = true
+		}
+	case EventReasoningChunk:
+		chunk := event.Text
+		messageID := strings.TrimSpace(event.MessageID)
+		if chunk == "" {
+			break
+		}
+		m.activityHint = ""
+		if m.state.phase != progressStreaming {
+			cmd = m.transitionProgress(progressStreaming)
+		}
+		if len(m.entries) == 0 || m.entries[len(m.entries)-1].role != "reasoning" || m.entries[len(m.entries)-1].messageID != messageID {
+			m.entries = append(m.entries, entry{role: "reasoning", content: chunk, messageID: messageID})
+		} else {
+			m.entries[len(m.entries)-1].content += chunk
 		}
 	case EventProgressNote:
 		if strings.TrimSpace(event.Text) != "" {
@@ -2451,7 +2488,11 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		if note := buildEventTimelineNote("服务端工具调用", event.Text); note != "" {
 			m.entries = append(m.entries, entry{role: "system", content: note})
 		}
-		m.activityHint = "执行 " + m.currentToolLabel
+		if status := searchActivityText(event.Text); status != "" {
+			m.activityHint = status
+		} else {
+			m.activityHint = "执行 " + m.currentToolLabel
+		}
 		m.splitNextAssistant = true
 	case EventBuiltInCall:
 		m.requestStats.CommandCount++
@@ -2670,7 +2711,7 @@ func (m model) useMinimalChrome() bool {
 }
 
 func (m *model) syncViewport() {
-	content := renderEntries(m.entries, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot)
+	content := renderEntries(m.entries, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot, m.streamingIndicatorSuffix())
 	if transient := m.renderTransientStatus(); transient != "" {
 		if strings.TrimSpace(content) != "" {
 			content += "\n"
@@ -2898,6 +2939,9 @@ func (m model) renderTransientStatus() string {
 	if status == "" {
 		return ""
 	}
+	if m.streamingIndicatorTargetIndex() < 0 {
+		status += m.streamingIndicatorSuffix()
+	}
 	width := m.viewport.Width - 2
 	if width < 18 {
 		width = 18
@@ -2906,6 +2950,25 @@ func (m model) renderTransientStatus() string {
 		trimForWidth(status, width),
 	}
 	return transientStatusStyle.Width(width).Render(strings.Join(lines, "\n"))
+}
+
+func renderEntries(entries []entry, width int, height int, renderer *glamour.TermRenderer, snapshot Snapshot, streamingSuffix string) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	targetIndex := -1
+	if streamingSuffix != "" {
+		targetIndex = streamingIndicatorTargetIndex(entries)
+	}
+	blocks := make([]string, 0, len(entries))
+	for index, item := range entries {
+		renderItem := item
+		if index == targetIndex {
+			renderItem.content += streamingSuffix
+		}
+		blocks = append(blocks, renderEntry(renderItem, width, height, renderer, snapshot))
+	}
+	return strings.Join(blocks, "\n\n")
 }
 
 func (m model) renderStatusBar() string {
@@ -4610,7 +4673,7 @@ func (m model) backendUnavailableMessage() string {
 func welcomeCommandsLabel(snapshot Snapshot) []string {
 	labelValue := "可用命令: "
 	if snapshot.BackendAvailable {
-		return []string{labelValue + "/agents /internet /knowledge /files /login /config /tasks /skills /reasoning /session /new /exit"}
+		return []string{labelValue + "/agents /internet /knowledge /upload /think /login /config /tasks /skills /reasoning /session /new /exit"}
 	}
 	return []string{labelValue + "/login /config /tasks /skills /reasoning /help /clear /exit"}
 }
@@ -4641,19 +4704,8 @@ func isAvailableInReadOnlyMode(input string) bool {
 	}
 }
 
-func renderEntries(entries []entry, width int, height int, renderer *glamour.TermRenderer, snapshot Snapshot) string {
-	if len(entries) == 0 {
-		return ""
-	}
-	blocks := make([]string, 0, len(entries))
-	for _, item := range entries {
-		blocks = append(blocks, renderEntry(item, width, height, renderer, snapshot))
-	}
-	return strings.Join(blocks, "\n\n")
-}
-
 func renderEntry(item entry, width int, height int, renderer *glamour.TermRenderer, snapshot Snapshot) string {
-	content := sanitizeTerminalText(item.content)
+	content := sanitizeTerminalText(rewriteRetrievalCitationMarkers(item.content))
 	textWidth := maxInt(10, width-4)
 	wrapped := hardWrapText(content, textWidth)
 	switch item.role {
@@ -4666,11 +4718,75 @@ func renderEntry(item entry, width int, height int, renderer *glamour.TermRender
 	case "assistant":
 		rendered := renderMarkdown(hardWrapText(content, textWidth), renderer)
 		return assistantMessageStyle.Render(rendered)
+	case "reasoning":
+		rendered := renderMarkdown(hardWrapText(content, textWidth), renderer)
+		return reasoningMessageStyle.Render(rendered)
 	case "error":
 		return errorMessageStyle.Render(wrapped)
 	default:
 		return systemMessageStyle.Render(wrapped)
 	}
+}
+
+var retrievalCitationPattern = regexp.MustCompile(`\[\^([123])\.(\d+)\^\]|\^([123])\.(\d+)\^`)
+
+func rewriteRetrievalCitationMarkers(content string) string {
+	if strings.TrimSpace(content) == "" {
+		return content
+	}
+	return retrievalCitationPattern.ReplaceAllStringFunc(content, func(match string) string {
+		parts := retrievalCitationPattern.FindStringSubmatch(match)
+		prefix := parts[1]
+		index := parts[2]
+		if prefix == "" {
+			prefix = parts[3]
+			index = parts[4]
+		}
+		label := retrievalCitationSourceLabel(prefix)
+		if label == "" {
+			return match
+		}
+		return fmt.Sprintf("[%s#%s]", label, index)
+	})
+}
+
+func retrievalCitationSourceLabel(prefix string) string {
+	switch strings.TrimSpace(prefix) {
+	case "1":
+		return "联网"
+	case "2":
+		return "共享"
+	case "3":
+		return "个人"
+	default:
+		return ""
+	}
+}
+
+func searchActivityText(content string) string {
+	lower := strings.ToLower(strings.TrimSpace(content))
+	switch {
+	case strings.Contains(lower, "internet"), strings.Contains(lower, "联网"), strings.Contains(lower, "bocha"), strings.Contains(lower, "tencent"):
+		return "正在联网搜索..."
+	case strings.Contains(lower, "personal"), strings.Contains(lower, "个人知识"):
+		return "正在检索个人知识..."
+	case strings.Contains(lower, "knowledge"), strings.Contains(lower, "知识库"), strings.Contains(lower, "milvus"), strings.Contains(lower, "document"):
+		return "正在检索共享知识..."
+	case strings.Contains(lower, "search"), strings.Contains(lower, "检索"):
+		return "正在搜索..."
+	default:
+		return ""
+	}
+}
+
+func streamingIndicatorTargetIndex(entries []entry) int {
+	for index := len(entries) - 1; index >= 0; index-- {
+		switch entries[index].role {
+		case "assistant", "reasoning":
+			return index
+		}
+	}
+	return -1
 }
 
 func buildWelcomeRenderLines(snapshot Snapshot, content string) []string {
@@ -6745,7 +6861,18 @@ func newProgressState(phase progressPhase) progressState {
 
 func (m *model) transitionProgress(phase progressPhase) tea.Cmd {
 	m.state = newProgressState(phase)
-	return m.progress.SetPercent(m.state.percent)
+	progressCmd := m.progress.SetPercent(m.state.percent)
+	if m.shouldAnimateStreamingIndicator() {
+		if m.streamingIndicatorActive {
+			return progressCmd
+		}
+		m.streamingIndicatorActive = true
+		m.streamingIndicatorFrame = 0
+		return tea.Batch(progressCmd, m.scheduleStreamingIndicator())
+	}
+	m.streamingIndicatorActive = false
+	m.streamingIndicatorFrame = 0
+	return progressCmd
 }
 
 func (m *model) syncInputPlaceholder() {
@@ -6767,6 +6894,36 @@ func (m model) scheduleBackendRetry() tea.Cmd {
 	return tea.Tick(5*time.Second, func(time.Time) tea.Msg {
 		return backendRetryTickMsg{}
 	})
+}
+
+func (m model) shouldAnimateStreamingIndicator() bool {
+	switch m.state.phase {
+	case progressSending, progressStreaming, progressExecuting:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m model) scheduleStreamingIndicator() tea.Cmd {
+	if !m.shouldAnimateStreamingIndicator() || !m.streamingIndicatorActive {
+		return nil
+	}
+	return tea.Tick(350*time.Millisecond, func(time.Time) tea.Msg {
+		return streamingIndicatorTickMsg{}
+	})
+}
+
+func (m model) streamingIndicatorSuffix() string {
+	if !m.streamingIndicatorActive || !m.shouldAnimateStreamingIndicator() {
+		return ""
+	}
+	frames := []string{".", "..", "...", ".."}
+	return frames[m.streamingIndicatorFrame%len(frames)]
+}
+
+func (m model) streamingIndicatorTargetIndex() int {
+	return streamingIndicatorTargetIndex(m.entries)
 }
 
 func (m model) maybeRefreshSnapshot() tea.Cmd {
@@ -7405,7 +7562,9 @@ func isExecutableSlashCommandInput(input string) bool {
 		return true
 	case strings.EqualFold(trimmed, "/knowledge"):
 		return true
-	case strings.EqualFold(trimmed, "/files"):
+	case strings.EqualFold(trimmed, "/upload"):
+		return true
+	case strings.EqualFold(trimmed, "/think"):
 		return true
 	case strings.EqualFold(trimmed, "/ask"):
 		return true
@@ -7443,8 +7602,10 @@ func isExecutableSlashCommandInput(input string) bool {
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/internet ")) != ""
 	case strings.HasPrefix(strings.ToLower(trimmed), "/knowledge "):
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/knowledge ")) != ""
-	case strings.HasPrefix(strings.ToLower(trimmed), "/files "):
-		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/files ")) != ""
+	case strings.HasPrefix(strings.ToLower(trimmed), "/upload "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/upload ")) != ""
+	case strings.HasPrefix(strings.ToLower(trimmed), "/think "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/think ")) != ""
 	case strings.HasPrefix(strings.ToLower(trimmed), "/reasoning "):
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/reasoning ")) != ""
 	case strings.HasPrefix(strings.ToLower(trimmed), "/skills "):

@@ -159,8 +159,11 @@ func TestIsExecutableSlashCommandInputUsesSplitDialogueCommands(t *testing.T) {
 	if !isExecutableSlashCommandInput("/knowledge auto") {
 		t.Fatalf("expected /knowledge auto to be executable")
 	}
-	if !isExecutableSlashCommandInput("/files") {
-		t.Fatalf("expected /files to be executable")
+	if !isExecutableSlashCommandInput("/upload report.txt") {
+		t.Fatalf("expected /upload to be executable")
+	}
+	if !isExecutableSlashCommandInput("/think 1") {
+		t.Fatalf("expected /think to be executable")
 	}
 }
 
@@ -1539,6 +1542,27 @@ func TestRenderTransientStatusShownInAllRequestModes(t *testing.T) {
 	}
 }
 
+func TestRenderTransientStatusAppendsStreamingIndicatorWithoutAssistantEntry(t *testing.T) {
+	model := model{
+		viewport:                 viewport.Model{Width: 80},
+		activityHint:             "正在搜索",
+		state:                    newProgressState(progressStreaming),
+		streamingIndicatorActive: true,
+		streamingIndicatorFrame:  2,
+	}
+
+	if got := sanitizeTerminalText(model.renderTransientStatus()); !strings.Contains(got, "正在搜索...") {
+		t.Fatalf("expected streaming indicator in transient status, got %q", got)
+	}
+}
+
+func TestRenderEntriesAppendsStreamingIndicatorToLatestAssistant(t *testing.T) {
+	rendered := sanitizeTerminalText(renderEntries([]entry{{role: "user", content: "问题"}, {role: "assistant", content: "回答"}}, 80, 20, nil, Snapshot{}, "..."))
+	if !strings.Contains(rendered, "回答...") {
+		t.Fatalf("expected assistant entry to include streaming indicator, got %q", rendered)
+	}
+}
+
 func TestCompressionProgressNoteRendersInFooterInsteadOfTransientStatus(t *testing.T) {
 	model := model{
 		snapshot:     Snapshot{BackendAvailable: true, RequestMode: "agent", ApprovalMode: "confirm"},
@@ -2551,6 +2575,33 @@ func TestAssistantChunkSplitAfterToolCall(t *testing.T) {
 	}
 	if assistantEntries[0].content != "第一段" || assistantEntries[1].content != "第二段" {
 		t.Fatalf("unexpected split assistant content: %#v", model.entries)
+	}
+}
+
+func TestReasoningChunkCreatesSeparateEntryAndMergesByMessage(t *testing.T) {
+	model := model{}
+
+	model.applyEvent(Event{Kind: EventReasoningChunk, Text: "第一段思考", MessageID: "msg-1"})
+	model.applyEvent(Event{Kind: EventReasoningChunk, Text: "第二段思考", MessageID: "msg-1"})
+	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "最终回答", MessageID: "msg-1"})
+
+	if len(model.entries) != 2 {
+		t.Fatalf("expected reasoning entry plus assistant entry, got %#v", model.entries)
+	}
+	if model.entries[0].role != "reasoning" || model.entries[0].content != "第一段思考第二段思考" {
+		t.Fatalf("unexpected reasoning entry: %#v", model.entries[0])
+	}
+	if model.entries[1].role != "assistant" || model.entries[1].content != "最终回答" {
+		t.Fatalf("unexpected assistant entry after reasoning: %#v", model.entries[1])
+	}
+}
+
+func TestRewriteRetrievalCitationMarkers(t *testing.T) {
+	input := "联网引用 ^1.2^，共享引用 [^2.1^]，个人引用 ^3.4^。"
+	got := rewriteRetrievalCitationMarkers(input)
+	want := "联网引用 [联网#2]，共享引用 [共享#1]，个人引用 [个人#4]。"
+	if got != want {
+		t.Fatalf("unexpected citation rewrite: got %q want %q", got, want)
 	}
 }
 

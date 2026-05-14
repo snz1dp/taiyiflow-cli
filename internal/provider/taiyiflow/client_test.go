@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -391,6 +393,115 @@ func TestListKnowledgeBasesParsesResponse(t *testing.T) {
 	}
 	if list.Items[0].Code != "kb_demo" || list.Items[0].Name != "演示知识库" {
 		t.Fatalf("unexpected knowledge base payload: %#v", list.Items[0])
+	}
+}
+
+func TestCreateSessionIDParsesResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/taiyi/composer/api/v1/session_id" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"session_id":"session-xyz"}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	sessionID, err := client.CreateSessionID(context.Background())
+	if err != nil {
+		t.Fatalf("expected CreateSessionID to succeed, got %v", err)
+	}
+	if sessionID != "session-xyz" {
+		t.Fatalf("expected session-xyz, got %q", sessionID)
+	}
+}
+
+func TestUploadFilePostsMultipartFormAndParsesResponse(t *testing.T) {
+	tempDir := t.TempDir()
+	localPath := filepath.Join(tempDir, "demo.txt")
+	if err := os.WriteFile(localPath, []byte("hello upload"), 0o644); err != nil {
+		t.Fatalf("write temp file failed: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/taiyi/composer/api/v1/files/upload/demo-flow" {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.Method != http.MethodPost {
+			t.Fatalf("expected POST request, got %s", request.Method)
+		}
+		if err := request.ParseMultipartForm(1024 * 1024); err != nil {
+			t.Fatalf("parse multipart form failed: %v", err)
+		}
+		if request.FormValue("session_id") != "session-123" {
+			t.Fatalf("expected session_id to be forwarded, got %q", request.FormValue("session_id"))
+		}
+		file, header, err := request.FormFile("file")
+		if err != nil {
+			t.Fatalf("read uploaded file failed: %v", err)
+		}
+		defer file.Close()
+		content, err := io.ReadAll(file)
+		if err != nil {
+			t.Fatalf("read uploaded file content failed: %v", err)
+		}
+		if header.Filename != "remote.txt" {
+			t.Fatalf("expected uploaded filename remote.txt, got %q", header.Filename)
+		}
+		if string(content) != "hello upload" {
+			t.Fatalf("unexpected uploaded file content: %q", string(content))
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"flowId":"demo-flow","file_path":"demo-flow/session-123/folder/remote.txt"}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	result, err := client.UploadFile(context.Background(), "demo-flow", "session-123", localPath, "folder/remote.txt")
+	if err != nil {
+		t.Fatalf("expected UploadFile to succeed, got %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected upload result")
+	}
+	if result.FlowID != "demo-flow" || result.FilePath != "demo-flow/session-123/folder/remote.txt" {
+		t.Fatalf("unexpected upload result: %#v", result)
+	}
+}
+
+func TestListSessionMessagesParsesReasoningAndSearchResults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/taiyi/composer/api/v1/agents/flows/demo-flow/sessions/session-123/messages" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"total":1,"offset":0,"data":[{"id":"msg-1","session_id":"session-123","run_id":"run-123","sender":"Machine","sender_name":"助手","text":"最终回答[^1.1^][^2.1^]","reason_text":"内部思考","search_keyword":"golang upload","reasoning_enabled":true,"search_results":[{"title":"网络结果","link":"https://example.com/a","text":"网页摘要","source":"internet","provider":"bocha"},{"title":"共享文档","file_path":"kb/shared/doc.md","text":"知识摘要","source":"shared","provider":"milvus"}],"session_name":"演示会话","timestamp":"2026-05-14T12:00:00Z","error":false}]}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	list, err := client.ListSessionMessages(context.Background(), "demo-flow", "session-123", 0, 20)
+	if err != nil {
+		t.Fatalf("expected ListSessionMessages to succeed, got %v", err)
+	}
+	if list == nil || len(list.Items) != 1 {
+		t.Fatalf("expected one session message, got %#v", list)
+	}
+	message := list.Items[0]
+	if message.ReasonText != "内部思考" || message.SearchKeyword != "golang upload" || !message.ReasoningEnabled {
+		t.Fatalf("expected reasoning fields to be parsed, got %#v", message)
+	}
+	if len(message.SearchResults) != 2 {
+		t.Fatalf("expected two search results, got %#v", message.SearchResults)
+	}
+	if message.SearchResults[0].Source != "internet" || message.SearchResults[0].Link != "https://example.com/a" {
+		t.Fatalf("expected internet search result to be preserved, got %#v", message.SearchResults[0])
+	}
+	if message.SearchResults[1].Source != "shared" || message.SearchResults[1].FilePath != "kb/shared/doc.md" {
+		t.Fatalf("expected knowledge search result to be preserved, got %#v", message.SearchResults[1])
 	}
 }
 

@@ -459,7 +459,7 @@ func TestBuildTUIHelpLinesUsesLoginOverlayWording(t *testing.T) {
 	if strings.Contains(joined, "/chat") {
 		t.Fatalf("expected help text to remove /chat, got %q", joined)
 	}
-	if !strings.Contains(joined, "/internet [on|off|status]") || !strings.Contains(joined, "/knowledge 打开知识库范围选择器") || !strings.Contains(joined, "/files 查看当前对话附带的文件状态") {
+	if !strings.Contains(joined, "/internet [on|off|status]") || !strings.Contains(joined, "/knowledge 打开知识库范围选择器") || !strings.Contains(joined, "/upload <本地文件路径> 上传文件并附带到当前对话") {
 		t.Fatalf("expected help text to include split dialogue commands, got %q", joined)
 	}
 	if !strings.Contains(joined, "/login 打开登录表单") {
@@ -544,6 +544,92 @@ func TestRenderTUIChatFilesStatusIncludesServiceConfig(t *testing.T) {
 		if !strings.Contains(status, expected) {
 			t.Fatalf("expected files status to contain %q, got %q", expected, status)
 		}
+	}
+}
+
+func TestExecuteTUIUploadCommandUploadsFileAndUpdatesSnapshot(t *testing.T) {
+	tempDir := t.TempDir()
+	localFile := filepath.Join(tempDir, "report.txt")
+	if err := os.WriteFile(localFile, []byte("report"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+
+	var gotFlowID string
+	var gotSessionID string
+	var gotLocalPath string
+	result, err := executeTUIUploadCommand(context.Background(), &stubProvider{uploadHook: func(_ context.Context, flowID string, sessionID string, localPath string, remotePath string) (*provider.UploadResult, error) {
+		gotFlowID = flowID
+		gotSessionID = sessionID
+		gotLocalPath = localPath
+		if remotePath != "" {
+			t.Fatalf("expected empty remotePath, got %q", remotePath)
+		}
+		return &provider.UploadResult{FilePath: "flow-1/session-1/report.txt"}, nil
+	}}, "/upload report.txt", internaltui.Snapshot{
+		BackendAvailable: true,
+		DefaultFlow:      "flow-1",
+		Workdir:          tempDir,
+		ContextDir:       tempDir,
+		SessionID:        "session-1",
+	})
+	if err != nil {
+		t.Fatalf("executeTUIUploadCommand failed: %v", err)
+	}
+	if gotFlowID != "flow-1" || gotSessionID != "session-1" {
+		t.Fatalf("unexpected upload identifiers: flow=%q session=%q", gotFlowID, gotSessionID)
+	}
+	if gotLocalPath != localFile {
+		t.Fatalf("expected absolute local path %q, got %q", localFile, gotLocalPath)
+	}
+	if result.Snapshot == nil || len(result.Snapshot.InputFiles) != 1 || result.Snapshot.InputFiles[0] != "flow-1/session-1/report.txt" {
+		t.Fatalf("unexpected snapshot after upload: %#v", result.Snapshot)
+	}
+	if len(result.Events) != 1 || !strings.Contains(result.Events[0].Text, "已上传文件并附带到当前对话") {
+		t.Fatalf("unexpected upload events: %#v", result.Events)
+	}
+}
+
+func TestExecuteTUIThinkCommandListsAndShowsReasoning(t *testing.T) {
+	snapshot := internaltui.Snapshot{History: []internaltui.HistoryEntry{
+		{Role: "assistant", Content: "历史回答一\n\n[历史思考已隐藏，输入 /think 1 查看]", ThinkingText: "第一条思考", ThinkingIndex: 1},
+		{Role: "assistant", Content: "历史回答二\n\n[历史思考已隐藏，输入 /think 2 查看]", ThinkingText: "第二条思考", ThinkingIndex: 2},
+	}}
+
+	listResult, err := executeTUIThinkCommand("/think", snapshot)
+	if err != nil {
+		t.Fatalf("executeTUIThinkCommand list failed: %v", err)
+	}
+	if len(listResult.Events) != 1 || !strings.Contains(listResult.Events[0].Text, "#1") || !strings.Contains(listResult.Events[0].Text, "#2") {
+		t.Fatalf("unexpected think list result: %#v", listResult.Events)
+	}
+
+	showResult, err := executeTUIThinkCommand("/think 2", snapshot)
+	if err != nil {
+		t.Fatalf("executeTUIThinkCommand show failed: %v", err)
+	}
+	if len(showResult.Events) != 1 || !strings.Contains(showResult.Events[0].Text, "第二条思考") {
+		t.Fatalf("unexpected think detail result: %#v", showResult.Events)
+	}
+}
+
+func TestBuildSearchResultsSummaryUsesCitationBuckets(t *testing.T) {
+	summary := buildSearchResultsSummary("数据库 迁移", []provider.SearchResult{
+		{Source: "internet", Title: "联网结果", Link: "https://example.com"},
+		{Source: "document", Title: "共享文档结果"},
+		{Source: "personal", Title: "个人知识结果"},
+	})
+
+	if !strings.Contains(summary, "关键词: 数据库 迁移") {
+		t.Fatalf("expected keyword in summary, got %q", summary)
+	}
+	if !strings.Contains(summary, "1.1 联网结果 - https://example.com") {
+		t.Fatalf("expected internet citation bucket, got %q", summary)
+	}
+	if !strings.Contains(summary, "2.1 共享文档结果") {
+		t.Fatalf("expected shared citation bucket, got %q", summary)
+	}
+	if !strings.Contains(summary, "3.1 个人知识结果") {
+		t.Fatalf("expected personal citation bucket, got %q", summary)
 	}
 }
 

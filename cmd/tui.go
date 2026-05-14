@@ -175,6 +175,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			}
 
 			retryRequested := false
+			assistantRenderState := tuiAssistantRenderState{}
 		eventLoop:
 			for event := range stream {
 				switch event.Type {
@@ -189,7 +190,21 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						emit(tui.Event{Kind: tui.EventSessionUpdate, SessionID: sessionState.SessionID, SessionTitle: sessionTitle})
 					}
 					if assistantChunkEvent, ok := buildTUIAssistantChunkEvent(event.Data); ok {
-						emit(assistantChunkEvent)
+						segments := assistantRenderState.consume(assistantChunkEvent.Text)
+						emitted := false
+						for _, segment := range segments {
+							eventToEmit := assistantChunkEvent
+							eventToEmit.Text = segment.Text
+							eventToEmit.SplitAssistant = false
+							if segment.Reasoning {
+								eventToEmit.Kind = tui.EventReasoningChunk
+							}
+							emit(eventToEmit)
+							emitted = true
+						}
+						if !emitted && assistantChunkEvent.SplitAssistant {
+							emit(assistantChunkEvent)
+						}
 						continue
 					}
 					if message, ok := event.Data["message"].(string); ok && strings.TrimSpace(message) != "" {
@@ -338,6 +353,16 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				case provider.EventClose:
 					break eventLoop
 				}
+			}
+			for _, segment := range assistantRenderState.flush() {
+				eventToEmit := tui.Event{Kind: tui.EventAssistantChunk, Text: segment.Text}
+				if segment.Reasoning {
+					eventToEmit.Kind = tui.EventReasoningChunk
+				}
+				emit(eventToEmit)
+			}
+			if summary := loadLatestSearchResultsSummary(runCtx, callbackProvider, currentFlow, sessionState.SessionID); summary != "" {
+				emit(tui.Event{Kind: tui.EventSystemNote, Text: summary})
 			}
 			if retryRequested {
 				continue
@@ -567,8 +592,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			return executeTUIInternetCommand(trimmed, snapshot)
 		case strings.EqualFold(trimmed, "/knowledge") || strings.HasPrefix(strings.ToLower(trimmed), "/knowledge "):
 			return executeTUIKnowledgeCommand(trimmed, snapshot)
-		case strings.EqualFold(trimmed, "/files") || strings.HasPrefix(strings.ToLower(trimmed), "/files "):
-			return executeTUIFilesCommand(trimmed, snapshot)
+		case strings.EqualFold(trimmed, "/upload") || strings.HasPrefix(strings.ToLower(trimmed), "/upload "):
+			return executeTUIUploadCommand(ctx, authRefreshProvider(), trimmed, snapshot)
+		case strings.EqualFold(trimmed, "/think") || strings.HasPrefix(strings.ToLower(trimmed), "/think "):
+			return executeTUIThinkCommand(trimmed, snapshot)
 		case strings.EqualFold(trimmed, knowledgePickerCommandPrefix) || strings.HasPrefix(strings.ToLower(trimmed), knowledgePickerCommandPrefix+" "):
 			return executeTUIKnowledgePickerCommand(trimmed, snapshot)
 		case strings.EqualFold(trimmed, "/skills help"):
@@ -858,7 +885,8 @@ func buildTUIHelpLines(snapshot tui.Snapshot) []string {
 		"/clear 清空当前界面消息",
 		"/internet [on|off|status] 查看或切换当前对话的联网搜索",
 		"/knowledge 打开知识库范围选择器；/knowledge status 查看当前状态；/knowledge auto 切回自动",
-		"/files 查看当前对话附带的文件状态",
+		"/upload <本地文件路径> 上传文件并附带到当前对话；/upload status 查看当前文件状态",
+		"/think [编号] 查看历史消息里的思考内容；不带编号时列出可查看项",
 		"/review [路径] 发起当前工作区或指定路径的代码审查",
 		"/agent 或 /agent <任务> 切换执行模式",
 		"/ask 或 /ask <问题> 切换问答模式",
@@ -1087,14 +1115,27 @@ func loadRecentSessionHistory(ctx context.Context, providerClient provider.Provi
 	}
 
 	entries := make([]tui.HistoryEntry, 0, len(messages.Items))
+	thinkingIndex := 0
 	for index := len(messages.Items) - 1; index >= 0; index-- {
 		item := messages.Items[index]
+		role := mapMessageRole(item)
 		content := strings.TrimSpace(item.Text)
+		reasoning := strings.TrimSpace(item.ReasonText)
+		currentThinkingIndex := 0
+		if role == "assistant" && reasoning != "" {
+			thinkingIndex++
+			currentThinkingIndex = thinkingIndex
+			note := fmt.Sprintf("[历史思考已隐藏，输入 /think %d 查看]", currentThinkingIndex)
+			if content == "" {
+				content = note
+			} else {
+				content = content + "\n\n" + note
+			}
+		}
 		if content == "" {
 			continue
 		}
-		role := mapMessageRole(item)
-		entries = append(entries, tui.HistoryEntry{Role: role, Content: content})
+		entries = append(entries, tui.HistoryEntry{Role: role, Content: content, ThinkingText: reasoning, ThinkingIndex: currentThinkingIndex})
 	}
 	return entries
 }
@@ -2561,12 +2602,226 @@ func executeTUIKnowledgeCommand(command string, snapshot tui.Snapshot) (tui.Loca
 	}
 }
 
-func executeTUIFilesCommand(command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
-	fields := strings.Fields(strings.ToLower(strings.TrimSpace(command)))
-	if len(fields) <= 1 || (len(fields) == 2 && fields[1] == "status") {
+func executeTUIUploadCommand(ctx context.Context, providerClient provider.Provider, command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
+	trimmed := strings.TrimSpace(command)
+	if strings.EqualFold(trimmed, "/upload") {
 		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: renderTUIChatFilesStatus(snapshot)}}}, nil
 	}
-	return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "用法: /files"}}}, nil
+	if !strings.HasPrefix(strings.ToLower(trimmed), "/upload ") {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "用法: /upload <本地文件路径>，或 /upload status"}}}, nil
+	}
+	argument := strings.TrimSpace(trimmed[len("/upload"):])
+	if argument == "" || strings.EqualFold(argument, "status") {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: renderTUIChatFilesStatus(snapshot)}}}, nil
+	}
+	if !snapshot.BackendAvailable {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "当前服务端不可用，无法上传文件。"}}}, nil
+	}
+	flowID := strings.TrimSpace(snapshot.DefaultFlow)
+	if flowID == "" {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "当前未配置智能体，无法上传文件。"}}}, nil
+	}
+	uploadedPath, err := uploadInputFile(ctx, providerClient, flowID, snapshot.SessionID, firstNonEmpty(snapshot.ContextDir, snapshot.Workdir), argument)
+	if err != nil {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
+	}
+	updatedSnapshot := snapshot
+	updatedSnapshot.InputFiles = append(append([]string(nil), snapshot.InputFiles...), uploadedPath)
+	return tui.LocalCommandResult{
+		Handled:  true,
+		Snapshot: &updatedSnapshot,
+		Events: []tui.Event{{
+			Kind: tui.EventSystemNote,
+			Text: fmt.Sprintf("已上传文件并附带到当前对话：%s", filepath.Base(argument)),
+		}},
+	}, nil
+}
+
+func executeTUIThinkCommand(command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
+	trimmed := strings.TrimSpace(command)
+	fields := strings.Fields(trimmed)
+	available := availableThinkingHistory(snapshot.History)
+	if len(fields) == 1 || (len(fields) == 2 && strings.EqualFold(fields[1], "list")) {
+		if len(available) == 0 {
+			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: "当前历史消息中没有可查看的思考内容。"}}}, nil
+		}
+		lines := []string{"可查看的历史思考:"}
+		for _, item := range available {
+			lines = append(lines, fmt.Sprintf("#%d %s", item.ThinkingIndex, summarizeThinkingHistory(item.Content)))
+		}
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: strings.Join(lines, "\n")}}}, nil
+	}
+	if len(fields) != 2 {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "用法: /think [编号]"}}}, nil
+	}
+	index, err := strconv.Atoi(strings.TrimSpace(fields[1]))
+	if err != nil || index <= 0 {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "用法: /think [编号]"}}}, nil
+	}
+	for _, item := range available {
+		if item.ThinkingIndex == index {
+			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: fmt.Sprintf("历史消息 #%d 的思考过程:\n%s", index, item.ThinkingText)}}}, nil
+		}
+	}
+	return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: fmt.Sprintf("未找到编号为 %d 的历史思考。", index)}}}, nil
+}
+
+type tuiRenderedSegment struct {
+	Text      string
+	Reasoning bool
+}
+
+type tuiAssistantRenderState struct {
+	insideThink bool
+	pending     string
+}
+
+func (s *tuiAssistantRenderState) consume(chunk string) []tuiRenderedSegment {
+	if chunk == "" {
+		return nil
+	}
+	input := s.pending + chunk
+	s.pending = ""
+	segments := []tuiRenderedSegment{}
+	appendSegment := func(text string, reasoning bool) {
+		if text == "" {
+			return
+		}
+		if len(segments) > 0 && segments[len(segments)-1].Reasoning == reasoning {
+			segments[len(segments)-1].Text += text
+			return
+		}
+		segments = append(segments, tuiRenderedSegment{Text: text, Reasoning: reasoning})
+	}
+	for len(input) > 0 {
+		if s.insideThink {
+			closeIndex := strings.Index(input, "</think>")
+			if closeIndex < 0 {
+				fragment := trailingThinkTagFragment(input, "</think>")
+				appendSegment(input[:len(input)-len(fragment)], true)
+				s.pending = fragment
+				return segments
+			}
+			appendSegment(input[:closeIndex], true)
+			input = input[closeIndex+len("</think>"):]
+			s.insideThink = false
+			continue
+		}
+		openIndex := strings.Index(input, "<think>")
+		closeIndex := strings.Index(input, "</think>")
+		if closeIndex >= 0 && (openIndex < 0 || closeIndex < openIndex) {
+			appendSegment(input[:closeIndex], false)
+			input = input[closeIndex+len("</think>"):]
+			continue
+		}
+		if openIndex < 0 {
+			fragment := trailingThinkTagFragment(input, "<think>", "</think>")
+			appendSegment(input[:len(input)-len(fragment)], false)
+			s.pending = fragment
+			return segments
+		}
+		appendSegment(input[:openIndex], false)
+		input = input[openIndex+len("<think>"):]
+		s.insideThink = true
+	}
+	return segments
+}
+
+func (s *tuiAssistantRenderState) flush() []tuiRenderedSegment {
+	s.pending = ""
+	return nil
+}
+
+func availableThinkingHistory(items []tui.HistoryEntry) []tui.HistoryEntry {
+	available := make([]tui.HistoryEntry, 0, len(items))
+	for _, item := range items {
+		if item.ThinkingIndex > 0 && strings.TrimSpace(item.ThinkingText) != "" {
+			available = append(available, item)
+		}
+	}
+	return available
+}
+
+func summarizeThinkingHistory(content string) string {
+	trimmed := strings.TrimSpace(content)
+	trimmed = strings.ReplaceAll(trimmed, "\n", " ")
+	if len([]rune(trimmed)) <= 24 {
+		return trimmed
+	}
+	runes := []rune(trimmed)
+	return string(runes[:24]) + "..."
+}
+
+func loadLatestSearchResultsSummary(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string) string {
+	trimmedFlowID := strings.TrimSpace(flowID)
+	trimmedSessionID := strings.TrimSpace(sessionID)
+	if providerClient == nil || trimmedFlowID == "" || trimmedSessionID == "" {
+		return ""
+	}
+	messages, err := providerClient.ListSessionMessages(ctx, trimmedFlowID, trimmedSessionID, 0, 10)
+	if err != nil || messages == nil {
+		return ""
+	}
+	for _, item := range messages.Items {
+		if len(item.SearchResults) == 0 {
+			continue
+		}
+		return buildSearchResultsSummary(item.SearchKeyword, item.SearchResults)
+	}
+	return ""
+}
+
+func buildSearchResultsSummary(keyword string, results []provider.SearchResult) string {
+	if len(results) == 0 {
+		return ""
+	}
+	lines := []string{"检索结果摘要:"}
+	if trimmedKeyword := strings.TrimSpace(keyword); trimmedKeyword != "" {
+		lines = append(lines, "关键词: "+trimmedKeyword)
+	}
+	counters := map[string]int{}
+	for _, item := range results {
+		prefix, label := retrievalSourceSummaryDescriptor(item.Source)
+		counters[prefix]++
+		lines = append(lines, fmt.Sprintf("%s.%d %s", prefix, counters[prefix], summarizeSearchResult(item, label)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func retrievalSourceSummaryDescriptor(source string) (string, string) {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "internet":
+		return "1", "联网"
+	case "personal":
+		return "3", "个人"
+	default:
+		return "2", "共享"
+	}
+}
+
+func summarizeSearchResult(result provider.SearchResult, sourceLabel string) string {
+	title := strings.TrimSpace(result.Title)
+	if title == "" {
+		title = strings.TrimSpace(result.Text)
+	}
+	if title == "" {
+		title = strings.TrimSpace(result.Filename)
+	}
+	if title == "" {
+		title = strings.TrimSpace(result.Content)
+	}
+	title = strings.ReplaceAll(title, "\n", " ")
+	runes := []rune(title)
+	if len(runes) > 36 {
+		title = string(runes[:36]) + "..."
+	}
+	if title == "" {
+		title = sourceLabel + "结果"
+	}
+	if link := strings.TrimSpace(result.Link); link != "" {
+		return fmt.Sprintf("%s - %s", title, link)
+	}
+	return title
 }
 
 func executeTUIKnowledgePickerCommand(command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {

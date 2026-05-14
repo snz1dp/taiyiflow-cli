@@ -8,9 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -230,6 +233,10 @@ type sessionMessageResponse struct {
 	Sender      string         `json:"sender"`
 	SenderName  string         `json:"sender_name"`
 	Text        string         `json:"text"`
+	ReasonText  string         `json:"reason_text"`
+	SearchResults []searchResultResponse `json:"search_results"`
+	SearchKeyword string       `json:"search_keyword"`
+	ReasoningEnabled bool      `json:"reasoning_enabled"`
 	SessionName string         `json:"session_name"`
 	Timestamp   string         `json:"timestamp"`
 	Error       bool           `json:"error"`
@@ -240,6 +247,34 @@ type sessionMessagePageResponse struct {
 	Total  int                      `json:"total"`
 	Offset int                      `json:"offset"`
 	Data   []sessionMessageResponse `json:"data"`
+}
+
+type searchResultResponse struct {
+	DocID       string `json:"docid"`
+	FileType    string `json:"filetype"`
+	FilePath    string `json:"file_path"`
+	Filename    string `json:"filename"`
+	Content     string `json:"content"`
+	PageNumbers []int  `json:"page_numbers"`
+	Text        string `json:"text"`
+	Collection  string `json:"collection"`
+	Partition   string `json:"partition"`
+	Title       string `json:"title"`
+	Link        string `json:"link"`
+	Site        string `json:"site"`
+	Source      string `json:"source"`
+	Provider    string `json:"provider"`
+}
+
+type uploadFileResponse struct {
+	FlowID    string `json:"flow_id"`
+	FlowIDAlt string `json:"flowId"`
+	FilePath  string `json:"file_path"`
+	FilePathAlt string `json:"filePath"`
+}
+
+type sessionIDResponse struct {
+	SessionID string `json:"session_id"`
 }
 
 type compressionRecordResponse struct {
@@ -595,6 +630,103 @@ func (c *Client) ListKnowledgeBases(ctx context.Context, filter string, offset, 
 	}, nil
 }
 
+func (c *Client) CreateSessionID(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiURL("/session_id"), nil)
+	if err != nil {
+		return "", fmt.Errorf("创建会话 ID 请求失败: %w", err)
+	}
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("创建会话 ID 失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return "", readHTTPError("创建会话 ID 失败", resp)
+	}
+
+	var payload sessionIDResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", fmt.Errorf("解析会话 ID 响应失败: %w", err)
+	}
+	trimmed := strings.TrimSpace(payload.SessionID)
+	if trimmed == "" {
+		return "", fmt.Errorf("解析会话 ID 响应失败: session_id 为空")
+	}
+	return trimmed, nil
+}
+
+func (c *Client) UploadFile(ctx context.Context, flowID string, sessionID string, localPath string, remotePath string) (*provider.UploadResult, error) {
+	trimmedFlowID := strings.TrimSpace(flowID)
+	trimmedSessionID := strings.TrimSpace(sessionID)
+	trimmedLocalPath := strings.TrimSpace(localPath)
+	trimmedRemotePath := strings.TrimSpace(remotePath)
+	if trimmedFlowID == "" {
+		return nil, fmt.Errorf("上传文件失败: 智能体不能为空")
+	}
+	if trimmedLocalPath == "" {
+		return nil, fmt.Errorf("上传文件失败: 本地文件路径不能为空")
+	}
+
+	file, err := os.Open(trimmedLocalPath)
+	if err != nil {
+		return nil, fmt.Errorf("打开上传文件失败: %w", err)
+	}
+	defer file.Close()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if trimmedSessionID != "" {
+		if err := writer.WriteField("session_id", trimmedSessionID); err != nil {
+			return nil, fmt.Errorf("构造上传表单失败: %w", err)
+		}
+	}
+	uploadName := filepath.Base(trimmedLocalPath)
+	if trimmedRemotePath != "" {
+		uploadName = filepath.Base(trimmedRemotePath)
+	}
+	part, err := writer.CreateFormFile("file", uploadName)
+	if err != nil {
+		return nil, fmt.Errorf("构造上传文件字段失败: %w", err)
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		return nil, fmt.Errorf("写入上传文件内容失败: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("完成上传表单失败: %w", err)
+	}
+
+	endpoint := c.apiURL(fmt.Sprintf("/files/upload/%s", url.PathEscape(trimmedFlowID)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
+	if err != nil {
+		return nil, fmt.Errorf("创建上传请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("上传文件失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("上传文件失败", resp)
+	}
+
+	var payload uploadFileResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析上传响应失败: %w", err)
+	}
+
+	return &provider.UploadResult{
+		FlowID:   firstNonEmpty(payload.FlowID, payload.FlowIDAlt),
+		FilePath: firstNonEmpty(payload.FilePath, payload.FilePathAlt),
+	}, nil
+}
+
 func (c *Client) ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*provider.SessionMessageList, error) {
 	flowID = strings.TrimSpace(flowID)
 	sessionID = strings.TrimSpace(sessionID)
@@ -648,15 +780,19 @@ func (c *Client) ListSessionMessages(ctx context.Context, flowID string, session
 			return nil, fmt.Errorf("解析会话消息时间失败: %w", err)
 		}
 		items = append(items, provider.SessionMessage{
-			ID:          item.ID,
-			SessionID:   item.SessionID,
-			RunID:       item.RunID,
-			Sender:      item.Sender,
-			SenderName:  item.SenderName,
-			Text:        item.Text,
-			SessionName: item.SessionName,
-			Timestamp:   timestamp,
-			Error:       item.Error,
+			ID:               item.ID,
+			SessionID:        item.SessionID,
+			RunID:            item.RunID,
+			Sender:           item.Sender,
+			SenderName:       item.SenderName,
+			Text:             item.Text,
+			ReasonText:       item.ReasonText,
+			SearchResults:    mapSearchResults(item.SearchResults),
+			SearchKeyword:    item.SearchKeyword,
+			ReasoningEnabled: item.ReasoningEnabled,
+			SessionName:      item.SessionName,
+			Timestamp:        timestamp,
+			Error:            item.Error,
 		})
 	}
 
@@ -1246,6 +1382,32 @@ func readHTTPError(prefix string, response *http.Response) error {
 		message = response.Status
 	}
 	return fmt.Errorf("%s: %s", prefix, message)
+}
+
+func mapSearchResults(items []searchResultResponse) []provider.SearchResult {
+	if len(items) == 0 {
+		return nil
+	}
+	results := make([]provider.SearchResult, 0, len(items))
+	for _, item := range items {
+		results = append(results, provider.SearchResult{
+			DocID:       item.DocID,
+			FileType:    item.FileType,
+			FilePath:    item.FilePath,
+			Filename:    item.Filename,
+			Content:     item.Content,
+			PageNumbers: append([]int(nil), item.PageNumbers...),
+			Text:        item.Text,
+			Collection:  item.Collection,
+			Partition:   item.Partition,
+			Title:       item.Title,
+			Link:        item.Link,
+			Site:        item.Site,
+			Source:      item.Source,
+			Provider:    item.Provider,
+		})
+	}
+	return results
 }
 
 func firstNonEmpty(value, fallback string) string {

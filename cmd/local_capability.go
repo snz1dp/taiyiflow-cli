@@ -81,6 +81,30 @@ func (p *callbackAuthRefreshProvider) ListSessionMessages(ctx context.Context, f
 	return p.Provider.ListSessionMessages(ctx, flowID, sessionID, offset, limit)
 }
 
+func (p *callbackAuthRefreshProvider) CreateSessionID(ctx context.Context) (string, error) {
+	sessionID, err := p.Provider.CreateSessionID(ctx)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return "", refreshErr
+	}
+	if !retry {
+		return sessionID, err
+	}
+	return p.Provider.CreateSessionID(ctx)
+}
+
+func (p *callbackAuthRefreshProvider) UploadFile(ctx context.Context, flowID string, sessionID string, localPath string, remotePath string) (*provider.UploadResult, error) {
+	result, err := p.Provider.UploadFile(ctx, flowID, sessionID, localPath, remotePath)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return result, err
+	}
+	return p.Provider.UploadFile(ctx, flowID, sessionID, localPath, remotePath)
+}
+
 func (p *callbackAuthRefreshProvider) GetVersionInfo(ctx context.Context) (*provider.ServiceVersion, error) {
 	versionInfo, err := p.Provider.GetVersionInfo(ctx)
 	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)

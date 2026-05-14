@@ -29,6 +29,9 @@ type stubProvider struct {
 	sessionContext     *provider.SessionContextPreview
 	skillPreview       *provider.SkillResolvePreview
 	skillPreviewErr    error
+	uploadResult       *provider.UploadResult
+	uploadErr          error
+	uploadHook         func(context.Context, string, string, string, string) (*provider.UploadResult, error)
 	lastRequest        provider.StreamRequest
 	lastResolveRequest provider.SkillResolveRequest
 }
@@ -80,6 +83,20 @@ func (s stubProvider) ListSessions(context.Context, string, int, int) (*provider
 
 func (s stubProvider) ListSessionMessages(context.Context, string, string, int, int) (*provider.SessionMessageList, error) {
 	return s.messages, nil
+}
+
+func (s stubProvider) CreateSessionID(context.Context) (string, error) {
+	return "session-created", nil
+}
+
+func (s stubProvider) UploadFile(ctx context.Context, flowID string, sessionID string, localPath string, remotePath string) (*provider.UploadResult, error) {
+	if s.uploadHook != nil {
+		return s.uploadHook(ctx, flowID, sessionID, localPath, remotePath)
+	}
+	if s.uploadResult != nil || s.uploadErr != nil {
+		return s.uploadResult, s.uploadErr
+	}
+	return &provider.UploadResult{}, nil
 }
 
 func (s stubProvider) GetVersionInfo(context.Context) (*provider.ServiceVersion, error) {
@@ -744,6 +761,137 @@ func runTaskAndCaptureStreamBody(t *testing.T, crossSessionMemoryEnabled bool, a
 	return captured
 }
 
+func TestUploadInputFileResolvesRelativePathAndReturnsServerPath(t *testing.T) {
+	baseDir := t.TempDir()
+	localDir := filepath.Join(baseDir, "docs")
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	localFile := filepath.Join(localDir, "demo.txt")
+	if err := os.WriteFile(localFile, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+
+	var gotFlowID string
+	var gotSessionID string
+	var gotLocalPath string
+	var gotRemotePath string
+	filePath, err := uploadInputFile(context.Background(), &stubProvider{uploadHook: func(_ context.Context, flowID string, sessionID string, localPath string, remotePath string) (*provider.UploadResult, error) {
+		gotFlowID = flowID
+		gotSessionID = sessionID
+		gotLocalPath = localPath
+		gotRemotePath = remotePath
+		return &provider.UploadResult{FilePath: "flow-1/session-1/demo.txt"}, nil
+	}}, "flow-1", "session-1", baseDir, filepath.Join("docs", "demo.txt"))
+	if err != nil {
+		t.Fatalf("uploadInputFile failed: %v", err)
+	}
+	if filePath != "flow-1/session-1/demo.txt" {
+		t.Fatalf("unexpected uploaded file path: %q", filePath)
+	}
+	if gotFlowID != "flow-1" || gotSessionID != "session-1" {
+		t.Fatalf("unexpected upload identifiers: flow=%q session=%q", gotFlowID, gotSessionID)
+	}
+	if gotLocalPath != localFile {
+		t.Fatalf("expected absolute local path %q, got %q", localFile, gotLocalPath)
+	}
+	if gotRemotePath != "" {
+		t.Fatalf("expected empty remote path, got %q", gotRemotePath)
+	}
+}
+
+func TestRunTaskWithFileUploadsAndForwardsInputFiles(t *testing.T) {
+	var captured map[string]any
+	uploadCalled := false
+	tempWorkdir := t.TempDir()
+	localFile := filepath.Join(tempWorkdir, "notes.txt")
+	if err := os.WriteFile(localFile, []byte("note"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/taiyi/composer/api/v1/users/whoami/userinfo":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
+		case "/taiyi/composer/api/v1/version":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"package":"taiyiflow","main_version":"1.0.0"}`)
+		case "/taiyi/composer/api/v1/config":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"default_flow_id":"flow-1"}`)
+		case "/taiyi/composer/api/v1/files/upload/flow-1":
+			uploadCalled = true
+			if got := request.FormValue("session_id"); got != "" {
+				t.Fatalf("expected empty session_id for first upload, got %q", got)
+			}
+			file, header, err := request.FormFile("file")
+			if err != nil {
+				t.Fatalf("read uploaded file failed: %v", err)
+			}
+			defer file.Close()
+			payload, err := io.ReadAll(file)
+			if err != nil {
+				t.Fatalf("read upload payload failed: %v", err)
+			}
+			if header.Filename != "notes.txt" {
+				t.Fatalf("unexpected uploaded filename: %q", header.Filename)
+			}
+			if string(payload) != "note" {
+				t.Fatalf("unexpected uploaded payload: %q", string(payload))
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"flow_id":"flow-1","file_path":"flow-1/flow-1/notes.txt"}`)
+		case "/taiyi/composer/api/v1/run/flow-1/stream":
+			if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode stream request failed: %v", err)
+			}
+			writer.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(writer, "event: close\ndata: {}\n\n")
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.AccessToken = "access-1"
+	config.Workdir = tempWorkdir
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	store, err := agent.NewSessionStore()
+	if err != nil {
+		t.Fatalf("new session store failed: %v", err)
+	}
+	var stdout bytes.Buffer
+	app := &App{
+		configManager: manager,
+		sessionStore:  store,
+		stdout:        &stdout,
+		stderr:        io.Discard,
+		stdin:         strings.NewReader(""),
+		runtime:       clientruntime.NewClientRuntime(strings.NewReader(""), &stdout, io.Discard),
+	}
+
+	if err := app.runTask(context.Background(), []string{"--file", "notes.txt", "分析这个文件"}); err != nil {
+		t.Fatalf("runTask failed: %v", err)
+	}
+	if !uploadCalled {
+		t.Fatal("expected upload endpoint to be called")
+	}
+	inputFiles, ok := captured["files"].([]any)
+	if !ok || len(inputFiles) != 1 || inputFiles[0] != "flow-1/flow-1/notes.txt" {
+		t.Fatalf("unexpected files payload: %#v", captured["files"])
+	}
+}
+
 func TestCallbackAuthRefreshProviderRetriesSubmitAfterUnauthorized(t *testing.T) {
 	callbackCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -1376,6 +1524,65 @@ func TestStreamTaskDropsSplitClosingThinkTagWhenEnabled(t *testing.T) {
 
 	if got := stdout.String(); got != "开始内部推理结论\n" {
 		t.Fatalf("expected split closing tag hidden when showThinking enabled, got %q", got)
+	}
+}
+
+func TestCLIStreamRenderStateRewritesSplitCitationMarkers(t *testing.T) {
+	state := cliStreamRenderState{}
+
+	if got := state.renderChunk("结论 ^1.", false); got != "结论 " {
+		t.Fatalf("expected citation prefix to be buffered, got %q", got)
+	}
+	if got := state.renderChunk("2^ 与 [^2.", false); got != "[联网#2] 与 " {
+		t.Fatalf("expected internet citation to be rewritten, got %q", got)
+	}
+	if got := state.renderChunk("1^]", false); got != "[共享#1]" {
+		t.Fatalf("expected shared citation to be rewritten, got %q", got)
+	}
+	if got := state.flush(false); got != "" {
+		t.Fatalf("expected no buffered citation text after flush, got %q", got)
+	}
+}
+
+func TestStreamTaskShowsAndClearsStreamingEllipsisInCLI(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	stdout := &fakeTTYWriter{fd: 1}
+	var stderr bytes.Buffer
+	app.stdout = stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), stdout, &stderr)
+
+	previous := isTerminalFD
+	isTerminalFD = func(fd int) bool {
+		return fd == 1
+	}
+	defer func() {
+		isTerminalFD = previous
+	}()
+
+	stream := make(chan provider.StreamEvent, 2)
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "答案 ^1.2^"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err := app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+
+	want := "答案 [联网#2]...\b\b\b   \b\b\b\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("expected citation rewrite and trailing ellipsis cleanup, got %q want %q", got, want)
 	}
 }
 

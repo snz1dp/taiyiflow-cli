@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -28,6 +29,9 @@ var (
 	cliDisableFocusReporting = "\x1b[?1004l"
 	cmdANSICSIRegexp         = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 	cmdANSIOSCRegexp         = regexp.MustCompile(`\x1b\][^\a]*(\a|\x1b\\)`)
+	cliCitationRegexp        = regexp.MustCompile(`\[\^([123])\.(\d+)\^\]|\^([123])\.(\d+)\^`)
+	cliCitationExactRegexp   = regexp.MustCompile(`^(?:\[\^([123])\.(\d+)\^\]|\^([123])\.(\d+)\^)$`)
+	cliCitationPrefixRegexp  = regexp.MustCompile(`^(?:\[\^|\^)(?:[123](?:\.\d*(?:\^\]?)?)?)?$`)
 	isTerminalFD             = term.IsTerminal
 )
 
@@ -48,6 +52,7 @@ type App struct {
 
 type rootOptions struct {
 	Flow                      string
+	UploadFile                string
 	RequestMode               string
 	ReasoningMode             string
 	InternetSearchMode        string
@@ -65,6 +70,8 @@ type rootOptions struct {
 type cliStreamRenderState struct {
 	insideThink         bool
 	pending             string
+	citationPending     string
+	streamingSuffix     string
 	splitNextAssistant  bool
 	hasPrintedAssistant bool
 }
@@ -143,6 +150,7 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 
 	var options rootOptions
 	flagSet.StringVar(&options.Flow, "agent", "", "指定要运行的智能体 ID 或名称")
+	flagSet.StringVar(&options.UploadFile, "file", "", "上传一个本地文件并作为本次任务输入")
 	flagSet.StringVar(&options.RequestMode, "mode", "", "task 请求模式（agent|ask|plan），默认 agent")
 	flagSet.StringVar(&options.ReasoningMode, "reasoning", "", "思考模式（on|off），仅影响当前 task 会话")
 	flagSet.StringVar(&options.InternetSearchMode, "internet-search", "", "联网搜索（on|off），仅影响当前 task 会话")
@@ -489,8 +497,23 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	if options.InternetSearchMode != "" {
 		sessionState.InternetSearchOverride = options.InternetSearchMode
 	}
+	inputFiles := []string(nil)
+	if strings.TrimSpace(options.UploadFile) != "" {
+		uploadedPath, uploadErr := uploadInputFile(
+			ctx,
+			a.providerWithCallbackAuthRefresh(providerClient, &config),
+			flowID,
+			sessionState.SessionID,
+			firstNonEmpty(sessionState.ContextDir, workdir),
+			options.UploadFile,
+		)
+		if uploadErr != nil {
+			return uploadErr
+		}
+		inputFiles = append(inputFiles, uploadedPath)
+	}
 
-	_, err = a.streamTask(ctx, providerClient, config, flowID, task, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents, options.ShowThinking)
+	_, err = a.streamTaskWithInputFiles(ctx, providerClient, config, flowID, task, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents, options.ShowThinking, inputFiles)
 	return err
 }
 
@@ -533,6 +556,32 @@ func (a *App) streamTask(
 	showStreamEvents bool,
 	showThinking bool,
 ) (agent.SessionState, error) {
+	return a.streamTaskWithInputFiles(
+		ctx,
+		providerClient,
+		config,
+		flowID,
+		task,
+		sessionState,
+		commandSandboxEscapePolicy,
+		showStreamEvents,
+		showThinking,
+		nil,
+	)
+}
+
+func (a *App) streamTaskWithInputFiles(
+	ctx context.Context,
+	providerClient provider.Provider,
+	config internalconfig.Config,
+	flowID string,
+	task string,
+	sessionState agent.SessionState,
+	commandSandboxEscapePolicy string,
+	showStreamEvents bool,
+	showThinking bool,
+	inputFiles []string,
+) (agent.SessionState, error) {
 	return a.streamTaskWithSkillRetry(
 		ctx,
 		providerClient,
@@ -543,6 +592,7 @@ func (a *App) streamTask(
 		commandSandboxEscapePolicy,
 		showStreamEvents,
 		showThinking,
+		inputFiles,
 		0,
 	)
 }
@@ -557,6 +607,7 @@ func (a *App) streamTaskWithSkillRetry(
 	commandSandboxEscapePolicy string,
 	showStreamEvents bool,
 	showThinking bool,
+	inputFiles []string,
 	retryCount int,
 ) (agent.SessionState, error) {
 	providerClient = a.providerWithCallbackAuthRefresh(providerClient, &config)
@@ -578,6 +629,7 @@ func (a *App) streamTaskWithSkillRetry(
 		Input:                     strings.TrimSpace(task),
 		InputType:                 "any",
 		Tweaks:                    buildTaskTweaks(clientContextDir, commandExecutionTarget),
+		InputFiles:                append([]string(nil), inputFiles...),
 		InternetSearch:            resolveInternetSearchEnabled(sessionState.InternetSearchOverride),
 		OutputType:                "any",
 		SessionID:                 sessionState.SessionID,
@@ -615,6 +667,7 @@ func (a *App) streamTaskWithSkillRetry(
 				commandSandboxEscapePolicy,
 				showStreamEvents,
 				showThinking,
+				inputFiles,
 				retryCount+1,
 			)
 		}
@@ -622,6 +675,7 @@ func (a *App) streamTaskWithSkillRetry(
 	}
 	hasVisibleOutput := false
 	renderState := cliStreamRenderState{}
+	renderStreamingSuffix := isTerminalWriter(a.stdout)
 
 	if streamSession != nil && streamSession.SessionID != "" {
 		sessionState.SessionID = streamSession.SessionID
@@ -659,16 +713,24 @@ func (a *App) streamTaskWithSkillRetry(
 					chunk = "\n\n" + chunk
 				}
 				chunk = renderState.renderChunk(chunk, showThinking)
+				clearIndicator := ""
+				if renderStreamingSuffix {
+					clearIndicator = renderState.clearStreamingSuffix()
+				}
 				if !hasVisibleOutput {
+					clearIndicator = ""
 					chunk = strings.TrimLeft(chunk, "\r\n")
 					if chunk == "" {
 						continue
 					}
 				}
-				fmt.Fprint(a.stdout, chunk)
+				fmt.Fprint(a.stdout, clearIndicator+chunk)
 				hasVisibleOutput = true
 				renderState.hasPrintedAssistant = true
 				renderState.splitNextAssistant = false
+				if renderStreamingSuffix {
+					fmt.Fprint(a.stdout, renderState.showStreamingSuffix())
+				}
 				continue
 			}
 			if showStreamEvents {
@@ -676,6 +738,9 @@ func (a *App) streamTaskWithSkillRetry(
 					message = sanitizeCLIStreamText(message)
 					if strings.TrimSpace(message) == "" {
 						continue
+					}
+					if clearIndicator := clearStreamingSuffixIfNeeded(renderStreamingSuffix, &renderState); clearIndicator != "" {
+						fmt.Fprint(a.stdout, clearIndicator)
 					}
 					if hasVisibleOutput {
 						fmt.Fprintf(a.stdout, "\n[系统提示]: %s\n", strings.TrimSpace(message))
@@ -737,6 +802,7 @@ func (a *App) streamTaskWithSkillRetry(
 							commandSandboxEscapePolicy,
 							showStreamEvents,
 							showThinking,
+							inputFiles,
 							retryCount+1,
 						)
 					}
@@ -744,6 +810,9 @@ func (a *App) streamTaskWithSkillRetry(
 			}
 			streamRetryLimit := internalconfig.NormalizeStreamRetryAttempts(config.StreamRetryAttempts)
 			if retryCount < streamRetryLimit && shouldRetryStreamError(normalizedErr) {
+				if clearIndicator := clearStreamingSuffixIfNeeded(renderStreamingSuffix, &renderState); clearIndicator != "" {
+					fmt.Fprint(a.stdout, clearIndicator)
+				}
 				if hasVisibleOutput {
 					fmt.Fprintln(a.stdout)
 				}
@@ -760,8 +829,12 @@ func (a *App) streamTaskWithSkillRetry(
 					commandSandboxEscapePolicy,
 					showStreamEvents,
 					showThinking,
+					inputFiles,
 					retryCount+1,
 				)
+			}
+			if clearIndicator := clearStreamingSuffixIfNeeded(renderStreamingSuffix, &renderState); clearIndicator != "" {
+				fmt.Fprint(a.stdout, clearIndicator)
 			}
 			if hasVisibleOutput {
 				fmt.Fprintln(a.stderr)
@@ -796,13 +869,29 @@ func (a *App) streamTaskWithSkillRetry(
 				return sessionState, err
 			}
 		case provider.EventToolCall:
-			if showStreamEvents {
-				if text, ok := event.Data["text"].(string); ok && text != "" {
-					text = sanitizeCLIStreamText(text)
-					if strings.TrimSpace(text) == "" {
-						continue
+			if text, ok := event.Data["text"].(string); ok && text != "" {
+				text = sanitizeCLIStreamText(text)
+				if strings.TrimSpace(text) == "" {
+					continue
+				}
+				if clearIndicator := clearStreamingSuffixIfNeeded(renderStreamingSuffix, &renderState); clearIndicator != "" {
+					fmt.Fprint(a.stdout, clearIndicator)
+				}
+				if status := tuiSearchActivityStatus(text); status != "" {
+					if hasVisibleOutput {
+						fmt.Fprintf(a.stdout, "\n[系统提示]: %s\n", status)
+					} else {
+						fmt.Fprintf(a.stdout, "[系统提示]: %s\n", status)
 					}
-					fmt.Fprintf(a.stdout, "[工具调用]: %s\n", text)
+					hasVisibleOutput = true
+					continue
+				}
+				if showStreamEvents {
+					if hasVisibleOutput {
+						fmt.Fprintf(a.stdout, "\n[工具调用]: %s\n", text)
+					} else {
+						fmt.Fprintf(a.stdout, "[工具调用]: %s\n", text)
+					}
 					hasVisibleOutput = true
 				}
 			}
@@ -814,9 +903,19 @@ func (a *App) streamTaskWithSkillRetry(
 			if text == "" {
 				continue
 			}
-			fmt.Fprintf(a.stdout, "[上下文压缩]: %s\n", text)
+			if clearIndicator := clearStreamingSuffixIfNeeded(renderStreamingSuffix, &renderState); clearIndicator != "" {
+				fmt.Fprint(a.stdout, clearIndicator)
+			}
+			if hasVisibleOutput {
+				fmt.Fprintf(a.stdout, "\n[上下文压缩]: %s\n", text)
+			} else {
+				fmt.Fprintf(a.stdout, "[上下文压缩]: %s\n", text)
+			}
 			hasVisibleOutput = true
 		case provider.EventClose:
+			if clearIndicator := clearStreamingSuffixIfNeeded(renderStreamingSuffix, &renderState); clearIndicator != "" {
+				fmt.Fprint(a.stdout, clearIndicator)
+			}
 			if pending := renderState.flush(showThinking); pending != "" {
 				if !hasVisibleOutput {
 					pending = strings.TrimLeft(pending, "\r\n")
@@ -830,6 +929,9 @@ func (a *App) streamTaskWithSkillRetry(
 		}
 	}
 
+	if clearIndicator := clearStreamingSuffixIfNeeded(renderStreamingSuffix, &renderState); clearIndicator != "" {
+		fmt.Fprint(a.stdout, clearIndicator)
+	}
 	if pending := renderState.flush(showThinking); pending != "" {
 		if !hasVisibleOutput {
 			pending = strings.TrimLeft(pending, "\r\n")
@@ -839,7 +941,26 @@ func (a *App) streamTaskWithSkillRetry(
 		}
 	}
 
+	if summary := loadLatestSearchResultsSummary(ctx, providerClient, flowID, sessionState.SessionID); summary != "" {
+		fmt.Fprintln(a.stdout, summary)
+	}
 	return sessionState, nil
+}
+
+func tuiSearchActivityStatus(content string) string {
+	lower := strings.ToLower(strings.TrimSpace(content))
+	switch {
+	case strings.Contains(lower, "internet"), strings.Contains(lower, "联网"), strings.Contains(lower, "bocha"), strings.Contains(lower, "tencent"):
+		return "正在联网搜索..."
+	case strings.Contains(lower, "personal"), strings.Contains(lower, "个人知识"):
+		return "正在检索个人知识..."
+	case strings.Contains(lower, "knowledge"), strings.Contains(lower, "知识库"), strings.Contains(lower, "milvus"), strings.Contains(lower, "document"):
+		return "正在检索共享知识..."
+	case strings.Contains(lower, "search"), strings.Contains(lower, "检索"):
+		return "正在搜索..."
+	default:
+		return ""
+	}
 }
 
 func (s *cliStreamRenderState) renderChunk(chunk string, showThinking bool) string {
@@ -860,7 +981,7 @@ func (s *cliStreamRenderState) renderChunk(chunk string, showThinking bool) stri
 					builder.WriteString(input[:len(input)-len(fragment)])
 				}
 				s.pending = fragment
-				return builder.String()
+				return s.rewriteCitationChunk(builder.String())
 			}
 			if showThinking {
 				builder.WriteString(input[:closeIndex])
@@ -881,7 +1002,7 @@ func (s *cliStreamRenderState) renderChunk(chunk string, showThinking bool) stri
 			fragment := trailingThinkTagFragment(input, "<think>", "</think>")
 			builder.WriteString(input[:len(input)-len(fragment)])
 			s.pending = fragment
-			return builder.String()
+			return s.rewriteCitationChunk(builder.String())
 		}
 
 		builder.WriteString(input[:openIndex])
@@ -889,16 +1010,17 @@ func (s *cliStreamRenderState) renderChunk(chunk string, showThinking bool) stri
 		s.insideThink = true
 	}
 
-	return builder.String()
+	return s.rewriteCitationChunk(builder.String())
 }
 
 func (s *cliStreamRenderState) flush(showThinking bool) string {
+	result := s.rewriteCitationChunk("")
 	if showThinking || s.insideThink || s.pending == "" {
 		s.pending = ""
-		return ""
+		return result
 	}
 	s.pending = ""
-	return ""
+	return result
 }
 
 func trailingThinkTagFragment(content string, tags ...string) string {
@@ -933,6 +1055,101 @@ func sanitizeCLIStreamText(content string) string {
 	return strings.ReplaceAll(cleaned, "\x1b", "")
 }
 
+func isTerminalWriter(writer io.Writer) bool {
+	fdTarget, ok := writer.(fdWriter)
+	if !ok {
+		return false
+	}
+	return isTerminalFD(int(fdTarget.Fd()))
+}
+
+func clearStreamingSuffixIfNeeded(enabled bool, state *cliStreamRenderState) string {
+	if !enabled || state == nil {
+		return ""
+	}
+	return state.clearStreamingSuffix()
+}
+
+func (s *cliStreamRenderState) rewriteCitationChunk(chunk string) string {
+	input := s.citationPending + chunk
+	s.citationPending = ""
+	if input == "" {
+		return ""
+	}
+	if fragment := trailingCLICitationFragment(input); fragment != "" {
+		s.citationPending = fragment
+		input = input[:len(input)-len(fragment)]
+	}
+	return rewriteCLICitationMarkers(input)
+}
+
+func trailingCLICitationFragment(content string) string {
+	if content == "" {
+		return ""
+	}
+	maxLength := len(content)
+	if maxLength > 16 {
+		maxLength = 16
+	}
+	for length := maxLength; length >= 1; length-- {
+		suffix := content[len(content)-length:]
+		if cliCitationExactRegexp.MatchString(suffix) {
+			return ""
+		}
+		if cliCitationPrefixRegexp.MatchString(suffix) {
+			return suffix
+		}
+	}
+	return ""
+}
+
+func rewriteCLICitationMarkers(content string) string {
+	if content == "" {
+		return ""
+	}
+	return cliCitationRegexp.ReplaceAllStringFunc(content, func(match string) string {
+		parts := cliCitationRegexp.FindStringSubmatch(match)
+		prefix := parts[1]
+		index := parts[2]
+		if prefix == "" {
+			prefix = parts[3]
+			index = parts[4]
+		}
+		label := cliCitationSourceLabel(prefix)
+		if label == "" {
+			return match
+		}
+		return fmt.Sprintf("[%s#%s]", label, index)
+	})
+}
+
+func cliCitationSourceLabel(prefix string) string {
+	switch strings.TrimSpace(prefix) {
+	case "1":
+		return "联网"
+	case "2":
+		return "共享"
+	case "3":
+		return "个人"
+	default:
+		return ""
+	}
+}
+
+func (s *cliStreamRenderState) showStreamingSuffix() string {
+	s.streamingSuffix = "..."
+	return s.streamingSuffix
+}
+
+func (s *cliStreamRenderState) clearStreamingSuffix() string {
+	if s.streamingSuffix == "" {
+		return ""
+	}
+	cleared := strings.Repeat("\b", len(s.streamingSuffix)) + strings.Repeat(" ", len(s.streamingSuffix)) + strings.Repeat("\b", len(s.streamingSuffix))
+	s.streamingSuffix = ""
+	return cleared
+}
+
 func (a *App) disableCLIFocusReporting() {
 	if writeTerminalControlSequence(a.stdout, cliDisableFocusReporting) {
 		return
@@ -952,7 +1169,7 @@ func writeTerminalControlSequence(writer io.Writer, sequence string) bool {
 func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "用法:")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli")
-	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--mode agent|plan|ask]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli task [--agent AGENT] [--file PATH] [--mode agent|plan|ask]")
 	fmt.Fprintln(a.stdout, "                     [--reasoning on|off] [--internet-search on|off]")
 	fmt.Fprintln(a.stdout, "                     [--stream-retry-attempts 0-3] [--new] [--continue]")
 	fmt.Fprintln(a.stdout, "                     [--show-stream-events] [--show-thinking]")
@@ -1085,6 +1302,59 @@ func firstNonEmpty(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func uploadInputFile(
+	ctx context.Context,
+	providerClient provider.Provider,
+	flowID string,
+	sessionID string,
+	baseDir string,
+	localPath string,
+) (string, error) {
+	resolvedPath, err := resolveUploadFilePath(baseDir, localPath)
+	if err != nil {
+		return "", err
+	}
+	uploadResult, err := providerClient.UploadFile(ctx, flowID, sessionID, resolvedPath, "")
+	if err != nil {
+		return "", err
+	}
+	if uploadResult == nil || strings.TrimSpace(uploadResult.FilePath) == "" {
+		return "", fmt.Errorf("上传文件失败: 服务端未返回文件路径")
+	}
+	return strings.TrimSpace(uploadResult.FilePath), nil
+}
+
+func resolveUploadFilePath(baseDir string, localPath string) (string, error) {
+	trimmedPath := strings.TrimSpace(localPath)
+	if trimmedPath == "" {
+		return "", fmt.Errorf("上传文件失败: 本地文件路径不能为空")
+	}
+	resolvedPath := trimmedPath
+	if !filepath.IsAbs(resolvedPath) {
+		anchorDir := strings.TrimSpace(baseDir)
+		if anchorDir == "" {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return "", fmt.Errorf("上传文件失败: 获取当前目录失败: %w", err)
+			}
+			anchorDir = cwd
+		}
+		resolvedPath = filepath.Join(anchorDir, resolvedPath)
+	}
+	absPath, err := filepath.Abs(resolvedPath)
+	if err != nil {
+		return "", fmt.Errorf("上传文件失败: 解析文件路径失败: %w", err)
+	}
+	fileInfo, err := os.Stat(absPath)
+	if err != nil {
+		return "", fmt.Errorf("上传文件失败: %w", err)
+	}
+	if fileInfo.IsDir() {
+		return "", fmt.Errorf("上传文件失败: %s 是目录，请提供文件路径", absPath)
+	}
+	return absPath, nil
 }
 
 func boolPtr(value bool) *bool {

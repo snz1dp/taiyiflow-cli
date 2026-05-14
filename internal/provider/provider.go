@@ -318,6 +318,28 @@ type SessionList struct {
 	Items  []SessionSummary
 }
 
+type SearchResult struct {
+	DocID       string
+	FileType    string
+	FilePath    string
+	Filename    string
+	Content     string
+	PageNumbers []int
+	Text        string
+	Collection  string
+	Partition   string
+	Title       string
+	Link        string
+	Site        string
+	Source      string
+	Provider    string
+}
+
+type UploadResult struct {
+	FlowID   string
+	FilePath string
+}
+
 type SessionMessage struct {
 	ID          string
 	SessionID   string
@@ -325,6 +347,10 @@ type SessionMessage struct {
 	Sender      string
 	SenderName  string
 	Text        string
+	ReasonText  string
+	SearchResults []SearchResult
+	SearchKeyword string
+	ReasoningEnabled bool
 	SessionName string
 	Timestamp   time.Time
 	Error       bool
@@ -353,6 +379,8 @@ type Provider interface {
 	ListKnowledgeBases(ctx context.Context, filter string, offset, limit int) (*KnowledgeBaseList, error)
 	ListSessions(ctx context.Context, flowID string, offset, limit int) (*SessionList, error)
 	ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*SessionMessageList, error)
+	CreateSessionID(ctx context.Context) (string, error)
+	UploadFile(ctx context.Context, flowID string, sessionID string, localPath string, remotePath string) (*UploadResult, error)
 	GetVersionInfo(ctx context.Context) (*ServiceVersion, error)
 	GetServiceConfig(ctx context.Context) (*ServiceConfig, error)
 	GetCurrentUserInfo(ctx context.Context) (*CurrentUser, error)
