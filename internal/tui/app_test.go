@@ -664,7 +664,7 @@ func TestRenderOverlayUsesLargeNonFullscreenSizeForSessionPicker(t *testing.T) {
 			Hint:       "使用方向键选择",
 			Page:       1,
 			TotalPages: 1,
-				PageSize:   40,
+			PageSize:   40,
 			Items:      items,
 		},
 	}
@@ -1560,6 +1560,43 @@ func TestRenderEntriesAppendsStreamingIndicatorToLatestAssistant(t *testing.T) {
 	rendered := sanitizeTerminalText(renderEntries([]entry{{role: "user", content: "问题"}, {role: "assistant", content: "回答"}}, 80, 20, nil, Snapshot{}, "..."))
 	if !strings.Contains(rendered, "回答...") {
 		t.Fatalf("expected assistant entry to include streaming indicator, got %q", rendered)
+	}
+}
+
+func TestInterruptRequestRemovesStreamingIndicator(t *testing.T) {
+	canceled := false
+	appModel := model{
+		entries:                  []entry{{role: "user", content: "问题"}, {role: "assistant", content: "回答"}},
+		state:                    newProgressState(progressStreaming),
+		streamingIndicatorActive: true,
+		streamingIndicatorFrame:  2,
+		activityHint:             "正在输出",
+		requestCancel: func() {
+			canceled = true
+		},
+		viewport: viewport.Model{Width: 80, Height: 10},
+	}
+	appModel.syncViewport()
+	if got := sanitizeTerminalText(appModel.viewport.View()); !strings.Contains(got, "回答...") {
+		t.Fatalf("expected streaming indicator before interrupt, got %q", got)
+	}
+
+	updatedModel, cmd := appModel.handleMainKey(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil {
+		t.Fatalf("expected interrupt not to return a command, got %#v", cmd)
+	}
+	updated := updatedModel.(model)
+	if !canceled {
+		t.Fatal("expected request cancel to be called")
+	}
+	if updated.streamingIndicatorActive {
+		t.Fatal("expected streaming indicator to be inactive after interrupt")
+	}
+	if suffix := updated.streamingIndicatorSuffix(); suffix != "" {
+		t.Fatalf("expected no streaming suffix after interrupt, got %q", suffix)
+	}
+	if got := sanitizeTerminalText(updated.viewport.View()); strings.Contains(got, "回答...") || strings.Contains(got, "请求已中断...") {
+		t.Fatalf("expected interrupt to remove streaming ellipsis from viewport, got %q", got)
 	}
 }
 

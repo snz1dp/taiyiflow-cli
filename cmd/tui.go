@@ -2672,8 +2672,9 @@ type tuiRenderedSegment struct {
 }
 
 type tuiAssistantRenderState struct {
-	insideThink bool
-	pending     string
+	insideThink    bool
+	pending        string
+	controlResidue streamControlResidueState
 }
 
 func (s *tuiAssistantRenderState) consume(chunk string) []tuiRenderedSegment {
@@ -2684,6 +2685,9 @@ func (s *tuiAssistantRenderState) consume(chunk string) []tuiRenderedSegment {
 	s.pending = ""
 	segments := []tuiRenderedSegment{}
 	appendSegment := func(text string, reasoning bool) {
+		if !reasoning {
+			text = s.controlResidue.consume(text)
+		}
 		if text == "" {
 			return
 		}
@@ -2729,6 +2733,7 @@ func (s *tuiAssistantRenderState) consume(chunk string) []tuiRenderedSegment {
 
 func (s *tuiAssistantRenderState) flush() []tuiRenderedSegment {
 	s.pending = ""
+	s.controlResidue.flush()
 	return nil
 }
 

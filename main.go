@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/cmd"
 )
@@ -15,7 +17,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := application.Run(context.Background(), os.Args[1:]); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	if err := application.Run(ctx, os.Args[1:]); err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "请求已中断")
+			os.Exit(130)
+		}
 		fmt.Fprintf(os.Stderr, "执行失败: %v\n", err)
 		os.Exit(1)
 	}

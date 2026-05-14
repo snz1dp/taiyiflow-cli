@@ -71,6 +71,7 @@ type cliStreamRenderState struct {
 	insideThink         bool
 	pending             string
 	citationPending     string
+	controlResidue      streamControlResidueState
 	streamingSuffix     string
 	splitNextAssistant  bool
 	hasPrintedAssistant bool
@@ -676,6 +677,12 @@ func (a *App) streamTaskWithSkillRetry(
 	hasVisibleOutput := false
 	renderState := cliStreamRenderState{}
 	renderStreamingSuffix := isTerminalWriter(a.stdout)
+	clearRenderedStreamingSuffix := func() {
+		if clearIndicator := clearStreamingSuffixIfNeeded(renderStreamingSuffix, &renderState); clearIndicator != "" {
+			fmt.Fprint(a.stdout, clearIndicator)
+		}
+	}
+	defer clearRenderedStreamingSuffix()
 
 	if streamSession != nil && streamSession.SessionID != "" {
 		sessionState.SessionID = streamSession.SessionID
@@ -841,6 +848,7 @@ func (a *App) streamTaskWithSkillRetry(
 			}
 			return sessionState, normalizedErr
 		case provider.EventBuiltIn:
+			clearRenderedStreamingSuffix()
 			if !modeAllowsBuiltIn(sessionState.RequestMode) {
 				if err := submitClientCallFailure(ctx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(sessionState.RequestMode))); err != nil {
 					return sessionState, err
@@ -854,6 +862,7 @@ func (a *App) streamTaskWithSkillRetry(
 				return sessionState, err
 			}
 		case provider.EventClientTool:
+			clearRenderedStreamingSuffix()
 			toolName := nestedStringValue(event.Data, "function", "name")
 			if !modeAllowsClientTool(sessionState.RequestMode, toolName) {
 				if err := submitClientCallFailure(ctx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(sessionState.RequestMode), toolName)); err != nil {
@@ -981,7 +990,7 @@ func (s *cliStreamRenderState) renderChunk(chunk string, showThinking bool) stri
 					builder.WriteString(input[:len(input)-len(fragment)])
 				}
 				s.pending = fragment
-				return s.rewriteCitationChunk(builder.String())
+				return s.renderVisibleChunk(builder.String())
 			}
 			if showThinking {
 				builder.WriteString(input[:closeIndex])
@@ -1002,7 +1011,7 @@ func (s *cliStreamRenderState) renderChunk(chunk string, showThinking bool) stri
 			fragment := trailingThinkTagFragment(input, "<think>", "</think>")
 			builder.WriteString(input[:len(input)-len(fragment)])
 			s.pending = fragment
-			return s.rewriteCitationChunk(builder.String())
+			return s.renderVisibleChunk(builder.String())
 		}
 
 		builder.WriteString(input[:openIndex])
@@ -1010,17 +1019,22 @@ func (s *cliStreamRenderState) renderChunk(chunk string, showThinking bool) stri
 		s.insideThink = true
 	}
 
-	return s.rewriteCitationChunk(builder.String())
+	return s.renderVisibleChunk(builder.String())
 }
 
 func (s *cliStreamRenderState) flush(showThinking bool) string {
-	result := s.rewriteCitationChunk("")
+	result := s.renderVisibleChunk("")
+	s.controlResidue.flush()
 	if showThinking || s.insideThink || s.pending == "" {
 		s.pending = ""
 		return result
 	}
 	s.pending = ""
 	return result
+}
+
+func (s *cliStreamRenderState) renderVisibleChunk(chunk string) string {
+	return s.controlResidue.consume(s.rewriteCitationChunk(chunk))
 }
 
 func trailingThinkTagFragment(content string, tags ...string) string {

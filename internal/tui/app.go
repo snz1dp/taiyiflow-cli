@@ -600,68 +600,68 @@ type progressState struct {
 }
 
 type model struct {
-	ctx                    context.Context
-	snapshot               Snapshot
-	flows                  []FlowItem
-	runner                 Runner
-	refreshSnapshot        SnapshotRefreshHandler
-	flowChange             FlowChangeHandler
-	sessionChange          SessionChangeHandler
-	approvalChange         ApprovalChangeHandler
-	configFormSubmit       ConfigFormSubmitHandler
-	loginFormSubmit        LoginFormSubmitHandler
-	localCommand           LocalCommandHandler
-	eventCh                chan tea.Msg
-	entries                []entry
-	input                  textarea.Model
-	flowFilter             textinput.Model
-	viewport               viewport.Model
-	toolPanelViewport      viewport.Model
-	progress               progress.Model
-	markdown               *glamour.TermRenderer
-	state                  progressState
-		streamingIndicatorFrame  int
-		streamingIndicatorActive bool
-	activityHint           string
-	footerHint             string
-	currentToolLabel       string
-	latestToolSummary      string
-	latestToolAt           time.Time
-	requestStats           RequestMetrics
-	width                  int
-	height                 int
-	contentWidth           int
-	ready                  bool
-	quitting               bool
-	showFlowPicker         bool
-	sessionPicker          *SessionPickerState
-	knowledgePicker        *KnowledgePickerState
-	skillsPicker           *SkillsPickerState
-	tasksPicker            *TasksPickerState
-	taskActionPicker       *TaskActionPickerState
-	approvalPicker         *ApprovalPickerState
-	configForm             *configFormState
-	loginForm              *loginFormState
-	flowCursor             int
-	sessionCursor          int
-	knowledgeCursor        int
-	skillsCursor           int
-	tasksCursor            int
-	taskActionCursor       int
-	approvalCursor         int
-	commandCursor          int
-	startupCommand         string
-	queuedInput            string
-	lastRetryableRequest   *Request
-	retryAvailable         bool
-	pendingConfirm         *confirmState
-	toolPanel              *ToolPanel
-	overlayManualScroll    bool
-	overlayScrollLine      int
-	requestCancel          context.CancelFunc
-	interrupting           bool
-	splitNextAssistant     bool
-	lastAssistantMessageID string
+	ctx                      context.Context
+	snapshot                 Snapshot
+	flows                    []FlowItem
+	runner                   Runner
+	refreshSnapshot          SnapshotRefreshHandler
+	flowChange               FlowChangeHandler
+	sessionChange            SessionChangeHandler
+	approvalChange           ApprovalChangeHandler
+	configFormSubmit         ConfigFormSubmitHandler
+	loginFormSubmit          LoginFormSubmitHandler
+	localCommand             LocalCommandHandler
+	eventCh                  chan tea.Msg
+	entries                  []entry
+	input                    textarea.Model
+	flowFilter               textinput.Model
+	viewport                 viewport.Model
+	toolPanelViewport        viewport.Model
+	progress                 progress.Model
+	markdown                 *glamour.TermRenderer
+	state                    progressState
+	streamingIndicatorFrame  int
+	streamingIndicatorActive bool
+	activityHint             string
+	footerHint               string
+	currentToolLabel         string
+	latestToolSummary        string
+	latestToolAt             time.Time
+	requestStats             RequestMetrics
+	width                    int
+	height                   int
+	contentWidth             int
+	ready                    bool
+	quitting                 bool
+	showFlowPicker           bool
+	sessionPicker            *SessionPickerState
+	knowledgePicker          *KnowledgePickerState
+	skillsPicker             *SkillsPickerState
+	tasksPicker              *TasksPickerState
+	taskActionPicker         *TaskActionPickerState
+	approvalPicker           *ApprovalPickerState
+	configForm               *configFormState
+	loginForm                *loginFormState
+	flowCursor               int
+	sessionCursor            int
+	knowledgeCursor          int
+	skillsCursor             int
+	tasksCursor              int
+	taskActionCursor         int
+	approvalCursor           int
+	commandCursor            int
+	startupCommand           string
+	queuedInput              string
+	lastRetryableRequest     *Request
+	retryAvailable           bool
+	pendingConfirm           *confirmState
+	toolPanel                *ToolPanel
+	overlayManualScroll      bool
+	overlayScrollLine        int
+	requestCancel            context.CancelFunc
+	interrupting             bool
+	splitNextAssistant       bool
+	lastAssistantMessageID   string
 }
 
 type configFormState struct {
@@ -1317,6 +1317,9 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.interrupting = true
 			m.requestCancel()
 			m.activityHint = "请求已中断"
+			m.streamingIndicatorActive = false
+			m.streamingIndicatorFrame = 0
+			m.syncViewport()
 			return m, nil
 		}
 		m.quitting = true
@@ -6897,6 +6900,9 @@ func (m model) scheduleBackendRetry() tea.Cmd {
 }
 
 func (m model) shouldAnimateStreamingIndicator() bool {
+	if m.interrupting {
+		return false
+	}
 	switch m.state.phase {
 	case progressSending, progressStreaming, progressExecuting:
 		return true

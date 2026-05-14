@@ -115,6 +115,34 @@ func TestApplyConfigFormSubmissionReturnsFieldError(t *testing.T) {
 	}
 }
 
+func TestTUIAssistantRenderStateDropsTrailingFinalizeControlResidue(t *testing.T) {
+	state := tuiAssistantRenderState{}
+
+	segments := state.consume("结果FINAL")
+	if len(segments) != 1 || segments[0].Text != "结果" || segments[0].Reasoning {
+		t.Fatalf("expected visible answer before finalize residue, got %#v", segments)
+	}
+	if segments = state.consume("IZE"); len(segments) != 0 {
+		t.Fatalf("expected split finalize tail to stay buffered, got %#v", segments)
+	}
+	if segments = state.flush(); len(segments) != 0 {
+		t.Fatalf("expected flush to drop buffered finalize residue, got %#v", segments)
+	}
+}
+
+func TestTUIAssistantRenderStatePreservesUppercaseWordEndingInIZE(t *testing.T) {
+	state := tuiAssistantRenderState{}
+
+	segments := state.consume("S")
+	if len(segments) != 1 || segments[0].Text != "S" || segments[0].Reasoning {
+		t.Fatalf("expected first uppercase word chunk, got %#v", segments)
+	}
+	segments = state.consume("IZE")
+	if len(segments) != 1 || segments[0].Text != "IZE" || segments[0].Reasoning {
+		t.Fatalf("expected uppercase word suffix to be preserved, got %#v", segments)
+	}
+}
+
 func TestExecuteTUISkillsPickerInstallDetailRefreshesPickerAndPanel(t *testing.T) {
 	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
 	manager, err := internalconfig.NewManager()

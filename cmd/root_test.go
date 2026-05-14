@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1586,6 +1587,48 @@ func TestStreamTaskShowsAndClearsStreamingEllipsisInCLI(t *testing.T) {
 	}
 }
 
+func TestStreamTaskClearsStreamingEllipsisOnCanceledError(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	stdout := &fakeTTYWriter{fd: 1}
+	var stderr bytes.Buffer
+	app.stdout = stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), stdout, &stderr)
+
+	previous := isTerminalFD
+	isTerminalFD = func(fd int) bool {
+		return fd == 1
+	}
+	defer func() {
+		isTerminalFD = previous
+	}()
+
+	stream := make(chan provider.StreamEvent, 2)
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "答案"}}
+	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "读取流失败: context canceled"}}
+	close(stream)
+
+	_, err := app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		false,
+		false,
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	want := "答案...\b\b\b   \b\b\b"
+	if got := stdout.String(); got != want {
+		t.Fatalf("expected canceled stream to clear trailing ellipsis, got %q want %q", got, want)
+	}
+}
+
 func TestStreamTaskShowsToolCallOnlyWhenStreamEventsEnabled(t *testing.T) {
 	app := newTestAppWithSessionStore(t)
 	var stdout bytes.Buffer
@@ -1907,6 +1950,108 @@ func TestStreamTaskDropsTrailingThinkTagFragmentByDefault(t *testing.T) {
 
 	if got := stdout.String(); got != "结果\n" {
 		t.Fatalf("expected trailing think fragment hidden by default, got %q", got)
+	}
+}
+
+func TestStreamTaskDropsTrailingFinalizeControlResidue(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	stream := make(chan provider.StreamEvent, 4)
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "结果已完成。FINAL"}}
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "IZE"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err := app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+
+	if got := stdout.String(); got != "结果已完成。\n" {
+		t.Fatalf("expected trailing finalize residue hidden, got %q", got)
+	}
+}
+
+func TestStreamTaskDropsStandaloneFinalizeTailResidueAtClose(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	stream := make(chan provider.StreamEvent, 4)
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "结果已完成。"}}
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "IZE"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err := app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+
+	if got := stdout.String(); got != "结果已完成。\n" {
+		t.Fatalf("expected standalone finalize tail residue hidden at close, got %q", got)
+	}
+}
+
+func TestStreamTaskPreservesUppercaseWordEndingInIZE(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	stream := make(chan provider.StreamEvent, 4)
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "S"}}
+	stream <- provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "IZE"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err := app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+
+	if got := stdout.String(); got != "SIZE\n" {
+		t.Fatalf("expected uppercase word ending in IZE to be preserved, got %q", got)
 	}
 }
 
