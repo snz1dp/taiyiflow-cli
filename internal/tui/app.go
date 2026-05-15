@@ -600,68 +600,69 @@ type progressState struct {
 }
 
 type model struct {
-	ctx                      context.Context
-	snapshot                 Snapshot
-	flows                    []FlowItem
-	runner                   Runner
-	refreshSnapshot          SnapshotRefreshHandler
-	flowChange               FlowChangeHandler
-	sessionChange            SessionChangeHandler
-	approvalChange           ApprovalChangeHandler
-	configFormSubmit         ConfigFormSubmitHandler
-	loginFormSubmit          LoginFormSubmitHandler
-	localCommand             LocalCommandHandler
-	eventCh                  chan tea.Msg
-	entries                  []entry
-	input                    textarea.Model
-	flowFilter               textinput.Model
-	viewport                 viewport.Model
-	toolPanelViewport        viewport.Model
-	progress                 progress.Model
-	markdown                 *glamour.TermRenderer
-	state                    progressState
-	streamingIndicatorFrame  int
-	streamingIndicatorActive bool
-	activityHint             string
-	footerHint               string
-	currentToolLabel         string
-	latestToolSummary        string
-	latestToolAt             time.Time
-	requestStats             RequestMetrics
-	width                    int
-	height                   int
-	contentWidth             int
-	ready                    bool
-	quitting                 bool
-	showFlowPicker           bool
-	sessionPicker            *SessionPickerState
-	knowledgePicker          *KnowledgePickerState
-	skillsPicker             *SkillsPickerState
-	tasksPicker              *TasksPickerState
-	taskActionPicker         *TaskActionPickerState
-	approvalPicker           *ApprovalPickerState
-	configForm               *configFormState
-	loginForm                *loginFormState
-	flowCursor               int
-	sessionCursor            int
-	knowledgeCursor          int
-	skillsCursor             int
-	tasksCursor              int
-	taskActionCursor         int
-	approvalCursor           int
-	commandCursor            int
-	startupCommand           string
-	queuedInput              string
-	lastRetryableRequest     *Request
-	retryAvailable           bool
-	pendingConfirm           *confirmState
-	toolPanel                *ToolPanel
-	overlayManualScroll      bool
-	overlayScrollLine        int
-	requestCancel            context.CancelFunc
-	interrupting             bool
-	splitNextAssistant       bool
-	lastAssistantMessageID   string
+	ctx                        context.Context
+	snapshot                   Snapshot
+	flows                      []FlowItem
+	runner                     Runner
+	refreshSnapshot            SnapshotRefreshHandler
+	flowChange                 FlowChangeHandler
+	sessionChange              SessionChangeHandler
+	approvalChange             ApprovalChangeHandler
+	configFormSubmit           ConfigFormSubmitHandler
+	loginFormSubmit            LoginFormSubmitHandler
+	localCommand               LocalCommandHandler
+	eventCh                    chan tea.Msg
+	entries                    []entry
+	input                      textarea.Model
+	flowFilter                 textinput.Model
+	viewport                   viewport.Model
+	toolPanelViewport          viewport.Model
+	progress                   progress.Model
+	markdown                   *glamour.TermRenderer
+	state                      progressState
+	streamingIndicatorFrame    int
+	streamingIndicatorActive   bool
+	activityHint               string
+	footerHint                 string
+	currentToolLabel           string
+	latestToolSummary          string
+	latestToolAt               time.Time
+	requestStats               RequestMetrics
+	width                      int
+	height                     int
+	contentWidth               int
+	ready                      bool
+	quitting                   bool
+	showFlowPicker             bool
+	sessionPicker              *SessionPickerState
+	knowledgePicker            *KnowledgePickerState
+	skillsPicker               *SkillsPickerState
+	tasksPicker                *TasksPickerState
+	taskActionPicker           *TaskActionPickerState
+	approvalPicker             *ApprovalPickerState
+	configForm                 *configFormState
+	loginForm                  *loginFormState
+	flowCursor                 int
+	sessionCursor              int
+	knowledgeCursor            int
+	skillsCursor               int
+	tasksCursor                int
+	taskActionCursor           int
+	approvalCursor             int
+	commandCursor              int
+	startupCommand             string
+	queuedInput                string
+	lastRetryableRequest       *Request
+	retryAvailable             bool
+	pendingConfirm             *confirmState
+	toolPanel                  *ToolPanel
+	overlayManualScroll        bool
+	overlayScrollLine          int
+	requestCancel              context.CancelFunc
+	interrupting               bool
+	splitNextAssistant         bool
+	lastAssistantMessageID     string
+	currentStreamingEntryIndex int
 }
 
 type configFormState struct {
@@ -967,28 +968,29 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 	initialEntries := buildInitialEntries(snapshot)
 	initialRequestStats := cloneRequestMetrics(snapshot.RequestStats)
 	program := tea.NewProgram(model{
-		ctx:               ctx,
-		snapshot:          snapshot,
-		flows:             flows,
-		runner:            runner,
-		refreshSnapshot:   refreshSnapshot,
-		flowChange:        flowChange,
-		sessionChange:     sessionChange,
-		approvalChange:    approvalChange,
-		configFormSubmit:  configFormSubmit,
-		loginFormSubmit:   loginFormSubmit,
-		localCommand:      localCommand,
-		eventCh:           make(chan tea.Msg),
-		entries:           initialEntries,
-		input:             inputModel,
-		flowFilter:        flowFilterModel,
-		viewport:          viewportModel,
-		toolPanelViewport: toolPanelViewportModel,
-		progress:          progressModel,
-		state:             newProgressState(progressIdle),
-		requestStats:      initialRequestStats,
-		flowCursor:        currentFlowIndex(flows, snapshot.DefaultFlow),
-		startupCommand:    resolveInitialStartupCommand(snapshot, startupCommand),
+		ctx:                        ctx,
+		snapshot:                   snapshot,
+		flows:                      flows,
+		runner:                     runner,
+		refreshSnapshot:            refreshSnapshot,
+		flowChange:                 flowChange,
+		sessionChange:              sessionChange,
+		approvalChange:             approvalChange,
+		configFormSubmit:           configFormSubmit,
+		loginFormSubmit:            loginFormSubmit,
+		localCommand:               localCommand,
+		eventCh:                    make(chan tea.Msg),
+		entries:                    initialEntries,
+		input:                      inputModel,
+		flowFilter:                 flowFilterModel,
+		viewport:                   viewportModel,
+		toolPanelViewport:          toolPanelViewportModel,
+		progress:                   progressModel,
+		state:                      newProgressState(progressIdle),
+		requestStats:               initialRequestStats,
+		currentStreamingEntryIndex: -1,
+		flowCursor:                 currentFlowIndex(flows, snapshot.DefaultFlow),
+		startupCommand:             resolveInitialStartupCommand(snapshot, startupCommand),
 	}, programOptions...)
 	finalModel, err := program.Run()
 	if err == nil {
@@ -2426,6 +2428,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 			m.entries[len(m.entries)-1].content += chunk
 			m.footerHint = ""
 		}
+		m.currentStreamingEntryIndex = len(m.entries) - 1
 		m.splitNextAssistant = false
 		if messageID != "" {
 			m.lastAssistantMessageID = messageID
@@ -2448,6 +2451,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		} else {
 			m.entries[len(m.entries)-1].content += chunk
 		}
+		m.currentStreamingEntryIndex = len(m.entries) - 1
 	case EventProgressNote:
 		if strings.TrimSpace(event.Text) != "" {
 			if event.EventType == "compression_progress" {
@@ -2714,7 +2718,7 @@ func (m model) useMinimalChrome() bool {
 }
 
 func (m *model) syncViewport() {
-	content := renderEntries(m.entries, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot, m.streamingIndicatorSuffix())
+	content := renderEntries(m.entries, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot, m.streamingIndicatorSuffix(), m.streamingIndicatorTargetIndex())
 	if transient := m.renderTransientStatus(); transient != "" {
 		if strings.TrimSpace(content) != "" {
 			content += "\n"
@@ -2955,13 +2959,9 @@ func (m model) renderTransientStatus() string {
 	return transientStatusStyle.Width(width).Render(strings.Join(lines, "\n"))
 }
 
-func renderEntries(entries []entry, width int, height int, renderer *glamour.TermRenderer, snapshot Snapshot, streamingSuffix string) string {
+func renderEntries(entries []entry, width int, height int, renderer *glamour.TermRenderer, snapshot Snapshot, streamingSuffix string, targetIndex int) string {
 	if len(entries) == 0 {
 		return ""
-	}
-	targetIndex := -1
-	if streamingSuffix != "" {
-		targetIndex = streamingIndicatorTargetIndex(entries)
 	}
 	blocks := make([]string, 0, len(entries))
 	for index, item := range entries {
@@ -6924,12 +6924,20 @@ func (m model) streamingIndicatorSuffix() string {
 	if !m.streamingIndicatorActive || !m.shouldAnimateStreamingIndicator() {
 		return ""
 	}
-	frames := []string{".", "..", "...", ".."}
+	frames := []string{".", "..", "...", "", ".", ".."}
 	return frames[m.streamingIndicatorFrame%len(frames)]
 }
 
 func (m model) streamingIndicatorTargetIndex() int {
-	return streamingIndicatorTargetIndex(m.entries)
+	if m.currentStreamingEntryIndex < 0 || m.currentStreamingEntryIndex >= len(m.entries) {
+		return -1
+	}
+	switch m.entries[m.currentStreamingEntryIndex].role {
+	case "assistant", "reasoning":
+		return m.currentStreamingEntryIndex
+	default:
+		return -1
+	}
 }
 
 func (m model) maybeRefreshSnapshot() tea.Cmd {
@@ -6967,6 +6975,7 @@ func (m *model) startRequestStats(input string, runID string) {
 func (m *model) resetAssistantChunkState() {
 	m.splitNextAssistant = false
 	m.lastAssistantMessageID = ""
+	m.currentStreamingEntryIndex = -1
 }
 
 func (m *model) finishRequestStats() {

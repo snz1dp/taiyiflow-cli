@@ -1556,21 +1556,98 @@ func TestRenderTransientStatusAppendsStreamingIndicatorWithoutAssistantEntry(t *
 	}
 }
 
+func TestStreamingIndicatorSuffixIncludesBlankFrame(t *testing.T) {
+	model := model{
+		state:                    newProgressState(progressStreaming),
+		streamingIndicatorActive: true,
+	}
+
+	testCases := []struct {
+		frame int
+		want  string
+	}{
+		{frame: 0, want: "."},
+		{frame: 1, want: ".."},
+		{frame: 2, want: "..."},
+		{frame: 3, want: ""},
+		{frame: 4, want: "."},
+		{frame: 5, want: ".."},
+	}
+
+	for _, testCase := range testCases {
+		model.streamingIndicatorFrame = testCase.frame
+		if got := model.streamingIndicatorSuffix(); got != testCase.want {
+			t.Fatalf("expected frame %d to render %q, got %q", testCase.frame, testCase.want, got)
+		}
+	}
+}
+
 func TestRenderEntriesAppendsStreamingIndicatorToLatestAssistant(t *testing.T) {
-	rendered := sanitizeTerminalText(renderEntries([]entry{{role: "user", content: "问题"}, {role: "assistant", content: "回答"}}, 80, 20, nil, Snapshot{}, "..."))
+	rendered := sanitizeTerminalText(renderEntries([]entry{{role: "user", content: "问题"}, {role: "assistant", content: "回答"}}, 80, 20, nil, Snapshot{}, "...", 1))
 	if !strings.Contains(rendered, "回答...") {
 		t.Fatalf("expected assistant entry to include streaming indicator, got %q", rendered)
+	}
+}
+
+func TestSyncViewportDoesNotAppendStreamingIndicatorToPreviousAssistantWhileSending(t *testing.T) {
+	model := model{
+		entries: []entry{
+			{role: "user", content: "上一个问题"},
+			{role: "assistant", content: "上一个回答"},
+			{role: "user", content: "新问题"},
+		},
+		state:                      newProgressState(progressSending),
+		streamingIndicatorActive:   true,
+		streamingIndicatorFrame:    2,
+		activityHint:               "正在发送",
+		viewport:                   viewport.Model{Width: 80, Height: 10},
+		currentStreamingEntryIndex: -1,
+	}
+
+	model.syncViewport()
+	got := sanitizeTerminalText(model.viewport.View())
+	if strings.Contains(got, "上一个回答...") {
+		t.Fatalf("expected previous assistant entry to stay unchanged, got %q", got)
+	}
+	if !strings.Contains(got, "正在发送...") {
+		t.Fatalf("expected transient status to show streaming indicator before first chunk, got %q", got)
+	}
+}
+
+func TestSyncViewportAppendsStreamingIndicatorToCurrentAssistantChunk(t *testing.T) {
+	model := model{
+		entries: []entry{
+			{role: "user", content: "上一个问题"},
+			{role: "assistant", content: "上一个回答"},
+			{role: "user", content: "新问题"},
+		},
+		state:                      newProgressState(progressSending),
+		streamingIndicatorActive:   true,
+		streamingIndicatorFrame:    2,
+		viewport:                   viewport.Model{Width: 80, Height: 10},
+		currentStreamingEntryIndex: -1,
+	}
+
+	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "新回答", MessageID: "msg-1"})
+	model.syncViewport()
+	got := sanitizeTerminalText(model.viewport.View())
+	if strings.Contains(got, "上一个回答...") {
+		t.Fatalf("expected streaming indicator to leave previous assistant entry untouched, got %q", got)
+	}
+	if !strings.Contains(got, "新回答...") {
+		t.Fatalf("expected current assistant chunk to include streaming indicator, got %q", got)
 	}
 }
 
 func TestInterruptRequestRemovesStreamingIndicator(t *testing.T) {
 	canceled := false
 	appModel := model{
-		entries:                  []entry{{role: "user", content: "问题"}, {role: "assistant", content: "回答"}},
-		state:                    newProgressState(progressStreaming),
-		streamingIndicatorActive: true,
-		streamingIndicatorFrame:  2,
-		activityHint:             "正在输出",
+		entries:                    []entry{{role: "user", content: "问题"}, {role: "assistant", content: "回答"}},
+		state:                      newProgressState(progressStreaming),
+		streamingIndicatorActive:   true,
+		streamingIndicatorFrame:    2,
+		activityHint:               "正在输出",
+		currentStreamingEntryIndex: 1,
 		requestCancel: func() {
 			canceled = true
 		},

@@ -10,11 +10,16 @@ import (
 )
 
 func skillsCommandSynopsis() string {
-	return "taiyiflow-cli skills [list|view|search|view-remote|install|remove|update|source|enable|disable|help] [参数]"
+	return strings.Join([]string{
+		"taiyiflow-cli skills [list|view|search|view-remote|install|remove|",
+		"                        update|source|enable|disable|help] [参数]",
+	}, "\n")
 }
 
 func skillsSlashSynopsis() string {
-	return "/skills [list|view|search|view-remote|install|remove|update|source|enable|disable|help]"
+	return strings.Join([]string{
+		"/skills [list|view|search|view-remote|install|remove|update|source|enable|disable|help]",
+	}, "\n")
 }
 
 func renderSkillsUsage(synopsis string) string {
