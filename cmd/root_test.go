@@ -229,6 +229,21 @@ func TestPrepareSessionNewSessionDefaultsToAgentMode(t *testing.T) {
 	}
 }
 
+func TestApplyExplicitTaskSessionIDOverridesSessionAndClearsStaleTitle(t *testing.T) {
+	updated := applyExplicitTaskSessionID(agent.SessionState{SessionID: "session-old", SessionTitle: "旧标题"}, " session-new ")
+	if updated.SessionID != "session-new" {
+		t.Fatalf("expected explicit session id override, got %#v", updated)
+	}
+	if updated.SessionTitle != "" {
+		t.Fatalf("expected stale session title to be cleared, got %#v", updated)
+	}
+
+	unchanged := applyExplicitTaskSessionID(agent.SessionState{SessionID: "session-keep", SessionTitle: "保留标题"}, "session-keep")
+	if unchanged.SessionTitle != "保留标题" {
+		t.Fatalf("expected same session id to keep title, got %#v", unchanged)
+	}
+}
+
 func TestStreamTaskDoesNotRetryDisconnectedEventWhenConfigDisablesRetry(t *testing.T) {
 	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
 	manager, err := internalconfig.NewManager()
@@ -619,6 +634,17 @@ func TestRunTaskCrossSessionMemoryConfigAndFlagPrecedence(t *testing.T) {
 	}
 }
 
+func TestRunTaskRejectsNewWithSessionID(t *testing.T) {
+	app := &App{stderr: io.Discard}
+	err := app.runTask(context.Background(), []string{"--new", "--session-id", "session-1", "测试任务"})
+	if err == nil {
+		t.Fatal("expected conflicting --new and --session-id flags to fail")
+	}
+	if !strings.Contains(err.Error(), "--new 与 --session-id 不能同时使用") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestStreamTaskSendsEnvironmentInTweaks(t *testing.T) {
 	app := newTestAppWithSessionStore(t)
 	app.stdout = io.Discard
@@ -889,6 +915,81 @@ func TestRunTaskWithFileUploadsAndForwardsInputFiles(t *testing.T) {
 	}
 	inputFiles, ok := captured["files"].([]any)
 	if !ok || len(inputFiles) != 1 || inputFiles[0] != "flow-1/flow-1/notes.txt" {
+		t.Fatalf("unexpected files payload: %#v", captured["files"])
+	}
+}
+
+func TestRunTaskWithExplicitSessionIDUsesUploadAndStreamSession(t *testing.T) {
+	var captured map[string]any
+	tempWorkdir := t.TempDir()
+	localFile := filepath.Join(tempWorkdir, "notes.txt")
+	if err := os.WriteFile(localFile, []byte("note"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/taiyi/composer/api/v1/users/whoami/userinfo":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
+		case "/taiyi/composer/api/v1/version":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"package":"taiyiflow","main_version":"1.0.0"}`)
+		case "/taiyi/composer/api/v1/config":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"default_flow_id":"flow-1"}`)
+		case "/taiyi/composer/api/v1/files/upload/flow-1":
+			if got := request.FormValue("session_id"); got != "session-explicit" {
+				t.Fatalf("expected upload session_id to use explicit value, got %q", got)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"flow_id":"flow-1","file_path":"flow-1/session-explicit/notes.txt"}`)
+		case "/taiyi/composer/api/v1/run/flow-1/stream":
+			if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode stream request failed: %v", err)
+			}
+			writer.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(writer, "event: close\ndata: {}\n\n")
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.AccessToken = "access-1"
+	config.Workdir = tempWorkdir
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	store, err := agent.NewSessionStore()
+	if err != nil {
+		t.Fatalf("new session store failed: %v", err)
+	}
+	var stdout bytes.Buffer
+	app := &App{
+		configManager: manager,
+		sessionStore:  store,
+		stdout:        &stdout,
+		stderr:        io.Discard,
+		stdin:         strings.NewReader(""),
+		runtime:       clientruntime.NewClientRuntime(strings.NewReader(""), &stdout, io.Discard),
+	}
+
+	if err := app.runTask(context.Background(), []string{"--session-id", "session-explicit", "--file", "notes.txt", "分析这个文件"}); err != nil {
+		t.Fatalf("runTask failed: %v", err)
+	}
+	if got, _ := captured["session_id"].(string); got != "session-explicit" {
+		t.Fatalf("expected stream session_id to use explicit value, got %#v", captured["session_id"])
+	}
+	inputFiles, ok := captured["files"].([]any)
+	if !ok || len(inputFiles) != 1 || inputFiles[0] != "flow-1/session-explicit/notes.txt" {
 		t.Fatalf("unexpected files payload: %#v", captured["files"])
 	}
 }

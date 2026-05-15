@@ -153,6 +153,9 @@ func TestIsExecutableSlashCommandInputUsesSplitDialogueCommands(t *testing.T) {
 	if !isExecutableSlashCommandInput("/about") {
 		t.Fatalf("expected /about to be executable")
 	}
+	if !isExecutableSlashCommandInput("/refresh") {
+		t.Fatalf("expected /refresh to be executable")
+	}
 	if !isExecutableSlashCommandInput("/internet on") {
 		t.Fatalf("expected /internet on to be executable")
 	}
@@ -164,6 +167,61 @@ func TestIsExecutableSlashCommandInputUsesSplitDialogueCommands(t *testing.T) {
 	}
 	if !isExecutableSlashCommandInput("/think 1") {
 		t.Fatalf("expected /think to be executable")
+	}
+	if !isExecutableSlashCommandInput("/todo hide") {
+		t.Fatalf("expected /todo hide to be executable")
+	}
+}
+
+func TestViewShowsTodoSidebarWhenPendingItemsExist(t *testing.T) {
+	input := textarea.New()
+	input.Prompt = "> "
+	appModel := model{
+		ready:    true,
+		width:    120,
+		height:   24,
+		snapshot: Snapshot{BackendAvailable: true, TodoItems: []TodoItem{{Title: "实现右侧待办栏", Status: "in_progress"}, {Title: "补齐测试", Status: "completed"}}},
+		input:    input,
+		viewport: viewport.New(0, 0),
+		entries:  []entry{{role: "system", content: "历史消息"}},
+	}
+	appModel.syncLayout()
+
+	rendered := sanitizeTerminalText(appModel.View())
+	if !strings.Contains(rendered, "待办(todo)") {
+		t.Fatalf("expected todo sidebar in view, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "1. [进行中]") || !strings.Contains(rendered, "实现右侧") {
+		t.Fatalf("expected todo item in view, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "│ 待办(todo)") {
+		t.Fatalf("expected todo content to keep left padding from divider, got %q", rendered)
+	}
+	if strings.Contains(rendered, "┐ ┌") {
+		t.Fatalf("expected history and todo panes to share one outer frame, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "历史消息") {
+		t.Fatalf("expected history content to remain visible, got %q", rendered)
+	}
+}
+
+func TestViewHidesTodoSidebarWhenAllItemsCompleted(t *testing.T) {
+	input := textarea.New()
+	input.Prompt = "> "
+	appModel := model{
+		ready:    true,
+		width:    120,
+		height:   24,
+		snapshot: Snapshot{BackendAvailable: true, TodoItems: []TodoItem{{Title: "完成改造", Status: "completed"}}},
+		input:    input,
+		viewport: viewport.New(0, 0),
+		entries:  []entry{{role: "system", content: "历史消息"}},
+	}
+	appModel.syncLayout()
+
+	rendered := sanitizeTerminalText(appModel.View())
+	if strings.Contains(rendered, "待办(todo)") {
+		t.Fatalf("expected todo sidebar to hide after completion, got %q", rendered)
 	}
 }
 
@@ -307,6 +365,102 @@ func TestEnterExecutesLoginSlashCommandImmediately(t *testing.T) {
 	}
 	if got := strings.TrimSpace(updated.input.Value()); got != "" {
 		t.Fatalf("expected input to clear after executing /login, got %q", got)
+	}
+}
+
+func TestTodoSlashCommandTogglesSidebarWithoutLocalCommand(t *testing.T) {
+	input := textarea.New()
+	input.Prompt = "> "
+	input.SetValue("/todo hide")
+	appModel := model{
+		ready:    true,
+		width:    120,
+		height:   24,
+		snapshot: Snapshot{BackendAvailable: true, TodoItems: []TodoItem{{Title: "实现右侧待办栏", Status: "in_progress"}}},
+		input:    input,
+		viewport: viewport.New(0, 0),
+	}
+	appModel.syncLayout()
+
+	updatedModel, cmd := appModel.handleMainKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatalf("expected /todo hide not to dispatch external command, got %#v", cmd)
+	}
+	updated := updatedModel.(model)
+	if !updated.todoPanelHidden {
+		t.Fatal("expected todo panel to be hidden after /todo hide")
+	}
+	if got := strings.TrimSpace(updated.input.Value()); got != "" {
+		t.Fatalf("expected input to clear after /todo hide, got %q", got)
+	}
+
+	updated.input.SetValue("/todo show")
+	reshownModel, cmd := updated.handleMainKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatalf("expected /todo show not to dispatch external command, got %#v", cmd)
+	}
+	reshown := reshownModel.(model)
+	if reshown.todoPanelHidden {
+		t.Fatal("expected todo panel to be shown after /todo show")
+	}
+}
+
+func TestRefreshSlashCommandForcesHistoryReload(t *testing.T) {
+	input := textarea.New()
+	input.SetValue("/refresh")
+	appModel := model{
+		ctx:      context.Background(),
+		ready:    true,
+		width:    120,
+		height:   24,
+		snapshot: Snapshot{BackendAvailable: true, History: []HistoryEntry{{Role: "assistant", Content: "旧历史消息"}}},
+		input:    input,
+		viewport: viewport.New(0, 0),
+		entries:  []entry{{role: "assistant", content: "本地临时消息"}},
+		refreshSnapshot: func(ctx context.Context, snapshot Snapshot) (Snapshot, []FlowItem, error) {
+			updated := snapshot
+			updated.History = []HistoryEntry{{Role: "assistant", Content: "刷新后的历史消息"}}
+			return updated, nil, nil
+		},
+	}
+	appModel.syncLayout()
+
+	updatedModel, cmd := appModel.handleMainKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected /refresh to trigger snapshot refresh")
+	}
+	updated := updatedModel.(model)
+	if !updated.manualSnapshotRefresh {
+		t.Fatal("expected manual refresh flag to be set before snapshot reload")
+	}
+	msg := cmd()
+	refreshMsg, ok := msg.(snapshotRefreshedMsg)
+	if !ok {
+		t.Fatalf("expected snapshotRefreshedMsg, got %T", msg)
+	}
+	finalModel, nextCmd := updated.Update(refreshMsg)
+	if nextCmd != nil {
+		t.Fatalf("expected refresh update not to enqueue follow-up command, got %#v", nextCmd)
+	}
+	final := finalModel.(model)
+	if final.manualSnapshotRefresh {
+		t.Fatal("expected manual refresh flag to clear after snapshot reload")
+	}
+	rendered := sanitizeTerminalText(renderEntries(final.entries, 80, 20, nil, final.snapshot, "", -1))
+	if !strings.Contains(rendered, "刷新后的历史消息") {
+		t.Fatalf("expected refreshed history in entries, got %q", rendered)
+	}
+	if strings.Contains(rendered, "本地临时消息") {
+		t.Fatalf("expected local stale entries to be replaced, got %q", rendered)
+	}
+	if final.activityHint != "" {
+		t.Fatalf("expected refresh activity hint to clear, got %q", final.activityHint)
+	}
+	if got := strings.TrimSpace(final.input.Value()); got != "" {
+		t.Fatalf("expected input to clear after /refresh, got %q", got)
+	}
+	if final.viewport.YOffset != 0 && final.viewport.YOffset < 0 {
+		t.Fatalf("unexpected viewport offset after refresh: %d", final.viewport.YOffset)
 	}
 }
 

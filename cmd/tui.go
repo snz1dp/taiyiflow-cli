@@ -853,6 +853,7 @@ func (a *App) buildInitialTUISnapshot(
 	snapshot.ReasoningOverride = strings.TrimSpace(sessionState.ReasoningOverride)
 	snapshot.ReasoningEnabled = resolveReasoningEnabled(config, sessionState.ReasoningOverride)
 	snapshot.SessionSandboxEscapePolicy = strings.TrimSpace(sessionState.SandboxEscapePolicyOverride)
+	snapshot.TodoItems = buildTUITodoItems(sessionState.TodoItems)
 	snapshot.DefaultFlowLabel = resolveFlowLabel(flowID, snapshot.DefaultFlowLabel, sessionState.FlowDisplayName)
 	return snapshot, nil
 }
@@ -868,9 +869,11 @@ func buildTUIHelpLines(snapshot tui.Snapshot) []string {
 			"原因: " + reason,
 			"可用命令:",
 			"/about 显示当前客户端版本、组织与后端对接说明",
+			"/refresh 刷新当前会话的历史消息",
 			"/login 打开登录表单",
 			"/clear 清空当前界面消息",
 			"/config 打开当前配置弹窗",
+			"/todo [show|hide|status] 查看或切换右侧待办栏",
 			"/tasks 查看本地后台任务",
 			"/skills 查看本地技能与远程仓库技能",
 			"/reasoning 查看思考模式",
@@ -882,6 +885,7 @@ func buildTUIHelpLines(snapshot tui.Snapshot) []string {
 		"可用命令:",
 		"/about 显示当前客户端版本、组织与后端对接说明",
 		"/new 重置当前智能体的本地会话",
+		"/refresh 刷新当前会话的历史消息",
 		"/clear 清空当前界面消息",
 		"/internet [on|off|status] 查看或切换当前对话的联网搜索",
 		"/knowledge 打开知识库范围选择器；/knowledge status 查看当前状态；/knowledge auto 切回自动",
@@ -896,6 +900,7 @@ func buildTUIHelpLines(snapshot tui.Snapshot) []string {
 		"/sessions [页码] 查看当前智能体的服务端会话列表",
 		"/login 打开登录表单；/login status 和 /login logout 查看或清理当前登录态；图形验证码优先使用 kitty/iTerm2 终端图片协议",
 		"/config 打开全局与权限配置弹窗",
+		"/todo [show|hide|status] 查看或切换右侧待办栏；有未完成待办时自动显示，全部完成后自动隐藏",
 		"!<shell 命令> 在当前目录执行本地命令",
 		"/agents 或 /agents <名称> 选择智能体",
 		"/tasks [list|output|capture|stop|remove] 管理本地后台任务",
@@ -940,6 +945,7 @@ func (a *App) buildTUISnapshot(
 		snapshot.ReasoningOverride = strings.TrimSpace(sessionState.ReasoningOverride)
 		snapshot.ReasoningEnabled = resolveReasoningEnabled(config, sessionState.ReasoningOverride)
 		snapshot.SessionSandboxEscapePolicy = strings.TrimSpace(sessionState.SandboxEscapePolicyOverride)
+		snapshot.TodoItems = buildTUITodoItems(sessionState.TodoItems)
 		snapshot.DefaultFlowLabel = resolveFlowLabel(flowID, snapshot.DefaultFlowLabel, sessionState.FlowDisplayName)
 		return snapshot, nil
 	}
@@ -974,6 +980,7 @@ func (a *App) buildTUISnapshot(
 	snapshot.ReasoningOverride = strings.TrimSpace(sessionState.ReasoningOverride)
 	snapshot.ReasoningEnabled = resolveReasoningEnabled(config, sessionState.ReasoningOverride)
 	snapshot.SessionSandboxEscapePolicy = strings.TrimSpace(sessionState.SandboxEscapePolicyOverride)
+	snapshot.TodoItems = buildTUITodoItems(sessionState.TodoItems)
 	if strings.TrimSpace(snapshot.SessionID) != "" {
 		title, titleErr := lookupSessionTitle(ctx, providerClient, flowID, snapshot.SessionID)
 		if titleErr == nil {
@@ -1610,6 +1617,14 @@ func emitTUIClientToolResultEvents(emit func(tui.Event), config internalconfig.C
 		}
 		return
 	}
+	if strings.TrimSpace(toolName) == "todo_write" {
+		if resultMap, ok := result.(map[string]any); ok {
+			items := buildTUITodoItemsFromResult(resultMap)
+			emit(tui.Event{Kind: tui.EventTodoUpdate, TodoItems: items})
+			emit(tui.Event{Kind: tui.EventSystemNote, Text: buildTodoUpdateEventText(items)})
+		}
+		return
+	}
 	panel := buildTUIClientToolPanel(toolName, result, toolErr)
 	if panel != nil {
 		if statusText := buildToolPanelStatusText(panel, ""); statusText != "" {
@@ -1644,6 +1659,56 @@ func buildToolPanelStatusText(panel *tui.ToolPanel, fallback string) string {
 		return "结果已生成：" + title
 	}
 	return strings.TrimSpace(fallback)
+}
+
+func buildTUITodoItems(items []agent.TodoItem) []tui.TodoItem {
+	if len(items) == 0 {
+		return nil
+	}
+	result := make([]tui.TodoItem, 0, len(items))
+	for _, item := range items {
+		result = append(result, tui.TodoItem{
+			Title:  strings.TrimSpace(item.Title),
+			Status: strings.TrimSpace(item.Status),
+			Notes:  strings.TrimSpace(item.Notes),
+		})
+	}
+	return result
+}
+
+func buildTUITodoItemsFromResult(resultMap map[string]any) []tui.TodoItem {
+	items := mapSliceValue(resultMap, "items")
+	if len(items) == 0 {
+		return nil
+	}
+	result := make([]tui.TodoItem, 0, len(items))
+	for _, item := range items {
+		result = append(result, tui.TodoItem{
+			Title:  strings.TrimSpace(stringMapValue(item, "title")),
+			Status: strings.TrimSpace(stringMapValue(item, "status")),
+			Notes:  strings.TrimSpace(stringMapValue(item, "notes")),
+		})
+	}
+	return result
+}
+
+func buildTodoUpdateEventText(items []tui.TodoItem) string {
+	if len(items) == 0 {
+		return "当前会话暂无待办。"
+	}
+	activeCount := 0
+	for _, item := range items {
+		status := strings.ToLower(strings.TrimSpace(item.Status))
+		status = strings.ReplaceAll(status, "-", "_")
+		status = strings.ReplaceAll(status, " ", "_")
+		if status != "completed" && status != "done" {
+			activeCount++
+		}
+	}
+	if activeCount == 0 {
+		return fmt.Sprintf("会话待办已更新：共 %d 项，已全部完成，右侧待办栏已自动隐藏。", len(items))
+	}
+	return fmt.Sprintf("会话待办已更新：共 %d 项，未完成 %d 项。", len(items), activeCount)
 }
 
 func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.ToolPanel {

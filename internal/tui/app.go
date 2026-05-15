@@ -51,6 +51,7 @@ type Snapshot struct {
 	SessionID                    string
 	SessionTitle                 string
 	History                      []HistoryEntry
+	TodoItems                    []TodoItem
 	WelcomeMessage               string
 	SubHead                      string
 	Questions                    []string
@@ -135,6 +136,12 @@ type SkillItem struct {
 	RelativeDir    string
 	Restriction    string
 	ReferenceFiles []SkillReferenceItem
+}
+
+type TodoItem struct {
+	Title  string
+	Status string
+	Notes  string
 }
 
 type RemoteSkillItem struct {
@@ -349,6 +356,7 @@ const (
 	EventErrorNote      EventKind = "error_note"
 	EventToolSummary    EventKind = "tool_summary"
 	EventToolPanel      EventKind = "tool_panel"
+	EventTodoUpdate     EventKind = "todo_update"
 	EventSessionUpdate  EventKind = "session_update"
 	EventToolCall       EventKind = "tool_call"
 	EventBuiltInCall    EventKind = "built_in_call"
@@ -367,6 +375,7 @@ type Event struct {
 	SplitAssistant bool
 	Stats          *RequestMetrics
 	Panel          *ToolPanel
+	TodoItems      []TodoItem
 }
 
 type Request struct {
@@ -663,6 +672,8 @@ type model struct {
 	splitNextAssistant         bool
 	lastAssistantMessageID     string
 	currentStreamingEntryIndex int
+	todoPanelHidden            bool
+	manualSnapshotRefresh      bool
 }
 
 type configFormState struct {
@@ -910,6 +921,7 @@ var (
 var slashCommands = []slashCommand{
 	{Trigger: "/new", Completion: "/new", Description: "重置当前智能体的本地会话"},
 	{Trigger: "/retry", Completion: "/retry", Description: "重新发起最近一次失败的请求"},
+	{Trigger: "/refresh", Completion: "/refresh", Description: "刷新当前会话的历史消息"},
 	{Trigger: "/clear", Completion: "/clear", Description: "清空当前界面消息"},
 	{Trigger: "/internet", Completion: "/internet ", Description: "查看或切换当前对话的联网搜索"},
 	{Trigger: "/knowledge", Completion: "/knowledge ", Description: "查看或切换当前对话的知识库范围"},
@@ -922,6 +934,7 @@ var slashCommands = []slashCommand{
 	{Trigger: "/ask", Completion: "/ask ", Description: "切换为问答模式，或直接发送一个问答请求"},
 	{Trigger: "/plan", Completion: "/plan ", Description: "切换为计划模式，或直接发送一个计划请求"},
 	{Trigger: "/agents", Completion: "/agents ", Description: "打开智能体选择，或用 /agents <名称> 直接切换"},
+	{Trigger: "/todo", Completion: "/todo ", Description: "显示或隐藏右侧待办栏，可用 show、hide、status"},
 	{Trigger: "/tasks", Completion: "/tasks ", Description: "查看、捕获、停止或清理本地后台任务"},
 	{Trigger: "/skills", Completion: "/skills ", Description: "列出本地技能，浏览远程仓库技能，并执行搜索、安装、更新或删除"},
 	{Trigger: "/sessions", Completion: "/sessions ", Description: "列出当前智能体的服务端会话，可附页码"},
@@ -937,7 +950,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 	if snapshot.BackendAvailable {
 		inputModel.Placeholder = multilineInputPlaceholder(os.Environ())
 	} else {
-		inputModel.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/tasks、/skills、/reasoning、/help、/clear、/exit"
+		inputModel.Placeholder = "服务端不可用，当前为只读模式，仅支持 /refresh、/config、/todo、/tasks、/skills、/reasoning、/help、/clear、/exit"
 	}
 	inputModel.Prompt = "> "
 	inputModel.ShowLineNumbers = false
@@ -1042,13 +1055,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncViewport()
 		return m, m.scheduleStreamingIndicator()
 	case snapshotRefreshedMsg:
+		manualSnapshotRefresh := m.manualSnapshotRefresh
+		if manualSnapshotRefresh {
+			m.manualSnapshotRefresh = false
+			m.activityHint = ""
+		}
 		if typed.err != nil {
+			if manualSnapshotRefresh {
+				m.entries = append(m.entries, entry{role: "error", content: fmt.Sprintf("刷新当前历史消息失败: %v", typed.err)})
+				m.syncViewport()
+				if !m.snapshot.BackendAvailable {
+					return m, m.scheduleBackendRetry()
+				}
+				return m, nil
+			}
 			if !m.snapshot.BackendAvailable {
 				return m, m.scheduleBackendRetry()
 			}
 			return m, nil
 		}
-		replaceInitialEntries := shouldReplaceEntriesOnSnapshotRefresh(m.entries, m.snapshot)
+		replaceInitialEntries := manualSnapshotRefresh || shouldReplaceEntriesOnSnapshotRefresh(m.entries, m.snapshot)
 		previouslyAvailable := m.snapshot.BackendAvailable
 		previouslyAuthRequired := m.snapshot.AuthRequired
 		previousReason := strings.TrimSpace(m.snapshot.BackendStatusReason)
@@ -2477,6 +2503,10 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 				m.latestToolAt = time.Now()
 			}
 		}
+	case EventTodoUpdate:
+		previousTodoItems := append([]TodoItem(nil), m.snapshot.TodoItems...)
+		m.snapshot.TodoItems = append([]TodoItem(nil), event.TodoItems...)
+		m.syncTodoPanelVisibility(previousTodoItems, m.snapshot.TodoItems)
 	case EventSystemNote:
 		if strings.TrimSpace(event.Text) != "" {
 			if isTransientSystemStatus(event.Text) {
@@ -2645,7 +2675,7 @@ func (m *model) syncLayout() {
 
 	historyWidth := m.historyPaneWidth()
 	viewportWidth := historyWidth
-	if !m.useMinimalChrome() {
+	if !m.useMinimalChrome() && !m.useSharedHistoryFrame() {
 		viewportWidth = historyWidth - 4
 	}
 	if viewportWidth < 20 {
@@ -2675,7 +2705,7 @@ func (m *model) syncLayout() {
 	m.viewport.Width = viewportWidth
 	m.viewport.Height = historyHeight
 	m.updateMarkdownRenderer(viewportWidth - 2)
-	inputWidth := historyWidth - 4
+	inputWidth := m.mainPaneWidth() - 4
 	if inputWidth <= 0 {
 		inputWidth = contentWidth - 10
 	}
@@ -2759,15 +2789,18 @@ func (m model) View() string {
 	topParts = append(topParts, header)
 	topBlock := lipgloss.JoinVertical(lipgloss.Left, topParts...)
 
-	bodyParts := []string{}
+	bodyMainParts := []string{}
 	history := m.renderHistoryPane()
+	if todoPane := m.renderTodoPane(); todoPane != "" && !m.useSharedHistoryFrame() {
+		history = lipgloss.JoinHorizontal(lipgloss.Top, history, " ", todoPane)
+	}
 	inputView := m.input.View()
 	if m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.knowledgePicker != nil || m.skillsPicker != nil || m.tasksPicker != nil || m.taskActionPicker != nil || m.approvalPicker != nil {
 		inputView = hintStyle.Render("当前有未处理的弹层，请先完成操作。")
 	} else if commandHints := m.renderSlashCommandHints(); commandHints != "" {
 		inputView = lipgloss.JoinVertical(lipgloss.Left, inputView, "", commandHints)
 	}
-	inputBoxWidth := m.historyPaneWidth()
+	inputBoxWidth := m.mainPaneWidth()
 	if inputBoxWidth <= 0 {
 		inputBoxWidth = m.contentWidth - 6
 	}
@@ -2775,20 +2808,21 @@ func (m model) View() string {
 		inputBoxWidth = 20
 	}
 	inputBox := inputStyle.Width(inputBoxWidth).Render(inputView)
-	bodyParts = append(bodyParts, history, inputBox, m.renderStatusBar())
-	bodyContent := lipgloss.JoinVertical(lipgloss.Left, bodyParts...)
-	content := lipgloss.JoinVertical(lipgloss.Left, topBlock, bodyContent)
+	bodyMainParts = append(bodyMainParts, history, inputBox)
+	bodyMain := lipgloss.JoinVertical(lipgloss.Left, bodyMainParts...)
+	statusBar := m.renderStatusBar()
+	content := lipgloss.JoinVertical(lipgloss.Left, topBlock, bodyMain, statusBar)
 	if !m.ready || m.width == 0 {
 		return "\n" + content + "\n"
 	}
 
 	topPlaced := lipgloss.Place(m.width, lipgloss.Height(topBlock), lipgloss.Center, lipgloss.Top, topBlock)
-	bodyHeight := m.height - lipgloss.Height(topPlaced)
+	bodyHeight := m.height - lipgloss.Height(topPlaced) - lipgloss.Height(statusBar)
 	if bodyHeight < 1 {
 		bodyHeight = 1
 	}
-	bodyPlaced := lipgloss.Place(m.width, bodyHeight, lipgloss.Center, lipgloss.Top, bodyContent)
-	base := lipgloss.JoinVertical(lipgloss.Left, topPlaced, bodyPlaced)
+	bodyMainPlaced := lipgloss.Place(m.width, bodyHeight, lipgloss.Center, lipgloss.Top, bodyMain)
+	base := lipgloss.JoinVertical(lipgloss.Left, topPlaced, bodyMainPlaced, statusBar)
 	if overlay := m.renderOverlay(); overlay != "" {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay)
 	}
@@ -2923,6 +2957,16 @@ func formatHeaderServerVersion(value string) string {
 }
 
 func (m model) renderHistoryPane() string {
+	if m.useSharedHistoryFrame() {
+		contentHeight := maxInt(3, m.viewport.Height)
+		historyContent := minimalHistoryStyle.Width(m.historyPaneWidth()).Height(contentHeight).Render(m.viewport.View())
+		todoContent := m.renderTodoPane()
+		if todoContent == "" {
+			return historyFrameStyle.Width(m.mainPaneWidth()).Render(historyContent)
+		}
+		combined := lipgloss.JoinHorizontal(lipgloss.Top, historyContent, m.renderHistoryTodoDivider(contentHeight), todoContent)
+		return historyFrameStyle.Width(m.mainPaneWidth()).Render(combined)
+	}
 	width := m.historyPaneWidth()
 	if m.useMinimalChrome() {
 		return minimalHistoryStyle.Width(width).Render(m.viewport.View())
@@ -2930,7 +2974,71 @@ func (m model) renderHistoryPane() string {
 	return historyFrameStyle.Width(width).Render(m.viewport.View())
 }
 
+func (m model) renderTodoPane() string {
+	width := m.todoPaneWidth()
+	if width <= 0 {
+		return ""
+	}
+	const leftPadding = 1
+	if m.useSharedHistoryFrame() {
+		contentHeight := maxInt(3, m.viewport.Height)
+		contentWidth := width - 4
+		if contentWidth < 18 {
+			contentWidth = 18
+		}
+		lines := m.todoPaneLines(contentWidth - leftPadding)
+		if len(lines) == 0 {
+			return ""
+		}
+		body := indentMultilineText(strings.Join(fitTodoPaneLines(lines, contentWidth-leftPadding, contentHeight), "\n"), leftPadding)
+		return minimalHistoryStyle.Width(contentWidth).Height(contentHeight).Render(body)
+	}
+	contentWidth := width
+	contentHeight := maxInt(3, m.viewport.Height)
+	style := minimalHistoryStyle
+	if !m.useMinimalChrome() {
+		contentWidth = width - 4
+		style = historyFrameStyle.Height(contentHeight)
+	}
+	if contentWidth < 18 {
+		contentWidth = 18
+	}
+	lines := m.todoPaneLines(contentWidth - leftPadding)
+	if len(lines) == 0 {
+		return ""
+	}
+	body := indentMultilineText(strings.Join(fitTodoPaneLines(lines, contentWidth-leftPadding, contentHeight), "\n"), leftPadding)
+	return style.Width(width).Render(body)
+}
+
+func (m model) useSharedHistoryFrame() bool {
+	return !m.useMinimalChrome() && m.todoPaneWidth() > 0
+}
+
+func (m model) renderHistoryTodoDivider(height int) string {
+	if height < 1 {
+		height = 1
+	}
+	line := lipgloss.NewStyle().Foreground(lipgloss.Color("#2E7D32")).Render("│")
+	parts := make([]string, 0, height)
+	for index := 0; index < height; index++ {
+		parts = append(parts, line)
+	}
+	return strings.Join(parts, "\n")
+}
+
 func (m model) historyPaneWidth() int {
+	width := m.mainPaneWidth()
+	if todoWidth := m.todoPaneWidth(); todoWidth > 0 {
+		width -= todoWidth + 1
+	}
+	if width < 20 {
+		width = 20
+	}
+	return width
+}
+
+func (m model) mainPaneWidth() int {
 	width := m.width
 	if !m.useMinimalChrome() {
 		width = m.width - 2
@@ -2939,6 +3047,139 @@ func (m model) historyPaneWidth() int {
 		width = 20
 	}
 	return width
+}
+
+func (m model) todoPaneWidth() int {
+	if !m.hasTodoSidebarContent() || m.todoPanelHidden {
+		return 0
+	}
+	available := m.mainPaneWidth()
+	maxWidth := available - 36
+	if maxWidth < 24 {
+		return 0
+	}
+	width := maxInt(28, available/4)
+	if width > 40 {
+		width = 40
+	}
+	if width > maxWidth {
+		width = maxWidth
+	}
+	if width < 24 {
+		return 0
+	}
+	return width
+}
+
+func (m model) hasTodoSidebarContent() bool {
+	return countActiveTodoItems(m.snapshot.TodoItems) > 0
+}
+
+func (m model) todoPaneLines(width int) []string {
+	if !m.hasTodoSidebarContent() {
+		return nil
+	}
+	items := m.snapshot.TodoItems
+	lines := []string{
+		labelStyle.Bold(true).Render(trimForWidth("待办(todo)", width)),
+		hintStyle.Render(trimForWidth(todoPanelSummary(items), width)),
+		"",
+	}
+	for index, item := range items {
+		line := fmt.Sprintf("%d. [%s] %s", index+1, todoStatusLabel(item.Status), fallback(strings.TrimSpace(item.Title), "<empty>"))
+		renderedLine := valueStyle.Render(trimForWidth(line, width))
+		if isCompletedTodoStatus(item.Status) {
+			renderedLine = commandHintStyle.Render(trimForWidth(line, width))
+		}
+		lines = append(lines, renderedLine)
+		if notes := strings.TrimSpace(item.Notes); notes != "" {
+			for _, noteLine := range strings.Split(strings.ReplaceAll(hardWrapText("   "+notes, width), "\r\n", "\n"), "\n") {
+				lines = append(lines, hintStyle.Render(trimForWidth(noteLine, width)))
+			}
+		}
+		if index < len(items)-1 {
+			lines = append(lines, "")
+		}
+	}
+	lines = append(lines, "", hintStyle.Render(trimForWidth("/todo hide 可隐藏右侧待办栏", width)))
+	return lines
+}
+
+func fitTodoPaneLines(lines []string, width int, height int) []string {
+	if height < 1 || len(lines) == 0 {
+		return nil
+	}
+	if len(lines) <= height {
+		return lines
+	}
+	if height == 1 {
+		return []string{hintStyle.Render(trimForWidth("... 更多待办", width))}
+	}
+	remaining := len(lines) - (height - 1)
+	result := append([]string(nil), lines[:height-1]...)
+	result = append(result, hintStyle.Render(trimForWidth(fmt.Sprintf("... 还有 %d 行", remaining), width)))
+	return result
+}
+
+func indentMultilineText(text string, indent int) string {
+	if indent <= 0 || text == "" {
+		return text
+	}
+	prefix := strings.Repeat(" ", indent)
+	return prefix + strings.ReplaceAll(text, "\n", "\n"+prefix)
+}
+
+func countActiveTodoItems(items []TodoItem) int {
+	count := 0
+	for _, item := range items {
+		if !isCompletedTodoStatus(item.Status) {
+			count++
+		}
+	}
+	return count
+}
+
+func isCompletedTodoStatus(status string) bool {
+	switch normalizeTodoStatus(status) {
+	case "completed", "done":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeTodoStatus(status string) string {
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	normalized = strings.ReplaceAll(normalized, "-", "_")
+	normalized = strings.ReplaceAll(normalized, " ", "_")
+	switch normalized {
+	case "", "not_started", "notstarted", "todo":
+		return "not_started"
+	case "in_progress", "inprogress", "doing":
+		return "in_progress"
+	case "completed", "complete", "done", "finished":
+		return "completed"
+	default:
+		return normalized
+	}
+}
+
+func todoStatusLabel(status string) string {
+	switch normalizeTodoStatus(status) {
+	case "completed":
+		return "已完成"
+	case "in_progress":
+		return "进行中"
+	default:
+		return "未开始"
+	}
+}
+
+func todoPanelSummary(items []TodoItem) string {
+	if len(items) == 0 {
+		return "当前会话没有待办。"
+	}
+	return fmt.Sprintf("共 %d 项 · 未完成 %d 项", len(items), countActiveTodoItems(items))
 }
 
 func (m model) renderTransientStatus() string {
@@ -4634,7 +4875,7 @@ func buildBackendStatusEntries(snapshot Snapshot) []entry {
 		return nil
 	}
 	message := "当前无法连接服务端，已进入只读模式。"
-	message += "\n可用命令: /config /tasks /skills /reasoning /help /clear /exit"
+	message += "\n可用命令: /config /todo /tasks /skills /reasoning /help /clear /exit"
 	return []entry{{role: "error", content: message}}
 }
 
@@ -4669,21 +4910,23 @@ func authStatusLabel(snapshot Snapshot, compact bool) string {
 
 func (m model) backendUnavailableMessage() string {
 	message := "当前无法连接服务端，已进入只读模式。"
-	message += " 可用命令: /config /tasks /skills /reasoning /help /clear /exit"
+	message += " 可用命令: /config /todo /tasks /skills /reasoning /help /clear /exit"
 	return message
 }
 
 func welcomeCommandsLabel(snapshot Snapshot) []string {
 	labelValue := "可用命令: "
 	if snapshot.BackendAvailable {
-		return []string{labelValue + "/agents /internet /knowledge /upload /think /login /config /tasks /skills /reasoning /session /new /exit"}
+		return []string{labelValue + "/agents /internet /knowledge /upload /think /refresh /login /config /todo /tasks /skills /reasoning /session /new /exit"}
 	}
-	return []string{labelValue + "/login /config /tasks /skills /reasoning /help /clear /exit"}
+	return []string{labelValue + "/refresh /login /config /todo /tasks /skills /reasoning /help /clear /exit"}
 }
 
 func isAvailableInReadOnlyMode(input string) bool {
 	trimmed := strings.TrimSpace(strings.ToLower(input))
 	switch {
+	case trimmed == "/refresh":
+		return true
 	case trimmed == "/login", strings.HasPrefix(trimmed, "/login "):
 		return true
 	case trimmed == "/help", trimmed == "/clear", trimmed == "/exit":
@@ -4693,6 +4936,8 @@ func isAvailableInReadOnlyMode(input string) bool {
 	case trimmed == "/review", strings.HasPrefix(trimmed, "/review "):
 		return true
 	case trimmed == "/tasks", strings.HasPrefix(trimmed, "/tasks "):
+		return true
+	case trimmed == "/todo", strings.HasPrefix(trimmed, "/todo "):
 		return true
 	case trimmed == "/config", strings.HasPrefix(trimmed, "/config "):
 		return true
@@ -4933,6 +5178,8 @@ func (m *model) handleSlashCommand(input string) (bool, tea.Cmd) {
 	case strings.EqualFold(trimmed, "/retry"):
 		m.input.SetValue("")
 		return true, m.retryLastFailedRequest()
+	case strings.EqualFold(trimmed, "/refresh"):
+		return true, m.handleRefreshSlashCommand()
 	case strings.EqualFold(trimmed, "/agents"):
 		m.input.SetValue("")
 		return true, m.openFlowPicker()
@@ -4946,9 +5193,24 @@ func (m *model) handleSlashCommand(input string) (bool, tea.Cmd) {
 		}
 		m.input.SetValue("")
 		return true, tea.Batch(m.transitionProgress(progressSwitching), changeFlowCmd(m.ctx, flowID, m.flowChange))
+	case isTodoSlashCommand(trimmed):
+		return true, m.handleTodoSlashCommand(trimmed)
 	default:
 		return m.handleLocalSlashCommand(trimmed)
 	}
+}
+
+func (m *model) handleRefreshSlashCommand() tea.Cmd {
+	m.input.SetValue("")
+	if m.refreshSnapshot == nil {
+		m.entries = append(m.entries, entry{role: "error", content: "当前界面不支持刷新历史消息。"})
+		m.refreshLayoutAfterStateChange()
+		return nil
+	}
+	m.manualSnapshotRefresh = true
+	m.activityHint = "正在刷新当前历史消息..."
+	m.refreshLayoutAfterStateChange()
+	return refreshSnapshotCmd(m.ctx, m.snapshot, m.refreshSnapshot)
 }
 
 func (m *model) retryLastFailedRequest() tea.Cmd {
@@ -4970,6 +5232,71 @@ func (m *model) retryLastFailedRequest() tea.Cmd {
 	request := *cloneRequest(*m.lastRetryableRequest)
 	request.RunID = newRequestRunID()
 	return m.startRequest(request, true)
+}
+
+func isTodoSlashCommand(command string) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(command))
+	return trimmed == "/todo" || strings.HasPrefix(trimmed, "/todo ")
+}
+
+func parseTodoSlashCommand(command string) (string, error) {
+	trimmed := strings.TrimSpace(strings.ToLower(command))
+	if trimmed == "/todo" || trimmed == "/todo toggle" {
+		return "toggle", nil
+	}
+	if !strings.HasPrefix(trimmed, "/todo ") {
+		return "", fmt.Errorf("用法: /todo [show|hide|toggle|status]")
+	}
+	action := strings.TrimSpace(strings.TrimPrefix(trimmed, "/todo "))
+	switch action {
+	case "show", "hide", "toggle", "status":
+		return action, nil
+	default:
+		return "", fmt.Errorf("用法: /todo [show|hide|toggle|status]")
+	}
+}
+
+func (m *model) handleTodoSlashCommand(command string) tea.Cmd {
+	action, err := parseTodoSlashCommand(command)
+	m.input.SetValue("")
+	if err != nil {
+		m.entries = append(m.entries, entry{role: "error", content: err.Error()})
+		m.refreshLayoutAfterStateChange()
+		return nil
+	}
+	hasActiveItems := m.hasTodoSidebarContent()
+	switch action {
+	case "show":
+		m.todoPanelHidden = false
+	case "hide":
+		m.todoPanelHidden = true
+	case "toggle":
+		if hasActiveItems {
+			m.todoPanelHidden = !m.todoPanelHidden
+		}
+	case "status":
+	}
+	if !hasActiveItems {
+		m.todoPanelHidden = false
+	}
+	m.entries = append(m.entries, entry{role: "system", content: todoPanelStatusText(m.todoPanelHidden, m.snapshot.TodoItems)})
+	m.refreshLayoutAfterStateChange()
+	return nil
+}
+
+func todoPanelStatusText(hidden bool, items []TodoItem) string {
+	total := len(items)
+	active := countActiveTodoItems(items)
+	if total == 0 {
+		return "当前会话没有待办，右侧待办栏保持隐藏。"
+	}
+	if active == 0 {
+		return fmt.Sprintf("当前待办共 %d 项，已全部完成，右侧待办栏已自动隐藏。", total)
+	}
+	if hidden {
+		return fmt.Sprintf("当前待办共 %d 项，未完成 %d 项，右侧待办栏已隐藏。", total, active)
+	}
+	return fmt.Sprintf("当前待办共 %d 项，未完成 %d 项，右侧待办栏已显示。", total, active)
 }
 
 func (m *model) handleLocalSlashCommand(command string) (bool, tea.Cmd) {
@@ -5035,7 +5362,9 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		m.syncLayout()
 	}
 	if result.Snapshot != nil {
+		previousTodoItems := append([]TodoItem(nil), m.snapshot.TodoItems...)
 		m.snapshot = *result.Snapshot
+		m.syncTodoPanelVisibility(previousTodoItems, m.snapshot.TodoItems)
 		m.flows = result.Flows
 		m.flowCursor = currentFlowIndex(m.flows, m.snapshot.DefaultFlow)
 		m.syncInputPlaceholder()
@@ -5131,6 +5460,14 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		return executeLocalCommandCmd(m.ctx, m.snapshot, "/login", m.localCommand)
 	}
 	return nil
+}
+
+func (m *model) syncTodoPanelVisibility(previousItems []TodoItem, currentItems []TodoItem) {
+	previousActive := countActiveTodoItems(previousItems) > 0
+	currentActive := countActiveTodoItems(currentItems) > 0
+	if !currentActive || (!previousActive && currentActive) {
+		m.todoPanelHidden = false
+	}
 }
 
 func (m model) showSlashCommandHints() bool {
@@ -6887,7 +7224,7 @@ func (m *model) syncInputPlaceholder() {
 		m.input.Placeholder = multilineInputPlaceholder(os.Environ())
 		return
 	}
-	m.input.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/tasks、/skills、/reasoning、/help、/clear、/exit"
+	m.input.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/todo、/tasks、/skills、/reasoning、/help、/clear、/exit"
 }
 
 func (m model) scheduleBackendRetry() tea.Cmd {
@@ -7591,6 +7928,8 @@ func isExecutableSlashCommandInput(input string) bool {
 		return true
 	case strings.EqualFold(trimmed, "/config show"):
 		return true
+	case strings.EqualFold(trimmed, "/refresh"):
+		return true
 	case strings.EqualFold(trimmed, "/login"):
 		return true
 	case strings.EqualFold(trimmed, "/login help"):
@@ -7612,6 +7951,16 @@ func isExecutableSlashCommandInput(input string) bool {
 	case strings.EqualFold(trimmed, "/reasoning status"):
 		return true
 	case strings.EqualFold(trimmed, "/skills"):
+		return true
+	case strings.EqualFold(trimmed, "/todo"):
+		return true
+	case strings.EqualFold(trimmed, "/todo toggle"):
+		return true
+	case strings.EqualFold(trimmed, "/todo show"):
+		return true
+	case strings.EqualFold(trimmed, "/todo hide"):
+		return true
+	case strings.EqualFold(trimmed, "/todo status"):
 		return true
 	case strings.HasPrefix(strings.ToLower(trimmed), "/internet "):
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/internet ")) != ""
@@ -7639,6 +7988,8 @@ func isExecutableSlashCommandInput(input string) bool {
 		return true
 	case strings.HasPrefix(strings.ToLower(trimmed), "/tasks "):
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/tasks ")) != ""
+	case strings.HasPrefix(strings.ToLower(trimmed), "/todo "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/todo ")) != ""
 	case strings.EqualFold(trimmed, "/sessions"):
 		return true
 	case strings.HasPrefix(strings.ToLower(trimmed), "/sessions "):

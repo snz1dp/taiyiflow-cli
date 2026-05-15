@@ -493,6 +493,12 @@ func TestBuildTUIHelpLinesUsesLoginOverlayWording(t *testing.T) {
 	if !strings.Contains(joined, "/login 打开登录表单") {
 		t.Fatalf("expected help text to describe /login as overlay entry, got %q", joined)
 	}
+	if !strings.Contains(joined, "/refresh 刷新当前会话的历史消息") {
+		t.Fatalf("expected help text to include /refresh, got %q", joined)
+	}
+	if !strings.Contains(joined, "/todo [show|hide|status]") {
+		t.Fatalf("expected help text to include /todo sidebar command, got %q", joined)
+	}
 	if !strings.Contains(joined, "kitty/iTerm2 终端图片协议") {
 		t.Fatalf("expected help text to mention terminal image captcha rendering, got %q", joined)
 	}
@@ -505,8 +511,39 @@ func TestBuildTUIHelpLinesUsesLoginOverlayWording(t *testing.T) {
 	if !strings.Contains(readonlyJoined, "/login 打开登录表单") {
 		t.Fatalf("expected readonly help text to direct to /login overlay, got %q", readonlyJoined)
 	}
+	if !strings.Contains(readonlyJoined, "/refresh 刷新当前会话的历史消息") {
+		t.Fatalf("expected readonly help text to include /refresh, got %q", readonlyJoined)
+	}
 	if strings.Contains(readonlyJoined, "查看登录状态") {
 		t.Fatalf("expected readonly help text to stop using legacy status wording, got %q", readonlyJoined)
+	}
+	if !strings.Contains(readonlyJoined, "/todo [show|hide|status]") {
+		t.Fatalf("expected readonly help text to include /todo sidebar command, got %q", readonlyJoined)
+	}
+}
+
+func TestBuildInitialTUISnapshotLoadsSessionTodoItems(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	workdir := t.TempDir()
+	if err := app.sessionStore.Save(agent.SessionState{
+		FlowID:    "flow-1",
+		Workdir:   workdir,
+		TodoItems: []agent.TodoItem{{Title: "实现右侧待办栏", Status: "in_progress", Notes: "放到历史区右边"}},
+	}); err != nil {
+		t.Fatalf("save session failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.Workdir = workdir
+
+	snapshot, err := app.buildInitialTUISnapshot(config, "flow-1", backendStatus{Available: true}, nil)
+	if err != nil {
+		t.Fatalf("buildInitialTUISnapshot failed: %v", err)
+	}
+	if len(snapshot.TodoItems) != 1 {
+		t.Fatalf("expected initial snapshot to load todo items, got %#v", snapshot.TodoItems)
+	}
+	if snapshot.TodoItems[0].Title != "实现右侧待办栏" || snapshot.TodoItems[0].Notes != "放到历史区右边" {
+		t.Fatalf("unexpected todo item mapping: %#v", snapshot.TodoItems[0])
 	}
 }
 
@@ -753,6 +790,30 @@ func TestEmitTUIClientToolResultEventsEmitsStatusNoteBeforePanel(t *testing.T) {
 	}
 	if events[1].Kind != internaltui.EventToolPanel || events[1].Panel == nil {
 		t.Fatalf("expected tool panel after note, got %#v", events)
+	}
+}
+
+func TestEmitTUIClientToolResultEventsUpdatesTodoWithoutPanel(t *testing.T) {
+	events := []internaltui.Event{}
+	emitTUIClientToolResultEvents(func(event internaltui.Event) {
+		events = append(events, event)
+	}, internalconfig.Default(), "todo_write", map[string]any{
+		"items": []any{
+			map[string]any{"title": "实现右侧待办栏", "status": "in_progress", "notes": "放到历史区右边"},
+			map[string]any{"title": "补齐测试", "status": "completed"},
+		},
+	}, nil)
+	if len(events) != 2 {
+		t.Fatalf("expected todo update event and note, got %#v", events)
+	}
+	if events[0].Kind != internaltui.EventTodoUpdate {
+		t.Fatalf("expected todo update event first, got %#v", events)
+	}
+	if len(events[0].TodoItems) != 2 || events[0].TodoItems[0].Title != "实现右侧待办栏" {
+		t.Fatalf("expected todo items to map into event, got %#v", events[0].TodoItems)
+	}
+	if events[1].Kind != internaltui.EventSystemNote || !strings.Contains(events[1].Text, "未完成 1 项") {
+		t.Fatalf("expected todo update summary note without panel, got %#v", events)
 	}
 }
 

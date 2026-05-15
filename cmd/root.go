@@ -52,6 +52,7 @@ type App struct {
 
 type rootOptions struct {
 	Flow                      string
+	SessionID                 string
 	UploadFile                string
 	RequestMode               string
 	ReasoningMode             string
@@ -151,6 +152,7 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 
 	var options rootOptions
 	flagSet.StringVar(&options.Flow, "agent", "", "指定要运行的智能体 ID 或名称")
+	flagSet.StringVar(&options.SessionID, "session-id", "", "指定已有会话 ID，并在该会话内启动任务")
 	flagSet.StringVar(&options.UploadFile, "file", "", "上传一个本地文件并作为本次任务输入")
 	flagSet.StringVar(&options.RequestMode, "mode", "", "task 请求模式（agent|ask|plan），默认 agent")
 	flagSet.StringVar(&options.ReasoningMode, "reasoning", "", "思考模式（on|off），仅影响当前 task 会话")
@@ -176,6 +178,9 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	})
 	if options.StreamRetrySet && (options.StreamRetryAttempts < 0 || options.StreamRetryAttempts > internalconfig.MaxStreamRetryAttempts) {
 		return fmt.Errorf("重试次数仅支持 0-%d 的整数，0 表示不重试", internalconfig.MaxStreamRetryAttempts)
+	}
+	if options.NewSession && strings.TrimSpace(options.SessionID) != "" {
+		return errors.New("--new 与 --session-id 不能同时使用")
 	}
 	requestMode, err := resolveTaskRequestMode(options.RequestMode)
 	if err != nil {
@@ -239,6 +244,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	if err != nil {
 		return err
 	}
+	sessionState = applyExplicitTaskSessionID(sessionState, options.SessionID)
 	if options.ReasoningMode != "" {
 		sessionState.ReasoningOverride = options.ReasoningMode
 	}
@@ -492,6 +498,7 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	if err != nil {
 		return err
 	}
+	sessionState = applyExplicitTaskSessionID(sessionState, options.SessionID)
 	if options.ReasoningMode != "" {
 		sessionState.ReasoningOverride = options.ReasoningMode
 	}
@@ -544,6 +551,18 @@ func (a *App) prepareSession(flowID string, newSession bool, workdir string, req
 		state.ContextDir = resolvedWorkdir
 	}
 	return state, nil
+}
+
+func applyExplicitTaskSessionID(state agent.SessionState, sessionID string) agent.SessionState {
+	trimmedSessionID := strings.TrimSpace(sessionID)
+	if trimmedSessionID == "" {
+		return state
+	}
+	if strings.TrimSpace(state.SessionID) != trimmedSessionID {
+		state.SessionTitle = ""
+	}
+	state.SessionID = trimmedSessionID
+	return state
 }
 
 func (a *App) streamTask(
@@ -1188,6 +1207,7 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "                     [--stream-retry-attempts 0-3] [--new] [--continue]")
 	fmt.Fprintln(a.stdout, "                     [--show-stream-events] [--show-thinking]")
 	fmt.Fprintln(a.stdout, "                     [--external-resource-access-policy allow|deny]")
+	fmt.Fprintln(a.stdout, "                     [--session-id SESSION_ID]")
 	fmt.Fprintln(a.stdout, "                     [任务描述]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli login [help|status|logout|password|qr]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli config [show|init|path|set|unset]")
