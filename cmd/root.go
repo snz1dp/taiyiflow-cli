@@ -267,7 +267,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	}
 
 	reader := bufio.NewScanner(a.stdin)
-	fmt.Fprintln(a.stdout, "进入交互模式，输入 /ask、/plan、/agent 切换请求模式，输入 /reasoning 调整思考模式，输入 /review 发起代码审查。")
+	fmt.Fprintln(a.stdout, "进入交互模式，输入 /ask、/plan、/agent 切换请求模式，输入 /reasoning 调整思考模式，输入 /exit 退出。")
 
 	for {
 		fmt.Fprint(a.stdout, "> ")
