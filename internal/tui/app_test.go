@@ -19,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
 )
 
 func testVerificationPNGBase64(t *testing.T) string {
@@ -43,7 +44,7 @@ func testVerificationPNGBase64(t *testing.T) string {
 func TestStartStreamErrorDoesNotQueueDoneMessage(t *testing.T) {
 	eventCh := make(chan tea.Msg, 4)
 	runnerErr := errors.New("backend failed")
-	cmd := startStream(context.Background(), Request{}, func(ctx context.Context, request Request, emit func(Event), confirm func(ConfirmRequest) bool) error {
+	cmd := startStream(context.Background(), Request{}, func(ctx context.Context, request Request, emit func(Event), confirm func(ConfirmRequest) bool, askUser func(clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error)) error {
 		return runnerErr
 	}, eventCh)
 
@@ -60,6 +61,31 @@ func TestStartStreamErrorDoesNotQueueDoneMessage(t *testing.T) {
 	case extra := <-eventCh:
 		t.Fatalf("expected no trailing message after stream failure, got %T", extra)
 	default:
+	}
+}
+
+func TestStartStreamReturnsAskUserRequestMessage(t *testing.T) {
+	eventCh := make(chan tea.Msg, 4)
+	cmd := startStream(context.Background(), Request{}, func(ctx context.Context, request Request, emit func(Event), confirm func(ConfirmRequest) bool, askUser func(clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error)) error {
+		_, err := askUser(clientruntime.AskUserRequest{
+			Questions: []clientruntime.AskUserQuestion{{Name: "project", Label: "项目名称", InputFormat: "text"}},
+		})
+		return err
+	}, eventCh)
+
+	msg := cmd()
+	requestMsg, ok := msg.(askUserRequestMsg)
+	if !ok {
+		t.Fatalf("expected askUserRequestMsg, got %T", msg)
+	}
+	if len(requestMsg.request.Questions) != 1 || requestMsg.request.Questions[0].Name != "project" {
+		t.Fatalf("unexpected ask_user request: %#v", requestMsg.request)
+	}
+	requestMsg.responseCh <- askUserResult{response: clientruntime.AskUserResponse{Answers: map[string]any{"project": "Alpha"}}}
+	close(requestMsg.responseCh)
+	next := <-eventCh
+	if _, ok := next.(streamDoneMsg); !ok {
+		t.Fatalf("expected streamDoneMsg after ask_user response, got %T", next)
 	}
 }
 
@@ -315,7 +341,7 @@ func TestRetryLastFailedRequestReusesInputWithNewRunID(t *testing.T) {
 		state:                newProgressState(progressIdle),
 		lastRetryableRequest: cloneRequest(request),
 		retryAvailable:       true,
-		runner: func(ctx context.Context, request Request, emit func(Event), confirm func(ConfirmRequest) bool) error {
+		runner: func(ctx context.Context, request Request, emit func(Event), confirm func(ConfirmRequest) bool, askUser func(clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error)) error {
 			return nil
 		},
 	}
@@ -801,6 +827,74 @@ func TestRenderOverlayUsesWiderConfirmOverlay(t *testing.T) {
 	}
 	if lipgloss.Height(rendered) != 30 {
 		t.Fatalf("expected expanded confirm overlay to use full height, got %d", lipgloss.Height(rendered))
+	}
+}
+
+func TestRenderAskUserFormShowsQuestionsAndOptions(t *testing.T) {
+	form := newAskUserFormState(clientruntime.AskUserRequest{
+		Questions: []clientruntime.AskUserQuestion{
+			{Name: "project", Label: "项目名称", InputFormat: "text"},
+			{Name: "targets", Label: "选择目标", InputFormat: "select", MultiSelect: true, OptionsList: []clientruntime.AskUserOption{{Label: "alpha", Value: "alpha"}, {Label: "beta", Value: "beta"}}},
+		},
+	}, make(chan askUserResult, 1))
+	form.questions[0].input.SetValue("Alpha")
+	form.questions[1].selected[1] = true
+	appModel := model{
+		width:        120,
+		height:       30,
+		contentWidth: 112,
+		askUserForm:  form,
+	}
+
+	rendered := sanitizeTerminalText(appModel.renderOverlay())
+	if !strings.Contains(rendered, "用户提问(ask_user)") {
+		t.Fatalf("expected ask_user overlay title, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "项目名称") || !strings.Contains(rendered, "选择目标") {
+		t.Fatalf("expected ask_user questions in overlay, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "alpha") || !strings.Contains(rendered, "[x] beta") {
+		t.Fatalf("expected ask_user options in overlay, got %q", rendered)
+	}
+}
+
+func TestHandleAskUserFormKeyEnterSubmitsResponse(t *testing.T) {
+	responseCh := make(chan askUserResult, 1)
+	form := newAskUserFormState(clientruntime.AskUserRequest{
+		Questions: []clientruntime.AskUserQuestion{{Name: "project", Label: "项目名称", InputFormat: "text"}},
+	}, responseCh)
+	form.questions[0].input.SetValue("Alpha")
+	appModel := model{askUserForm: form, eventCh: make(chan tea.Msg, 2)}
+
+	updatedAny, _ := appModel.handleAskUserFormKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated := updatedAny.(*model)
+	if updated.askUserForm != nil {
+		t.Fatal("expected ask_user form to close after submit")
+	}
+	result := <-responseCh
+	if result.err != nil {
+		t.Fatalf("expected ask_user submit success, got %v", result.err)
+	}
+	if result.response.Answers["project"] != "Alpha" {
+		t.Fatalf("unexpected ask_user answer: %#v", result.response.Answers)
+	}
+}
+
+func TestHandleAskUserFormKeyEscCancelsResponse(t *testing.T) {
+	responseCh := make(chan askUserResult, 1)
+	form := newAskUserFormState(clientruntime.AskUserRequest{
+		Questions: []clientruntime.AskUserQuestion{{Name: "project", Label: "项目名称", InputFormat: "text"}},
+	}, responseCh)
+	appModel := model{askUserForm: form, eventCh: make(chan tea.Msg, 2)}
+
+	updatedAny, _ := appModel.handleAskUserFormKey(tea.KeyMsg{Type: tea.KeyEsc})
+	updated := updatedAny.(*model)
+	if updated.askUserForm != nil {
+		t.Fatal("expected ask_user form to close after cancel")
+	}
+	result := <-responseCh
+	if result.err == nil || !strings.Contains(result.err.Error(), "取消 ask_user") {
+		t.Fatalf("expected ask_user cancel error, got %#v", result.err)
 	}
 }
 

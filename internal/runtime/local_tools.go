@@ -42,6 +42,8 @@ func canonicalClientToolName(toolName string) string {
 	switch strings.TrimSpace(toolName) {
 	case "skill":
 		return "skill"
+	case "ask_user":
+		return "ask_user"
 	case "lsp_query":
 		return "lsp_query"
 	case "glob_files":
@@ -106,6 +108,50 @@ func argumentInt(arguments map[string]any, defaultValue int, keys ...string) int
 
 func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]any {
 	definitions := []map[string]any{
+		{
+			"name":                 "ask_user",
+			"description":          "向用户收集澄清信息或执行前确认。questions 中每项使用 name、label、input_format、options_list 描述；input_format 支持 text 或 select，multi_select 为 true 时允许多选并返回字符串数组。用户取消时返回错误，而不是空结果。",
+			"waiting_for_response": true,
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"questions": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"name":         map[string]any{"type": "string", "description": "题目键名，返回结果会使用该字段名。"},
+								"label":        map[string]any{"type": "string", "description": "展示给用户的问题文案。"},
+								"input_format": map[string]any{"type": "string", "enum": []string{"text", "select"}, "description": "text 为自由输入，select 为从 options_list 中选择。"},
+								"options_list": map[string]any{
+									"type": "array",
+									"items": map[string]any{
+										"anyOf": []any{
+											map[string]any{"type": "string"},
+											map[string]any{
+												"type": "object",
+												"properties": map[string]any{
+													"label": map[string]any{"type": "string"},
+													"value": map[string]any{"type": "string"},
+												},
+												"required":             []string{"label"},
+												"additionalProperties": false,
+											},
+										},
+									},
+									"description": "select 题的候选项；可传字符串或 {label, value} 对象。",
+								},
+								"multi_select": map[string]any{"type": "boolean", "description": "仅对 select 生效；为 true 时允许多选，并返回字符串数组。"},
+							},
+							"required":             []string{"name", "label"},
+							"additionalProperties": false,
+						},
+					},
+				},
+				"required":             []string{"questions"},
+				"additionalProperties": false,
+			},
+		},
 		{
 			"name":                 "lsp_query",
 			"description":          "通过本地标准输入输出(stdio)语言服务器(language server)执行定义跳转(go_to_definition)、引用查询(find_references)、实现跳转(go_to_implementation)、文档符号(document_symbol)、工作区符号(workspace_symbol)查询。",
@@ -372,6 +418,7 @@ func allowedClientToolSetForMode(mode string) map[string]bool {
 		return map[string]bool{}
 	}
 	return map[string]bool{
+		"ask_user":         true,
 		"lsp_query":        true,
 		"glob_files":       true,
 		"task_output":      true,
@@ -533,6 +580,12 @@ func previewClientTool(toolName string, arguments map[string]any) string {
 	path := argumentString(arguments, "path", "filePath")
 	name := argumentString(arguments, "name")
 	switch canonicalClientToolName(toolName) {
+	case "ask_user":
+		questions := 0
+		if rawQuestions, ok := arguments["questions"].([]any); ok {
+			questions = len(rawQuestions)
+		}
+		return fmt.Sprintf("ask_user %d 题", questions)
 	case "lsp_query":
 		operation := fallbackString(argumentString(arguments, "operation"), "<missing>")
 		return fmt.Sprintf("lsp_query %s (%s)", operation, fallbackString(argumentString(arguments, "serverCommand", "server_command"), "<missing>"))

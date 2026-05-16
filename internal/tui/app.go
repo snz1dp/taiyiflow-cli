@@ -27,6 +27,7 @@ import (
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/loginprompt"
+	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
 )
 
 type Snapshot struct {
@@ -458,6 +459,16 @@ type ConfirmRequest struct {
 	DisableDefaultAlwaysApprove bool
 }
 
+type AskUserFormState struct {
+	Title     string
+	Hint      string
+	Questions []clientruntime.AskUserQuestion
+}
+
+type AskUserFormSubmission struct {
+	Answers map[string]any
+}
+
 type ToolPanel struct {
 	Title   string
 	Summary string
@@ -492,7 +503,13 @@ type LocalCommandResult struct {
 	QueuedInput     string
 }
 
-type Runner func(ctx context.Context, request Request, emit func(Event), confirm func(ConfirmRequest) bool) error
+type Runner func(
+	ctx context.Context,
+	request Request,
+	emit func(Event),
+	confirm func(ConfirmRequest) bool,
+	askUser func(clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error),
+) error
 
 type FlowChangeHandler func(ctx context.Context, flowID string) (Snapshot, error)
 
@@ -539,6 +556,16 @@ type streamFailedMsg struct {
 type confirmRequestMsg struct {
 	request    ConfirmRequest
 	responseCh chan bool
+}
+
+type askUserResult struct {
+	response clientruntime.AskUserResponse
+	err      error
+}
+
+type askUserRequestMsg struct {
+	request    clientruntime.AskUserRequest
+	responseCh chan askUserResult
 }
 
 type flowChangedMsg struct {
@@ -656,6 +683,7 @@ type model struct {
 	approvalPicker             *ApprovalPickerState
 	configForm                 *configFormState
 	loginForm                  *loginFormState
+	askUserForm                *askUserFormState
 	flowCursor                 int
 	sessionCursor              int
 	knowledgeCursor            int
@@ -733,6 +761,20 @@ type loginFormState struct {
 	qrCodeASCII            string
 	qrWaiting              bool
 	qrWaitPollCount        int
+}
+
+type askUserFormState struct {
+	definition AskUserFormState
+	responseCh chan askUserResult
+	questions  []askUserFormQuestionState
+	cursor     int
+}
+
+type askUserFormQuestionState struct {
+	question     clientruntime.AskUserQuestion
+	input        textinput.Model
+	optionCursor int
+	selected     map[int]bool
 }
 
 type configFieldSpec struct {
@@ -1168,6 +1210,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resetOverlayScroll()
 		m.input.Blur()
 		return m, tea.Batch(m.transitionProgress(progressConfirming), waitForStream(m.eventCh))
+	case askUserRequestMsg:
+		m.askUserForm = newAskUserFormState(typed.request, typed.responseCh)
+		m.resetOverlayScroll()
+		m.input.Blur()
+		return m, tea.Batch(m.transitionProgress(progressConfirming), waitForStream(m.eventCh), textinput.Blink)
 	case flowChangedMsg:
 		if typed.err != nil {
 			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
@@ -1311,6 +1358,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.handleMainMouse(typed)
 	case tea.KeyMsg:
+		if m.askUserForm != nil {
+			return m.handleAskUserFormKey(typed)
+		}
 		if m.pendingConfirm != nil {
 			return m.handleConfirmKey(typed)
 		}
@@ -1475,6 +1525,161 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.clampSlashCommandCursor()
 	return m, cmd
+}
+
+func (m model) handleAskUserFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.askUserForm == nil || len(m.askUserForm.questions) == 0 {
+		return m, nil
+	}
+	current := &m.askUserForm.questions[m.askUserForm.cursor]
+	switch msg.String() {
+	case "esc", "q", "ctrl+c":
+		return m.cancelAskUserForm()
+	case "shift+tab":
+		m.resetOverlayScroll()
+		m.moveAskUserFormCursor(-1)
+		return m, textinput.Blink
+	case "tab":
+		m.resetOverlayScroll()
+		m.moveAskUserFormCursor(1)
+		return m, textinput.Blink
+	case "pgdown", "f":
+		m.scrollOverlayBy(m.overlayPageStep())
+		return m, nil
+	case "pgup", "b":
+		m.scrollOverlayBy(-m.overlayPageStep())
+		return m, nil
+	case "home", "g":
+		m.scrollOverlayTo(0)
+		return m, nil
+	case "end", "G":
+		m.scrollOverlayTo(1 << 30)
+		return m, nil
+	case "up", "k":
+		if current.question.InputFormat != "select" {
+			return m, nil
+		}
+		m.resetOverlayScroll()
+		if current.optionCursor > 0 {
+			current.optionCursor--
+		} else {
+			current.optionCursor = len(current.question.OptionsList) - 1
+		}
+		return m, nil
+	case "down", "j":
+		if current.question.InputFormat != "select" {
+			return m, nil
+		}
+		m.resetOverlayScroll()
+		if current.optionCursor < len(current.question.OptionsList)-1 {
+			current.optionCursor++
+		} else {
+			current.optionCursor = 0
+		}
+		return m, nil
+	case " ":
+		if current.question.InputFormat != "select" || !current.question.MultiSelect || len(current.question.OptionsList) == 0 {
+			return m, nil
+		}
+		m.resetOverlayScroll()
+		if current.selected == nil {
+			current.selected = map[int]bool{}
+		}
+		if current.selected[current.optionCursor] {
+			delete(current.selected, current.optionCursor)
+		} else {
+			current.selected[current.optionCursor] = true
+		}
+		return m, nil
+	case "enter":
+		m.resetOverlayScroll()
+		if m.askUserForm.cursor < len(m.askUserForm.questions)-1 {
+			m.moveAskUserFormCursor(1)
+			return m, textinput.Blink
+		}
+		return m.submitAskUserForm()
+	default:
+		if current.question.InputFormat == "select" {
+			return m, nil
+		}
+		previousValue := current.input.Value()
+		var cmd tea.Cmd
+		current.input, cmd = current.input.Update(msg)
+		if current.input.Value() != previousValue {
+			m.syncLayout()
+		}
+		return m, cmd
+	}
+}
+
+func (m *model) moveAskUserFormCursor(delta int) {
+	if m.askUserForm == nil || len(m.askUserForm.questions) == 0 {
+		return
+	}
+	current := m.askUserForm.cursor
+	if current >= 0 && current < len(m.askUserForm.questions) {
+		if m.askUserForm.questions[current].question.InputFormat != "select" {
+			m.askUserForm.questions[current].input.Blur()
+		}
+	}
+	m.askUserForm.cursor += delta
+	if m.askUserForm.cursor < 0 {
+		m.askUserForm.cursor = len(m.askUserForm.questions) - 1
+	} else if m.askUserForm.cursor >= len(m.askUserForm.questions) {
+		m.askUserForm.cursor = 0
+	}
+	if m.askUserForm.questions[m.askUserForm.cursor].question.InputFormat != "select" {
+		m.askUserForm.questions[m.askUserForm.cursor].input.Focus()
+	}
+	m.syncLayout()
+}
+
+func (m model) cancelAskUserForm() (tea.Model, tea.Cmd) {
+	return m.applyAskUserFormResult(askUserResult{err: fmt.Errorf("用户取消 ask_user")})
+}
+
+func (m model) submitAskUserForm() (tea.Model, tea.Cmd) {
+	if m.askUserForm == nil {
+		return m, nil
+	}
+	answers := make(map[string]any, len(m.askUserForm.questions))
+	for _, item := range m.askUserForm.questions {
+		question := item.question
+		if question.InputFormat == "select" {
+			if question.MultiSelect {
+				values := make([]string, 0, len(item.selected))
+				for index, option := range question.OptionsList {
+					if item.selected[index] {
+						values = append(values, option.Value)
+					}
+				}
+				answers[question.Name] = values
+				continue
+			}
+			selectedIndex := item.optionCursor
+			if selectedIndex < 0 || selectedIndex >= len(question.OptionsList) {
+				selectedIndex = 0
+			}
+			answers[question.Name] = question.OptionsList[selectedIndex].Value
+			continue
+		}
+		answers[question.Name] = strings.TrimSpace(item.input.Value())
+	}
+	submission := AskUserFormSubmission{Answers: answers}
+	return m.applyAskUserFormResult(askUserResult{response: clientruntime.AskUserResponse{Answers: submission.Answers}})
+}
+
+func (m *model) applyAskUserFormResult(result askUserResult) (tea.Model, tea.Cmd) {
+	if m.askUserForm == nil {
+		return m, nil
+	}
+	m.askUserForm.responseCh <- result
+	close(m.askUserForm.responseCh)
+	m.askUserForm = nil
+	if result.err != nil {
+		return m, tea.Batch(m.transitionProgress(progressStreaming), waitForStream(m.eventCh))
+	}
+	return m, tea.Batch(m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
 }
 
 func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -2843,7 +3048,7 @@ func (m model) View() string {
 		history = lipgloss.JoinHorizontal(lipgloss.Top, history, " ", todoPane)
 	}
 	inputView := m.input.View()
-	if m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.knowledgePicker != nil || m.skillsPicker != nil || m.tasksPicker != nil || m.taskActionPicker != nil || m.approvalPicker != nil {
+	if m.askUserForm != nil || m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.knowledgePicker != nil || m.skillsPicker != nil || m.tasksPicker != nil || m.taskActionPicker != nil || m.approvalPicker != nil {
 		inputView = hintStyle.Render("当前有未处理的弹层，请先完成操作。")
 	} else if commandHints := m.renderSlashCommandHints(); commandHints != "" {
 		inputView = lipgloss.JoinVertical(lipgloss.Left, inputView, "", commandHints)
@@ -3362,7 +3567,10 @@ func (m model) renderOverlay() string {
 	width := 0
 	fullScreenLogin := false
 	expandedConfirm := false
-	if m.pendingConfirm != nil {
+	if m.askUserForm != nil {
+		width = m.askUserOverlayWidth()
+		content = m.renderAskUserForm()
+	} else if m.pendingConfirm != nil {
 		width = m.confirmOverlayWidth()
 		content = m.renderConfirmOverlay()
 		expandedConfirm = m.confirmOverlayExpanded()
@@ -3432,6 +3640,108 @@ func (m model) maximizedOverlayStyle() lipgloss.Style {
 		style = style.MaxWidth(m.width)
 	}
 	return style
+}
+
+func (m model) askUserOverlayWidth() int {
+	width := minInt(m.contentWidth-6, 96)
+	if width < 44 {
+		width = 44
+	}
+	return width
+}
+
+func (m model) askUserOverlayWrapWidth() int {
+	width := m.askUserOverlayWidth() - overlayStyle.GetHorizontalFrameSize() - 4
+	if width < 24 {
+		width = 24
+	}
+	return width
+}
+
+func (m model) renderAskUserForm() string {
+	if m.askUserForm == nil {
+		return ""
+	}
+	form := m.askUserForm
+	wrapWidth := m.askUserOverlayWrapWidth()
+	title := strings.TrimSpace(form.definition.Title)
+	if title == "" {
+		title = "用户提问(ask_user)"
+	}
+	lines := []string{headerBarStyle.Render(trimForWidth(title, wrapWidth))}
+	progressLine := fmt.Sprintf("问题 %d/%d", form.cursor+1, len(form.questions))
+	lines = append(lines, "", hintStyle.Render(progressLine))
+	for index, item := range form.questions {
+		questionLine := fmt.Sprintf("%d. %s", index+1, strings.TrimSpace(item.question.Label))
+		renderedQuestion := trimForWidth(questionLine, wrapWidth)
+		if index == form.cursor {
+			renderedQuestion = markOverlayFocus(selectedFlowStyle.Render(renderedQuestion), true)
+		}
+		lines = append(lines, "", renderedQuestion)
+		if item.question.InputFormat == "select" {
+			for optionIndex, option := range item.question.OptionsList {
+				marker := askUserSingleSelectMarker(optionIndex == item.optionCursor)
+				if item.question.MultiSelect {
+					marker = askUserMultiSelectMarker(item.selected[optionIndex])
+				}
+				optionLine := fmt.Sprintf("  %s %s", marker, strings.TrimSpace(option.Label))
+				renderedOption := trimForWidth(optionLine, wrapWidth)
+				if index == form.cursor && optionIndex == item.optionCursor {
+					renderedOption = markOverlayFocus(selectedFlowStyle.Render(renderedOption), true)
+				}
+				lines = append(lines, renderedOption)
+			}
+			continue
+		}
+		renderedValue := ""
+		if index == form.cursor {
+			input := item.input
+			input.Width = wrapWidth - 2
+			renderedValue = input.View()
+		} else {
+			value := strings.TrimSpace(item.input.Value())
+			if value == "" {
+				renderedValue = hintStyle.Render("<空>")
+			} else {
+				renderedValue = valueStyle.Render(trimForWidth(value, wrapWidth-2))
+			}
+		}
+		lines = append(lines, "  "+renderedValue)
+	}
+	hint := strings.TrimSpace(form.definition.Hint)
+	if hint == "" {
+		hint = askUserFormHint(form.questions[form.cursor].question, form.cursor, len(form.questions))
+	}
+	lines = append(lines, "", hintStyle.Render(hardWrapText(hint, wrapWidth)))
+	return strings.Join(lines, "\n")
+}
+
+func askUserSingleSelectMarker(selected bool) string {
+	if selected {
+		return "(*)"
+	}
+	return "( )"
+}
+
+func askUserMultiSelectMarker(selected bool) string {
+	if selected {
+		return "[x]"
+	}
+	return "[ ]"
+}
+
+func askUserFormHint(question clientruntime.AskUserQuestion, index int, total int) string {
+	action := "Enter 下一题"
+	if index >= total-1 {
+		action = "Enter 提交"
+	}
+	if question.InputFormat == "select" && question.MultiSelect {
+		return "上下键选择，空格切换多选，Tab/Shift+Tab 切换问题，" + action + "，Esc 取消。"
+	}
+	if question.InputFormat == "select" {
+		return "上下键选择，Tab/Shift+Tab 切换问题，" + action + "，Esc 取消。"
+	}
+	return "输入答案后，Tab/Shift+Tab 切换问题，" + action + "，Esc 取消。"
 }
 
 func (m model) maxOverlayStyleWidth() int {
@@ -5266,6 +5576,11 @@ func startStream(ctx context.Context, request Request, runner Runner, eventCh ch
 				responseCh := make(chan bool, 1)
 				eventCh <- confirmRequestMsg{request: request, responseCh: responseCh}
 				return <-responseCh
+			}, func(request clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error) {
+				responseCh := make(chan askUserResult, 1)
+				eventCh <- askUserRequestMsg{request: request, responseCh: responseCh}
+				result := <-responseCh
+				return result.response, result.err
 			})
 			if err != nil && !errors.Is(err, context.Canceled) {
 				eventCh <- streamFailedMsg{err: err}
@@ -5274,6 +5589,37 @@ func startStream(ctx context.Context, request Request, runner Runner, eventCh ch
 			eventCh <- streamDoneMsg{}
 		}()
 		return <-eventCh
+	}
+}
+
+func newAskUserFormState(request clientruntime.AskUserRequest, responseCh chan askUserResult) *askUserFormState {
+	questions := make([]askUserFormQuestionState, 0, len(request.Questions))
+	for index, question := range request.Questions {
+		input := textinput.New()
+		input.Prompt = ""
+		input.Placeholder = "请输入答案"
+		input.CharLimit = 2048
+		if question.InputFormat != "select" && index == 0 {
+			input.Focus()
+		} else {
+			input.Blur()
+		}
+		questions = append(questions, askUserFormQuestionState{
+			question:     question,
+			input:        input,
+			optionCursor: 0,
+			selected:     map[int]bool{},
+		})
+	}
+	return &askUserFormState{
+		definition: AskUserFormState{
+			Title:     "用户提问(ask_user)",
+			Hint:      "",
+			Questions: append([]clientruntime.AskUserQuestion(nil), request.Questions...),
+		},
+		responseCh: responseCh,
+		questions:  questions,
+		cursor:     0,
 	}
 }
 

@@ -15,6 +15,7 @@ var bundledSkillDefinitions = []BundledSkillDefinition{
 	{Name: "verify", RelativeDir: "verify", Summary: "围绕刚完成的任务做结果核对与验收。", DefaultEnabled: true},
 	{Name: "debug", RelativeDir: "debug", Summary: "读取日志与上下文，定位当前问题。", DefaultEnabled: true},
 	{Name: "developer", RelativeDir: "developer", Summary: "提供编码阶段的通用行为准则与约束。", DefaultEnabled: true},
+	{Name: "askuser", RelativeDir: "askuser", Summary: "在 CLI 执行过程中向用户补齐关键信息或确认关键动作。", DefaultEnabled: true},
 	{Name: "loremipsum", RelativeDir: "loremipsum", Summary: "生成占位文本或演示内容。", DefaultEnabled: true},
 	{Name: "skillify", RelativeDir: "skillify", Summary: "把当前流程整理成可复用技能。", DefaultEnabled: true},
 	{Name: "remember", RelativeDir: "remember", Summary: "整理长期有效的偏好、模式与经验。", DefaultEnabled: true},

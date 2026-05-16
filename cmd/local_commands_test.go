@@ -137,6 +137,9 @@ func TestReviewRequestModeIsReadOnlyForMutatingTools(t *testing.T) {
 	if modeAllowsClientTool(reviewRequestMode(), "file_edit") {
 		t.Fatal("expected review mode to reject file_edit")
 	}
+	if !modeAllowsClientTool(reviewRequestMode(), "ask_user") {
+		t.Fatal("expected review mode to allow ask_user")
+	}
 	if !modeAllowsClientTool(reviewRequestMode(), "read_file") {
 		t.Fatal("expected review mode to allow read_file")
 	}

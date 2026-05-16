@@ -26,10 +26,34 @@ const (
 	localToolServerName = "local"
 )
 
+type AskUserOption struct {
+	Label string
+	Value string
+}
+
+type AskUserQuestion struct {
+	Name        string
+	Label       string
+	InputFormat string
+	OptionsList []AskUserOption
+	MultiSelect bool
+}
+
+type AskUserRequest struct {
+	Questions []AskUserQuestion
+}
+
+type AskUserResponse struct {
+	Answers map[string]any
+}
+
+type AskUserPrompter func(ctx context.Context, request AskUserRequest) (AskUserResponse, error)
+
 type ClientRuntime struct {
 	stdin                       io.Reader
 	stdout                      io.Writer
 	stderr                      io.Writer
+	askUserPrompter             AskUserPrompter
 	sandboxEscapeConfirmer      func(path string) (bool, error)
 	sandboxEscapePolicyOverride string
 	streamEventLogsEnabled      bool
@@ -41,6 +65,10 @@ func NewClientRuntime(stdin io.Reader, stdout io.Writer, stderr io.Writer) *Clie
 
 func (r *ClientRuntime) SetSandboxEscapeConfirmer(confirmer func(path string) (bool, error)) {
 	r.sandboxEscapeConfirmer = confirmer
+}
+
+func (r *ClientRuntime) SetAskUserPrompter(prompter AskUserPrompter) {
+	r.askUserPrompter = prompter
 }
 
 func (r *ClientRuntime) SetSandboxEscapePolicyOverride(policy string) {
@@ -131,6 +159,8 @@ func (r *ClientRuntime) ExecuteClientToolPayload(
 		err    error
 	)
 	switch toolName {
+	case "ask_user":
+		result, err = r.askUser(ctx, arguments)
 	case "lsp_query":
 		result, err = r.lspQuery(config, arguments)
 	case "glob_files":
@@ -230,6 +260,268 @@ func (r *ClientRuntime) ExecuteShellCommand(
 		return nil, fmt.Errorf("当前审批模式为只读，不能执行本地命令")
 	}
 	return r.runCommand(ctx, config, map[string]any{"raw_command": strings.TrimSpace(rawCommand)})
+}
+
+func (r *ClientRuntime) askUser(ctx context.Context, arguments map[string]any) (map[string]any, error) {
+	request, err := parseAskUserRequest(arguments)
+	if err != nil {
+		return nil, err
+	}
+	response, err := r.promptAskUser(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	if response.Answers == nil {
+		return map[string]any{}, nil
+	}
+	return response.Answers, nil
+}
+
+func parseAskUserRequest(arguments map[string]any) (AskUserRequest, error) {
+	rawQuestions, ok := arguments["questions"]
+	if !ok {
+		return AskUserRequest{}, newToolError("PARAM_ERROR", "ask_user 缺少 questions")
+	}
+	items, ok := rawQuestions.([]any)
+	if !ok || len(items) == 0 {
+		return AskUserRequest{}, newToolError("PARAM_ERROR", "ask_user 至少需要一个问题")
+	}
+	questions := make([]AskUserQuestion, 0, len(items))
+	seenNames := map[string]bool{}
+	for index, item := range items {
+		questionMap, ok := item.(map[string]any)
+		if !ok {
+			return AskUserRequest{}, newToolError("PARAM_ERROR", "ask_user questions[%d] 不是有效对象", index)
+		}
+		name := strings.TrimSpace(stringValue(questionMap["name"]))
+		if name == "" {
+			name = strings.TrimSpace(stringValue(questionMap["key"]))
+		}
+		if name == "" {
+			return AskUserRequest{}, newToolError("PARAM_ERROR", "ask_user questions[%d] 缺少 name", index)
+		}
+		nameKey := strings.ToLower(name)
+		if seenNames[nameKey] {
+			return AskUserRequest{}, newToolError("PARAM_ERROR", "ask_user questions 中存在重复 name: %s", name)
+		}
+		seenNames[nameKey] = true
+		label := strings.TrimSpace(stringValue(questionMap["label"]))
+		if label == "" {
+			label = name
+		}
+		options := parseAskUserOptions(questionMap["options_list"])
+		inputFormat := normalizeAskUserInputFormat(stringValue(questionMap["input_format"]), len(options) > 0)
+		multiSelect := boolValue(questionMap["multi_select"])
+		if inputFormat == "select" && len(options) == 0 {
+			return AskUserRequest{}, newToolError("PARAM_ERROR", "ask_user questions[%d] 使用 select 时必须提供 options_list", index)
+		}
+		if inputFormat == "text" {
+			multiSelect = false
+		}
+		questions = append(questions, AskUserQuestion{
+			Name:        name,
+			Label:       label,
+			InputFormat: inputFormat,
+			OptionsList: options,
+			MultiSelect: multiSelect,
+		})
+	}
+	return AskUserRequest{Questions: questions}, nil
+}
+
+func parseAskUserOptions(value any) []AskUserOption {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	options := make([]AskUserOption, 0, len(items))
+	for _, item := range items {
+		switch typed := item.(type) {
+		case string:
+			trimmed := strings.TrimSpace(typed)
+			if trimmed == "" {
+				continue
+			}
+			options = append(options, AskUserOption{Label: trimmed, Value: trimmed})
+		case map[string]any:
+			label := strings.TrimSpace(stringValue(typed["label"]))
+			value := strings.TrimSpace(stringValue(typed["value"]))
+			if label == "" {
+				label = strings.TrimSpace(stringValue(typed["name"]))
+			}
+			if value == "" {
+				value = label
+			}
+			if label == "" || value == "" {
+				continue
+			}
+			options = append(options, AskUserOption{Label: label, Value: value})
+		}
+	}
+	return options
+}
+
+func normalizeAskUserInputFormat(value string, hasOptions bool) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "text", "input", "string":
+		if hasOptions {
+			return "select"
+		}
+		return "text"
+	case "select", "single_select", "single-choice", "choice", "radio", "options":
+		return "select"
+	default:
+		if hasOptions {
+			return "select"
+		}
+		return "text"
+	}
+}
+
+func (r *ClientRuntime) promptAskUser(ctx context.Context, request AskUserRequest) (AskUserResponse, error) {
+	if r.askUserPrompter != nil {
+		return r.askUserPrompter(ctx, request)
+	}
+	return r.promptAskUserStdio(ctx, request)
+}
+
+func (r *ClientRuntime) promptAskUserStdio(ctx context.Context, request AskUserRequest) (AskUserResponse, error) {
+	reader := bufio.NewReader(r.stdin)
+	answers := make(map[string]any, len(request.Questions))
+	if len(request.Questions) > 0 {
+		fmt.Fprintln(r.stdout, "\n[ask_user] 请输入以下信息；输入 /cancel 可取消。")
+	}
+	for index, question := range request.Questions {
+		select {
+		case <-ctx.Done():
+			return AskUserResponse{}, ctx.Err()
+		default:
+		}
+		if index > 0 {
+			fmt.Fprintln(r.stdout)
+		}
+		answer, err := r.promptAskUserQuestion(ctx, reader, index, question)
+		if err != nil {
+			return AskUserResponse{}, err
+		}
+		answers[question.Name] = answer
+	}
+	return AskUserResponse{Answers: answers}, nil
+}
+
+func (r *ClientRuntime) promptAskUserQuestion(ctx context.Context, reader *bufio.Reader, index int, question AskUserQuestion) (any, error) {
+	fmt.Fprintf(r.stdout, "%d. %s\n", index+1, strings.TrimSpace(question.Label))
+	if question.InputFormat != "select" {
+		return r.promptAskUserText(ctx, reader)
+	}
+	for optionIndex, option := range question.OptionsList {
+		fmt.Fprintf(r.stdout, "  %d) %s\n", optionIndex+1, option.Label)
+	}
+	if question.MultiSelect {
+		return r.promptAskUserMultiSelect(ctx, reader, question.OptionsList)
+	}
+	return r.promptAskUserSingleSelect(ctx, reader, question.OptionsList)
+}
+
+func (r *ClientRuntime) promptAskUserText(ctx context.Context, reader *bufio.Reader) (string, error) {
+	return r.promptAskUserLine(ctx, reader, "请输入答案: ")
+}
+
+func (r *ClientRuntime) promptAskUserSingleSelect(ctx context.Context, reader *bufio.Reader, options []AskUserOption) (string, error) {
+	for {
+		answer, err := r.promptAskUserLine(ctx, reader, "请选择序号或候选值: ")
+		if err != nil {
+			return "", err
+		}
+		matched, ok := matchAskUserOption(answer, options)
+		if ok {
+			return matched.Value, nil
+		}
+		fmt.Fprintln(r.stdout, "输入无效，请输入序号或候选值。")
+	}
+}
+
+func (r *ClientRuntime) promptAskUserMultiSelect(ctx context.Context, reader *bufio.Reader, options []AskUserOption) ([]string, error) {
+	for {
+		answer, err := r.promptAskUserLine(ctx, reader, "请选择一个或多个值，多个项用逗号分隔: ")
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(answer) == "" {
+			return []string{}, nil
+		}
+		parts := splitAskUserAnswers(answer)
+		values := make([]string, 0, len(parts))
+		seen := map[string]bool{}
+		valid := true
+		for _, part := range parts {
+			matched, ok := matchAskUserOption(part, options)
+			if !ok {
+				valid = false
+				break
+			}
+			if !seen[matched.Value] {
+				seen[matched.Value] = true
+				values = append(values, matched.Value)
+			}
+		}
+		if valid {
+			return values, nil
+		}
+		fmt.Fprintln(r.stdout, "输入无效，请输入逗号分隔的序号或候选值。")
+	}
+}
+
+func (r *ClientRuntime) promptAskUserLine(ctx context.Context, reader *bufio.Reader, prompt string) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+	fmt.Fprint(r.stdout, prompt)
+	answerLine, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
+		return "", fmt.Errorf("读取 ask_user 输入失败: %w", err)
+	}
+	answer := strings.TrimSpace(answerLine)
+	if strings.EqualFold(answer, "/cancel") || strings.EqualFold(answer, "cancel") || strings.EqualFold(answer, "quit") {
+		return "", newToolError("USER_ABORTED", "用户取消 ask_user")
+	}
+	if errors.Is(err, io.EOF) && answer == "" {
+		return "", newToolError("USER_ABORTED", "用户取消 ask_user")
+	}
+	return answer, nil
+}
+
+func splitAskUserAnswers(value string) []string {
+	replaced := strings.NewReplacer("，", ",", "、", ",").Replace(value)
+	parts := strings.Split(replaced, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+func matchAskUserOption(answer string, options []AskUserOption) (AskUserOption, bool) {
+	trimmed := strings.TrimSpace(answer)
+	if trimmed == "" {
+		return AskUserOption{}, false
+	}
+	if index, err := strconv.Atoi(trimmed); err == nil {
+		if index >= 1 && index <= len(options) {
+			return options[index-1], true
+		}
+	}
+	for _, option := range options {
+		if strings.EqualFold(trimmed, option.Value) || strings.EqualFold(trimmed, option.Label) {
+			return option, true
+		}
+	}
+	return AskUserOption{}, false
 }
 
 func (r *ClientRuntime) submitCallback(

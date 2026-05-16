@@ -177,6 +177,33 @@ func TestShellExecToolDefinitionMentionsPlatformCompatibility(t *testing.T) {
 	t.Fatal("expected shell_exec tool definition")
 }
 
+func TestAskUserToolDefinitionAvailableForAskMode(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	definitions := runtimeClient.clientToolDefinitionsForMode("ask")
+	for _, item := range definitions {
+		name, _ := item["name"].(string)
+		if name != "ask_user" {
+			continue
+		}
+		description, _ := item["description"].(string)
+		if !strings.Contains(description, "multi_select") {
+			t.Fatalf("expected ask_user description to mention multi_select, got %q", description)
+		}
+		inputSchema, _ := item["inputSchema"].(map[string]any)
+		properties, _ := inputSchema["properties"].(map[string]any)
+		questionsSchema, _ := properties["questions"].(map[string]any)
+		questionItems, _ := questionsSchema["items"].(map[string]any)
+		questionProperties, _ := questionItems["properties"].(map[string]any)
+		for _, key := range []string{"name", "label", "input_format", "options_list", "multi_select"} {
+			if _, ok := questionProperties[key]; !ok {
+				t.Fatalf("expected ask_user question property %q, got %#v", key, questionProperties)
+			}
+		}
+		return
+	}
+	t.Fatal("expected ask_user tool definition in ask mode")
+}
+
 func TestSandboxEscapeAlwaysApproveSkipsSubsequentConfirmations(t *testing.T) {
 	tempDir := t.TempDir()
 	outsideDir := t.TempDir()
@@ -283,6 +310,9 @@ func TestMatchGlobSupportsDoublestar(t *testing.T) {
 }
 
 func TestCanonicalClientToolNameUsesSnakeCaseNamesOnly(t *testing.T) {
+	if got := canonicalClientToolName("ask_user"); got != "ask_user" {
+		t.Fatalf("unexpected canonical ask_user name: %s", got)
+	}
 	if got := canonicalClientToolName("lsp_query"); got != "lsp_query" {
 		t.Fatalf("unexpected canonical lsp_query name: %s", got)
 	}
@@ -369,6 +399,91 @@ func TestRequiresClientToolConfirmationRespectsSkillAndWritePolicies(t *testing.
 	directAskRuleConfig.PermissionRules = []internalconfig.PermissionRule{{Action: "ask", ToolName: "write_file"}}
 	if RequiresClientToolConfirmation(directAskRuleConfig, writePayload) {
 		t.Fatal("expected direct write policy to bypass write review despite ask rule")
+	}
+}
+
+func TestExecuteClientToolPayloadAskUserUsesStdioFallback(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader("项目 Alpha\n2\n"), io.Discard, io.Discard)
+	toolName, resultAny, err := runtimeClient.ExecuteClientToolPayload(context.Background(), internalconfig.Config{ApprovalMode: "auto"}, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": "ask_user",
+			"arguments": map[string]any{
+				"questions": []any{
+					map[string]any{"name": "project", "label": "项目名称", "input_format": "text"},
+					map[string]any{"name": "priority", "label": "优先级", "input_format": "select", "options_list": []any{"low", "high"}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected ask_user fallback to succeed, got %v", err)
+	}
+	if toolName != "ask_user" {
+		t.Fatalf("unexpected tool name: %s", toolName)
+	}
+	result, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected ask_user result map, got %#v", resultAny)
+	}
+	if result["project"] != "项目 Alpha" {
+		t.Fatalf("unexpected text answer: %#v", result)
+	}
+	if result["priority"] != "high" {
+		t.Fatalf("unexpected select answer: %#v", result)
+	}
+}
+
+func TestExecuteClientToolPayloadAskUserParsesMultiSelect(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader("1, beta\n"), io.Discard, io.Discard)
+	_, resultAny, err := runtimeClient.ExecuteClientToolPayload(context.Background(), internalconfig.Config{ApprovalMode: "auto"}, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": "ask_user",
+			"arguments": map[string]any{
+				"questions": []any{
+					map[string]any{
+						"name":         "targets",
+						"label":        "选择目标",
+						"input_format": "select",
+						"multi_select": true,
+						"options_list": []any{"alpha", "beta", map[string]any{"label": "Gamma", "value": "gamma"}},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected ask_user multi-select to succeed, got %v", err)
+	}
+	result, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected ask_user result map, got %#v", resultAny)
+	}
+	values, ok := result["targets"].([]string)
+	if !ok {
+		t.Fatalf("expected multi-select values, got %#v", result["targets"])
+	}
+	if len(values) != 2 || values[0] != "alpha" || values[1] != "beta" {
+		t.Fatalf("unexpected multi-select values: %#v", values)
+	}
+}
+
+func TestExecuteClientToolPayloadAskUserCancelReturnsError(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader("/cancel\n"), io.Discard, io.Discard)
+	_, _, err := runtimeClient.ExecuteClientToolPayload(context.Background(), internalconfig.Config{ApprovalMode: "auto"}, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": "ask_user",
+			"arguments": map[string]any{
+				"questions": []any{
+					map[string]any{"name": "project", "label": "项目名称", "input_format": "text"},
+				},
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "取消 ask_user") {
+		t.Fatalf("expected ask_user cancel error, got %v", err)
 	}
 }
 

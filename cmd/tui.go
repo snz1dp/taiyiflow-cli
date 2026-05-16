@@ -74,7 +74,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 
 	flowItems := []tui.FlowItem{}
 
-	runner := func(runCtx context.Context, request tui.Request, emit func(tui.Event), confirm func(tui.ConfirmRequest) bool) error {
+	runner := func(runCtx context.Context, request tui.Request, emit func(tui.Event), confirm func(tui.ConfirmRequest) bool, askUser func(clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error)) error {
 		currentFlow := strings.TrimSpace(request.FlowID)
 		if currentFlow == "" {
 			return fmt.Errorf("未配置默认智能体，请先执行 taiyiflow-cli agents use <名称>")
@@ -90,6 +90,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 
 		runtimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), logWriter, logWriter)
 		quietRuntimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), io.Discard, io.Discard)
+		runtimeClient.SetAskUserPrompter(func(_ context.Context, request clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error) {
+			return askUser(request)
+		})
 		persistSandboxEscapeAlwaysAllow := func(context.Context) error {
 			runtimeClient.SetSandboxEscapePolicyOverride(internalconfig.SandboxEscapePolicyAllow)
 			quietRuntimeClient.SetSandboxEscapePolicyOverride(internalconfig.SandboxEscapePolicyAllow)

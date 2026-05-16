@@ -40,6 +40,9 @@ func TestLoadSkillPayloadIncludesBundledEnabledSkills(t *testing.T) {
 	if len(names) == 0 {
 		t.Fatal("expected enabled bundled skill names")
 	}
+	if !containsIgnoreCase(names, "askuser") {
+		t.Fatalf("expected askuser in requested names: %#v", names)
+	}
 	if !containsIgnoreCase(names, "update-config") {
 		t.Fatalf("expected update-config in requested names: %#v", names)
 	}
