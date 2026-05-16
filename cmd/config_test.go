@@ -199,6 +199,14 @@ func TestRenderConfigSummaryUsesExternalResourceAccessPolicyLabel(t *testing.T) 
 	}
 }
 
+func TestRenderConfigSummaryMarksDocUnstructuredExtsDisabledByDefault(t *testing.T) {
+	config := internalconfig.Default()
+	summary := renderConfigSummary("/tmp/taiyiflow.yaml", config)
+	if !strings.Contains(summary, "文档服务端解析类型: <未配置，默认关闭>") {
+		t.Fatalf("expected doc unstructured summary to show disabled-by-default state, got %q", summary)
+	}
+}
+
 func TestAssignConfigValueRejectsUnsupportedAccessTokenConfig(t *testing.T) {
 	config := internalconfig.Default()
 	err := assignConfigValue(&config, "access_token", "token-1")
@@ -226,5 +234,36 @@ func TestShowConfigOmitsAccessToken(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "access_token") || strings.Contains(stdout.String(), "access-token") {
 		t.Fatalf("expected showConfig to omit access_token, got %q", stdout.String())
+	}
+}
+
+func TestRunConfigHelpOutputsLocalizedUsage(t *testing.T) {
+	stdout := &bytes.Buffer{}
+	app := &App{stdout: stdout}
+	if err := app.runConfig([]string{"help"}); err != nil {
+		t.Fatalf("runConfig help failed: %v", err)
+	}
+	output := stdout.String()
+	for _, expected := range []string{
+		"配置命令用于查看、设置或清空命令行（CLI）全局配置。",
+		"taiyiflow-cli config set <配置项> <值>",
+		"doc_unstructured_exts",
+		"未配置时默认关闭",
+		"readonly（只读模式）",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected help output to contain %q, got %q", expected, output)
+		}
+	}
+}
+
+func TestRunConfigUnknownSubcommandSuggestsHelp(t *testing.T) {
+	app := &App{stdout: &bytes.Buffer{}}
+	err := app.runConfig([]string{"unknown"})
+	if err == nil {
+		t.Fatal("expected unknown subcommand to fail")
+	}
+	if !strings.Contains(err.Error(), "taiyiflow-cli config help") {
+		t.Fatalf("expected unknown subcommand error to suggest help, got %v", err)
 	}
 }

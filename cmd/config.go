@@ -17,6 +17,8 @@ func (a *App) runConfig(args []string) error {
 	}
 
 	switch args[0] {
+	case "help", "-h", "--help":
+		return a.showConfigHelp()
 	case "show":
 		return a.showConfig()
 	case "init":
@@ -36,8 +38,38 @@ func (a *App) runConfig(args []string) error {
 	case "unset", "clear":
 		return a.unsetConfig(args[1:])
 	default:
-		return fmt.Errorf("不支持的 config 子命令: %s", args[0])
+		return fmt.Errorf("不支持的 config 子命令: %s，可使用 taiyiflow-cli config help 查看用法", args[0])
 	}
+}
+
+func (a *App) showConfigHelp() error {
+	lines := []string{
+		"配置命令用于查看、设置或清空命令行（CLI）全局配置。",
+		"",
+		"用法:",
+		"  taiyiflow-cli config show",
+		"  taiyiflow-cli config path",
+		"  taiyiflow-cli config set <配置项> <值>",
+		"  taiyiflow-cli config unset <配置项>",
+		"  taiyiflow-cli config help",
+		"",
+		"常用配置项:",
+		"  backend_base_url              服务端地址，需填写完整的 HTTP 或 HTTPS 地址。",
+		"  default_flow                  默认智能体 ID；留空时启动后自动选择。",
+		"  approval_mode                 命令执行模式；可选 confirm（每次确认）、auto（自动执行）、readonly（只读模式）。",
+		"  doc_unstructured_exts         逗号分隔扩展名；仅对显式配置的扩展名启用服务端文档结构化解析，未配置时默认关闭。",
+		"  skills_auto_install_policy    技能自动补装策略；可选 off、confirm、allow。",
+		"  cross_session_memory_enabled  跨会话记忆开关；可选 true、false。",
+		"",
+		"示例:",
+		"  taiyiflow-cli config set backend_base_url http://localhost:7860",
+		"  taiyiflow-cli config set doc_unstructured_exts pdf,png",
+		"  taiyiflow-cli config unset doc_unstructured_exts",
+		"",
+		"提示: 可先执行 taiyiflow-cli config show 查看当前 YAML 配置。",
+	}
+	_, err := fmt.Fprintln(a.stdout, strings.Join(lines, "\n"))
+	return err
 }
 
 func (a *App) showConfig() error {
@@ -57,7 +89,7 @@ func (a *App) showConfig() error {
 
 func (a *App) setConfig(args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("用法: taiyiflow-cli config set <key> <value>")
+		return fmt.Errorf("用法: taiyiflow-cli config set <配置项> <值>；可使用 taiyiflow-cli config help 查看示例")
 	}
 
 	key := strings.TrimSpace(args[0])
@@ -72,7 +104,7 @@ func (a *App) setConfig(args []string) error {
 
 func (a *App) unsetConfig(args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("用法: taiyiflow-cli config unset <key>")
+		return fmt.Errorf("用法: taiyiflow-cli config unset <配置项>；可使用 taiyiflow-cli config help 查看示例")
 	}
 
 	key := strings.TrimSpace(args[0])
@@ -160,7 +192,7 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 	case "doc_unstructured_exts":
 		normalizedExts := internalconfig.NormalizeDocUnstructuredExts(splitConfigCSV(trimmedValue))
 		if len(normalizedExts) == 0 {
-			return fmt.Errorf("doc_unstructured_exts 不能为空，如需清空请使用 taiyiflow-cli config unset doc_unstructured_exts")
+			return fmt.Errorf("doc_unstructured_exts 不能为空；留空或清空代表默认关闭，如需关闭请使用 taiyiflow-cli config unset doc_unstructured_exts")
 		}
 		config.DocUnstructuredExts = normalizedExts
 	case "external_resource_access_policy":
@@ -424,7 +456,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("技能自动补装策略: %s", fallbackConfigValue(config.Skills.AutoInstallPolicy, internalconfig.Default().Skills.AutoInstallPolicy)),
 		fmt.Sprintf("自由文本技能搜索: %t", config.Skills.FreeTextSearchEnabled),
 		fmt.Sprintf("技能仓库: %s", fallbackConfigValue(config.Skills.RegistryURL, internalconfig.Default().Skills.RegistryURL)),
-		fmt.Sprintf("文档服务端解析类型: %s", fallbackConfigValue(strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "), "<未配置>")),
+		fmt.Sprintf("文档服务端解析类型: %s", fallbackConfigValue(strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "), "<未配置，默认关闭>")),
 		fmt.Sprintf("可访问外部资源目录: %s", fallbackConfigValue(strings.Join(config.SandboxRoots, ", "), "<仅当前工作目录>")),
 	}
 	return strings.Join(lines, "\n")

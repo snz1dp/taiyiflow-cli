@@ -16,6 +16,8 @@ var bundledSkillDefinitions = []BundledSkillDefinition{
 	{Name: "debug", RelativeDir: "debug", Summary: "读取日志与上下文，定位当前问题。", DefaultEnabled: true},
 	{Name: "developer", RelativeDir: "developer", Summary: "提供编码阶段的通用行为准则与约束。", DefaultEnabled: true},
 	{Name: "askuser", RelativeDir: "askuser", Summary: "在 CLI 执行过程中向用户补齐关键信息或确认关键动作。", DefaultEnabled: true},
+	{Name: "cross-platform-shell", RelativeDir: "cross-platform-shell", Summary: "在本地命令执行场景下处理 OS/ARCH 与 fork/exec 兼容问题。", DefaultEnabled: true},
+	{Name: "document-unstructured", RelativeDir: "document-unstructured", Summary: "在图片 OCR、音频、视频、PDF 等结构化解析场景下优先使用 local.document_unstructured。", DefaultEnabled: true},
 	{Name: "loremipsum", RelativeDir: "loremipsum", Summary: "生成占位文本或演示内容。", DefaultEnabled: true},
 	{Name: "skillify", RelativeDir: "skillify", Summary: "把当前流程整理成可复用技能。", DefaultEnabled: true},
 	{Name: "remember", RelativeDir: "remember", Summary: "整理长期有效的偏好、模式与经验。", DefaultEnabled: true},

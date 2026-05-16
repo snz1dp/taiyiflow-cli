@@ -624,6 +624,8 @@ type snapshotRefreshedMsg struct {
 
 type progressPhase string
 
+const mouseScrollToggleKey = "f6"
+
 const (
 	progressIdle       progressPhase = "idle"
 	progressSending    progressPhase = "sending"
@@ -635,6 +637,9 @@ const (
 	progressApproval   progressPhase = "approval"
 	progressFailed     progressPhase = "failed"
 )
+
+var mouseResidueSequenceRegexp = regexp.MustCompile(`^(?:\[<\d+;\d+;\d+[Mm])+$`)
+var mouseResidueTokenRegexp = regexp.MustCompile(`\[<(\d+);(\d+);(\d+)([Mm])`)
 
 type progressState struct {
 	phase   progressPhase
@@ -705,6 +710,7 @@ type model struct {
 	overlayScrollLine          int
 	requestCancel              context.CancelFunc
 	interrupting               bool
+	mouseScrollEnabled         bool
 	splitNextAssistant         bool
 	lastAssistantMessageID     string
 	currentStreamingEntryIndex int
@@ -941,13 +947,6 @@ var (
 
 	minimalHistoryStyle = lipgloss.NewStyle()
 
-	transientStatusStyle = lipgloss.NewStyle().
-				BorderStyle(lipgloss.NormalBorder()).
-				BorderLeft(true).
-				BorderForeground(lipgloss.Color("#4CAF50")).
-				PaddingLeft(1).
-				Foreground(lipgloss.Color("#A5D6A7"))
-
 	statusAccentStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#F1F8E9")).
 				Background(lipgloss.Color("#2E7D32")).
@@ -993,7 +992,7 @@ var slashCommands = []slashCommand{
 	{Trigger: "/about", Completion: "/about", Description: "显示当前客户端版本、组织与后端对接说明"},
 	{Trigger: "/login", Completion: "/login ", Description: "查看、登录或退出当前账号状态"},
 	{Trigger: "/help", Completion: "/help", Description: "显示可用命令帮助"},
-	{Trigger: "/config", Completion: "/config ", Description: "查看或更新系统全局配置"},
+	{Trigger: "/config", Completion: "/config ", Description: "查看、设置或清空系统全局配置，可用 /config help 查看配置项说明"},
 	{Trigger: "/exit", Completion: "/exit", Description: "退出当前智能对话"},
 }
 
@@ -1024,7 +1023,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 	toolPanelViewportModel.Style = lipgloss.NewStyle()
 
 	progressModel := progress.New(progress.WithDefaultGradient())
-	programOptions := []tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion()}
+	programOptions := []tea.ProgramOption{tea.WithAltScreen()}
 	if keyboardOptions, cleanupKeyboard := programKeyboardOptions(os.Stdin, os.Stdout, os.Environ()); len(keyboardOptions) > 0 {
 		programOptions = append(programOptions, keyboardOptions...)
 		defer cleanupKeyboard()
@@ -1362,6 +1361,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.handleMainMouse(typed)
 	case tea.KeyMsg:
+		if updated, cmd, handled := m.handleMouseResidueKey(typed); handled {
+			return updated, cmd
+		}
+		if updated, cmd, handled := m.handleGlobalKey(typed); handled {
+			return updated, cmd
+		}
 		if m.askUserForm != nil {
 			return m.handleAskUserFormKey(typed)
 		}
@@ -1401,6 +1406,170 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMainKey(typed)
 	}
 	return m, nil
+}
+
+func (m model) handleMouseResidueKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	if !m.mouseScrollEnabled {
+		return m, nil, false
+	}
+	mouseMsgs, ok := parseMouseResidueKey(msg)
+	if !ok {
+		return m, nil, false
+	}
+	if m.toolPanel == nil && m.hasBlockingOverlayWithoutMouse() {
+		return m, nil, true
+	}
+
+	current := m
+	cmds := []tea.Cmd{}
+	for _, mouseMsg := range mouseMsgs {
+		var (
+			updatedModel tea.Model
+			cmd          tea.Cmd
+		)
+		if current.toolPanel != nil {
+			updatedModel, cmd = current.handleToolPanelMouse(mouseMsg)
+		} else {
+			updatedModel, cmd = current.handleMainMouse(mouseMsg)
+		}
+		updated, ok := updatedModel.(model)
+		if !ok {
+			return current, nil, true
+		}
+		current = updated
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	if len(cmds) == 0 {
+		return current, nil, true
+	}
+	return current, tea.Batch(cmds...), true
+}
+
+func (m model) hasBlockingOverlayWithoutMouse() bool {
+	return m.askUserForm != nil ||
+		m.pendingConfirm != nil ||
+		m.loginForm != nil ||
+		m.configForm != nil ||
+		m.showFlowPicker ||
+		m.sessionPicker != nil ||
+		m.knowledgePicker != nil ||
+		m.skillsPicker != nil ||
+		m.tasksPicker != nil ||
+		m.taskActionPicker != nil ||
+		m.approvalPicker != nil
+}
+
+func parseMouseResidueKey(msg tea.KeyMsg) ([]tea.MouseMsg, bool) {
+	if msg.Type != tea.KeyRunes || len(msg.Runes) == 0 {
+		return nil, false
+	}
+	content := string(msg.Runes)
+	if !mouseResidueSequenceRegexp.MatchString(content) {
+		return nil, false
+	}
+	matches := mouseResidueTokenRegexp.FindAllStringSubmatch(content, -1)
+	if len(matches) == 0 {
+		return nil, false
+	}
+	mouseMsgs := make([]tea.MouseMsg, 0, len(matches))
+	for _, match := range matches {
+		mouseMsg, ok := buildMouseResidueMsg(match)
+		if !ok {
+			return nil, false
+		}
+		mouseMsgs = append(mouseMsgs, mouseMsg)
+	}
+	return mouseMsgs, true
+}
+
+func buildMouseResidueMsg(match []string) (tea.MouseMsg, bool) {
+	if len(match) != 5 {
+		return tea.MouseMsg{}, false
+	}
+	buttonCode, err := strconv.Atoi(match[1])
+	if err != nil {
+		return tea.MouseMsg{}, false
+	}
+	x, err := strconv.Atoi(match[2])
+	if err != nil {
+		return tea.MouseMsg{}, false
+	}
+	y, err := strconv.Atoi(match[3])
+	if err != nil {
+		return tea.MouseMsg{}, false
+	}
+	release := match[4] == "m"
+	mouseMsg := tea.MouseMsg{
+		X:      maxInt(0, x-1),
+		Y:      maxInt(0, y-1),
+		Action: tea.MouseActionPress,
+	}
+
+	const (
+		bitShift  = 0b0000_0100
+		bitAlt    = 0b0000_1000
+		bitCtrl   = 0b0001_0000
+		bitMotion = 0b0010_0000
+		bitWheel  = 0b0100_0000
+		bitAdd    = 0b1000_0000
+		bitsMask  = 0b0000_0011
+	)
+
+	switch {
+	case buttonCode&bitAdd != 0:
+		mouseMsg.Button = tea.MouseButtonBackward + tea.MouseButton(buttonCode&bitsMask)
+	case buttonCode&bitWheel != 0:
+		mouseMsg.Button = tea.MouseButtonWheelUp + tea.MouseButton(buttonCode&bitsMask)
+	default:
+		mouseMsg.Button = tea.MouseButtonLeft + tea.MouseButton(buttonCode&bitsMask)
+		if buttonCode&bitsMask == bitsMask {
+			mouseMsg.Action = tea.MouseActionRelease
+			mouseMsg.Button = tea.MouseButtonNone
+		}
+	}
+	if buttonCode&bitMotion != 0 && !isWheelMouseButton(mouseMsg.Button) {
+		mouseMsg.Action = tea.MouseActionMotion
+	}
+	mouseMsg.Shift = buttonCode&bitShift != 0
+	mouseMsg.Alt = buttonCode&bitAlt != 0
+	mouseMsg.Ctrl = buttonCode&bitCtrl != 0
+	if release && mouseMsg.Action != tea.MouseActionMotion && !isWheelMouseButton(mouseMsg.Button) {
+		mouseMsg.Action = tea.MouseActionRelease
+	}
+	return mouseMsg, true
+}
+
+func isWheelMouseButton(button tea.MouseButton) bool {
+	return button == tea.MouseButtonWheelUp ||
+		button == tea.MouseButtonWheelDown ||
+		button == tea.MouseButtonWheelLeft ||
+		button == tea.MouseButtonWheelRight
+}
+
+func (m model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	switch msg.String() {
+	case mouseScrollToggleKey:
+		m.mouseScrollEnabled = !m.mouseScrollEnabled
+		if m.mouseScrollEnabled {
+			m.footerHint = "鼠标滚动已开启，按 F6 恢复选字。"
+		} else {
+			m.footerHint = "鼠标滚动已关闭，已恢复鼠标选字。"
+		}
+		return m, mouseScrollModeCmd(m.mouseScrollEnabled), true
+	default:
+		return m, nil, false
+	}
+}
+
+func mouseScrollModeCmd(enabled bool) tea.Cmd {
+	return func() tea.Msg {
+		if enabled {
+			return tea.EnableMouseCellMotion()
+		}
+		return tea.DisableMouse()
+	}
 }
 
 func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1869,6 +2038,9 @@ func (m model) handleToolPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleToolPanelMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if !m.mouseScrollEnabled {
+		return m, nil
+	}
 	if msg.Action != tea.MouseActionPress {
 		return m, nil
 	}
@@ -1885,6 +2057,9 @@ func (m model) handleToolPanelMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleMainMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if !m.mouseScrollEnabled {
+		return m, nil
+	}
 	if msg.Action != tea.MouseActionPress {
 		return m, nil
 	}
@@ -3442,32 +3617,6 @@ func todoPanelSummary(items []TodoItem) string {
 	return fmt.Sprintf("共 %d 项 · 未完成 %d 项", len(items), countActiveTodoItems(items))
 }
 
-func (m model) renderTransientStatus() string {
-	status := m.activityStatusText()
-	if status == "" {
-		return ""
-	}
-	width := m.viewport.Width - 2
-	if width < 18 {
-		width = 18
-	}
-	lines := []string{
-		trimForWidth(status, width),
-	}
-	return transientStatusStyle.Width(width).Render(strings.Join(lines, "\n"))
-}
-
-func (m model) activityStatusText() string {
-	status := strings.TrimSpace(m.activityHint)
-	if status == "" {
-		return ""
-	}
-	if m.streamingIndicatorTargetIndex() < 0 {
-		status += m.streamingIndicatorSuffix()
-	}
-	return status
-}
-
 func renderEntries(entries []entry, width int, height int, renderer *glamour.TermRenderer, snapshot Snapshot, streamingSuffix string, targetIndex int) string {
 	if len(entries) == 0 {
 		return ""
@@ -3501,9 +3650,6 @@ func (m model) renderStatusBar() string {
 		bodyWidth = 12
 	}
 	rightParts := []string{}
-	if activityStatus := m.activityStatusText(); activityStatus != "" {
-		rightParts = append(rightParts, statusBarDimStyle.Render(trimForWidth(activityStatus, maxInt(18, renderWidth/3))))
-	}
 	if footerHint := strings.TrimSpace(m.footerHint); footerHint != "" {
 		rightParts = append(rightParts, statusBarDimStyle.Render(trimForWidth(footerHint, maxInt(18, renderWidth/3))))
 	}
@@ -5225,6 +5371,7 @@ func (m model) statusBarSegments(maxWidth int) []string {
 	segments = append(segments, statusSegment{text: requestModeStatus(m.snapshot.RequestMode, compact), priority: 1})
 	segments = append(segments, statusSegment{text: approvalModeStatus(m.snapshot.ApprovalMode, compact), priority: 1})
 	segments = append(segments, statusSegment{text: reasoningStatus(m.snapshot.ReasoningEnabled, compact), priority: 1})
+	segments = append(segments, statusSegment{text: mouseModeStatus(m.mouseScrollEnabled, compact), priority: 2})
 	if capabilitySegment := chatCapabilityStatus(m.snapshot, compact); capabilitySegment != "" {
 		segments = append(segments, statusSegment{text: capabilitySegment, priority: 2})
 	}
@@ -5245,6 +5392,19 @@ func (m model) statusBarSegments(maxWidth int) []string {
 		segments = append(segments, statusSegment{text: requestSegment, priority: 5})
 	}
 	return fitStatusSegments(segments, maxWidth)
+}
+
+func mouseModeStatus(enabled bool, compact bool) string {
+	if compact {
+		if enabled {
+			return "鼠标滚动/F6"
+		}
+		return "鼠标选字/F6"
+	}
+	if enabled {
+		return "鼠标滚动/F6"
+	}
+	return "鼠标选字/F6"
 }
 
 func chatCapabilityStatus(snapshot Snapshot, compact bool) string {
@@ -7240,7 +7400,7 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "技能自动补装策略", placeholder: "", description: "左右键或空格切换关闭(off)、确认(confirm)、自动安装(allow)。默认建议使用确认(confirm)。"},
 		{label: "自由文本技能搜索", placeholder: "", description: "左右键或空格切换是否允许按任务文本搜索远程技能候选。"},
 		{label: "技能仓库地址", placeholder: "https://mirror-cn.clawhub.com", description: "远程技能搜索、详情和安装默认使用该镜像站。"},
-		{label: "文档服务端解析类型", placeholder: "pdf, docx", description: "多个扩展名用逗号分隔，指定的文件类型由服务端文档结构化服务进行解析。"},
+		{label: "服务端文档解析类型", placeholder: "pdf,wav,mp3", description: "留空表示默认关闭；多个扩展名用逗号分隔，仅对显式配置的扩展名启用服务端文档结构化解析。"},
 	}
 }
 

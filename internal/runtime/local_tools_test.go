@@ -196,7 +196,7 @@ func TestFileEditToolDefinitionMentionsRetryHintReuse(t *testing.T) {
 	t.Fatal("expected file_edit tool definition")
 }
 
-func TestShellExecToolDefinitionMentionsPlatformCompatibility(t *testing.T) {
+func TestShellExecToolDefinitionKeepsOnlyBasicExecutionSummary(t *testing.T) {
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	definitions := runtimeClient.clientToolDefinitionsForMode("agent")
 	for _, item := range definitions {
@@ -205,9 +205,12 @@ func TestShellExecToolDefinitionMentionsPlatformCompatibility(t *testing.T) {
 			continue
 		}
 		description, _ := item["description"].(string)
-		for _, expected := range []string{"当前 OS", "command + args", "rawCommand", "fork/exec ... not supported"} {
-			if !strings.Contains(description, expected) {
-				t.Fatalf("expected shell_exec description to mention %q, got %q", expected, description)
+		if !strings.Contains(description, "前台执行") || !strings.Contains(description, "后台任务句柄") {
+			t.Fatalf("expected shell_exec description to keep basic execution summary, got %q", description)
+		}
+		for _, unexpected := range []string{"当前 OS", "command + args", "rawCommand", "fork/exec ... not supported"} {
+			if strings.Contains(description, unexpected) {
+				t.Fatalf("expected shell_exec description to omit %q, got %q", unexpected, description)
 			}
 		}
 		return
@@ -464,8 +467,11 @@ func TestDocumentUnstructuredToolDefinitionAvailableInAgentMode(t *testing.T) {
 			continue
 		}
 		description, _ := item["description"].(string)
-		if !strings.Contains(description, "doc_unstructured_exts") || !strings.Contains(description, "doc_unstructured_flow_id") {
-			t.Fatalf("expected document_unstructured description to mention config and flow id, got %q", description)
+		if !strings.Contains(description, "doc_unstructured_flow_id") {
+			t.Fatalf("expected document_unstructured description to mention flow id, got %q", description)
+		}
+		if strings.Contains(description, "doc_unstructured_exts") {
+			t.Fatalf("expected document_unstructured description to leave extension guidance to skills, got %q", description)
 		}
 		return
 	}

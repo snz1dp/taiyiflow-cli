@@ -16,24 +16,8 @@ import (
 )
 
 func TestLoadSkillPayloadIncludesBundledEnabledSkills(t *testing.T) {
-	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
-	manager, err := internalconfig.NewManager()
-	if err != nil {
-		t.Fatalf("new manager failed: %v", err)
-	}
-
-	app := &App{
-		stdout:        &bytes.Buffer{},
-		stderr:        &bytes.Buffer{},
-		configManager: manager,
-	}
-
 	config := internalconfig.Default()
-	if err := manager.Save(config); err != nil {
-		t.Fatalf("save config failed: %v", err)
-	}
-
-	names, packages, err := app.loadSkillPayload(config, "")
+	names, packages, err := loadSkillPayloadWithConfig(config)
 	if err != nil {
 		t.Fatalf("loadSkillPayload failed: %v", err)
 	}
@@ -42,6 +26,12 @@ func TestLoadSkillPayloadIncludesBundledEnabledSkills(t *testing.T) {
 	}
 	if !containsIgnoreCase(names, "askuser") {
 		t.Fatalf("expected askuser in requested names: %#v", names)
+	}
+	if !containsIgnoreCase(names, "cross-platform-shell") {
+		t.Fatalf("expected cross-platform-shell in requested names: %#v", names)
+	}
+	if containsIgnoreCase(names, "document-unstructured") {
+		t.Fatalf("expected document-unstructured to stay disabled by default, got %#v", names)
 	}
 	if !containsIgnoreCase(names, "update-config") {
 		t.Fatalf("expected update-config in requested names: %#v", names)
@@ -59,6 +49,33 @@ func TestLoadSkillPayloadIncludesBundledEnabledSkills(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected bundled package root, got %#v", payload)
+	}
+}
+
+func TestLoadSkillPayloadIncludesDocumentUnstructuredSkillWhenExtensionsConfigured(t *testing.T) {
+	config := internalconfig.Default()
+	config.DocUnstructuredExts = []string{"pdf", "png"}
+	names, _, err := loadSkillPayloadWithConfig(config)
+	if err != nil {
+		t.Fatalf("loadSkillPayload failed: %v", err)
+	}
+	if !containsIgnoreCase(names, "document-unstructured") {
+		t.Fatalf("expected document-unstructured when doc_unstructured_exts is configured, got %#v", names)
+	}
+}
+
+func TestLoadSkillPayloadSkipsDocumentUnstructuredSkillWhenExtensionsDisabled(t *testing.T) {
+	config := internalconfig.Default()
+	config.DocUnstructuredExts = nil
+	names, _, err := loadSkillPayloadWithConfig(config)
+	if err != nil {
+		t.Fatalf("loadSkillPayload failed: %v", err)
+	}
+	if containsIgnoreCase(names, "document-unstructured") {
+		t.Fatalf("expected document-unstructured to be omitted when doc_unstructured_exts is empty, got %#v", names)
+	}
+	if !containsIgnoreCase(names, "cross-platform-shell") {
+		t.Fatalf("expected cross-platform-shell to remain enabled, got %#v", names)
 	}
 }
 

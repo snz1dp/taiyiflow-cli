@@ -1362,7 +1362,7 @@ func boolPtr(value bool) *bool {
 	return &value
 }
 
-func buildTaskEnvironmentHint(contextDir string, commandExecutionTarget string, docUnstructuredExts []string) string {
+func buildTaskEnvironmentHint(contextDir string, commandExecutionTarget string) string {
 	resolvedContextDir := resolveLocalWorkdir(contextDir)
 	resolvedTarget := strings.TrimSpace(commandExecutionTarget)
 	if resolvedTarget == "" {
@@ -1374,11 +1374,6 @@ func buildTaskEnvironmentHint(contextDir string, commandExecutionTarget string, 
 		fmt.Sprintf("ARCH: %s", runtime.GOARCH),
 		fmt.Sprintf("工作目录: %s", resolvedContextDir),
 		fmt.Sprintf("命令执行目标: %s", resolvedTarget),
-		"跨平台执行建议: 根据当前 OS/ARCH 选择命令；优先使用 shell_exec 的 command + args 结构化调用，只有需要管道、重定向或通配符时再使用 rawCommand。",
-		"fork/exec 回退建议: 如遇到 fork/exec ... not supported，通常表示可执行文件不适配当前 OS/ARCH 或脚本缺少可用解释器；请改用当前平台可执行命令或通过 shell 包装。",
-	}
-	if formattedExts := formatTaskDocUnstructuredExts(docUnstructuredExts); formattedExts != "" {
-		lines = append(lines, fmt.Sprintf("文档结构化工具: 对 %s 优先显式调用 local.document_unstructured；不要自动改写现有 --file、/upload 或 InputFiles 主流程。", formattedExts))
 	}
 	lines = append(lines, "</taiyiflow_environment>")
 	return strings.Join(lines, "\n")
@@ -1386,20 +1381,8 @@ func buildTaskEnvironmentHint(contextDir string, commandExecutionTarget string, 
 
 func buildTaskTweaks(config internalconfig.Config, contextDir string, commandExecutionTarget string) map[string]any {
 	return map[string]any{
-		"taiyiflow_environment": buildTaskEnvironmentHint(contextDir, commandExecutionTarget, config.DocUnstructuredExts),
+		"taiyiflow_environment": buildTaskEnvironmentHint(contextDir, commandExecutionTarget),
 	}
-}
-
-func formatTaskDocUnstructuredExts(values []string) string {
-	normalized := internalconfig.NormalizeDocUnstructuredExts(values)
-	if len(normalized) == 0 {
-		return ""
-	}
-	prefixed := prefixDocumentExts(normalized)
-	if len(prefixed) > 8 {
-		return fmt.Sprintf("%s 等 %d 种", strings.Join(prefixed[:8], ", "), len(prefixed))
-	}
-	return strings.Join(prefixed, ", ")
 }
 
 func splitAssistantMessage(payload map[string]any) bool {

@@ -238,7 +238,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "shell_exec",
-			"description":          "执行结构化本地 Shell 命令，支持前台执行或后台任务句柄返回。根据当前 OS 选择可用命令，优先使用 command + args 结构化调用；只有需要管道、重定向或通配符时再使用 rawCommand。如遇到 fork/exec ... not supported，改用当前平台可执行文件或通过 shell 包装。",
+			"description":          "执行结构化本地 Shell 命令，支持前台执行或后台任务句柄返回。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -371,7 +371,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "document_unstructured",
-			"description":          "按全局 doc_unstructured_exts 配置筛选本地文档文件，上传到服务端文档结构化流程(doc_unstructured_flow_id)并返回稳定 JSON 结果。",
+			"description":          "上传本地文件到服务端文档结构化流程(doc_unstructured_flow_id)并返回稳定 JSON 结果；具体适用场景由当前技能提示、配置和服务端能力共同决定。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",

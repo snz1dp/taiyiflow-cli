@@ -17,6 +17,9 @@ var bundledSkillFS embed.FS
 func discoverBundledSkills(config internalconfig.Config, enabled map[string]bool, disabled map[string]bool) []Skill {
 	items := make([]Skill, 0, len(bundledSkillDefinitions))
 	for _, definition := range bundledSkillDefinitions {
+		if !shouldExposeBundledSkill(config, definition) {
+			continue
+		}
 		item, err := loadBundledSkill(config, definition)
 		if err != nil {
 			continue
@@ -25,6 +28,15 @@ func discoverBundledSkills(config internalconfig.Config, enabled map[string]bool
 		items = append(items, item)
 	}
 	return items
+}
+
+func shouldExposeBundledSkill(config internalconfig.Config, definition BundledSkillDefinition) bool {
+	switch strings.ToLower(strings.TrimSpace(definition.Name)) {
+	case "document-unstructured":
+		return len(internalconfig.NormalizeDocUnstructuredExts(config.DocUnstructuredExts)) > 0
+	default:
+		return true
+	}
 }
 
 func loadBundledSkill(config internalconfig.Config, definition BundledSkillDefinition) (Skill, error) {

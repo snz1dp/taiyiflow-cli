@@ -302,6 +302,30 @@ func TestVisibleSlashCommandsKeepsLoginInReadOnlyMode(t *testing.T) {
 	t.Fatalf("expected /login to stay visible in read-only mode, got %#v", commands)
 }
 
+func TestVisibleSlashCommandsDescribeConfigHelpEntry(t *testing.T) {
+	input := textarea.New()
+	input.SetValue("/con")
+
+	model := model{
+		snapshot: Snapshot{BackendAvailable: true},
+		input:    input,
+	}
+
+	for _, command := range model.visibleSlashCommands() {
+		if command.Trigger != "/config" {
+			continue
+		}
+		if !strings.Contains(command.Description, "/config help") {
+			t.Fatalf("expected /config description to reference help entry, got %#v", command)
+		}
+		if !strings.Contains(command.Description, "查看配置项说明") {
+			t.Fatalf("expected /config description to use localized wording, got %#v", command)
+		}
+		return
+	}
+	t.Fatal("expected /config to appear in visible slash commands")
+}
+
 func TestVisibleSlashCommandsShowsRetryOnlyAfterFailure(t *testing.T) {
 	input := textarea.New()
 	input.SetValue("/ret")
@@ -526,6 +550,34 @@ func TestReliableMultilineShortcutsInsertNewline(t *testing.T) {
 	}
 }
 
+func TestF6TogglesMouseScrollMode(t *testing.T) {
+	appModel := model{}
+
+	updatedModel, cmd := appModel.Update(tea.KeyMsg{Type: tea.KeyF6})
+	if cmd == nil {
+		t.Fatal("expected F6 to emit mouse mode command")
+	}
+	updated := updatedModel.(model)
+	if !updated.mouseScrollEnabled {
+		t.Fatal("expected F6 to enable mouse scroll mode")
+	}
+	if !strings.Contains(updated.footerHint, "鼠标滚动已开启") {
+		t.Fatalf("expected enable hint after F6, got %q", updated.footerHint)
+	}
+
+	updatedModel, cmd = updated.Update(tea.KeyMsg{Type: tea.KeyF6})
+	if cmd == nil {
+		t.Fatal("expected second F6 to emit mouse disable command")
+	}
+	updated = updatedModel.(model)
+	if updated.mouseScrollEnabled {
+		t.Fatal("expected second F6 to disable mouse scroll mode")
+	}
+	if !strings.Contains(updated.footerHint, "已恢复鼠标选字") {
+		t.Fatalf("expected disable hint after second F6, got %q", updated.footerHint)
+	}
+}
+
 func TestBackspaceShrinksInputHeightAfterDeletingTrailingNewline(t *testing.T) {
 	input := textarea.New()
 	input.Prompt = "> "
@@ -602,7 +654,7 @@ func TestRenderConfigFormHidesAccessTokenField(t *testing.T) {
 	})
 
 	model := model{
-		contentWidth: 80,
+		contentWidth: 140,
 		configForm:   state,
 	}
 
@@ -637,6 +689,26 @@ func TestRenderConfigFormGroupsFieldsByCategory(t *testing.T) {
 			t.Fatalf("expected category %q to render once, got %q", category, rendered)
 		}
 		lastIndex = index
+	}
+}
+
+func TestRenderConfigFormShowsDocUnstructuredDisabledByDefaultHint(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{
+		Title: "配置设置",
+	})
+	state.cursor = configFieldDocUnstructuredExts
+
+	model := model{
+		contentWidth: 80,
+		configForm:   state,
+	}
+
+	rendered := sanitizeTerminalText(model.renderConfigForm())
+	if !strings.Contains(rendered, "文档服务端解析类型") {
+		t.Fatalf("expected doc unstructured field rendered, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "留空表示默认关闭") {
+		t.Fatalf("expected doc unstructured field to mention disabled-by-default state, got %q", rendered)
 	}
 }
 
@@ -1773,42 +1845,6 @@ func TestSnapshotRefreshRebuildsInitialEntriesAndContextBudget(t *testing.T) {
 	}
 }
 
-func TestRenderTransientStatusShownInAllRequestModes(t *testing.T) {
-	model := model{
-		snapshot:     Snapshot{RequestMode: "agent"},
-		viewport:     viewport.Model{Width: 80},
-		activityHint: "执行 读取文件",
-	}
-
-	if got := sanitizeTerminalText(model.renderTransientStatus()); !strings.Contains(got, "执行 读取文件") {
-		t.Fatalf("expected transient status in agent mode, got %q", got)
-	}
-
-	model.snapshot.RequestMode = "ask"
-	if got := sanitizeTerminalText(model.renderTransientStatus()); !strings.Contains(got, "执行 读取文件") {
-		t.Fatalf("expected transient status in ask mode, got %q", got)
-	}
-
-	model.snapshot.RequestMode = "plan"
-	if got := sanitizeTerminalText(model.renderTransientStatus()); !strings.Contains(got, "执行 读取文件") {
-		t.Fatalf("expected transient status in plan mode, got %q", got)
-	}
-}
-
-func TestRenderTransientStatusAppendsStreamingIndicatorWithoutAssistantEntry(t *testing.T) {
-	model := model{
-		viewport:                 viewport.Model{Width: 80},
-		activityHint:             "正在搜索",
-		state:                    newProgressState(progressStreaming),
-		streamingIndicatorActive: true,
-		streamingIndicatorFrame:  2,
-	}
-
-	if got := sanitizeTerminalText(model.renderTransientStatus()); !strings.Contains(got, "正在搜索...") {
-		t.Fatalf("expected streaming indicator in transient status, got %q", got)
-	}
-}
-
 func TestStreamingIndicatorSuffixIncludesBlankFrame(t *testing.T) {
 	model := model{
 		state:                    newProgressState(progressStreaming),
@@ -1867,8 +1903,8 @@ func TestSyncViewportDoesNotAppendStreamingIndicatorToPreviousAssistantWhileSend
 	if strings.Contains(got, "正在发送...") {
 		t.Fatalf("expected activity hint to stay out of history viewport, got %q", got)
 	}
-	if status := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(status, "正在发送...") {
-		t.Fatalf("expected status bar to show streaming indicator before first chunk, got %q", status)
+	if status := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(status, "正在发送...") {
+		t.Fatalf("expected status bar to stay free of activity hint before first chunk, got %q", status)
 	}
 }
 
@@ -1946,9 +1982,6 @@ func TestCompressionProgressNoteRendersInFooterInsteadOfTransientStatus(t *testi
 
 	model.applyEvent(Event{Kind: EventProgressNote, Text: "上下文压缩完成：320 -> 160", EventType: "compression_progress"})
 
-	if got := sanitizeTerminalText(model.renderTransientStatus()); strings.Contains(got, "上下文压缩完成") {
-		t.Fatalf("expected compression progress to stay out of transient status, got %q", got)
-	}
 	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "上下文压缩完成：320 -> 160") {
 		t.Fatalf("expected compression progress in footer status bar, got %q", got)
 	}
@@ -2966,11 +2999,12 @@ func TestMouseWheelScrollsToolPanelViewport(t *testing.T) {
 		bodyLines = append(bodyLines, "第"+strconv.Itoa(index)+"行远程技能详情内容")
 	}
 	m := model{
-		ready:             true,
-		width:             100,
-		height:            24,
-		contentWidth:      80,
-		toolPanelViewport: viewport.New(0, 0),
+		ready:              true,
+		width:              100,
+		height:             24,
+		contentWidth:       80,
+		mouseScrollEnabled: true,
+		toolPanelViewport:  viewport.New(0, 0),
 		toolPanel: &ToolPanel{
 			Title:   "远程技能详情",
 			Summary: "用于验证鼠标滚轮滚动详情正文。",
@@ -2990,6 +3024,95 @@ func TestMouseWheelScrollsToolPanelViewport(t *testing.T) {
 	updated = updatedModel.(model)
 	if updated.toolPanelViewport.YOffset != 0 {
 		t.Fatalf("expected mouse wheel up to scroll tool panel viewport back to top, got %d", updated.toolPanelViewport.YOffset)
+	}
+}
+
+func TestMouseWheelDoesNotScrollWhenMouseScrollModeDisabled(t *testing.T) {
+	bodyLines := make([]string, 0, 30)
+	for index := 1; index <= 30; index++ {
+		bodyLines = append(bodyLines, "第"+strconv.Itoa(index)+"行远程技能详情内容")
+	}
+	m := model{
+		ready:             true,
+		width:             100,
+		height:            24,
+		contentWidth:      80,
+		toolPanelViewport: viewport.New(0, 0),
+		toolPanel: &ToolPanel{
+			Title:   "远程技能详情",
+			Summary: "用于验证未开启鼠标滚动时仍可选字。",
+			Body:    strings.Join(bodyLines, "\n"),
+			Hint:    "Esc 返回上层技能列表。",
+		},
+	}
+	m.syncToolPanelViewport()
+
+	updatedModel, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	updated := updatedModel.(model)
+	if updated.toolPanelViewport.YOffset != 0 {
+		t.Fatalf("expected mouse wheel to be ignored when mouse scroll mode is disabled, got %d", updated.toolPanelViewport.YOffset)
+	}
+}
+
+func TestMouseResidueKeyScrollsToolPanelViewport(t *testing.T) {
+	bodyLines := make([]string, 0, 30)
+	for index := 1; index <= 30; index++ {
+		bodyLines = append(bodyLines, "第"+strconv.Itoa(index)+"行远程技能详情内容")
+	}
+	m := model{
+		ready:              true,
+		width:              100,
+		height:             24,
+		contentWidth:       80,
+		mouseScrollEnabled: true,
+		toolPanelViewport:  viewport.New(0, 0),
+		toolPanel: &ToolPanel{
+			Title:   "远程技能详情",
+			Summary: "用于验证鼠标残片仍能驱动滚动。",
+			Body:    strings.Join(bodyLines, "\n"),
+			Hint:    "Esc 返回上层技能列表。",
+		},
+	}
+	m.syncToolPanelViewport()
+
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[<65;53;22M[<65;53;22M")})
+	updated := updatedModel.(model)
+	if updated.toolPanelViewport.YOffset != 6 {
+		t.Fatalf("expected duplicated mouse residue to scroll tool panel by 6 lines, got %d", updated.toolPanelViewport.YOffset)
+	}
+	if got := updated.input.Value(); got != "" {
+		t.Fatalf("expected mouse residue not to pollute input, got %q", got)
+	}
+}
+
+func TestMouseResidueKeyDoesNotInsertIntoMainInput(t *testing.T) {
+	lines := make([]string, 0, 40)
+	for index := 1; index <= 40; index++ {
+		lines = append(lines, "第"+strconv.Itoa(index)+"行主视图内容")
+	}
+	input := textarea.New()
+	input.Prompt = "> "
+	m := model{
+		ready:              true,
+		width:              100,
+		height:             12,
+		contentWidth:       80,
+		mouseScrollEnabled: true,
+		input:              input,
+		viewport:           viewport.New(0, 0),
+		entries:            []entry{{role: "assistant", content: strings.Join(lines, "\n")}},
+	}
+	m.syncLayout()
+	m.viewport.GotoTop()
+	initialOffset := m.viewport.YOffset
+
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[<65;53;22M")})
+	updated := updatedModel.(model)
+	if got := updated.input.Value(); got != "" {
+		t.Fatalf("expected mouse residue not to be inserted into main input, got %q", got)
+	}
+	if updated.viewport.YOffset <= initialOffset {
+		t.Fatalf("expected mouse residue to scroll main viewport downward, initial=%d updated=%d", initialOffset, updated.viewport.YOffset)
 	}
 }
 
@@ -3524,6 +3647,30 @@ func TestRenderStatusBarShowsFooterHint(t *testing.T) {
 	got := sanitizeTerminalText(model.renderStatusBar())
 	if !strings.Contains(got, "张三(已登录)") {
 		t.Fatalf("expected footer hint in status bar, got %q", got)
+	}
+}
+
+func TestRenderStatusBarShowsMouseModeShortcut(t *testing.T) {
+	model := model{
+		snapshot: Snapshot{
+			BackendAvailable: true,
+			RequestMode:      "agent",
+			ApprovalMode:     "confirm",
+		},
+		state:        newProgressState(progressIdle),
+		width:        140,
+		contentWidth: 140,
+	}
+
+	got := sanitizeTerminalText(model.renderStatusBar())
+	if !strings.Contains(got, "鼠标选字/F6") {
+		t.Fatalf("expected default mouse selection shortcut in status bar, got %q", got)
+	}
+
+	model.mouseScrollEnabled = true
+	got = sanitizeTerminalText(model.renderStatusBar())
+	if !strings.Contains(got, "鼠标滚动/F6") {
+		t.Fatalf("expected mouse scroll shortcut in status bar after toggle, got %q", got)
 	}
 }
 

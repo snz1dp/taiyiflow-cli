@@ -143,6 +143,34 @@ func TestTUIAssistantRenderStatePreservesUppercaseWordEndingInIZE(t *testing.T) 
 	}
 }
 
+func TestEmitTUIAssistantChunkKeepsSplitMarkerButDropsClosingThinkTagText(t *testing.T) {
+	state := tuiAssistantRenderState{}
+	events := []internaltui.Event{}
+	emit := func(event internaltui.Event) {
+		events = append(events, event)
+	}
+
+	emitTUIAssistantChunk(emit, &state, internaltui.Event{Kind: internaltui.EventAssistantChunk, Text: "开始<think>内部推理", MessageID: "msg-1"})
+	events = nil
+
+	emitTUIAssistantChunk(emit, &state, internaltui.Event{Kind: internaltui.EventAssistantChunk, Text: "</think>", MessageID: "msg-1", SplitAssistant: true})
+	if len(events) != 1 {
+		t.Fatalf("expected one split marker event, got %#v", events)
+	}
+	if events[0].Text != "" {
+		t.Fatalf("expected split marker to drop hidden closing tag text, got %#v", events[0])
+	}
+	if !events[0].SplitAssistant || events[0].Kind != internaltui.EventAssistantChunk {
+		t.Fatalf("expected split marker assistant event, got %#v", events[0])
+	}
+
+	events = nil
+	emitTUIAssistantChunk(emit, &state, internaltui.Event{Kind: internaltui.EventAssistantChunk, Text: "结论", MessageID: "msg-1"})
+	if len(events) != 1 || events[0].Text != "结论" || events[0].Kind != internaltui.EventAssistantChunk {
+		t.Fatalf("expected visible answer after closing think tag, got %#v", events)
+	}
+}
+
 func TestExecuteTUISkillsPickerInstallDetailRefreshesPickerAndPanel(t *testing.T) {
 	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
 	manager, err := internalconfig.NewManager()

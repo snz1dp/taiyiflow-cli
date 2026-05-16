@@ -690,12 +690,17 @@ func TestStreamTaskSendsEnvironmentInTweaks(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected taiyiflow_environment tweak string, got %#v", providerStub.lastRequest.Tweaks)
 	}
-	for _, expected := range []string{"<taiyiflow_environment>", "OS:", "ARCH:", "工作目录:", workdir, "命令执行目标: client", "command + args", "rawCommand", "fork/exec ... not supported", ".pdf", ".docx", "local.document_unstructured", "demo task"} {
+	for _, expected := range []string{"<taiyiflow_environment>", "OS:", "ARCH:", "工作目录:", workdir, "命令执行目标: client", "demo task"} {
 		if expected == "demo task" {
 			continue
 		}
 		if !strings.Contains(environmentHint, expected) {
 			t.Fatalf("expected environment hint to contain %q, got %q", expected, environmentHint)
+		}
+	}
+	for _, unexpected := range []string{"command + args", "rawCommand", "fork/exec ... not supported", ".pdf", ".docx", "local.document_unstructured"} {
+		if strings.Contains(environmentHint, unexpected) {
+			t.Fatalf("expected environment hint to omit %q, got %q", unexpected, environmentHint)
 		}
 	}
 	if strings.Contains(environmentHint, "demo task") {

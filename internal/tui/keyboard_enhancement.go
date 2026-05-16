@@ -27,19 +27,25 @@ var vscodeKittySequenceReplacements = []struct {
 	{from: []byte("\x1b[27;3u"), to: []byte("\x1b\x1b")},
 }
 
-type vscodeKittyKeyboardReader struct {
-	input     term.File
-	pending   bytes.Buffer
-	remainder []byte
+type terminalInputReader struct {
+	input                     term.File
+	pending                   bytes.Buffer
+	remainder                 []byte
+	translateVSCodeKittyInput bool
 }
 
 func programKeyboardOptions(input term.File, output io.Writer, environ []string) ([]tea.ProgramOption, func()) {
-	if input == nil || output == nil || !shouldEnableVSCodeKeyboardProtocol(environ) {
+	if input == nil || runtime.GOOS == "windows" {
 		return nil, nil
 	}
-	_, _ = io.WriteString(output, vscodeKittyKeyboardEnable)
-	return []tea.ProgramOption{tea.WithInput(newVSCodeKittyKeyboardReader(input))}, func() {
-		_, _ = io.WriteString(output, vscodeKittyKeyboardDisable)
+	enableVSCodeKeyboard := output != nil && shouldEnableVSCodeKeyboardProtocol(environ)
+	if enableVSCodeKeyboard {
+		_, _ = io.WriteString(output, vscodeKittyKeyboardEnable)
+	}
+	return []tea.ProgramOption{tea.WithInput(newTerminalInputReader(input, enableVSCodeKeyboard))}, func() {
+		if enableVSCodeKeyboard {
+			_, _ = io.WriteString(output, vscodeKittyKeyboardDisable)
+		}
 	}
 }
 
@@ -67,11 +73,15 @@ func multilineInputPlaceholder(environ []string) string {
 	return "回车发送，Alt+Enter 或 Ctrl+J 换行"
 }
 
-func newVSCodeKittyKeyboardReader(input term.File) *vscodeKittyKeyboardReader {
-	return &vscodeKittyKeyboardReader{input: input}
+func newTerminalInputReader(input term.File, translateVSCodeKittyInput bool) *terminalInputReader {
+	return &terminalInputReader{input: input, translateVSCodeKittyInput: translateVSCodeKittyInput}
 }
 
-func (r *vscodeKittyKeyboardReader) Read(buffer []byte) (int, error) {
+func newVSCodeKittyKeyboardReader(input term.File) *terminalInputReader {
+	return newTerminalInputReader(input, true)
+}
+
+func (r *terminalInputReader) Read(buffer []byte) (int, error) {
 	for {
 		if r.pending.Len() > 0 {
 			return r.pending.Read(buffer)
@@ -85,7 +95,7 @@ func (r *vscodeKittyKeyboardReader) Read(buffer []byte) (int, error) {
 		readCount, readErr := r.input.Read(readBuffer)
 		if readCount > 0 {
 			payload := append(append([]byte(nil), r.remainder...), readBuffer[:readCount]...)
-			translated, remainder := translateVSCodeKittyKeyboardInput(payload)
+			translated, remainder := translateTerminalInput(payload, r.translateVSCodeKittyInput)
 			r.remainder = append(r.remainder[:0], remainder...)
 			if len(translated) > 0 {
 				_, _ = r.pending.Write(translated)
@@ -104,47 +114,53 @@ func (r *vscodeKittyKeyboardReader) Read(buffer []byte) (int, error) {
 	}
 }
 
-func (r *vscodeKittyKeyboardReader) Write(buffer []byte) (int, error) {
+func (r *terminalInputReader) Write(buffer []byte) (int, error) {
 	return r.input.Write(buffer)
 }
 
-func (r *vscodeKittyKeyboardReader) Close() error {
+func (r *terminalInputReader) Close() error {
 	return nil
 }
 
-func (r *vscodeKittyKeyboardReader) Fd() uintptr {
+func (r *terminalInputReader) Fd() uintptr {
 	return r.input.Fd()
 }
 
 func translateVSCodeKittyKeyboardInput(input []byte) ([]byte, []byte) {
+	return translateTerminalInput(input, true)
+}
+
+func translateTerminalInput(input []byte, translateVSCodeKittyInput bool) ([]byte, []byte) {
 	if len(input) == 0 {
 		return nil, nil
 	}
 
 	translated := make([]byte, 0, len(input))
 	for index := 0; index < len(input); {
-		matched := false
-		for _, replacement := range vscodeKittySequenceReplacements {
-			if len(input[index:]) >= len(replacement.from) && bytes.Equal(input[index:index+len(replacement.from)], replacement.from) {
-				translated = append(translated, replacement.to...)
-				index += len(replacement.from)
-				matched = true
-				break
+		if translateVSCodeKittyInput {
+			matched := false
+			for _, replacement := range vscodeKittySequenceReplacements {
+				if len(input[index:]) >= len(replacement.from) && bytes.Equal(input[index:index+len(replacement.from)], replacement.from) {
+					translated = append(translated, replacement.to...)
+					index += len(replacement.from)
+					matched = true
+					break
+				}
 			}
-		}
-		if matched {
-			continue
-		}
+			if matched {
+				continue
+			}
 
-		if isVSCodeKittySequencePrefix(input[index:]) {
-			return translated, append([]byte(nil), input[index:]...)
+			if isVSCodeKittySequencePrefix(input[index:]) {
+				return translated, append([]byte(nil), input[index:]...)
+			}
 		}
 
 		translated = append(translated, input[index])
 		index++
 	}
 
-	return translated, nil
+	return splitTrailingANSIEscapeRemainder(translated)
 }
 
 func isVSCodeKittySequencePrefix(input []byte) bool {
@@ -154,4 +170,47 @@ func isVSCodeKittySequencePrefix(input []byte) bool {
 		}
 	}
 	return false
+}
+
+func splitTrailingANSIEscapeRemainder(input []byte) ([]byte, []byte) {
+	if len(input) == 0 {
+		return input, nil
+	}
+	escapeIndex := bytes.LastIndexByte(input, '\x1b')
+	if escapeIndex < 0 {
+		return input, nil
+	}
+	sequence := input[escapeIndex:]
+	if !hasIncompleteANSIEscape(sequence) {
+		return input, nil
+	}
+	return input[:escapeIndex], append([]byte(nil), sequence...)
+}
+
+func hasIncompleteANSIEscape(sequence []byte) bool {
+	if len(sequence) == 1 && sequence[0] == '\x1b' {
+		return true
+	}
+	if len(sequence) < 2 || sequence[0] != '\x1b' {
+		return false
+	}
+	switch sequence[1] {
+	case '[':
+		if len(sequence) >= 3 && sequence[2] == 'M' {
+			return len(sequence) < 6
+		}
+		return !hasANSIFinalByte(sequence[2:])
+	case 'O':
+		return !hasANSIFinalByte(sequence[2:])
+	default:
+		return false
+	}
+}
+
+func hasANSIFinalByte(sequence []byte) bool {
+	if len(sequence) == 0 {
+		return false
+	}
+	lastByte := sequence[len(sequence)-1]
+	return lastByte >= 0x40 && lastByte <= 0x7e
 }

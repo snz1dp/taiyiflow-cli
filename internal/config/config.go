@@ -45,7 +45,6 @@ const (
 	SkillAutoInstallPolicyOff       = "off"
 	SkillAutoInstallPolicyConfirm   = "confirm"
 	SkillAutoInstallPolicyAllow     = "allow"
-	DefaultUnstructuredDocExts      = ".jpg, .jpeg, .png, .gif, .svg, .mp3, .wav, .ogg, .flac, .aif, .m4a, .aac, .mp4, .webm, .avi, .mov, .flv, .wmv, .rmvb, .mkv, .pdf"
 	DefaultClawHubRegistryURL       = "https://mirror-cn.clawhub.com"
 )
 
@@ -134,7 +133,6 @@ func Default() Config {
 			FreeTextSearchEnabled: false,
 			RegistryURL:           DefaultClawHubRegistryURL,
 		},
-		DocUnstructuredExts: NormalizeDocUnstructuredExts(strings.Split(DefaultUnstructuredDocExts, ",")),
 	}
 }
 

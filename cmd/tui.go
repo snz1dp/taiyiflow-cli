@@ -193,21 +193,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						emit(tui.Event{Kind: tui.EventSessionUpdate, SessionID: sessionState.SessionID, SessionTitle: resolveSessionTitle(sessionState)})
 					}
 					if assistantChunkEvent, ok := buildTUIAssistantChunkEvent(event.Data); ok {
-						segments := assistantRenderState.consume(assistantChunkEvent.Text)
-						emitted := false
-						for _, segment := range segments {
-							eventToEmit := assistantChunkEvent
-							eventToEmit.Text = segment.Text
-							eventToEmit.SplitAssistant = false
-							if segment.Reasoning {
-								eventToEmit.Kind = tui.EventReasoningChunk
-							}
-							emit(eventToEmit)
-							emitted = true
-						}
-						if !emitted && assistantChunkEvent.SplitAssistant {
-							emit(assistantChunkEvent)
-						}
+						emitTUIAssistantChunk(emit, &assistantRenderState, assistantChunkEvent)
 						continue
 					}
 					if message, ok := event.Data["message"].(string); ok && strings.TrimSpace(message) != "" {
@@ -2841,6 +2827,29 @@ type tuiAssistantRenderState struct {
 	insideThink    bool
 	pending        string
 	controlResidue streamControlResidueState
+}
+
+func emitTUIAssistantChunk(emit func(tui.Event), state *tuiAssistantRenderState, assistantChunkEvent tui.Event) {
+	if state == nil {
+		return
+	}
+	segments := state.consume(assistantChunkEvent.Text)
+	emitted := false
+	for _, segment := range segments {
+		eventToEmit := assistantChunkEvent
+		eventToEmit.Text = segment.Text
+		eventToEmit.SplitAssistant = false
+		if segment.Reasoning {
+			eventToEmit.Kind = tui.EventReasoningChunk
+		}
+		emit(eventToEmit)
+		emitted = true
+	}
+	if !emitted && assistantChunkEvent.SplitAssistant {
+		boundaryEvent := assistantChunkEvent
+		boundaryEvent.Text = ""
+		emit(boundaryEvent)
+	}
 }
 
 func (s *tuiAssistantRenderState) consume(chunk string) []tuiRenderedSegment {
