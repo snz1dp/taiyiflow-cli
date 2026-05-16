@@ -108,6 +108,10 @@ func (s stubProvider) UploadFile(ctx context.Context, flowID string, sessionID s
 	return &provider.UploadResult{}, nil
 }
 
+func (s stubProvider) RunDocumentUnstructured(context.Context, provider.DocumentUnstructuredRequest) (*provider.DocumentUnstructuredResult, error) {
+	return &provider.DocumentUnstructuredResult{}, nil
+}
+
 func (s stubProvider) GetVersionInfo(context.Context) (*provider.ServiceVersion, error) {
 	return nil, nil
 }
@@ -668,7 +672,7 @@ func TestStreamTaskSendsEnvironmentInTweaks(t *testing.T) {
 	_, err := app.streamTask(
 		context.Background(),
 		providerStub,
-		internalconfig.Config{Workdir: workdir},
+		internalconfig.Config{Workdir: workdir, DocUnstructuredExts: []string{"pdf", "docx"}},
 		"demo-flow",
 		"demo task",
 		agent.SessionState{RequestMode: provider.RequestTypeAgent, ContextDir: workdir},
@@ -686,7 +690,7 @@ func TestStreamTaskSendsEnvironmentInTweaks(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected taiyiflow_environment tweak string, got %#v", providerStub.lastRequest.Tweaks)
 	}
-	for _, expected := range []string{"<taiyiflow_environment>", "OS:", "ARCH:", "工作目录:", workdir, "命令执行目标: client", "command + args", "rawCommand", "fork/exec ... not supported", "demo task"} {
+	for _, expected := range []string{"<taiyiflow_environment>", "OS:", "ARCH:", "工作目录:", workdir, "命令执行目标: client", "command + args", "rawCommand", "fork/exec ... not supported", ".pdf", ".docx", "local.document_unstructured", "demo task"} {
 		if expected == "demo task" {
 			continue
 		}

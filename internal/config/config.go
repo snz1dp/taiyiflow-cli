@@ -24,16 +24,16 @@ const (
 	DefaultAuthAPIPrefix            = "/xeai"
 	SkillInstallScopeUser           = "user"
 	SkillInstallScopeWorkspace      = "workspace"
-	DefaultHTTPTimeoutSeconds       = 300
-	DefaultCommandTimeoutSeconds    = 600
+	DefaultHTTPTimeoutSeconds       = 600
+	DefaultCommandTimeoutSeconds    = 3000
 	MaxHTTPTimeoutSeconds           = 2000
-	MaxCommandTimeoutSeconds        = 2000
+	MaxCommandTimeoutSeconds        = 6000
 	DefaultStreamIdleTimeoutSeconds = 1200
 	DefaultStreamRetryAttempts      = 0
 	MaxStreamRetryAttempts          = 3
 	DefaultQRWaitTimeoutSeconds     = 120
 	DefaultAgentAutoLoopMaxRounds   = 0
-	MaxAgentAutoLoopMaxRounds       = 100
+	MaxAgentAutoLoopMaxRounds       = 10000
 	encryptedConfigValuePrefix      = "enc:v1:"
 	SandboxEscapePolicyConfirm      = "confirm"
 	SandboxEscapePolicyDeny         = "deny"
@@ -45,6 +45,8 @@ const (
 	SkillAutoInstallPolicyOff       = "off"
 	SkillAutoInstallPolicyConfirm   = "confirm"
 	SkillAutoInstallPolicyAllow     = "allow"
+	DefaultUnstructuredDocExts      = ".jpg, .jpeg, .png, .gif, .svg, .mp3, .wav, .ogg, .flac, .aif, .m4a, .aac, .mp4, .webm, .avi, .mov, .flv, .wmv, .rmvb, .mkv, .pdf"
+	DefaultClawHubRegistryURL       = "https://mirror-cn.clawhub.com"
 )
 
 type Config struct {
@@ -59,6 +61,7 @@ type Config struct {
 	ApprovalMode              string           `yaml:"approval_mode"`
 	ReasoningEnabled          bool             `yaml:"reasoning_enabled,omitempty"`
 	Workdir                   string           `yaml:"workdir,omitempty"`
+	DocUnstructuredExts       []string         `yaml:"doc_unstructured_exts,omitempty"`
 	HTTPTimeoutSeconds        int              `yaml:"http_timeout_seconds,omitempty"`
 	SandboxEscapePolicy       string           `yaml:"sandbox_escape_policy,omitempty"`
 	CommandTimeoutSeconds     int              `yaml:"command_timeout_seconds,omitempty"`
@@ -129,8 +132,9 @@ func Default() Config {
 			InstallScope:          SkillInstallScopeUser,
 			AutoInstallPolicy:     SkillAutoInstallPolicyOff,
 			FreeTextSearchEnabled: false,
-			RegistryURL:           "https://mirror-cn.clawhub.com",
+			RegistryURL:           DefaultClawHubRegistryURL,
 		},
+		DocUnstructuredExts: NormalizeDocUnstructuredExts(strings.Split(DefaultUnstructuredDocExts, ",")),
 	}
 }
 
@@ -234,6 +238,23 @@ func NormalizeWriteConfirmationPolicy(value string) string {
 	default:
 		return WriteConfirmationPolicyConfirm
 	}
+}
+
+func NormalizeDocUnstructuredExts(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		trimmed := strings.Trim(strings.ToLower(strings.TrimSpace(value)), ".")
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
 }
 
 func NormalizePermissionAction(value string) string {
@@ -387,6 +408,7 @@ func (m *Manager) Load() (Config, error) {
 	config.PersistentToken = strings.TrimSpace(config.PersistentToken)
 	config.DeviceID = strings.TrimSpace(config.DeviceID)
 	config.AuthUpdatedAt = strings.TrimSpace(config.AuthUpdatedAt)
+	config.DocUnstructuredExts = NormalizeDocUnstructuredExts(config.DocUnstructuredExts)
 	if config.ApprovalMode == "" {
 		config.ApprovalMode = Default().ApprovalMode
 	}
@@ -411,6 +433,7 @@ func (m *Manager) Load() (Config, error) {
 }
 
 func (m *Manager) Save(config Config) error {
+	config.DocUnstructuredExts = NormalizeDocUnstructuredExts(config.DocUnstructuredExts)
 	config.PermissionRules = NormalizePermissionRules(config.PermissionRules)
 	if err := os.MkdirAll(filepath.Dir(m.path), 0o755); err != nil {
 		return fmt.Errorf("创建配置目录失败: %w", err)

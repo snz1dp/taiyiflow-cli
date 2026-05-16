@@ -780,6 +780,63 @@ func (c *Client) UploadFile(ctx context.Context, flowID string, sessionID string
 	}, nil
 }
 
+func (c *Client) RunDocumentUnstructured(ctx context.Context, request provider.DocumentUnstructuredRequest) (*provider.DocumentUnstructuredResult, error) {
+	trimmedFlowID := strings.TrimSpace(request.FlowID)
+	if trimmedFlowID == "" {
+		return nil, fmt.Errorf("调用文档结构化服务失败: 文档结构化流程不能为空")
+	}
+
+	body := streamRequestBody{
+		InputValue: request.Input,
+		InputType:  firstNonEmpty(strings.TrimSpace(request.InputType), "any"),
+		Files:      append([]string(nil), request.InputFiles...),
+		OutputType: firstNonEmpty(strings.TrimSpace(request.OutputType), "any"),
+		SessionID:  strings.TrimSpace(request.SessionID),
+	}
+
+	content, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("序列化文档结构化请求失败: %w", err)
+	}
+
+	endpoint := c.apiURL(fmt.Sprintf("/run/%s", url.PathEscape(trimmedFlowID)))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(content))
+	if err != nil {
+		return nil, fmt.Errorf("创建文档结构化请求失败: %w", err)
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	c.applyAuth(httpRequest)
+
+	resp, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("调用文档结构化服务失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("调用文档结构化服务失败", resp)
+	}
+
+	output, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取文档结构化响应失败: %w", err)
+	}
+
+	mediaType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if separatorIndex := strings.Index(mediaType, ";"); separatorIndex >= 0 {
+		mediaType = strings.TrimSpace(mediaType[:separatorIndex])
+	}
+	if mediaType == "" {
+		mediaType = "text/plain"
+	}
+
+	return &provider.DocumentUnstructuredResult{
+		SessionID: firstNonEmpty(strings.TrimSpace(resp.Header.Get(SessionHeader)), strings.TrimSpace(request.SessionID)),
+		Output:    string(output),
+		MediaType: mediaType,
+	}, nil
+}
+
 func (c *Client) ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*provider.SessionMessageList, error) {
 	flowID = strings.TrimSpace(flowID)
 	sessionID = strings.TrimSpace(sessionID)

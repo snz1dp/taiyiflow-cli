@@ -31,49 +31,51 @@ import (
 )
 
 type Snapshot struct {
-	Version                      string
-	BackendURL                   string
-	BackendAvailable             bool
-	BackendStatusReason          string
-	ServerPackage                string
-	ServerVersion                string
-	AuthRequired                 bool
-	AuthStatusReason             string
-	CurrentUserName              string
-	DefaultFlow                  string
-	DefaultFlowLabel             string
-	Workdir                      string
-	ContextDir                   string
-	RequestMode                  string
-	ApprovalMode                 string
-	ReasoningEnabled             bool
-	ReasoningOverride            string
-	SessionSandboxEscapePolicy   string
-	SessionID                    string
-	SessionTitle                 string
-	History                      []HistoryEntry
-	TodoItems                    []TodoItem
-	WelcomeMessage               string
-	SubHead                      string
-	Questions                    []string
-	InternetSearchSupported      bool
-	InternetSearchEnabled        bool
-	InternetSearchDefault        bool
-	KnowledgeSearchSupported     bool
-	KnowledgeSystemEnabled       bool
-	MCPToolsSupported            bool
-	TextToSpeechSupported        bool
-	SpeechToTextSupported        bool
-	HumanAIDialogueSystemEnabled bool
-	HumanAIDialogueFlowSupported bool
-	HumanAIDialogueSupported     bool
-	KnowledgeBases               []KnowledgeBaseItem
-	SelectedKnowledgeBases       []string
-	MaxFileSizeUploadMB          int
-	SupportedDocumentExts        []string
-	FileCapabilities             []FileCapability
-	InputFiles                   []string
-	RequestStats                 *RequestMetrics
+	Version                       string
+	BackendURL                    string
+	BackendAvailable              bool
+	BackendStatusReason           string
+	ServerPackage                 string
+	ServerVersion                 string
+	AuthRequired                  bool
+	AuthStatusReason              string
+	CurrentUserName               string
+	DefaultFlow                   string
+	DefaultFlowLabel              string
+	Workdir                       string
+	ContextDir                    string
+	RequestMode                   string
+	ApprovalMode                  string
+	ReasoningEnabled              bool
+	ReasoningOverride             string
+	SessionSandboxEscapePolicy    string
+	SessionID                     string
+	SessionTitle                  string
+	History                       []HistoryEntry
+	TodoItems                     []TodoItem
+	WelcomeMessage                string
+	SubHead                       string
+	Questions                     []string
+	InternetSearchSupported       bool
+	InternetSearchEnabled         bool
+	InternetSearchDefault         bool
+	KnowledgeSearchSupported      bool
+	KnowledgeSystemEnabled        bool
+	MCPToolsSupported             bool
+	TextToSpeechSupported         bool
+	SpeechToTextSupported         bool
+	HumanAIDialogueSystemEnabled  bool
+	HumanAIDialogueFlowSupported  bool
+	HumanAIDialogueSupported      bool
+	KnowledgeBases                []KnowledgeBaseItem
+	SelectedKnowledgeBases        []string
+	MaxFileSizeUploadMB           int
+	SupportedDocumentExts         []string
+	ConfiguredDocUnstructuredExts []string
+	DocUnstructuredFlowAvailable  bool
+	FileCapabilities              []FileCapability
+	InputFiles                    []string
+	RequestStats                  *RequestMetrics
 }
 
 type HistoryEntry struct {
@@ -251,6 +253,7 @@ type ConfigFormValues struct {
 	SkillsAutoInstallPolicy   string
 	SkillsFreeTextSearch      bool
 	SkillsRegistryURL         string
+	DocUnstructuredExts       string
 }
 
 type ConfigChoice struct {
@@ -806,6 +809,7 @@ const (
 	configFieldSkillsAutoInstallPolicy
 	configFieldSkillsFreeTextSearch
 	configFieldSkillsRegistryURL
+	configFieldDocUnstructuredExts
 	configFieldCount
 )
 
@@ -7224,18 +7228,19 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "细粒度权限规则", placeholder: "tool:shell_exec=deny; shell:git status=allow", description: "使用工具规则(tool:name=动作)或命令前缀规则(shell:prefix=动作)，多个规则用分号分隔。"},
 		{label: "默认思考模式", placeholder: "", description: "左右键或空格切换是否默认启用思考模式。"},
 		{label: "工作区目录", placeholder: "留空表示当前目录", description: "默认使用当前工作目录。"},
-		{label: "HTTP 请求超时（秒）", placeholder: "60", description: "标准 HTTP 请求在未显式覆写时使用该默认值，范围 1-300 秒；不影响流式长连接。"},
-		{label: "命令执行超时（秒）", placeholder: "30", description: "本地命令与语言服务查询在未显式传超时(timeout)时使用该默认值，范围 1-300 秒。"},
+		{label: "HTTP 请求超时（秒）", placeholder: "60", description: "标准 HTTP 请求在未显式覆写时使用该默认值，范围 1-600 秒；不影响流式长连接。"},
+		{label: "命令执行超时（秒）", placeholder: "30", description: "本地命令与语言服务查询在未显式传超时(timeout)时使用该默认值，范围 1-6000 秒。"},
 		{label: "流式空闲超时（秒）", placeholder: "300", description: "大于等于 0 的整数秒，0 表示禁用流式空闲超时。"},
 		{label: "流失败自动重试次数", placeholder: "0", description: "流连接异常后的自动重试次数，范围 0-3；0 表示不自动重试。"},
 		{label: "跨会话记忆", placeholder: "", description: "左右键或空格切换是否允许后端启用跨会话记忆。命令行(CLI)参数可覆盖该系统配置。"},
 		{label: "扫码等待超时（秒）", placeholder: "30", description: "二维码登录在自动轮询时使用该默认值；大于等于 0 的整数秒，0 表示持续等待直到手动取消。"},
-		{label: "智能体自动续跑最大轮数", placeholder: "0", description: "仅对智能体模式生效；填写 0-100 的整数，0 表示禁用。"},
+		{label: "智能体自动续跑最大轮数", placeholder: "0", description: "仅对智能体模式生效；填写 0-10000 的整数，0 表示禁用。"},
 		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
 		{label: "技能安装位置", placeholder: "", description: "左右键或空格切换用户目录(user)或工作区(workspace)。"},
 		{label: "技能自动补装策略", placeholder: "", description: "左右键或空格切换关闭(off)、确认(confirm)、自动安装(allow)。默认建议使用确认(confirm)。"},
 		{label: "自由文本技能搜索", placeholder: "", description: "左右键或空格切换是否允许按任务文本搜索远程技能候选。"},
 		{label: "技能仓库地址", placeholder: "https://mirror-cn.clawhub.com", description: "远程技能搜索、详情和安装默认使用该镜像站。"},
+		{label: "文档服务端解析类型", placeholder: "pdf, docx", description: "多个扩展名用逗号分隔，指定的文件类型由服务端文档结构化服务进行解析。"},
 	}
 }
 
@@ -7251,6 +7256,8 @@ func configFormFieldGroup(index int) string {
 		return "会话与输出"
 	case configFieldSkillsInstallScope, configFieldSkillsAutoInstallPolicy, configFieldSkillsFreeTextSearch, configFieldSkillsRegistryURL:
 		return "技能配置"
+	case configFieldDocUnstructuredExts:
+		return "文档工具"
 	default:
 		return ""
 	}
@@ -7302,6 +7309,8 @@ func configFormFieldValue(index int, values ConfigFormValues) string {
 		return ""
 	case 21:
 		return strings.TrimSpace(values.SkillsRegistryURL)
+	case 22:
+		return strings.TrimSpace(values.DocUnstructuredExts)
 	default:
 		return ""
 	}
@@ -7348,12 +7357,15 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 	if len(inputs) > 21 {
 		values.SkillsRegistryURL = strings.TrimSpace(inputs[21].Value())
 	}
+	if len(inputs) > 22 {
+		values.DocUnstructuredExts = strings.TrimSpace(inputs[22].Value())
+	}
 	return values
 }
 
 func isConfigTextField(index int) bool {
 	switch index {
-	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldStreamRetryAttempts, configFieldQRWaitTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldSkillsRegistryURL:
+	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldStreamRetryAttempts, configFieldQRWaitTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldSkillsRegistryURL, configFieldDocUnstructuredExts:
 		return true
 	default:
 		return false
@@ -7406,6 +7418,8 @@ func configFieldKey(index int) string {
 		return "skills_free_text_search"
 	case configFieldSkillsRegistryURL:
 		return "skills_registry_url"
+	case configFieldDocUnstructuredExts:
+		return "doc_unstructured_exts"
 	default:
 		return ""
 	}

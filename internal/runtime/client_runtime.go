@@ -133,12 +133,30 @@ func (r *ClientRuntime) HandleClientToolEvent(
 	config internalconfig.Config,
 	payload map[string]any,
 ) error {
-	_, result, err := r.ExecuteClientToolPayload(ctx, config, payload)
+	_, result, err := r.ExecuteClientToolPayloadWithProvider(ctx, providerClient, config, payload)
 	return r.SubmitClientToolCallback(ctx, providerClient, payload, result, err)
 }
 
 func (r *ClientRuntime) ExecuteClientToolPayload(
 	ctx context.Context,
+	config internalconfig.Config,
+	payload map[string]any,
+) (string, any, error) {
+	return r.executeClientToolPayload(ctx, nil, config, payload)
+}
+
+func (r *ClientRuntime) ExecuteClientToolPayloadWithProvider(
+	ctx context.Context,
+	providerClient provider.Provider,
+	config internalconfig.Config,
+	payload map[string]any,
+) (string, any, error) {
+	return r.executeClientToolPayload(ctx, providerClient, config, payload)
+}
+
+func (r *ClientRuntime) executeClientToolPayload(
+	ctx context.Context,
+	providerClient provider.Provider,
 	config internalconfig.Config,
 	payload map[string]any,
 ) (string, any, error) {
@@ -187,6 +205,8 @@ func (r *ClientRuntime) ExecuteClientToolPayload(
 		result, err = r.searchFiles(ctx, config, arguments)
 	case "read_file":
 		result, err = r.readFile(config, arguments)
+	case "document_unstructured":
+		result, err = r.documentUnstructured(ctx, providerClient, config, arguments)
 	case "write_file":
 		result, err = r.writeFile(config, arguments)
 	case "skill":

@@ -370,6 +370,25 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 			},
 		},
 		{
+			"name":                 "document_unstructured",
+			"description":          "按全局 doc_unstructured_exts 配置筛选本地文档文件，上传到服务端文档结构化流程(doc_unstructured_flow_id)并返回稳定 JSON 结果。",
+			"waiting_for_response": true,
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path":              map[string]any{"type": "string", "description": "单个本地文件路径；相对路径基于 working_directory。"},
+					"paths":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "多个本地文件路径；与 path 可同时使用。"},
+					"input":             map[string]any{"type": "string", "description": "可选附加说明，会作为 input_value 发送给服务端解析流程。"},
+					"input_type":        map[string]any{"type": "string", "description": "可选输入类型；默认 any。"},
+					"output_type":       map[string]any{"type": "string", "description": "可选输出类型；默认 any。"},
+					"working_directory": map[string]any{"type": "string", "description": "解析相对路径的基准目录。"},
+					"flow_id":           map[string]any{"type": "string", "description": "当前会话所属智能体 ID；通常由上下文自动注入。"},
+					"session_id":        map[string]any{"type": "string", "description": "当前会话 ID；通常由上下文自动注入。"},
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
 			"name":                 "write_file",
 			"description":          "在当前工作目录访问范围内写入文本文件，支持 create、overwrite、append 和原子写入。",
 			"waiting_for_response": true,
@@ -560,7 +579,7 @@ func shouldConfirmMutatingTool(config internalconfig.Config, toolName string) bo
 
 func mutatingClientTool(toolName string) bool {
 	switch canonicalClientToolName(toolName) {
-	case "shell_exec", "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit", "write_file":
+	case "shell_exec", "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit", "document_unstructured", "write_file":
 		return true
 	default:
 		return false
@@ -617,6 +636,18 @@ func previewClientTool(toolName string, arguments map[string]any) string {
 		return fmt.Sprintf("write_file %s (%s)", path, fallbackString(stringValue(arguments["mode"]), "overwrite"))
 	case "read_file", "search_files":
 		return fmt.Sprintf("%s %s", toolName, fallbackString(path, "."))
+	case "document_unstructured":
+		paths := argumentStringSlice(arguments, "paths")
+		if singlePath := argumentString(arguments, "path", "file_path"); singlePath != "" {
+			paths = append([]string{singlePath}, paths...)
+		}
+		if len(paths) == 0 {
+			return "document_unstructured <missing>"
+		}
+		if len(paths) == 1 {
+			return fmt.Sprintf("document_unstructured %s", paths[0])
+		}
+		return fmt.Sprintf("document_unstructured %d 文件", len(paths))
 	case "skill":
 		return fmt.Sprintf("skill %s", fallbackString(name, "<missing>"))
 	default:

@@ -157,6 +157,12 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("workdir 不能为空，如需清空请使用 taiyiflow-cli config unset workdir")
 		}
 		config.Workdir = trimmedValue
+	case "doc_unstructured_exts":
+		normalizedExts := internalconfig.NormalizeDocUnstructuredExts(splitConfigCSV(trimmedValue))
+		if len(normalizedExts) == 0 {
+			return fmt.Errorf("doc_unstructured_exts 不能为空，如需清空请使用 taiyiflow-cli config unset doc_unstructured_exts")
+		}
+		config.DocUnstructuredExts = normalizedExts
 	case "external_resource_access_policy":
 		normalizedPolicy := internalconfig.NormalizeSandboxEscapePolicy(trimmedValue)
 		if normalizedPolicy != trimmedValue {
@@ -289,6 +295,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.ReasoningEnabled = defaults.ReasoningEnabled
 	case "workdir":
 		config.Workdir = ""
+	case "doc_unstructured_exts":
+		config.DocUnstructuredExts = nil
 	case "external_resource_access_policy":
 		config.SandboxEscapePolicy = defaults.SandboxEscapePolicy
 	case "skill_review_policy":
@@ -365,6 +373,8 @@ func normalizeConfigKey(key string) string {
 		return "skills_auto_install_policy"
 	case "skills_free_text_search_enabled", "skills_intent_search", "skills_auto_install_free_text":
 		return "skills_free_text_search"
+	case "doc_unstructured_extensions", "document_unstructured_exts", "document_unstructured_extensions", "document_parse_exts":
+		return "doc_unstructured_exts"
 	default:
 		return normalized
 	}
@@ -414,6 +424,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("技能自动补装策略: %s", fallbackConfigValue(config.Skills.AutoInstallPolicy, internalconfig.Default().Skills.AutoInstallPolicy)),
 		fmt.Sprintf("自由文本技能搜索: %t", config.Skills.FreeTextSearchEnabled),
 		fmt.Sprintf("技能仓库: %s", fallbackConfigValue(config.Skills.RegistryURL, internalconfig.Default().Skills.RegistryURL)),
+		fmt.Sprintf("文档服务端解析类型: %s", fallbackConfigValue(strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "), "<未配置>")),
 		fmt.Sprintf("可访问外部资源目录: %s", fallbackConfigValue(strings.Join(config.SandboxRoots, ", "), "<仅当前工作目录>")),
 	}
 	return strings.Join(lines, "\n")

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -654,7 +653,7 @@ func (a *App) streamTaskWithSkillRetry(
 		FlowID:                    flowID,
 		Input:                     strings.TrimSpace(task),
 		InputType:                 "any",
-		Tweaks:                    buildTaskTweaks(clientContextDir, commandExecutionTarget),
+		Tweaks:                    buildTaskTweaks(config, clientContextDir, commandExecutionTarget),
 		InputFiles:                append([]string(nil), inputFiles...),
 		InternetSearch:            resolveInternetSearchEnabled(sessionState.InternetSearchOverride),
 		OutputType:                "any",
@@ -1352,62 +1351,24 @@ func uploadInputFile(
 	baseDir string,
 	localPath string,
 ) (string, error) {
-	resolvedPath, err := resolveUploadFilePath(baseDir, localPath)
-	if err != nil {
-		return "", err
-	}
-	uploadResult, err := providerClient.UploadFile(ctx, flowID, sessionID, resolvedPath, "")
-	if err != nil {
-		return "", err
-	}
-	if uploadResult == nil || strings.TrimSpace(uploadResult.FilePath) == "" {
-		return "", fmt.Errorf("上传文件失败: 服务端未返回文件路径")
-	}
-	return strings.TrimSpace(uploadResult.FilePath), nil
+	return clientruntime.UploadInputFile(ctx, providerClient, flowID, sessionID, baseDir, localPath)
 }
 
 func resolveUploadFilePath(baseDir string, localPath string) (string, error) {
-	trimmedPath := strings.TrimSpace(localPath)
-	if trimmedPath == "" {
-		return "", fmt.Errorf("上传文件失败: 本地文件路径不能为空")
-	}
-	resolvedPath := trimmedPath
-	if !filepath.IsAbs(resolvedPath) {
-		anchorDir := strings.TrimSpace(baseDir)
-		if anchorDir == "" {
-			cwd, err := os.Getwd()
-			if err != nil {
-				return "", fmt.Errorf("上传文件失败: 获取当前目录失败: %w", err)
-			}
-			anchorDir = cwd
-		}
-		resolvedPath = filepath.Join(anchorDir, resolvedPath)
-	}
-	absPath, err := filepath.Abs(resolvedPath)
-	if err != nil {
-		return "", fmt.Errorf("上传文件失败: 解析文件路径失败: %w", err)
-	}
-	fileInfo, err := os.Stat(absPath)
-	if err != nil {
-		return "", fmt.Errorf("上传文件失败: %w", err)
-	}
-	if fileInfo.IsDir() {
-		return "", fmt.Errorf("上传文件失败: %s 是目录，请提供文件路径", absPath)
-	}
-	return absPath, nil
+	return clientruntime.ResolveUploadFilePath(baseDir, localPath)
 }
 
 func boolPtr(value bool) *bool {
 	return &value
 }
 
-func buildTaskEnvironmentHint(contextDir string, commandExecutionTarget string) string {
+func buildTaskEnvironmentHint(contextDir string, commandExecutionTarget string, docUnstructuredExts []string) string {
 	resolvedContextDir := resolveLocalWorkdir(contextDir)
 	resolvedTarget := strings.TrimSpace(commandExecutionTarget)
 	if resolvedTarget == "" {
 		resolvedTarget = "client"
 	}
-	return strings.Join([]string{
+	lines := []string{
 		"<taiyiflow_environment>",
 		fmt.Sprintf("OS: %s", runtime.GOOS),
 		fmt.Sprintf("ARCH: %s", runtime.GOARCH),
@@ -1415,14 +1376,30 @@ func buildTaskEnvironmentHint(contextDir string, commandExecutionTarget string) 
 		fmt.Sprintf("命令执行目标: %s", resolvedTarget),
 		"跨平台执行建议: 根据当前 OS/ARCH 选择命令；优先使用 shell_exec 的 command + args 结构化调用，只有需要管道、重定向或通配符时再使用 rawCommand。",
 		"fork/exec 回退建议: 如遇到 fork/exec ... not supported，通常表示可执行文件不适配当前 OS/ARCH 或脚本缺少可用解释器；请改用当前平台可执行命令或通过 shell 包装。",
-		"</taiyiflow_environment>",
-	}, "\n")
+	}
+	if formattedExts := formatTaskDocUnstructuredExts(docUnstructuredExts); formattedExts != "" {
+		lines = append(lines, fmt.Sprintf("文档结构化工具: 对 %s 优先显式调用 local.document_unstructured；不要自动改写现有 --file、/upload 或 InputFiles 主流程。", formattedExts))
+	}
+	lines = append(lines, "</taiyiflow_environment>")
+	return strings.Join(lines, "\n")
 }
 
-func buildTaskTweaks(contextDir string, commandExecutionTarget string) map[string]any {
+func buildTaskTweaks(config internalconfig.Config, contextDir string, commandExecutionTarget string) map[string]any {
 	return map[string]any{
-		"taiyiflow_environment": buildTaskEnvironmentHint(contextDir, commandExecutionTarget),
+		"taiyiflow_environment": buildTaskEnvironmentHint(contextDir, commandExecutionTarget, config.DocUnstructuredExts),
 	}
+}
+
+func formatTaskDocUnstructuredExts(values []string) string {
+	normalized := internalconfig.NormalizeDocUnstructuredExts(values)
+	if len(normalized) == 0 {
+		return ""
+	}
+	prefixed := prefixDocumentExts(normalized)
+	if len(prefixed) > 8 {
+		return fmt.Sprintf("%s 等 %d 种", strings.Join(prefixed[:8], ", "), len(prefixed))
+	}
+	return strings.Join(prefixed, ", ")
 }
 
 func splitAssistantMessage(payload map[string]any) bool {

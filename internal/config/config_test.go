@@ -62,6 +62,16 @@ func TestNormalizeWriteConfirmationPolicy(t *testing.T) {
 	}
 }
 
+func TestNormalizeDocUnstructuredExts(t *testing.T) {
+	values := NormalizeDocUnstructuredExts([]string{".PDF", " pdf ", "docx", ".docx", "", " .Md "})
+	if len(values) != 3 {
+		t.Fatalf("expected 3 normalized extensions, got %#v", values)
+	}
+	if values[0] != "pdf" || values[1] != "docx" || values[2] != "md" {
+		t.Fatalf("unexpected normalized extensions: %#v", values)
+	}
+}
+
 func TestNormalizeSkillAutoInstallPolicy(t *testing.T) {
 	cases := []struct {
 		input    string
@@ -213,6 +223,24 @@ func TestManagerLoadReadsCrossSessionMemoryEnabled(t *testing.T) {
 	}
 	if !loaded.CrossSessionMemoryEnabled {
 		t.Fatal("expected cross_session_memory_enabled to load as true")
+	}
+}
+
+func TestManagerLoadNormalizesDocUnstructuredExts(t *testing.T) {
+	tempDir := t.TempDir()
+	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
+
+	content := []byte("backend_base_url: http://localhost:4005\ndoc_unstructured_exts:\n  - .PDF\n  - pdf\n  - docx\n")
+	if err := os.WriteFile(manager.path, content, 0o644); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	if len(loaded.DocUnstructuredExts) != 2 || loaded.DocUnstructuredExts[0] != "pdf" || loaded.DocUnstructuredExts[1] != "docx" {
+		t.Fatalf("expected normalized doc_unstructured_exts, got %#v", loaded.DocUnstructuredExts)
 	}
 }
 

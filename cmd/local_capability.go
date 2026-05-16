@@ -117,6 +117,18 @@ func (p *callbackAuthRefreshProvider) UploadFile(ctx context.Context, flowID str
 	return p.Provider.UploadFile(ctx, flowID, sessionID, localPath, remotePath)
 }
 
+func (p *callbackAuthRefreshProvider) RunDocumentUnstructured(ctx context.Context, request provider.DocumentUnstructuredRequest) (*provider.DocumentUnstructuredResult, error) {
+	result, err := p.Provider.RunDocumentUnstructured(ctx, request)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return result, err
+	}
+	return p.Provider.RunDocumentUnstructured(ctx, request)
+}
+
 func (p *callbackAuthRefreshProvider) GetVersionInfo(ctx context.Context) (*provider.ServiceVersion, error) {
 	versionInfo, err := p.Provider.GetVersionInfo(ctx)
 	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)

@@ -156,8 +156,25 @@ func TestAssignConfigValueSkillsAutoInstallPolicy(t *testing.T) {
 	}
 }
 
+func TestAssignAndResetConfigValueDocUnstructuredExts(t *testing.T) {
+	config := internalconfig.Default()
+	if err := assignConfigValue(&config, "document_unstructured_extensions", ".PDF, docx, pdf"); err != nil {
+		t.Fatalf("assignConfigValue returned error: %v", err)
+	}
+	if len(config.DocUnstructuredExts) != 2 || config.DocUnstructuredExts[0] != "pdf" || config.DocUnstructuredExts[1] != "docx" {
+		t.Fatalf("expected normalized doc_unstructured_exts, got %#v", config.DocUnstructuredExts)
+	}
+	if err := resetConfigValue(&config, "doc_unstructured_exts"); err != nil {
+		t.Fatalf("resetConfigValue returned error: %v", err)
+	}
+	if len(config.DocUnstructuredExts) != 0 {
+		t.Fatalf("expected cleared doc_unstructured_exts, got %#v", config.DocUnstructuredExts)
+	}
+}
+
 func TestRenderConfigSummaryUsesExternalResourceAccessPolicyLabel(t *testing.T) {
 	config := internalconfig.Default()
+	config.DocUnstructuredExts = []string{"pdf", "docx"}
 	summary := renderConfigSummary("/tmp/taiyiflow.yaml", config)
 	if !strings.Contains(summary, "外部资源访问策略:") {
 		t.Fatalf("expected external resource access policy label, got %q", summary)
@@ -176,6 +193,9 @@ func TestRenderConfigSummaryUsesExternalResourceAccessPolicyLabel(t *testing.T) 
 	}
 	if !strings.Contains(summary, "跨会话记忆: false") {
 		t.Fatalf("expected cross session memory label, got %q", summary)
+	}
+	if !strings.Contains(summary, "文档服务端解析类型:") || !strings.Contains(summary, ".pdf") || !strings.Contains(summary, ".docx") {
+		t.Fatalf("expected doc unstructured ext summary, got %q", summary)
 	}
 }
 

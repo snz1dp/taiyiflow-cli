@@ -341,6 +341,21 @@ type UploadResult struct {
 	FilePath string
 }
 
+type DocumentUnstructuredRequest struct {
+	FlowID     string
+	Input      string
+	InputType  string
+	InputFiles []string
+	OutputType string
+	SessionID  string
+}
+
+type DocumentUnstructuredResult struct {
+	SessionID string
+	Output    string
+	MediaType string
+}
+
 type SessionMessage struct {
 	ID               string
 	SessionID        string
@@ -383,6 +398,7 @@ type Provider interface {
 	ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*SessionMessageList, error)
 	CreateSessionID(ctx context.Context) (string, error)
 	UploadFile(ctx context.Context, flowID string, sessionID string, localPath string, remotePath string) (*UploadResult, error)
+	RunDocumentUnstructured(ctx context.Context, request DocumentUnstructuredRequest) (*DocumentUnstructuredResult, error)
 	GetVersionInfo(ctx context.Context) (*ServiceVersion, error)
 	GetServiceConfig(ctx context.Context) (*ServiceConfig, error)
 	GetCurrentUserInfo(ctx context.Context) (*CurrentUser, error)

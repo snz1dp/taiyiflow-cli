@@ -125,7 +125,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				FlowID:                    currentFlow,
 				Input:                     strings.TrimSpace(request.Input),
 				InputType:                 "any",
-				Tweaks:                    buildTaskTweaks(clientContextDir, commandExecutionTarget),
+				Tweaks:                    buildTaskTweaks(config, clientContextDir, commandExecutionTarget),
 				InputFiles:                append([]string(nil), request.InputFiles...),
 				InternetSearch:            request.InternetSearch,
 				KnowledgeScopes:           append([]string(nil), request.KnowledgeScopes...),
@@ -303,14 +303,14 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						if strings.TrimSpace(execConfig.ApprovalMode) != "readonly" {
 							execConfig.ApprovalMode = "auto"
 						}
-						toolName, result, toolErr := runtimeClient.ExecuteClientToolPayload(runCtx, execConfig, event.Data)
+						toolName, result, toolErr := runtimeClient.ExecuteClientToolPayloadWithProvider(runCtx, callbackProvider, execConfig, event.Data)
 						emitTUIClientToolResultEvents(emit, execConfig, toolName, result, toolErr)
 						if err := runtimeClient.SubmitClientToolCallback(runCtx, callbackProvider, event.Data, result, toolErr); err != nil {
 							return err
 						}
 						continue
 					}
-					toolName, result, toolErr := runtimeClient.ExecuteClientToolPayload(runCtx, localConfig, event.Data)
+					toolName, result, toolErr := runtimeClient.ExecuteClientToolPayloadWithProvider(runCtx, callbackProvider, localConfig, event.Data)
 					emitTUIClientToolResultEvents(emit, localConfig, toolName, result, toolErr)
 					if err := runtimeClient.SubmitClientToolCallback(runCtx, callbackProvider, event.Data, result, toolErr); err != nil {
 						return err
@@ -815,17 +815,18 @@ func (a *App) buildInitialTUISnapshot(
 	serviceConfig *provider.ServiceConfig,
 ) (tui.Snapshot, error) {
 	snapshot := tui.Snapshot{
-		Version:             buildinfo.Version,
-		BackendURL:          config.BackendBaseURL,
-		BackendAvailable:    backend.Available,
-		BackendStatusReason: strings.TrimSpace(backend.Reason),
-		DefaultFlow:         flowID,
-		DefaultFlowLabel:    strings.TrimSpace(flowID),
-		Workdir:             resolveLocalWorkdir(config.Workdir),
-		ContextDir:          resolveLocalWorkdir(config.Workdir),
-		RequestMode:         provider.RequestTypeAgent,
-		ApprovalMode:        config.ApprovalMode,
-		ReasoningEnabled:    config.ReasoningEnabled,
+		Version:                       buildinfo.Version,
+		BackendURL:                    config.BackendBaseURL,
+		BackendAvailable:              backend.Available,
+		BackendStatusReason:           strings.TrimSpace(backend.Reason),
+		DefaultFlow:                   flowID,
+		DefaultFlowLabel:              strings.TrimSpace(flowID),
+		Workdir:                       resolveLocalWorkdir(config.Workdir),
+		ContextDir:                    resolveLocalWorkdir(config.Workdir),
+		RequestMode:                   provider.RequestTypeAgent,
+		ApprovalMode:                  config.ApprovalMode,
+		ReasoningEnabled:              config.ReasoningEnabled,
+		ConfiguredDocUnstructuredExts: internalconfig.NormalizeDocUnstructuredExts(config.DocUnstructuredExts),
 	}
 	if backend.AuthRequired {
 		snapshot.AuthRequired = true
@@ -912,17 +913,18 @@ func (a *App) buildTUISnapshot(
 	backend backendStatus,
 ) (tui.Snapshot, error) {
 	snapshot := tui.Snapshot{
-		Version:             buildinfo.Version,
-		BackendURL:          config.BackendBaseURL,
-		BackendAvailable:    backend.Available,
-		BackendStatusReason: strings.TrimSpace(backend.Reason),
-		DefaultFlow:         flowID,
-		DefaultFlowLabel:    a.resolveFlowDisplayName(ctx, providerClient, flowID),
-		Workdir:             resolveLocalWorkdir(config.Workdir),
-		ContextDir:          resolveLocalWorkdir(config.Workdir),
-		RequestMode:         provider.RequestTypeAgent,
-		ApprovalMode:        config.ApprovalMode,
-		ReasoningEnabled:    config.ReasoningEnabled,
+		Version:                       buildinfo.Version,
+		BackendURL:                    config.BackendBaseURL,
+		BackendAvailable:              backend.Available,
+		BackendStatusReason:           strings.TrimSpace(backend.Reason),
+		DefaultFlow:                   flowID,
+		DefaultFlowLabel:              a.resolveFlowDisplayName(ctx, providerClient, flowID),
+		Workdir:                       resolveLocalWorkdir(config.Workdir),
+		ContextDir:                    resolveLocalWorkdir(config.Workdir),
+		RequestMode:                   provider.RequestTypeAgent,
+		ApprovalMode:                  config.ApprovalMode,
+		ReasoningEnabled:              config.ReasoningEnabled,
+		ConfiguredDocUnstructuredExts: internalconfig.NormalizeDocUnstructuredExts(config.DocUnstructuredExts),
 	}
 	if !backend.Available {
 		if strings.TrimSpace(flowID) == "" {
@@ -2361,6 +2363,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			SkillsAutoInstallPolicy:   internalconfig.NormalizeSkillAutoInstallPolicy(config.Skills.AutoInstallPolicy),
 			SkillsFreeTextSearch:      config.Skills.FreeTextSearchEnabled,
 			SkillsRegistryURL:         strings.TrimSpace(config.Skills.RegistryURL),
+			DocUnstructuredExts:       strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "),
 		},
 	}, nil
 }
@@ -2420,6 +2423,12 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		config.Workdir = ""
 	} else if err := assignConfigValue(&config, "workdir", submission.Values.Workdir); err != nil {
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "workdir", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.DocUnstructuredExts) == "" {
+		config.DocUnstructuredExts = nil
+	} else if err := assignConfigValue(&config, "doc_unstructured_exts", submission.Values.DocUnstructuredExts); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "doc_unstructured_exts", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.HTTPTimeoutSeconds) == "" {
@@ -2778,7 +2787,7 @@ func executeTUIUploadCommand(ctx context.Context, providerClient provider.Provid
 	if flowID == "" {
 		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "当前未配置智能体，无法上传文件。"}}}, nil
 	}
-	uploadedPath, err := uploadInputFile(ctx, providerClient, flowID, snapshot.SessionID, firstNonEmpty(snapshot.ContextDir, snapshot.Workdir), argument)
+	uploadedPath, err := clientruntime.UploadInputFile(ctx, providerClient, flowID, snapshot.SessionID, firstNonEmpty(snapshot.ContextDir, snapshot.Workdir), argument)
 	if err != nil {
 		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
 	}
@@ -3045,6 +3054,7 @@ func applyServiceConfigToTUISnapshot(snapshot *tui.Snapshot, serviceConfig *prov
 	}
 	snapshot.MaxFileSizeUploadMB = serviceConfig.MaxFileSizeUpload
 	snapshot.SupportedDocumentExts = compactNonEmptyStrings(serviceConfig.DocExts)
+	snapshot.DocUnstructuredFlowAvailable = strings.TrimSpace(serviceConfig.DocUnstructuredFlowID) != ""
 	snapshot.KnowledgeSystemEnabled = serviceConfig.MilvusEnabled
 	snapshot.TextToSpeechSupported = serviceConfig.FeatureFlags.TextToSpeech
 	snapshot.SpeechToTextSupported = serviceConfig.FeatureFlags.SpeechToText
@@ -3218,7 +3228,15 @@ func renderTUIChatFilesStatus(snapshot tui.Snapshot) string {
 		lines = append(lines, fmt.Sprintf("上传上限: %d MB", snapshot.MaxFileSizeUploadMB))
 	}
 	if len(snapshot.SupportedDocumentExts) > 0 {
-		lines = append(lines, "支持扩展: "+formatDocumentExts(snapshot.SupportedDocumentExts, 16))
+		lines = append(lines, "服务端支持扩展: "+formatDocumentExts(snapshot.SupportedDocumentExts, 16))
+	}
+	if len(snapshot.ConfiguredDocUnstructuredExts) > 0 {
+		lines = append(lines, "结构化扩展: "+formatDocumentExts(snapshot.ConfiguredDocUnstructuredExts, 16))
+	}
+	if snapshot.DocUnstructuredFlowAvailable {
+		lines = append(lines, "结构化解析: 服务端流程已启用")
+	} else if len(snapshot.ConfiguredDocUnstructuredExts) > 0 {
+		lines = append(lines, "结构化解析: 服务端未配置文档结构化流程")
 	}
 	if len(snapshot.FileCapabilities) > 0 {
 		labels := make([]string, 0, len(snapshot.FileCapabilities))

@@ -10,7 +10,45 @@ import (
 	"testing"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
+
+type documentToolUploadCall struct {
+	FlowID    string
+	SessionID string
+	LocalPath string
+}
+
+type documentToolProviderStub struct {
+	provider.Provider
+	serviceConfig *provider.ServiceConfig
+	uploadCalls   []documentToolUploadCall
+	runRequest    provider.DocumentUnstructuredRequest
+	runResult     *provider.DocumentUnstructuredResult
+	callback      provider.ClientCallResult
+}
+
+func (s *documentToolProviderStub) GetServiceConfig(context.Context) (*provider.ServiceConfig, error) {
+	return s.serviceConfig, nil
+}
+
+func (s *documentToolProviderStub) UploadFile(_ context.Context, flowID string, sessionID string, localPath string, remotePath string) (*provider.UploadResult, error) {
+	if remotePath != "" {
+		return nil, nil
+	}
+	s.uploadCalls = append(s.uploadCalls, documentToolUploadCall{FlowID: flowID, SessionID: sessionID, LocalPath: localPath})
+	return &provider.UploadResult{FlowID: flowID, FilePath: "/remote/" + filepath.Base(localPath)}, nil
+}
+
+func (s *documentToolProviderStub) RunDocumentUnstructured(_ context.Context, request provider.DocumentUnstructuredRequest) (*provider.DocumentUnstructuredResult, error) {
+	s.runRequest = request
+	return s.runResult, nil
+}
+
+func (s *documentToolProviderStub) SubmitClientCallResult(_ context.Context, result provider.ClientCallResult) error {
+	s.callback = result
+	return nil
+}
 
 func TestWriteAndReadFile(t *testing.T) {
 	tempDir := t.TempDir()
@@ -399,6 +437,170 @@ func TestRequiresClientToolConfirmationRespectsSkillAndWritePolicies(t *testing.
 	directAskRuleConfig.PermissionRules = []internalconfig.PermissionRule{{Action: "ask", ToolName: "write_file"}}
 	if RequiresClientToolConfirmation(directAskRuleConfig, writePayload) {
 		t.Fatal("expected direct write policy to bypass write review despite ask rule")
+	}
+}
+
+func TestRequiresClientToolConfirmationDocumentUnstructuredFollowsApprovalMode(t *testing.T) {
+	payload := map[string]any{
+		"function": map[string]any{
+			"name":      "document_unstructured",
+			"arguments": map[string]any{"path": "report.pdf"},
+		},
+	}
+	if !RequiresClientToolConfirmation(internalconfig.Config{ApprovalMode: "confirm"}, payload) {
+		t.Fatal("expected document_unstructured to require confirmation in confirm mode")
+	}
+	if RequiresClientToolConfirmation(internalconfig.Config{ApprovalMode: "auto"}, payload) {
+		t.Fatal("expected document_unstructured to skip confirmation in auto mode")
+	}
+}
+
+func TestDocumentUnstructuredToolDefinitionAvailableInAgentMode(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	definitions := runtimeClient.clientToolDefinitionsForMode("agent")
+	for _, item := range definitions {
+		name, _ := item["name"].(string)
+		if name != "document_unstructured" {
+			continue
+		}
+		description, _ := item["description"].(string)
+		if !strings.Contains(description, "doc_unstructured_exts") || !strings.Contains(description, "doc_unstructured_flow_id") {
+			t.Fatalf("expected document_unstructured description to mention config and flow id, got %q", description)
+		}
+		return
+	}
+	t.Fatal("expected document_unstructured tool definition in agent mode")
+}
+
+func TestExecuteClientToolPayloadWithProviderDocumentUnstructured(t *testing.T) {
+	tempDir := t.TempDir()
+	localPath := filepath.Join(tempDir, "report.pdf")
+	if err := os.WriteFile(localPath, []byte("fake-pdf"), 0o644); err != nil {
+		t.Fatalf("write test file failed: %v", err)
+	}
+	providerStub := &documentToolProviderStub{
+		serviceConfig: &provider.ServiceConfig{DocUnstructuredFlowID: "doc-flow", DocExts: []string{"pdf"}},
+		runResult:     &provider.DocumentUnstructuredResult{SessionID: "session-2", MediaType: "application/json", Output: `{"items":[{"text":"parsed content"}]}`},
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	toolName, resultAny, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, internalconfig.Config{
+		Workdir:             tempDir,
+		ApprovalMode:        "auto",
+		DocUnstructuredExts: []string{"pdf"},
+	}, map[string]any{
+		"server":             map[string]any{"name": "local"},
+		"flow_id":            "chat-flow",
+		"client_context_dir": tempDir,
+		"context":            map[string]any{"session_id": "session-1"},
+		"function": map[string]any{
+			"name": "document_unstructured",
+			"arguments": map[string]any{
+				"path":  "report.pdf",
+				"input": "请提取正文",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected document_unstructured to succeed, got %v", err)
+	}
+	if toolName != "document_unstructured" {
+		t.Fatalf("unexpected tool name: %s", toolName)
+	}
+	if len(providerStub.uploadCalls) != 1 {
+		t.Fatalf("expected one upload call, got %#v", providerStub.uploadCalls)
+	}
+	if providerStub.uploadCalls[0].FlowID != "chat-flow" || providerStub.uploadCalls[0].SessionID != "session-1" {
+		t.Fatalf("unexpected upload call context: %#v", providerStub.uploadCalls[0])
+	}
+	if providerStub.runRequest.FlowID != "doc-flow" {
+		t.Fatalf("expected doc flow id, got %#v", providerStub.runRequest)
+	}
+	if len(providerStub.runRequest.InputFiles) != 1 || providerStub.runRequest.InputFiles[0] != "/remote/report.pdf" {
+		t.Fatalf("unexpected uploaded remote files: %#v", providerStub.runRequest.InputFiles)
+	}
+	result, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected document_unstructured result map, got %#v", resultAny)
+	}
+	if result["count"] != 1 {
+		t.Fatalf("unexpected count: %#v", result)
+	}
+	items, ok := result["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("unexpected items: %#v", result["items"])
+	}
+	if result["session_id"] != "session-2" {
+		t.Fatalf("expected returned session id, got %#v", result["session_id"])
+	}
+}
+
+func TestExecuteClientToolPayloadWithProviderDocumentUnstructuredRejectsDisabledExtension(t *testing.T) {
+	tempDir := t.TempDir()
+	localPath := filepath.Join(tempDir, "report.pdf")
+	if err := os.WriteFile(localPath, []byte("fake-pdf"), 0o644); err != nil {
+		t.Fatalf("write test file failed: %v", err)
+	}
+	providerStub := &documentToolProviderStub{
+		serviceConfig: &provider.ServiceConfig{DocUnstructuredFlowID: "doc-flow", DocExts: []string{"pdf"}},
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	_, _, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, internalconfig.Config{
+		Workdir:             tempDir,
+		ApprovalMode:        "auto",
+		DocUnstructuredExts: []string{"docx"},
+	}, map[string]any{
+		"server":             map[string]any{"name": "local"},
+		"flow_id":            "chat-flow",
+		"client_context_dir": tempDir,
+		"function": map[string]any{
+			"name":      "document_unstructured",
+			"arguments": map[string]any{"path": "report.pdf"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "doc_unstructured_exts") {
+		t.Fatalf("expected disabled extension error, got %v", err)
+	}
+}
+
+func TestHandleClientToolEventSubmitsDocumentUnstructuredCallback(t *testing.T) {
+	tempDir := t.TempDir()
+	localPath := filepath.Join(tempDir, "report.pdf")
+	if err := os.WriteFile(localPath, []byte("fake-pdf"), 0o644); err != nil {
+		t.Fatalf("write test file failed: %v", err)
+	}
+	providerStub := &documentToolProviderStub{
+		serviceConfig: &provider.ServiceConfig{DocUnstructuredFlowID: "doc-flow", DocExts: []string{"pdf"}},
+		runResult:     &provider.DocumentUnstructuredResult{SessionID: "session-1", MediaType: "text/plain", Output: "plain text"},
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	err := runtimeClient.HandleClientToolEvent(context.Background(), providerStub, internalconfig.Config{
+		Workdir:             tempDir,
+		ApprovalMode:        "auto",
+		DocUnstructuredExts: []string{"pdf"},
+	}, map[string]any{
+		"flow_id": "chat-flow",
+		"server":  map[string]any{"name": "local"},
+		"context": map[string]any{"session_id": "session-1", "run_id": "run-1", "message_id": "msg-1"},
+		"function": map[string]any{
+			"id":   "call-1",
+			"name": "document_unstructured",
+			"arguments": map[string]any{
+				"path": localPath,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected callback submission to succeed, got %v", err)
+	}
+	if !providerStub.callback.Success {
+		t.Fatalf("expected successful callback, got %#v", providerStub.callback)
+	}
+	result, ok := providerStub.callback.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("expected callback result map, got %#v", providerStub.callback.Result)
+	}
+	if result["raw_output"] != "plain text" {
+		t.Fatalf("expected raw output in callback result, got %#v", result)
 	}
 }
 

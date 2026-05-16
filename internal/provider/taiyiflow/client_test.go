@@ -380,7 +380,7 @@ func TestGetServiceConfigParsesResponse(t *testing.T) {
 			return
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(writer, `{"feature_flags":{"text_to_speech":true,"speech_to_text":true,"human_ai_dialogue":true},"max_file_size_upload":100,"doc_exts":[".pdf","PDF","docx",""],"milvus_enabled":true,"default_flow_id":" flow-1 "}`)
+		fmt.Fprint(writer, `{"feature_flags":{"text_to_speech":true,"speech_to_text":true,"human_ai_dialogue":true},"max_file_size_upload":100,"doc_exts":[".pdf","PDF","docx",""],"milvus_enabled":true,"default_flow_id":" flow-1 ","doc_unstructured_flow_id":" doc-unstructured-flow "}`)
 	}))
 	defer server.Close()
 
@@ -400,6 +400,9 @@ func TestGetServiceConfigParsesResponse(t *testing.T) {
 	}
 	if len(config.DocExts) != 2 || config.DocExts[0] != "pdf" || config.DocExts[1] != "docx" {
 		t.Fatalf("expected normalized doc extensions, got %#v", config.DocExts)
+	}
+	if config.DocUnstructuredFlowID != "doc-unstructured-flow" {
+		t.Fatalf("expected doc unstructured flow id to be preserved, got %#v", config)
 	}
 }
 
@@ -502,6 +505,84 @@ func TestUploadFilePostsMultipartFormAndParsesResponse(t *testing.T) {
 	}
 	if result.FlowID != "demo-flow" || result.FilePath != "demo-flow/session-123/folder/remote.txt" {
 		t.Fatalf("unexpected upload result: %#v", result)
+	}
+}
+
+func TestRunDocumentUnstructuredPostsSimplifiedRequestAndParsesResponse(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != backendAPIPath("/run/doc-flow") {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.Method != http.MethodPost {
+			t.Fatalf("expected POST request, got %s", request.Method)
+		}
+		if contentType := request.Header.Get("Content-Type"); !strings.Contains(contentType, "application/json") {
+			t.Fatalf("expected application/json content type, got %q", contentType)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request body failed: %v", err)
+		}
+		writer.Header().Set(SessionHeader, "session-doc-2")
+		writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+		fmt.Fprint(writer, `{"items":[{"text":"结构化结果"}]}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	result, err := client.RunDocumentUnstructured(context.Background(), provider.DocumentUnstructuredRequest{
+		FlowID:     "doc-flow",
+		Input:      "请解析文件",
+		InputType:  "any",
+		InputFiles: []string{"flow/session/demo.pdf"},
+		OutputType: "any",
+		SessionID:  "session-doc-1",
+	})
+	if err != nil {
+		t.Fatalf("expected RunDocumentUnstructured to succeed, got %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected document unstructured result")
+	}
+	if result.SessionID != "session-doc-2" {
+		t.Fatalf("expected response session id, got %#v", result)
+	}
+	if result.MediaType != "application/json" {
+		t.Fatalf("expected normalized media type, got %#v", result)
+	}
+	if result.Output != `{"items":[{"text":"结构化结果"}]}` {
+		t.Fatalf("expected raw output body to be preserved, got %#v", result)
+	}
+	if captured["input_value"] != "请解析文件" {
+		t.Fatalf("expected input_value to be forwarded, got %#v", captured)
+	}
+	if captured["session_id"] != "session-doc-1" {
+		t.Fatalf("expected session_id to be forwarded, got %#v", captured)
+	}
+	files, ok := captured["files"].([]any)
+	if !ok || len(files) != 1 || files[0] != "flow/session/demo.pdf" {
+		t.Fatalf("expected files payload, got %#v", captured)
+	}
+	if _, exists := captured["input_files"]; exists {
+		t.Fatalf("expected simplified request to use files alias, got %#v", captured)
+	}
+}
+
+func TestRunDocumentUnstructuredReturnsHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != backendAPIPath("/run/doc-flow") {
+			http.NotFound(writer, request)
+			return
+		}
+		http.Error(writer, `{"detail":"bad request"}`, http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	_, err := client.RunDocumentUnstructured(context.Background(), provider.DocumentUnstructuredRequest{FlowID: "doc-flow"})
+	if err == nil || !strings.Contains(err.Error(), "调用文档结构化服务失败") {
+		t.Fatalf("expected http error to surface, got %v", err)
 	}
 }
 
