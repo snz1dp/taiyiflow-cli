@@ -73,7 +73,7 @@ func (a *App) tryPersistentLogin(
 		changed = true
 	}
 
-	authClient := providerclient.NewAuthClient(config.BackendBaseURL)
+	authClient := buildAuthClient(config)
 	session, err := authClient.ExchangePersistentToken(ctx, persistentToken, deviceID)
 	if err != nil {
 		if shouldClearPersistentLogin(err) {
@@ -139,7 +139,7 @@ func (a *App) persistAuthenticatedSession(
 
 		persistentToken := strings.TrimSpace(session.PersistentToken)
 		if persistentToken == "" {
-			authClient := providerclient.NewAuthClient(config.BackendBaseURL)
+			authClient := buildAuthClient(config)
 			createdToken, err := authClient.CreatePersistentToken(ctx, config.AccessToken, deviceID)
 			if err != nil {
 				return config, err

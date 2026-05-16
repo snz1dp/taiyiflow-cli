@@ -79,13 +79,13 @@ func TestSubmitTUILoginFormPasswordUpdatesAuthState(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/password_token":
+		case authAPIPath("/oauth/api/password_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
-		case "/xeai/logged/persistent_token":
+		case authAPIPath("/logged/persistent_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"persist-1","userinfo":{"userid":"u-1","display_name":"张三"}}}`)
 		default:
@@ -160,13 +160,13 @@ func TestSubmitTUILoginFormPasswordClearsSavedSessionAfterSuccess(t *testing.T) 
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/password_token":
+		case authAPIPath("/oauth/api/password_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
-		case "/xeai/logged/persistent_token":
+		case authAPIPath("/logged/persistent_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"persist-1","userinfo":{"userid":"u-1","display_name":"张三"}}}`)
 		default:
@@ -252,7 +252,7 @@ func TestExecuteTUILoginCommandOpensOverlay(t *testing.T) {
 		t.Fatalf("new manager failed: %v", err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/xeai/oauth/api/channel_names" {
+		if request.URL.Path != authAPIPath("/oauth/api/channel_names") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -383,17 +383,17 @@ func TestSubmitTUILoginFormPasswordRequiresCaptcha(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/password_token":
+		case authAPIPath("/oauth/api/password_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			writer.Header().Set("Content-Type", "application/json")
 			writer.WriteHeader(http.StatusBadRequest)
 			fmt.Fprint(writer, `{"code":404,"message":"需要图形验证码","data":{"type":"kaptcha","ticket":"captcha-ticket-1","hint":"请输入图形验证码","interval":120}}`)
-		case "/xeai/kaptcha/ticket":
+		case authAPIPath("/kaptcha/ticket"):
 			kaptchaTicketCalled = true
 			http.NotFound(writer, request)
-		case "/xeai/kaptcha/image":
+		case authAPIPath("/kaptcha/image"):
 			kaptchaImageQueryTicket = request.URL.Query().Get("ticket")
 			writer.Header().Set("Content-Type", "image/png")
 			_, _ = writer.Write(kaptchaPNG.Bytes())
@@ -463,7 +463,7 @@ func TestSubmitTUILoginFormPasswordRequiresCaptcha(t *testing.T) {
 	if strings.TrimSpace(result.LoginForm.VerifyImagePNGBase64) == "" {
 		t.Fatalf("expected captcha flow to keep terminal image payload, got %#v", result.LoginForm)
 	}
-	if !strings.Contains(result.LoginForm.VerifyImageURL, "/xeai/kaptcha/image") || !strings.Contains(result.LoginForm.VerifyImageURL, "ticket=captcha-ticket-1") {
+	if !strings.Contains(result.LoginForm.VerifyImageURL, authAPIPath("/kaptcha/image")) || !strings.Contains(result.LoginForm.VerifyImageURL, "ticket=captcha-ticket-1") {
 		t.Fatalf("expected captcha flow to keep real captcha image url, got %#v", result.LoginForm)
 	}
 	if kaptchaImageQueryTicket != "captcha-ticket-1" {
@@ -526,7 +526,7 @@ func TestSubmitTUILoginFormPasswordCaptchaRefetchesPasswordTokenEachSubmit(t *te
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/password_token":
+		case authAPIPath("/oauth/api/password_token"):
 			passwordTokenCalls++
 			writer.Header().Set("Content-Type", "application/json")
 			if passwordTokenCalls == 1 {
@@ -534,7 +534,7 @@ func TestSubmitTUILoginFormPasswordCaptchaRefetchesPasswordTokenEachSubmit(t *te
 				return
 			}
 			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-2","pubkey":%q}}`, secondPublicKeyPEM)
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			ajaxLogonCalls++
 			query := request.URL.Query()
 			expectedTicket := ""
@@ -573,10 +573,10 @@ func TestSubmitTUILoginFormPasswordCaptchaRefetchesPasswordTokenEachSubmit(t *te
 			}
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
-		case "/xeai/kaptcha/ticket":
+		case authAPIPath("/kaptcha/ticket"):
 			kaptchaTicketCalls++
 			http.NotFound(writer, request)
-		case "/xeai/kaptcha/image":
+		case authAPIPath("/kaptcha/image"):
 			kaptchaImageCalls++
 			if got := request.URL.Query().Get("ticket"); got != "captcha-ticket-1" {
 				t.Fatalf("unexpected image ticket: %q", got)
@@ -676,14 +676,14 @@ func TestSubmitTUILoginFormPasswordUsesVerifyChallengeFromHTTPError(t *testing.T
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/password_token":
+		case authAPIPath("/oauth/api/password_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			writer.Header().Set("Content-Type", "application/json")
 			writer.WriteHeader(http.StatusBadRequest)
 			fmt.Fprint(writer, `{"code":404,"message":"需要图形验证码","data":{"type":"kaptcha","ticket":"captcha-ticket-1","hint":"请输入图形验证码","interval":120}}`)
-		case "/xeai/kaptcha/image":
+		case authAPIPath("/kaptcha/image"):
 			kaptchaImageQueryTicket = request.URL.Query().Get("ticket")
 			writer.Header().Set("Content-Type", "image/png")
 			_, _ = writer.Write(kaptchaPNG.Bytes())
@@ -771,10 +771,10 @@ func TestSubmitTUILoginFormPasswordCaptchaFailureRefreshesImageByReturnedTicket(
 	imageTickets := make([]string, 0, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/password_token":
+		case authAPIPath("/oauth/api/password_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			ajaxLogonCalls++
 			query := request.URL.Query()
 			if got := query.Get("password_ticket"); got != "password-ticket-1" {
@@ -793,7 +793,7 @@ func TestSubmitTUILoginFormPasswordCaptchaFailureRefreshesImageByReturnedTicket(
 				t.Fatalf("unexpected retry captcha code: %q", got)
 			}
 			fmt.Fprint(writer, `{"code":408,"message":"图形验证码错误","data":{"type":"kaptcha","ticket":"captcha-ticket-2","hint":"请重新输入图形验证码","interval":120}}`)
-		case "/xeai/kaptcha/image":
+		case authAPIPath("/kaptcha/image"):
 			ticket := request.URL.Query().Get("ticket")
 			imageTickets = append(imageTickets, ticket)
 			writer.Header().Set("Content-Type", "image/png")
@@ -906,14 +906,14 @@ func TestSubmitTUILoginFormPasswordChallengeTicketOverridesQRTicket(t *testing.T
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/password_token":
+		case authAPIPath("/oauth/api/password_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			writer.Header().Set("Content-Type", "application/json")
 			writer.WriteHeader(http.StatusBadRequest)
 			fmt.Fprint(writer, `{"code":404,"message":"需要图形验证码","data":{"type":"kaptcha","ticket":"captcha-ticket-1","hint":"请输入图形验证码","interval":120}}`)
-		case "/xeai/kaptcha/image":
+		case authAPIPath("/kaptcha/image"):
 			kaptchaImageQueryTicket = request.URL.Query().Get("ticket")
 			writer.Header().Set("Content-Type", "image/png")
 			_, _ = writer.Write(kaptchaPNG.Bytes())
@@ -977,10 +977,10 @@ func TestSubmitTUILoginFormPasswordSMSChallengeReusesAjaxLogon(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/password_token":
+		case authAPIPath("/oauth/api/password_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			ajaxLogonCalls++
 			query := request.URL.Query()
 			if got := query.Get("password_ticket"); got != "password-ticket-1" {
@@ -1010,10 +1010,10 @@ func TestSubmitTUILoginFormPasswordSMSChallengeReusesAjaxLogon(t *testing.T) {
 			secondAjaxLogonCode = query.Get("code")
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
-		case "/xeai/ajax_logon/verify_token":
+		case authAPIPath("/ajax_logon/verify_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"verify-ticket-1","type":"sms","hint":"请输入短信验证码","target":"138****0000"}}`)
-		case "/xeai/ajax_logon/verify_login":
+		case authAPIPath("/ajax_logon/verify_login"):
 			verifyLoginCalls++
 			t.Fatalf("expected sms verification to stop using /ajax_logon/verify_login, got %q", request.URL.String())
 		default:
@@ -1113,10 +1113,10 @@ func TestSubmitTUILoginFormPasswordSMSUsesAjaxLogon(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/password_token":
+		case authAPIPath("/oauth/api/password_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			ajaxLogonCalls++
 			query := request.URL.Query()
 			if got := query.Get("password_ticket"); got != "password-ticket-1" {
@@ -1146,10 +1146,10 @@ func TestSubmitTUILoginFormPasswordSMSUsesAjaxLogon(t *testing.T) {
 			secondAjaxLogonCode = query.Get("code")
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
-		case "/xeai/ajax_logon/verify_token":
+		case authAPIPath("/ajax_logon/verify_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"verify-ticket-1","type":"sms","hint":"请输入短信验证码","target":"138****0000"}}`)
-		case "/xeai/ajax_logon/verify_login":
+		case authAPIPath("/ajax_logon/verify_login"):
 			verifyLoginCalls++
 			t.Fatalf("expected sms verification to stop using /ajax_logon/verify_login, got %q", request.URL.String())
 		default:
@@ -1249,10 +1249,10 @@ func TestSubmitTUILoginFormPasswordMailUsesAjaxLogon(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/password_token":
+		case authAPIPath("/oauth/api/password_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-1","pubkey":%q}}`, publicKeyPEM)
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			ajaxLogonCalls++
 			query := request.URL.Query()
 			if got := query.Get("password_ticket"); got != "password-ticket-1" {
@@ -1282,10 +1282,10 @@ func TestSubmitTUILoginFormPasswordMailUsesAjaxLogon(t *testing.T) {
 			secondAjaxLogonCode = query.Get("code")
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
-		case "/xeai/ajax_logon/verify_token":
+		case authAPIPath("/ajax_logon/verify_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"verify-ticket-1","type":"mail","hint":"请输入邮箱验证码","target":"zhangsan@example.com"}}`)
-		case "/xeai/ajax_logon/verify_login":
+		case authAPIPath("/ajax_logon/verify_login"):
 			verifyLoginCalls++
 			t.Fatalf("expected mail verification to stop using /ajax_logon/verify_login, got %q", request.URL.String())
 		default:
@@ -1391,14 +1391,14 @@ func TestSubmitTUILoginFormPasswordTOTPUsesAjaxLogon(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/password_token":
+		case authAPIPath("/oauth/api/password_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			if ajaxLogonCalls == 0 {
 				fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-1","pubkey":%q}}`, firstPublicKeyPEM)
 				return
 			}
 			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"password-ticket-2","pubkey":%q}}`, secondPublicKeyPEM)
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			ajaxLogonCalls++
 			query := request.URL.Query()
 			if ajaxLogonCalls == 1 {
@@ -1448,10 +1448,10 @@ func TestSubmitTUILoginFormPasswordTOTPUsesAjaxLogon(t *testing.T) {
 			}
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
-		case "/xeai/ajax_logon/verify_token":
+		case authAPIPath("/ajax_logon/verify_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"verify-ticket-1","type":"totp","hint":"请输入动态口令","target":"totp-device"}}`)
-		case "/xeai/ajax_logon/verify_login":
+		case authAPIPath("/ajax_logon/verify_login"):
 			verifyLoginCalls++
 			t.Fatalf("expected totp verification to stop using /ajax_logon/verify_login, got %q", request.URL.String())
 		default:
@@ -1564,10 +1564,10 @@ func TestSubmitTUILoginFormPasswordShowsInlineErrorAndKeepsPasswordFocus(t *test
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/password_token":
+		case authAPIPath("/oauth/api/password_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":4001,"message":"用户名或密码错误"}`)
 		default:
@@ -1656,7 +1656,7 @@ func TestExecuteTUILoginCommandRejectsQRCodeWhenChannelUnsupported(t *testing.T)
 		t.Fatalf("new manager failed: %v", err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/xeai/oauth/api/channel_names" {
+		if request.URL.Path != authAPIPath("/oauth/api/channel_names") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -1726,16 +1726,16 @@ func TestRunLoginPasswordSubcommandShowsRemovedCommandHint(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/password_token":
+		case authAPIPath("/oauth/api/password_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(writer, `{"code":0,"message":"OK","data":{"ticket":"ticket-1","pubkey":%q}}`, publicKeyPEM)
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee"}}`)
-		case "/xeai/logged/persistent_token":
+		case authAPIPath("/logged/persistent_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"persist-1","userinfo":{"userid":"u-1","display_name":"张三"}}}`)
-		case "/taiyi/composer/api/v1/users/whoami/userinfo":
+		case backendAPIPath("/users/whoami/userinfo"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan","user_scope":"employee"}`)
 		default:
@@ -1783,13 +1783,13 @@ func TestRunLoginQRSubcommandWaitsForScanAndPersistsAuthState(t *testing.T) {
 	waitCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/channel_names":
+		case authAPIPath("/oauth/api/channel_names"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"调用成功!","data":"钉钉"}`)
-		case "/xeai/oauth/api/token":
+		case authAPIPath("/oauth/api/token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"qr-ticket-1","fireurl":"https://example.com/scan","scanhint":"请使用微信扫码"}}`)
-		case "/xeai/oauth/api/wait_event":
+		case authAPIPath("/oauth/api/wait_event"):
 			writer.Header().Set("Content-Type", "application/json")
 			if waitCalls == 0 {
 				waitCalls++
@@ -1798,10 +1798,10 @@ func TestRunLoginQRSubcommandWaitsForScanAndPersistsAuthState(t *testing.T) {
 			}
 			waitCalls++
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","idle_duration":3600,"scope":"employee","state":2}}`)
-		case "/xeai/logged/persistent_token":
+		case authAPIPath("/logged/persistent_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"persist-1","userinfo":{"userid":"u-1","display_name":"张三"}}}`)
-		case "/taiyi/composer/api/v1/users/whoami/userinfo":
+		case backendAPIPath("/users/whoami/userinfo"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan","user_scope":"employee"}`)
 		default:
@@ -1877,7 +1877,7 @@ func TestNormalizeQRScanHintUsesChannelNames(t *testing.T) {
 func TestExecuteTUIQRWaitKeepsStaticQRCodeStateWithoutDynamicMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/wait_event":
+		case authAPIPath("/oauth/api/wait_event"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"","access_token":"","idle_duration":0,"scope":"","state":1}}`)
 		default:
@@ -1931,7 +1931,7 @@ func TestExecuteTUIQRWaitKeepsStaticQRCodeStateWithoutDynamicMessage(t *testing.
 func TestExecuteTUIQRWaitShowsTerminalQRCodeStateError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/wait_event":
+		case authAPIPath("/oauth/api/wait_event"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"","access_token":"","idle_duration":0,"scope":"","state":-1}}`)
 		default:
@@ -1979,7 +1979,7 @@ func TestExecuteTUIQRWaitShowsTerminalQRCodeStateError(t *testing.T) {
 func TestExecuteTUIQRWaitStopsAutoRetryAfterTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/oauth/api/wait_event":
+		case authAPIPath("/oauth/api/wait_event"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"","access_token":"","idle_duration":0,"scope":"","state":0}}`)
 		default:

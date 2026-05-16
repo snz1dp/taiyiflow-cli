@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 )
 
 func testVerificationPNGBase64(t *testing.T) string {
@@ -1172,7 +1173,7 @@ func TestRenderLoginFormShowsCaptchaStepWhenTicketPresent(t *testing.T) {
 		VerifyImagePNGBase64:   testVerificationPNGBase64(t),
 		VerifyImageWidth:       120,
 		VerifyImageHeight:      48,
-		VerifyImageURL:         "https://example.com/xeai/kaptcha/image?ticket=captcha-ticket-1",
+		VerifyImageURL:         "https://example.com" + internalconfig.DefaultAuthAPIPrefix + "/kaptcha/image?ticket=captcha-ticket-1",
 		VerifyImagePreviewPath: "/tmp/captcha-preview.png",
 		Ticket:                 "captcha-ticket-1",
 	})
@@ -1201,7 +1202,7 @@ func TestRenderLoginFormShowsCaptchaStepWhenTicketPresent(t *testing.T) {
 	if strings.Contains(rendered, "本地路径(image_path):") || strings.Contains(rendered, "/tmp/captcha-preview.png") {
 		t.Fatalf("expected captcha step to hide local preview path, got %q", rendered)
 	}
-	if strings.Contains(rendered, "图片地址(image_url):") || strings.Contains(rendered, "https://example.com/xeai/kaptcha/image?ticket=captcha-ticket-1") {
+	if strings.Contains(rendered, "图片地址(image_url):") || strings.Contains(rendered, "https://example.com"+internalconfig.DefaultAuthAPIPrefix+"/kaptcha/image?ticket=captcha-ticket-1") {
 		t.Fatalf("expected captcha step to hide image url, got %q", rendered)
 	}
 	if strings.Contains(rendered, "验证码票据(captcha_ticket)") {
@@ -1335,11 +1336,11 @@ func TestRenderLoginFormHidesImageURLWithoutPreviewPathInPlainTerminal(t *testin
 		VerifyType:           "kaptcha",
 		VerifyImageASCII:     "##",
 		VerifyImagePNGBase64: testVerificationPNGBase64(t),
-		VerifyImageURL:       "https://example.com/xeai/kaptcha/image?ticket=captcha-ticket-2",
+		VerifyImageURL:       "https://example.com" + internalconfig.DefaultAuthAPIPrefix + "/kaptcha/image?ticket=captcha-ticket-2",
 		Ticket:               "captcha-ticket-2",
 	})
 	rendered := sanitizeTerminalText((model{contentWidth: 80, loginForm: state}).renderLoginForm())
-	if strings.Contains(rendered, "图片地址(image_url):") || strings.Contains(rendered, "https://example.com/xeai/kaptcha/image?ticket=captcha-ticket-2") {
+	if strings.Contains(rendered, "图片地址(image_url):") || strings.Contains(rendered, "https://example.com"+internalconfig.DefaultAuthAPIPrefix+"/kaptcha/image?ticket=captcha-ticket-2") {
 		t.Fatalf("expected plain terminal captcha step to hide http image url, got %q", rendered)
 	}
 	if strings.Contains(rendered, "本地路径(image_path):") {

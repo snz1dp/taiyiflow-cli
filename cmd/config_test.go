@@ -82,6 +82,22 @@ func TestAssignConfigValueCommandTimeoutSeconds(t *testing.T) {
 	}
 }
 
+func TestAssignAndResetConfigValueAuthAPIPrefix(t *testing.T) {
+	config := internalconfig.Default()
+	if err := assignConfigValue(&config, "auth_prefix", "custom-auth/"); err != nil {
+		t.Fatalf("assignConfigValue returned error: %v", err)
+	}
+	if config.AuthAPIPrefix != "/custom-auth" {
+		t.Fatalf("expected auth api prefix /custom-auth, got %q", config.AuthAPIPrefix)
+	}
+	if err := resetConfigValue(&config, "auth_api_prefix"); err != nil {
+		t.Fatalf("resetConfigValue returned error: %v", err)
+	}
+	if config.AuthAPIPrefix != internalconfig.Default().AuthAPIPrefix {
+		t.Fatalf("expected default auth api prefix %q, got %q", internalconfig.Default().AuthAPIPrefix, config.AuthAPIPrefix)
+	}
+}
+
 func TestResetConfigValueCommandTimeoutSeconds(t *testing.T) {
 	config := internalconfig.Default()
 	config.CommandTimeoutSeconds = 45

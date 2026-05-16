@@ -24,13 +24,13 @@ func TestExchangePersistentToken(t *testing.T) {
 	expectedSign := buildPersistentLoginSignature("device-1", "salt-value")
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/sso/salt":
+		case authAPIPath("/sso/salt"):
 			if got := request.URL.Query().Get("persistent_token"); got != "persist-token" {
 				t.Fatalf("unexpected persistent token: %q", got)
 			}
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"salt-ticket","value":"salt-value"}}`)
-		case "/xeai/sso":
+		case authAPIPath("/sso"):
 			query := request.URL.Query()
 			if got := query.Get("persistent_token"); got != "persist-token" {
 				t.Fatalf("unexpected persistent token on sso: %q", got)
@@ -67,7 +67,7 @@ func TestExchangePersistentToken(t *testing.T) {
 
 func TestCreatePersistentToken(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/xeai/logged/persistent_token" {
+		if request.URL.Path != authAPIPath("/logged/persistent_token") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -94,7 +94,7 @@ func TestCreatePersistentToken(t *testing.T) {
 
 func TestSupportsQRCodeLoginRecognizesWeChatChannel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/xeai/oauth/api/channel_names" {
+		if request.URL.Path != authAPIPath("/oauth/api/channel_names") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -122,7 +122,7 @@ func TestSupportsQRCodeLoginRecognizesWeChatChannel(t *testing.T) {
 
 func TestSupportsQRCodeLoginTreatsAnyNonEmptyChannelAsSupported(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/xeai/oauth/api/channel_names" {
+		if request.URL.Path != authAPIPath("/oauth/api/channel_names") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -143,7 +143,7 @@ func TestSupportsQRCodeLoginTreatsAnyNonEmptyChannelAsSupported(t *testing.T) {
 
 func TestSupportsQRCodeLoginReturnsFalseWhenChannelNamesEmpty(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/xeai/oauth/api/channel_names" {
+		if request.URL.Path != authAPIPath("/oauth/api/channel_names") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -175,7 +175,7 @@ func TestPasswordLoginEncryptsPasswordAndParsesSession(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			query := request.URL.Query()
 			if got := query.Get("ticket"); got != "ticket-1" {
 				t.Fatalf("unexpected ticket: %q", got)
@@ -210,7 +210,7 @@ func TestPasswordLoginEncryptsPasswordAndParsesSession(t *testing.T) {
 
 	client := NewAuthClient(server.URL)
 	session, err := client.PasswordLogin(context.Background(), PasswordLoginRequest{
-		VerifyTicket:         "ticket-1",
+		VerifyTicket:   "ticket-1",
 		PasswordTicket: "ticket-1",
 		PublicKey:      publicKeyPEM,
 		Username:       "zhangsan",
@@ -237,7 +237,7 @@ func TestPasswordLoginWithCodeSendsEncryptedPasswordAndCode(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			query := request.URL.Query()
 			if got := query.Get("username"); got != "zhangsan" {
 				t.Fatalf("unexpected username: %q", got)
@@ -266,7 +266,7 @@ func TestPasswordLoginWithCodeSendsEncryptedPasswordAndCode(t *testing.T) {
 
 	client := NewAuthClient(server.URL)
 	session, err := client.PasswordLogin(context.Background(), PasswordLoginRequest{
-		VerifyTicket:         "ticket-1",
+		VerifyTicket:   "ticket-1",
 		PasswordTicket: "ticket-1",
 		PublicKey:      publicKeyPEM,
 		Username:       "zhangsan",
@@ -283,7 +283,7 @@ func TestPasswordLoginWithCodeSendsEncryptedPasswordAndCode(t *testing.T) {
 
 func TestGetPasswordLoginTokenRequiresPasswordTicket(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/xeai/oauth/api/password_token" {
+		if request.URL.Path != authAPIPath("/oauth/api/password_token") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -338,7 +338,7 @@ func TestPasswordLoginRequiresPasswordTicket(t *testing.T) {
 
 func TestValidateVerifyCodeSendsPasswordTicket(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/xeai/send_verify/validate" {
+		if request.URL.Path != authAPIPath("/send_verify/validate") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -377,7 +377,7 @@ func TestOAuthEndpointsUseXEAIContextPath(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		requests[request.URL.Path] = true
 		switch request.URL.Path {
-		case "/xeai/oauth/api/token":
+		case authAPIPath("/oauth/api/token"):
 			if got := request.URL.Query().Get("platform"); got != "" {
 				t.Fatalf("unexpected platform: %q", got)
 			}
@@ -386,7 +386,7 @@ func TestOAuthEndpointsUseXEAIContextPath(t *testing.T) {
 			}
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"ticket-1","fireurl":"https://example.com/scan","scanhint":"请扫码"}}`)
-		case "/xeai/oauth/api/wait_event":
+		case authAPIPath("/oauth/api/wait_event"):
 			if got := request.URL.Query().Get("ticket"); got != "ticket-1" {
 				t.Fatalf("unexpected wait ticket: %q", got)
 			}
@@ -413,8 +413,8 @@ func TestOAuthEndpointsUseXEAIContextPath(t *testing.T) {
 	if waitEvent == nil || waitEvent.AccessToken != "access-1" {
 		t.Fatalf("unexpected wait event: %#v", waitEvent)
 	}
-	if !requests["/xeai/oauth/api/token"] || !requests["/xeai/oauth/api/wait_event"] {
-		t.Fatalf("expected oauth endpoints to be requested under /xeai, got %#v", requests)
+	if !requests[authAPIPath("/oauth/api/token")] || !requests[authAPIPath("/oauth/api/wait_event")] {
+		t.Fatalf("expected oauth endpoints to be requested under %s, got %#v", authAPIPath(""), requests)
 	}
 }
 
@@ -431,7 +431,7 @@ func TestPasswordLoginReturnsEnvelopeMessageOnBusinessError(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":4001,"message":"用户名或密码错误","data":null}`)
 		default:
@@ -476,7 +476,7 @@ func TestPasswordLoginReturnsVerifyChallengeOnHTTPError(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			writer.Header().Set("Content-Type", "application/json")
 			writer.WriteHeader(http.StatusBadRequest)
 			fmt.Fprint(writer, `{"code":404,"message":"需要图形验证码","data":{"type":"kaptcha","ticket":"captcha-ticket-1","hint":"请输入图形验证码","interval":120}}`)
@@ -528,7 +528,7 @@ func TestPasswordLoginParsesStringSessionToken(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/ajax_logon":
+		case authAPIPath("/ajax_logon"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"登录成功","data":"session-token-1"}`)
 		default:
@@ -555,7 +555,7 @@ func TestPasswordLoginParsesStringSessionToken(t *testing.T) {
 
 func TestGetQRCodeLoginTokenReturnsEnvelopeMessageOnHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/xeai/oauth/api/token" {
+		if request.URL.Path != authAPIPath("/oauth/api/token") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -600,7 +600,7 @@ func TestGetVerificationImageFallsBackToKaptchaTicketQuery(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/kaptcha/image":
+		case authAPIPath("/kaptcha/image"):
 			query := request.URL.Query()
 			if got := query.Get("ticket"); got == "ticket-1" {
 				http.NotFound(writer, request)

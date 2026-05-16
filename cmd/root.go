@@ -86,6 +86,12 @@ func buildProviderClient(config internalconfig.Config) *providerclient.Client {
 	return client
 }
 
+func buildAuthClient(config internalconfig.Config) *providerclient.AuthClient {
+	client := providerclient.NewAuthClient(config.BackendBaseURL)
+	client.SetAuthAPIPrefix(config.AuthAPIPrefix)
+	return client
+}
+
 func NewApp() (*App, error) {
 	configManager, err := internalconfig.NewManager()
 	if err != nil {

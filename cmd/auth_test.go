@@ -16,9 +16,11 @@ import (
 )
 
 func TestEnsureProviderAuthenticatedUsesPersistentToken(t *testing.T) {
+	backendPrefix := internalconfig.DefaultBackendAPIPrefix
+	authPrefix := "/custom-auth"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/taiyi/composer/api/v1/users/whoami/userinfo":
+		case backendPrefix + "/users/whoami/userinfo":
 			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
 				writer.Header().Set("Content-Type", "application/json")
 				writer.WriteHeader(http.StatusUnauthorized)
@@ -27,10 +29,10 @@ func TestEnsureProviderAuthenticatedUsesPersistentToken(t *testing.T) {
 			}
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
-		case "/xeai/sso/salt":
+		case authPrefix + "/sso/salt":
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"salt-ticket","value":"salt-value"}}`)
-		case "/xeai/sso":
+		case authPrefix + "/sso":
 			if got := request.URL.Query().Get("persistent_token"); got != "persist-1" {
 				t.Fatalf("unexpected persistent token: %q", got)
 			}
@@ -52,6 +54,7 @@ func TestEnsureProviderAuthenticatedUsesPersistentToken(t *testing.T) {
 	}
 	config := internalconfig.Default()
 	config.BackendBaseURL = server.URL
+	config.AuthAPIPrefix = authPrefix
 	config.PersistentToken = "persist-1"
 	config.DeviceID = "device-1"
 	if err := manager.Save(config); err != nil {
@@ -144,7 +147,7 @@ func TestPersistAuthenticatedSessionGeneratesDeviceIDWhenMissing(t *testing.T) {
 	var capturedDeviceID string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/xeai/logged/persistent_token":
+		case authAPIPath("/logged/persistent_token"):
 			capturedDeviceID = strings.TrimSpace(request.URL.Query().Get("device_id"))
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"persist-1"}}`)

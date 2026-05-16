@@ -16,9 +16,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
-)
 
-const authContextPath = "/xeai"
+	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+)
 
 const (
 	authCodeVerifyChallengeRequired = 404
@@ -80,6 +80,7 @@ func (e *AuthError) Error() string {
 
 type AuthClient struct {
 	baseURL    string
+	authPrefix string
 	httpClient *http.Client
 }
 
@@ -190,8 +191,13 @@ type VerificationImage struct {
 func NewAuthClient(baseURL string) *AuthClient {
 	return &AuthClient{
 		baseURL:    strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		authPrefix: internalconfig.DefaultAuthAPIPrefix,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+func (c *AuthClient) SetAuthAPIPrefix(prefix string) {
+	c.authPrefix = internalconfig.NormalizeAuthAPIPrefix(prefix)
 }
 
 func (c *AuthClient) GetPasswordLoginToken(ctx context.Context) (*PasswordLoginToken, error) {
@@ -532,7 +538,7 @@ func (c *AuthClient) authURL(path string, query url.Values) (string, error) {
 	if !strings.HasPrefix(trimmedPath, "/") {
 		trimmedPath = "/" + trimmedPath
 	}
-	endpoint, err := url.Parse(c.baseURL + authContextPath + trimmedPath)
+	endpoint, err := url.Parse(c.baseURL + internalconfig.NormalizeAuthAPIPrefix(c.authPrefix) + trimmedPath)
 	if err != nil {
 		return "", err
 	}

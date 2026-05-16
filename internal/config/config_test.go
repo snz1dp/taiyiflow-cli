@@ -224,11 +224,27 @@ func TestNormalizeBackendAPIPrefix(t *testing.T) {
 		{input: "", expected: DefaultBackendAPIPrefix},
 		{input: "/api/v1", expected: DefaultBackendAPIPrefix},
 		{input: "api/v1/", expected: DefaultBackendAPIPrefix},
-		{input: "/taiyi/composer/api/v1/", expected: DefaultBackendAPIPrefix},
+		{input: DefaultBackendAPIPrefix + "/", expected: DefaultBackendAPIPrefix},
 	}
 	for _, item := range cases {
 		if got := NormalizeBackendAPIPrefix(item.input); got != item.expected {
 			t.Fatalf("NormalizeBackendAPIPrefix(%q) = %q, want %q", item.input, got, item.expected)
+		}
+	}
+}
+
+func TestNormalizeAuthAPIPrefix(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{input: "", expected: DefaultAuthAPIPrefix},
+		{input: "xeai/", expected: DefaultAuthAPIPrefix},
+		{input: "/custom-auth/", expected: "/custom-auth"},
+	}
+	for _, item := range cases {
+		if got := NormalizeAuthAPIPrefix(item.input); got != item.expected {
+			t.Fatalf("NormalizeAuthAPIPrefix(%q) = %q, want %q", item.input, got, item.expected)
 		}
 	}
 }

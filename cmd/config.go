@@ -131,6 +131,8 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 		config.BackendBaseURL = normalizedURL
 	case "backend_api_prefix":
 		config.BackendAPIPrefix = internalconfig.NormalizeBackendAPIPrefix(trimmedValue)
+	case "auth_api_prefix":
+		config.AuthAPIPrefix = internalconfig.NormalizeAuthAPIPrefix(trimmedValue)
 	case "default_flow":
 		if trimmedValue == "" {
 			return fmt.Errorf("default_flow 不能为空，如需清空请使用 taiyiflow-cli config unset default_flow")
@@ -277,6 +279,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.BackendBaseURL = defaults.BackendBaseURL
 	case "backend_api_prefix":
 		config.BackendAPIPrefix = defaults.BackendAPIPrefix
+	case "auth_api_prefix":
+		config.AuthAPIPrefix = defaults.AuthAPIPrefix
 	case "default_flow":
 		config.DefaultFlow = ""
 	case "approval_mode":
@@ -333,6 +337,8 @@ func normalizeConfigKey(key string) string {
 	switch normalized {
 	case "backend_prefix", "api_prefix", "backend_prefix_path":
 		return "backend_api_prefix"
+	case "auth_prefix", "auth_prefix_path", "login_api_prefix":
+		return "auth_api_prefix"
 	case "sandbox_escape_policy", "external_resource_policy":
 		return "external_resource_access_policy"
 	case "skill_package_review_policy", "skills_review_policy":

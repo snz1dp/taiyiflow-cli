@@ -504,7 +504,7 @@ func TestBuildInitialTUISnapshotMarksAuthRequired(t *testing.T) {
 func TestPrepareInitialTUIAuthenticationRefreshesAccessTokenBeforeInitialSnapshot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/taiyi/composer/api/v1/users/whoami/userinfo":
+		case backendAPIPath("/users/whoami/userinfo"):
 			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
 				writer.Header().Set("Content-Type", "application/json")
 				writer.WriteHeader(http.StatusUnauthorized)
@@ -513,13 +513,13 @@ func TestPrepareInitialTUIAuthenticationRefreshesAccessTokenBeforeInitialSnapsho
 			}
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
-		case "/taiyi/composer/api/v1/version":
+		case backendAPIPath("/version"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"package":"taiyiflow","main_version":"1.0.0"}`)
-		case "/xeai/sso/salt":
+		case authAPIPath("/sso/salt"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"salt-ticket","value":"salt-value"}}`)
-		case "/xeai/sso":
+		case authAPIPath("/sso"):
 			if got := request.URL.Query().Get("persistent_token"); got != "persist-1" {
 				t.Fatalf("unexpected persistent token: %q", got)
 			}

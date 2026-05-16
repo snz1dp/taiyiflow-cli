@@ -161,6 +161,21 @@ func NormalizeBackendAPIPrefix(value string) string {
 	return trimmed
 }
 
+func NormalizeAuthAPIPrefix(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return DefaultAuthAPIPrefix
+	}
+	if !strings.HasPrefix(trimmed, "/") {
+		trimmed = "/" + trimmed
+	}
+	trimmed = strings.TrimRight(trimmed, "/")
+	if trimmed == "" {
+		return DefaultAuthAPIPrefix
+	}
+	return trimmed
+}
+
 func NormalizeCommandTimeoutSeconds(value int) int {
 	if value < 1 {
 		return DefaultCommandTimeoutSeconds
@@ -367,6 +382,7 @@ func (m *Manager) Load() (Config, error) {
 		config.BackendBaseURL = Default().BackendBaseURL
 	}
 	config.BackendAPIPrefix = NormalizeBackendAPIPrefix(config.BackendAPIPrefix)
+	config.AuthAPIPrefix = NormalizeAuthAPIPrefix(config.AuthAPIPrefix)
 	config.AccessToken = strings.TrimSpace(config.AccessToken)
 	config.PersistentToken = strings.TrimSpace(config.PersistentToken)
 	config.DeviceID = strings.TrimSpace(config.DeviceID)

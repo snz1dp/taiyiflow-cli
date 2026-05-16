@@ -61,22 +61,22 @@ func TestSetHTTPTimeoutSeconds(t *testing.T) {
 func TestSetAPIPrefix(t *testing.T) {
 	client := NewClient("http://example.com", "")
 	client.SetAPIPrefix("taiyi/composer/api/v1/")
-	if got := client.apiURL("/version"); got != "http://example.com/taiyi/composer/api/v1/version" {
+	if got := client.apiURL("/version"); got != "http://example.com"+backendAPIPath("/version") {
 		t.Fatalf("expected normalized api url, got %q", got)
 	}
 	client.SetAPIPrefix("")
-	if got := client.apiURL("/version"); got != "http://example.com/taiyi/composer/api/v1/version" {
+	if got := client.apiURL("/version"); got != "http://example.com"+backendAPIPath("/version") {
 		t.Fatalf("expected empty prefix to fall back to default api prefix, got %q", got)
 	}
 	client.SetAPIPrefix("/api/v1")
-	if got := client.apiURL("/version"); got != "http://example.com/taiyi/composer/api/v1/version" {
+	if got := client.apiURL("/version"); got != "http://example.com"+backendAPIPath("/version") {
 		t.Fatalf("expected legacy api prefix to normalize to default api prefix, got %q", got)
 	}
 }
 
 func TestStreamIgnoresStandardClientTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
+		if request.URL.Path != backendAPIPath("/run/demo-flow/stream") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -128,7 +128,7 @@ func TestStreamIgnoresStandardClientTimeout(t *testing.T) {
 
 func TestStreamEmitsBackendIdleTimeoutWhenNoSSEActivity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
+		if request.URL.Path != backendAPIPath("/run/demo-flow/stream") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -169,7 +169,7 @@ func TestStreamEmitsBackendIdleTimeoutWhenNoSSEActivity(t *testing.T) {
 
 func TestStreamIdleTimeoutAllowsLongActiveStream(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
+		if request.URL.Path != backendAPIPath("/run/demo-flow/stream") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -231,10 +231,10 @@ func TestGetRunStatsPollsCompressionRecordsUntilAvailable(t *testing.T) {
 	compressionRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/taiyi/composer/api/v1/agents/flows/demo-flow/sessions/session-123/messages":
+		case backendAPIPath("/agents/flows/demo-flow/sessions/session-123/messages"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"total":1,"offset":0,"data":[{"id":"message-1","run_id":"run-123","token_usage":{"input_tokens":120,"output_tokens":40,"total_tokens":160}}]}`)
-		case "/taiyi/composer/api/v1/agents/dialogue/run-123/compressions":
+		case backendAPIPath("/agents/dialogue/run-123/compressions"):
 			compressionRequests++
 			writer.Header().Set("Content-Type", "application/json")
 			if compressionRequests == 1 {
@@ -272,7 +272,7 @@ func TestGetRunStatsPollsCompressionRecordsUntilAvailable(t *testing.T) {
 
 func TestGetSessionContextWindowParsesResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/agents/flows/demo-flow/sessions/session-123/context-window" {
+		if request.URL.Path != backendAPIPath("/agents/flows/demo-flow/sessions/session-123/context-window") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -314,7 +314,7 @@ func TestUpdateSessionTitlePostsSessionName(t *testing.T) {
 		if request.Method != http.MethodPost {
 			t.Fatalf("expected POST request, got %s", request.Method)
 		}
-		if request.URL.Path != "/taiyi/composer/api/v1/agents/flows/demo-flow/sessions/session-123" {
+		if request.URL.Path != backendAPIPath("/agents/flows/demo-flow/sessions/session-123") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -345,7 +345,7 @@ func TestUpdateSessionTitlePostsSessionName(t *testing.T) {
 
 func TestGetMetadataParsesMaxInputTokens(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/metadata" {
+		if request.URL.Path != backendAPIPath("/run/demo-flow/metadata") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -375,7 +375,7 @@ func TestGetMetadataParsesMaxInputTokens(t *testing.T) {
 
 func TestGetServiceConfigParsesResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/config" {
+		if request.URL.Path != backendAPIPath("/config") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -405,7 +405,7 @@ func TestGetServiceConfigParsesResponse(t *testing.T) {
 
 func TestListKnowledgeBasesParsesResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/agents/knowledge/bases" {
+		if request.URL.Path != backendAPIPath("/agents/knowledge/bases") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -432,7 +432,7 @@ func TestListKnowledgeBasesParsesResponse(t *testing.T) {
 
 func TestCreateSessionIDParsesResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/session_id" {
+		if request.URL.Path != backendAPIPath("/session_id") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -459,7 +459,7 @@ func TestUploadFilePostsMultipartFormAndParsesResponse(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/files/upload/demo-flow" {
+		if request.URL.Path != backendAPIPath("/files/upload/demo-flow") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -507,7 +507,7 @@ func TestUploadFilePostsMultipartFormAndParsesResponse(t *testing.T) {
 
 func TestListSessionMessagesParsesReasoningAndSearchResults(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/agents/flows/demo-flow/sessions/session-123/messages" {
+		if request.URL.Path != backendAPIPath("/agents/flows/demo-flow/sessions/session-123/messages") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -541,7 +541,7 @@ func TestListSessionMessagesParsesReasoningAndSearchResults(t *testing.T) {
 
 func TestGetCurrentUserInfoParsesResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/users/whoami/userinfo" {
+		if request.URL.Path != backendAPIPath("/users/whoami/userinfo") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -566,7 +566,7 @@ func TestGetCurrentUserInfoParsesResponse(t *testing.T) {
 func TestResolveSkillPreviewPostsRequestAndParsesResponse(t *testing.T) {
 	var captured skillResolveRequestBody
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/agents/skills/resolve" {
+		if request.URL.Path != backendAPIPath("/agents/skills/resolve") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -631,7 +631,7 @@ func TestResolveSkillPreviewPostsRequestAndParsesResponse(t *testing.T) {
 
 func TestStreamParsesCompressionEvent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
+		if request.URL.Path != backendAPIPath("/run/demo-flow/stream") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -676,7 +676,7 @@ func TestStreamParsesCompressionEvent(t *testing.T) {
 func TestStreamIncludesAgentAutoLoopRequestFields(t *testing.T) {
 	var captured streamRequestBody
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
+		if request.URL.Path != backendAPIPath("/run/demo-flow/stream") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -718,7 +718,7 @@ func TestStreamIncludesAgentAutoLoopRequestFields(t *testing.T) {
 func TestStreamIncludesCrossSessionMemoryRequestField(t *testing.T) {
 	var captured streamRequestBody
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
+		if request.URL.Path != backendAPIPath("/run/demo-flow/stream") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -754,7 +754,7 @@ func TestStreamRequestUsesInputValueWithoutPromptText(t *testing.T) {
 		capturedRawMap map[string]any
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
+		if request.URL.Path != backendAPIPath("/run/demo-flow/stream") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -798,7 +798,7 @@ func TestStreamRequestUsesInputValueWithoutPromptText(t *testing.T) {
 func TestStreamRequestIncludesTweaks(t *testing.T) {
 	var capturedRawMap map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/stream" {
+		if request.URL.Path != backendAPIPath("/run/demo-flow/stream") {
 			http.NotFound(writer, request)
 			return
 		}

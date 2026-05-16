@@ -129,7 +129,7 @@ func (a *App) executeTUILoginCommand(
 			return tui.LocalCommandResult{}, err
 		}
 	}
-	authClient := providerclient.NewAuthClient(localConfig.BackendBaseURL)
+	authClient := buildAuthClient(localConfig)
 	capabilities := loadLoginChannelCapabilities(ctx, authClient)
 
 	switch {
@@ -200,7 +200,7 @@ func (a *App) submitTUILoginForm(
 	if err != nil {
 		return tui.LocalCommandResult{}, err
 	}
-	authClient := providerclient.NewAuthClient(localConfig.BackendBaseURL)
+	authClient := buildAuthClient(localConfig)
 	capabilities := loadLoginChannelCapabilities(ctx, authClient)
 	remember := submission.Remember
 	if strings.TrimSpace(submission.Mode) == "" {
@@ -622,7 +622,7 @@ func (a *App) completeCLIQRCodeLogin(
 			providerClient,
 			snapshot,
 			localConfig,
-			providerclient.NewAuthClient(localConfig.BackendBaseURL),
+			buildAuthClient(localConfig),
 			state.Remember,
 			state.QRTicket,
 			state.QRLoginURL,

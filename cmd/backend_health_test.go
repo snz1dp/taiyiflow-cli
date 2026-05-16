@@ -14,7 +14,7 @@ import (
 
 func TestInspectBackendStatusTreatsAuthenticationErrorAsAvailable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/taiyi/composer/api/v1/version" {
+		if request.URL.Path != backendAPIPath("/version") {
 			http.NotFound(writer, request)
 			return
 		}

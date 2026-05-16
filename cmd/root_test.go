@@ -420,10 +420,10 @@ func TestEnsureDefaultFlowUsesServiceConfigDefaultFlowID(t *testing.T) {
 	flowListCalled := false
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/taiyi/composer/api/v1/config":
+		case backendAPIPath("/config"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"default_flow_id":"flow-from-config"}`)
-		case "/taiyi/composer/api/v1/agents/flows":
+		case backendAPIPath("/agents/flows"):
 			flowListCalled = true
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"total":1,"offset":0,"data":[{"id":"flow-from-list","name":"列表流程"}]}`)
@@ -470,7 +470,7 @@ func TestRunTaskOnceRefreshesPersistentLoginBeforeStream(t *testing.T) {
 	streamCalled := false
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/taiyi/composer/api/v1/users/whoami/userinfo":
+		case backendAPIPath("/users/whoami/userinfo"):
 			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
 				writer.Header().Set("Content-Type", "application/json")
 				writer.WriteHeader(http.StatusUnauthorized)
@@ -479,22 +479,22 @@ func TestRunTaskOnceRefreshesPersistentLoginBeforeStream(t *testing.T) {
 			}
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
-		case "/xeai/sso/salt":
+		case authAPIPath("/sso/salt"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"salt-ticket","value":"salt-value"}}`)
-		case "/xeai/sso":
+		case authAPIPath("/sso"):
 			if got := request.URL.Query().Get("persistent_token"); got != "persist-1" {
 				t.Fatalf("unexpected persistent token: %q", got)
 			}
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","persistent_token":"persist-2","idle_duration":3600,"scope":"employee"}}`)
-		case "/taiyi/composer/api/v1/version":
+		case backendAPIPath("/version"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"package":"taiyiflow","main_version":"1.0.0"}`)
-		case "/taiyi/composer/api/v1/config":
+		case backendAPIPath("/config"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"default_flow_id":"flow-1"}`)
-		case "/taiyi/composer/api/v1/run/flow-1/stream":
+		case backendAPIPath("/run/flow-1/stream"):
 			streamCalled = true
 			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
 				writer.Header().Set("Content-Type", "application/json")
@@ -555,16 +555,16 @@ func TestRunTaskStreamRetryFlagOverridesSystemConfig(t *testing.T) {
 	streamCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/taiyi/composer/api/v1/users/whoami/userinfo":
+		case backendAPIPath("/users/whoami/userinfo"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
-		case "/taiyi/composer/api/v1/version":
+		case backendAPIPath("/version"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"package":"taiyiflow","main_version":"1.0.0"}`)
-		case "/taiyi/composer/api/v1/config":
+		case backendAPIPath("/config"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"default_flow_id":"flow-1"}`)
-		case "/taiyi/composer/api/v1/run/flow-1/stream":
+		case backendAPIPath("/run/flow-1/stream"):
 			streamCalls++
 			writer.Header().Set("Content-Type", "text/event-stream")
 			if streamCalls < 3 {
@@ -768,16 +768,16 @@ func runTaskAndCaptureStreamBody(t *testing.T, crossSessionMemoryEnabled bool, a
 	var captured map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/taiyi/composer/api/v1/users/whoami/userinfo":
+		case backendAPIPath("/users/whoami/userinfo"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
-		case "/taiyi/composer/api/v1/version":
+		case backendAPIPath("/version"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"package":"taiyiflow","main_version":"1.0.0"}`)
-		case "/taiyi/composer/api/v1/config":
+		case backendAPIPath("/config"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"default_flow_id":"flow-1"}`)
-		case "/taiyi/composer/api/v1/run/flow-1/stream":
+		case backendAPIPath("/run/flow-1/stream"):
 			if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
 				t.Fatalf("decode stream request failed: %v", err)
 			}
@@ -873,16 +873,16 @@ func TestRunTaskWithFileUploadsAndForwardsInputFiles(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/taiyi/composer/api/v1/users/whoami/userinfo":
+		case backendAPIPath("/users/whoami/userinfo"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
-		case "/taiyi/composer/api/v1/version":
+		case backendAPIPath("/version"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"package":"taiyiflow","main_version":"1.0.0"}`)
-		case "/taiyi/composer/api/v1/config":
+		case backendAPIPath("/config"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"default_flow_id":"flow-1"}`)
-		case "/taiyi/composer/api/v1/files/upload/flow-1":
+		case backendAPIPath("/files/upload/flow-1"):
 			uploadCalled = true
 			if got := request.FormValue("session_id"); got != "" {
 				t.Fatalf("expected empty session_id for first upload, got %q", got)
@@ -904,7 +904,7 @@ func TestRunTaskWithFileUploadsAndForwardsInputFiles(t *testing.T) {
 			}
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"flow_id":"flow-1","file_path":"flow-1/flow-1/notes.txt"}`)
-		case "/taiyi/composer/api/v1/run/flow-1/stream":
+		case backendAPIPath("/run/flow-1/stream"):
 			if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
 				t.Fatalf("decode stream request failed: %v", err)
 			}
@@ -964,22 +964,22 @@ func TestRunTaskWithExplicitSessionIDUsesUploadAndStreamSession(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/taiyi/composer/api/v1/users/whoami/userinfo":
+		case backendAPIPath("/users/whoami/userinfo"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
-		case "/taiyi/composer/api/v1/version":
+		case backendAPIPath("/version"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"package":"taiyiflow","main_version":"1.0.0"}`)
-		case "/taiyi/composer/api/v1/config":
+		case backendAPIPath("/config"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"default_flow_id":"flow-1"}`)
-		case "/taiyi/composer/api/v1/files/upload/flow-1":
+		case backendAPIPath("/files/upload/flow-1"):
 			if got := request.FormValue("session_id"); got != "session-explicit" {
 				t.Fatalf("expected upload session_id to use explicit value, got %q", got)
 			}
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"flow_id":"flow-1","file_path":"flow-1/session-explicit/notes.txt"}`)
-		case "/taiyi/composer/api/v1/run/flow-1/stream":
+		case backendAPIPath("/run/flow-1/stream"):
 			if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
 				t.Fatalf("decode stream request failed: %v", err)
 			}
@@ -1033,7 +1033,7 @@ func TestCallbackAuthRefreshProviderRetriesSubmitAfterUnauthorized(t *testing.T)
 	callbackCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/taiyi/composer/api/v1/agents/client/call/result":
+		case backendAPIPath("/agents/client/call/result"):
 			callbackCalls++
 			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
 				writer.Header().Set("Content-Type", "application/json")
@@ -1043,10 +1043,10 @@ func TestCallbackAuthRefreshProviderRetriesSubmitAfterUnauthorized(t *testing.T)
 			}
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{}`)
-		case "/xeai/sso/salt":
+		case authAPIPath("/sso/salt"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"salt-ticket","value":"salt-value"}}`)
-		case "/xeai/sso":
+		case authAPIPath("/sso"):
 			if got := request.URL.Query().Get("persistent_token"); got != "persist-1" {
 				t.Fatalf("unexpected persistent token: %q", got)
 			}
@@ -1106,7 +1106,7 @@ func TestCallbackAuthRefreshProviderRetriesStreamAfterUnauthorized(t *testing.T)
 	streamCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/taiyi/composer/api/v1/run/flow-1/stream":
+		case backendAPIPath("/run/flow-1/stream"):
 			streamCalls++
 			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
 				writer.Header().Set("Content-Type", "application/json")
@@ -1116,10 +1116,10 @@ func TestCallbackAuthRefreshProviderRetriesStreamAfterUnauthorized(t *testing.T)
 			}
 			writer.Header().Set("Content-Type", "text/event-stream")
 			fmt.Fprint(writer, "event: close\ndata: {}\n\n")
-		case "/xeai/sso/salt":
+		case authAPIPath("/sso/salt"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"salt-ticket","value":"salt-value"}}`)
-		case "/xeai/sso":
+		case authAPIPath("/sso"):
 			if got := request.URL.Query().Get("persistent_token"); got != "persist-1" {
 				t.Fatalf("unexpected persistent token: %q", got)
 			}
@@ -1179,7 +1179,7 @@ func TestCallbackAuthRefreshProviderRetriesListSessionsAfterUnauthorized(t *test
 	sessionCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/taiyi/composer/api/v1/agents/flows/flow-1/sessions":
+		case backendAPIPath("/agents/flows/flow-1/sessions"):
 			sessionCalls++
 			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
 				writer.Header().Set("Content-Type", "application/json")
@@ -1189,10 +1189,10 @@ func TestCallbackAuthRefreshProviderRetriesListSessionsAfterUnauthorized(t *test
 			}
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"total":1,"offset":0,"data":[{"id":"session-1","session_name":"会话一","created_at":"2026-05-11T08:00:00Z","updated_at":"2026-05-11T09:00:00Z","client_type":"cli"}]}`)
-		case "/xeai/sso/salt":
+		case authAPIPath("/sso/salt"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"salt-ticket","value":"salt-value"}}`)
-		case "/xeai/sso":
+		case authAPIPath("/sso"):
 			if got := request.URL.Query().Get("persistent_token"); got != "persist-1" {
 				t.Fatalf("unexpected persistent token: %q", got)
 			}
