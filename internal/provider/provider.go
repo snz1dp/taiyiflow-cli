@@ -137,11 +137,12 @@ type ServiceFeatureFlags struct {
 }
 
 type ServiceConfig struct {
-	FeatureFlags      ServiceFeatureFlags
-	MaxFileSizeUpload int
-	DocExts           []string
-	MilvusEnabled     bool
-	DefaultFlowID     string
+	FeatureFlags          ServiceFeatureFlags
+	MaxFileSizeUpload     int
+	DocExts               []string
+	MilvusEnabled         bool
+	DefaultFlowID         string
+	DocUnstructuredFlowID string
 }
 
 type KnowledgeBaseSummary struct {

@@ -164,11 +164,12 @@ type serviceFeatureFlagsResponse struct {
 }
 
 type serviceConfigResponse struct {
-	FeatureFlags      serviceFeatureFlagsResponse `json:"feature_flags"`
-	MaxFileSizeUpload int                         `json:"max_file_size_upload"`
-	DocExts           []string                    `json:"doc_exts"`
-	MilvusEnabled     bool                        `json:"milvus_enabled"`
-	DefaultFlowID     string                      `json:"default_flow_id"`
+	FeatureFlags          serviceFeatureFlagsResponse `json:"feature_flags"`
+	MaxFileSizeUpload     int                         `json:"max_file_size_upload"`
+	DocExts               []string                    `json:"doc_exts"`
+	MilvusEnabled         bool                        `json:"milvus_enabled"`
+	DefaultFlowID         string                      `json:"default_flow_id"`
+	DocUnstructuredFlowID string                      `json:"doc_unstructured_flow_id"`
 }
 
 type versionInfoResponse struct {
@@ -959,10 +960,11 @@ func (c *Client) GetServiceConfig(ctx context.Context) (*provider.ServiceConfig,
 			SpeechToText:    payload.FeatureFlags.SpeechToText,
 			HumanAIDialogue: payload.FeatureFlags.HumanAIDialogue,
 		},
-		MaxFileSizeUpload: payload.MaxFileSizeUpload,
-		DocExts:           docExts,
-		MilvusEnabled:     payload.MilvusEnabled,
-		DefaultFlowID:     strings.TrimSpace(payload.DefaultFlowID),
+		MaxFileSizeUpload:     payload.MaxFileSizeUpload,
+		DocExts:               docExts,
+		MilvusEnabled:         payload.MilvusEnabled,
+		DefaultFlowID:         strings.TrimSpace(payload.DefaultFlowID),
+		DocUnstructuredFlowID: strings.TrimSpace(payload.DocUnstructuredFlowID),
 	}, nil
 }
 
