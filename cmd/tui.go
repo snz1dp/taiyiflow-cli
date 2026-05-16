@@ -162,7 +162,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				sessionState.FlowID = currentFlow
 				sessionState.FlowDisplayName = strings.TrimSpace(a.resolveFlowDisplayName(runCtx, providerClient, currentFlow))
 				title, titleErr := lookupSessionTitle(runCtx, providerClient, currentFlow, streamSession.SessionID)
-				if titleErr == nil {
+				if titleErr == nil && strings.TrimSpace(title) != "" {
 					sessionState.SessionTitle = strings.TrimSpace(title)
 				}
 				sessionState.Workdir = workdir
@@ -171,7 +171,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				if err := a.sessionStore.Save(sessionState); err != nil {
 					return err
 				}
-				emit(tui.Event{Kind: tui.EventSessionUpdate, SessionID: streamSession.SessionID})
+				emit(tui.Event{Kind: tui.EventSessionUpdate, SessionID: streamSession.SessionID, SessionTitle: resolveSessionTitle(sessionState)})
 			}
 
 			retryRequested := false
@@ -187,7 +187,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 								return err
 							}
 						}
-						emit(tui.Event{Kind: tui.EventSessionUpdate, SessionID: sessionState.SessionID, SessionTitle: sessionTitle})
+						emit(tui.Event{Kind: tui.EventSessionUpdate, SessionID: sessionState.SessionID, SessionTitle: resolveSessionTitle(sessionState)})
 					}
 					if assistantChunkEvent, ok := buildTUIAssistantChunkEvent(event.Data); ok {
 						segments := assistantRenderState.consume(assistantChunkEvent.Text)
@@ -733,17 +733,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			return tui.LocalCommandResult{Handled: true, Events: buildLocalShellCommandEvents(rawCommand, result)}, nil
 		case trimmed == "/clear":
 			return tui.LocalCommandResult{Handled: true, ClearHistory: true}, nil
-		case trimmed == "/session":
-			sessionID := strings.TrimSpace(snapshot.SessionID)
-			resolvedSnapshot := snapshot
-			if sessionID != "" && strings.TrimSpace(resolvedSnapshot.SessionTitle) == "" {
-				title, err := lookupSessionTitle(commandCtx, commandProvider, snapshot.DefaultFlow, sessionID)
-				if err == nil {
-					resolvedSnapshot.SessionTitle = strings.TrimSpace(title)
-				}
-			}
-			text := tui.RenderSessionStatusText(resolvedSnapshot, "")
-			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: text}}}, nil
+		case strings.EqualFold(trimmed, "/session") || strings.HasPrefix(strings.ToLower(trimmed), "/session "):
+			return a.executeTUISessionCommand(commandCtx, commandProvider, trimmed, snapshot)
 		case strings.EqualFold(trimmed, "/sessions") || strings.HasPrefix(strings.ToLower(trimmed), "/sessions "):
 			page, err := parseSessionsPage(trimmed)
 			if err != nil {
@@ -870,6 +861,7 @@ func buildTUIHelpLines(snapshot tui.Snapshot) []string {
 			"可用命令:",
 			"/about 显示当前客户端版本、组织与后端对接说明",
 			"/refresh 刷新当前会话的历史消息",
+			"/session 查看当前会话；/session title <标题> 设置当前会话标题（新会话除外）",
 			"/login 打开登录表单",
 			"/clear 清空当前界面消息",
 			"/config 打开当前配置弹窗",
@@ -896,7 +888,7 @@ func buildTUIHelpLines(snapshot tui.Snapshot) []string {
 		"/ask 或 /ask <问题> 切换问答模式",
 		"/plan 或 /plan <目标> 切换计划模式",
 		"/reasoning [on|off|default|status] 切换当前会话思考模式",
-		"/session 查看当前会话",
+		"/session 查看当前会话；/session title <标题> 设置当前会话标题（新会话除外）",
 		"/sessions [页码] 查看当前智能体的服务端会话列表",
 		"/login 打开登录表单；/login status 和 /login logout 查看或清理当前登录态；图形验证码优先使用 kitty/iTerm2 终端图片协议",
 		"/config 打开全局与权限配置弹窗",
@@ -983,9 +975,9 @@ func (a *App) buildTUISnapshot(
 	snapshot.TodoItems = buildTUITodoItems(sessionState.TodoItems)
 	if strings.TrimSpace(snapshot.SessionID) != "" {
 		title, titleErr := lookupSessionTitle(ctx, providerClient, flowID, snapshot.SessionID)
-		if titleErr == nil {
-			snapshot.SessionTitle = strings.TrimSpace(title)
-			sessionState.SessionTitle = snapshot.SessionTitle
+		if titleErr == nil && strings.TrimSpace(title) != "" {
+			sessionState.SessionTitle = strings.TrimSpace(title)
+			snapshot.SessionTitle = resolveSessionTitle(sessionState)
 		}
 		snapshot.History = loadRecentSessionHistory(ctx, providerClient, flowID, snapshot.SessionID)
 		snapshot.RequestStats = loadLatestSessionMetrics(ctx, providerClient, flowID, snapshot.SessionID)
@@ -2575,6 +2567,103 @@ func (a *App) executeReasoningCommand(config internalconfig.Config, command stri
 	return output, updatedState, nil
 }
 
+func (a *App) executeTUISessionCommand(ctx context.Context, providerClient provider.Provider, command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
+	trimmed := strings.TrimSpace(command)
+	lowered := strings.ToLower(trimmed)
+	const sessionTitleCommandPrefix = "/session title"
+
+	sessionCommandError := func(text string) (tui.LocalCommandResult, error) {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: text}}}, nil
+	}
+
+	switch {
+	case strings.EqualFold(trimmed, "/session"):
+		resolvedSnapshot := snapshot
+		if flowID := strings.TrimSpace(snapshot.DefaultFlow); flowID != "" {
+			currentState, err := a.prepareSession(flowID, false, snapshot.Workdir, snapshot.RequestMode)
+			if err != nil {
+				return tui.LocalCommandResult{}, err
+			}
+			if strings.TrimSpace(currentState.SessionID) == strings.TrimSpace(resolvedSnapshot.SessionID) && strings.TrimSpace(currentState.SessionID) != "" {
+				resolvedSnapshot.SessionTitle = resolveSessionTitle(currentState)
+			}
+		}
+
+		sessionID := strings.TrimSpace(resolvedSnapshot.SessionID)
+		if providerClient != nil && sessionID != "" && (strings.TrimSpace(resolvedSnapshot.SessionTitle) == "" || strings.TrimSpace(resolvedSnapshot.SessionTitle) == sessionID) {
+			currentState := agent.SessionState{SessionID: sessionID, SessionTitle: strings.TrimSpace(resolvedSnapshot.SessionTitle)}
+			if flowID := strings.TrimSpace(snapshot.DefaultFlow); flowID != "" {
+				loadedState, err := a.prepareSession(flowID, false, snapshot.Workdir, snapshot.RequestMode)
+				if err == nil {
+					currentState = loadedState
+					currentState.SessionID = sessionID
+				}
+			}
+			title, err := lookupSessionTitle(ctx, providerClient, snapshot.DefaultFlow, sessionID)
+			if err == nil && strings.TrimSpace(title) != "" {
+				currentState.SessionTitle = strings.TrimSpace(title)
+				resolvedSnapshot.SessionTitle = resolveSessionTitle(currentState)
+			}
+		}
+
+		text := tui.RenderSessionStatusText(resolvedSnapshot, "")
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: text}}}, nil
+	case strings.EqualFold(trimmed, sessionTitleCommandPrefix), strings.HasPrefix(lowered, sessionTitleCommandPrefix+" "):
+		title := strings.TrimSpace(trimmed[len(sessionTitleCommandPrefix):])
+		if title == "" {
+			return sessionCommandError("用法: /session title <标题>")
+		}
+
+		flowID := strings.TrimSpace(snapshot.DefaultFlow)
+		if flowID == "" {
+			return sessionCommandError("当前未选择智能体，无法设置会话标题。")
+		}
+		sessionID := strings.TrimSpace(snapshot.SessionID)
+		if sessionID == "" {
+			return sessionCommandError("当前是新会话，发送首条消息创建会话后才能设置标题。")
+		}
+		if providerClient == nil {
+			return sessionCommandError("当前服务端连接不可用，无法设置会话标题。")
+		}
+
+		updatedTitle, err := providerClient.UpdateSessionTitle(ctx, flowID, sessionID, title)
+		if err != nil {
+			return sessionCommandError(explainBackendFailure(err))
+		}
+		if strings.TrimSpace(updatedTitle) == "" {
+			updatedTitle = title
+		}
+
+		currentState, err := a.prepareSession(flowID, false, snapshot.Workdir, snapshot.RequestMode)
+		if err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+		currentState.FlowID = flowID
+		currentState.FlowDisplayName = strings.TrimSpace(snapshot.DefaultFlowLabel)
+		currentState.SessionID = sessionID
+		currentState.SessionTitle = strings.TrimSpace(updatedTitle)
+		currentState.Workdir = snapshot.Workdir
+		currentState.RequestMode = normalizeRequestMode(firstNonEmpty(snapshot.RequestMode, currentState.RequestMode))
+		currentState.ContextDir = resolveLocalWorkdir(firstNonEmpty(currentState.ContextDir, firstNonEmpty(snapshot.ContextDir, snapshot.Workdir)))
+		if err := a.sessionStore.Save(currentState); err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+
+		updatedSnapshot := snapshot
+		updatedSnapshot.SessionTitle = resolveSessionTitle(currentState)
+		return tui.LocalCommandResult{
+			Handled:  true,
+			Snapshot: &updatedSnapshot,
+			Events: []tui.Event{{
+				Kind: tui.EventSystemNote,
+				Text: fmt.Sprintf("已将当前会话标题设置为：%s", updatedSnapshot.SessionTitle),
+			}},
+		}, nil
+	default:
+		return sessionCommandError("/session 用法: /session 或 /session title <标题>")
+	}
+}
+
 func (a *App) executeTUIReasoningCommand(command string, snapshot tui.Snapshot) (string, *tui.Snapshot, error) {
 	config, err := a.configManager.Load()
 	if err != nil {
@@ -3215,6 +3304,19 @@ func buildTUISkillsPicker(config internalconfig.Config, contextDir string, query
 	if err != nil {
 		return nil, err
 	}
+	installedSkillLookup := map[string]skills.InstalledRemoteSkill{}
+	installedItems, installedErr := skills.ListInstalledRemoteSkills(skillConfig)
+	if installedErr == nil {
+		for _, item := range installedItems {
+			for _, key := range []string{item.Name, item.Slug, filepath.Base(strings.TrimSpace(item.TargetDir))} {
+				trimmed := strings.ToLower(strings.TrimSpace(key))
+				if trimmed == "" {
+					continue
+				}
+				installedSkillLookup[trimmed] = item
+			}
+		}
+	}
 	pickerItems := make([]tui.SkillItem, 0, len(items))
 	for _, item := range items {
 		referenceFiles := make([]tui.SkillReferenceItem, 0, len(item.Files))
@@ -3224,6 +3326,7 @@ func buildTUISkillsPicker(config internalconfig.Config, contextDir string, query
 				Description: strings.TrimSpace(file.Description),
 			})
 		}
+		removeTarget := resolveInstalledRemoteSkillSlug(item, installedSkillLookup)
 		pickerItems = append(pickerItems, tui.SkillItem{
 			Name:           item.Name,
 			Description:    item.Description,
@@ -3233,17 +3336,19 @@ func buildTUISkillsPicker(config internalconfig.Config, contextDir string, query
 			RootDir:        item.RootDir,
 			RelativeDir:    item.RelativeDir,
 			Restriction:    skillRestrictionNote(item.Name),
+			SkillMarkdown:  strings.TrimSpace(skills.Markdown(item)),
+			Removable:      removeTarget != "",
+			RemoveTarget:   removeTarget,
 			ReferenceFiles: referenceFiles,
 		})
 	}
-	hint := "使用方向键选择，Enter 查看详情，Esc 关闭。"
+	hint := "使用方向键选择，Enter 查看详情，已安装项按 d 删除，Tab 切换标签，Esc 关闭。"
 	if len(pickerItems) == 0 {
 		hint = "当前没有可展示的技能，Esc 关闭。"
 	}
 	remoteQuery := strings.TrimSpace(query)
 	remoteResults, registryURL, remoteErr := skills.SearchRemote(config, remoteQuery, 20)
 	installedMap := map[string]skills.InstalledRemoteSkill{}
-	installedItems, installedErr := skills.ListInstalledRemoteSkills(skillConfig)
 	if installedErr == nil {
 		for _, item := range installedItems {
 			installedMap[strings.ToLower(strings.TrimSpace(item.Slug))] = item
@@ -3352,6 +3457,12 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 		result.Events = append(result.Events, tui.Event{Kind: tui.EventToolPanel, Panel: buildRemoteSkillPanel(panelItem, query)})
 		return result, nil
 	}
+	splitTargetAndQuery := func(values []string) (string, string, error) {
+		if len(values) == 0 || strings.TrimSpace(values[0]) == "" {
+			return "", "", fmt.Errorf("缺少技能 slug")
+		}
+		return strings.TrimSpace(values[0]), strings.TrimSpace(strings.Join(values[1:], " ")), nil
+	}
 	splitSlugAndQuery := func(values []string) (string, string, error) {
 		if len(values) == 0 || strings.TrimSpace(values[0]) == "" {
 			return "", "", fmt.Errorf("缺少远程技能 slug")
@@ -3416,6 +3527,20 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 		result.Events = []tui.Event{{Kind: tui.EventSystemNote, Text: note}}
 		return result, nil
 	}
+	executeLocalRemove := func(target string, query string, closeToolPanel bool) (tui.LocalCommandResult, error) {
+		output, commandErr := a.executeSkillsCommand([]string{"remove", target})
+		result, pickerErr := buildPicker(query)
+		if pickerErr != nil {
+			return tui.LocalCommandResult{}, pickerErr
+		}
+		if commandErr != nil {
+			result.Events = []tui.Event{{Kind: tui.EventErrorNote, Text: commandErr.Error()}}
+			return result, nil
+		}
+		result.CloseToolPanel = closeToolPanel
+		result.Events = []tui.Event{{Kind: tui.EventSystemNote, Text: output}}
+		return result, nil
+	}
 	buildInstallPromptResult := func(slug string, query string, reopenDetail bool) (tui.LocalCommandResult, error) {
 		result, err := buildPicker(query)
 		if err != nil {
@@ -3469,6 +3594,12 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 		}
 		result.Events = []tui.Event{{Kind: tui.EventSystemNote, Text: output}}
 		return result, nil
+	case "remove-local", "remove-local-detail":
+		target, query, err := splitTargetAndQuery(args)
+		if err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+		return executeLocalRemove(target, query, action == "remove-local-detail")
 	case "install-detail", "update-detail", "remove-detail":
 		slug, query, err := splitSlugAndQuery(args)
 		if err != nil {
@@ -3491,6 +3622,23 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 	default:
 		return tui.LocalCommandResult{}, fmt.Errorf("不支持的 skills picker 动作: %s", action)
 	}
+}
+
+func resolveInstalledRemoteSkillSlug(item skills.Skill, installedLookup map[string]skills.InstalledRemoteSkill) string {
+	if strings.EqualFold(strings.TrimSpace(item.Source), "bundled") {
+		return ""
+	}
+	for _, candidate := range []string{item.Name, item.RelativeDir, filepath.Base(strings.TrimSpace(item.RootDir))} {
+		trimmed := strings.ToLower(strings.TrimSpace(candidate))
+		if trimmed == "" {
+			continue
+		}
+		installed, ok := installedLookup[trimmed]
+		if ok && strings.TrimSpace(installed.Slug) != "" {
+			return strings.TrimSpace(installed.Slug)
+		}
+	}
+	return ""
 }
 
 func resolveTUISkillsContextDir(snapshot tui.Snapshot) string {
@@ -3536,6 +3684,7 @@ func buildRemoteSkillDetailItem(detail skills.RemoteSkillDetail, registryLabel s
 		Slug:             strings.TrimSpace(detail.Slug),
 		DisplayName:      strings.TrimSpace(detail.DisplayName),
 		Summary:          strings.TrimSpace(detail.Summary),
+		SkillMarkdown:    strings.TrimSpace(detail.SkillMarkdown),
 		Version:          strings.TrimSpace(detail.Version),
 		RegistryLabel:    registryLabel,
 		Installed:        installedFound,
@@ -3618,6 +3767,9 @@ func buildRemoteSkillPanelBody(item tui.RemoteSkillItem) string {
 	}
 	if strings.TrimSpace(item.RegistryLabel) != "" {
 		lines = append(lines, fmt.Sprintf("仓库: %s", item.RegistryLabel))
+	}
+	if strings.TrimSpace(item.SkillMarkdown) != "" {
+		lines = append(lines, "", "SKILL.md 内容:", strings.TrimSpace(item.SkillMarkdown))
 	}
 	if item.Installed {
 		lines = append(lines, fmt.Sprintf("安装状态: 已安装 %s", firstNonEmpty(strings.TrimSpace(item.InstalledVersion), "<未知版本>")))

@@ -341,19 +341,19 @@ type UploadResult struct {
 }
 
 type SessionMessage struct {
-	ID          string
-	SessionID   string
-	RunID       string
-	Sender      string
-	SenderName  string
-	Text        string
-	ReasonText  string
-	SearchResults []SearchResult
-	SearchKeyword string
+	ID               string
+	SessionID        string
+	RunID            string
+	Sender           string
+	SenderName       string
+	Text             string
+	ReasonText       string
+	SearchResults    []SearchResult
+	SearchKeyword    string
 	ReasoningEnabled bool
-	SessionName string
-	Timestamp   time.Time
-	Error       bool
+	SessionName      string
+	Timestamp        time.Time
+	Error            bool
 }
 
 type SessionMessageList struct {
@@ -378,6 +378,7 @@ type Provider interface {
 	ListFlows(ctx context.Context, filter string, agentType string, offset, limit int) (*FlowList, error)
 	ListKnowledgeBases(ctx context.Context, filter string, offset, limit int) (*KnowledgeBaseList, error)
 	ListSessions(ctx context.Context, flowID string, offset, limit int) (*SessionList, error)
+	UpdateSessionTitle(ctx context.Context, flowID string, sessionID string, sessionTitle string) (string, error)
 	ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*SessionMessageList, error)
 	CreateSessionID(ctx context.Context) (string, error)
 	UploadFile(ctx context.Context, flowID string, sessionID string, localPath string, remotePath string) (*UploadResult, error)

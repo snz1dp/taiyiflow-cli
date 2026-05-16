@@ -135,6 +135,9 @@ type SkillItem struct {
 	RootDir        string
 	RelativeDir    string
 	Restriction    string
+	SkillMarkdown  string
+	Removable      bool
+	RemoveTarget   string
 	ReferenceFiles []SkillReferenceItem
 }
 
@@ -148,6 +151,7 @@ type RemoteSkillItem struct {
 	Slug             string
 	DisplayName      string
 	Summary          string
+	SkillMarkdown    string
 	Popularity       float64
 	Downloads        int64
 	Version          string
@@ -472,6 +476,7 @@ type ToolPanelAction struct {
 type LocalCommandResult struct {
 	Handled         bool
 	ClearHistory    bool
+	CloseToolPanel  bool
 	Events          []Event
 	FooterHint      string
 	LoginForm       *LoginFormState
@@ -928,6 +933,7 @@ var slashCommands = []slashCommand{
 	{Trigger: "/upload", Completion: "/upload ", Description: "上传文件并附带到当前对话，可用 /upload status 查看状态"},
 	{Trigger: "/think", Completion: "/think ", Description: "查看历史消息中的思考内容，可用 /think 列表或 /think <编号> 查看详情"},
 	{Trigger: "/session", Completion: "/session", Description: "显示当前会话状态"},
+	{Trigger: "/session title", Completion: "/session title ", Description: "设置当前会话标题，新会话不可用"},
 	{Trigger: "/reasoning", Completion: "/reasoning ", Description: "切换思考模式，支持 on、off、default、status"},
 	{Trigger: "/agent", Completion: "/agent ", Description: "切换为执行模式，或直接发送一个执行请求"},
 	{Trigger: "/review", Completion: "/review ", Description: "发起当前工作区或指定路径的代码审查"},
@@ -972,7 +978,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 	toolPanelViewportModel.Style = lipgloss.NewStyle()
 
 	progressModel := progress.New(progress.WithDefaultGradient())
-	programOptions := []tea.ProgramOption{tea.WithAltScreen()}
+	programOptions := []tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion()}
 	if keyboardOptions, cleanupKeyboard := programKeyboardOptions(os.Stdin, os.Stdout, os.Environ()); len(keyboardOptions) > 0 {
 		programOptions = append(programOptions, keyboardOptions...)
 		defer cleanupKeyboard()
@@ -1299,6 +1305,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			QRWaiting:       true,
 			QRWaitPollCount: m.loginForm.qrWaitPollCount,
 		}, m.loginFormSubmit), textinput.Blink)
+	case tea.MouseMsg:
+		if m.toolPanel != nil {
+			return m.handleToolPanelMouse(typed)
+		}
+		return m.handleMainMouse(typed)
 	case tea.KeyMsg:
 		if m.pendingConfirm != nil {
 			return m.handleConfirmKey(typed)
@@ -1642,6 +1653,38 @@ func (m model) handleToolPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "end", "G":
 		m.toolPanelViewport.GotoBottom()
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
+func (m model) handleToolPanelMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if msg.Action != tea.MouseActionPress {
+		return m, nil
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelDown:
+		m.toolPanelViewport.LineDown(3)
+		return m, nil
+	case tea.MouseButtonWheelUp:
+		m.toolPanelViewport.LineUp(3)
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
+func (m model) handleMainMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if msg.Action != tea.MouseActionPress {
+		return m, nil
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelDown:
+		m.viewport.LineDown(3)
+		return m, nil
+	case tea.MouseButtonWheelUp:
+		m.viewport.LineUp(3)
 		return m, nil
 	default:
 		return m, nil
@@ -2239,12 +2282,23 @@ func (m model) handleSkillsPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.activityHint = "正在更新远程技能..."
 		return m, tea.Batch(m.transitionProgress(progressExecuting), executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand("update", selected.Slug, m.skillsPicker.RemoteQuery), m.localCommand))
 	case "d":
-		selected, ok := m.selectedRemoteSkill()
-		if !ok || m.skillsPicker.ActiveTab != "remote" || !selected.Installed {
+		if m.skillsPicker.ActiveTab == "remote" {
+			selected, ok := m.selectedRemoteSkill()
+			if !ok || !selected.Installed {
+				return m, nil
+			}
+			m.activityHint = "正在删除远程技能..."
+			return m, tea.Batch(m.transitionProgress(progressExecuting), executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand("remove", selected.Slug, m.skillsPicker.RemoteQuery), m.localCommand))
+		}
+		if m.skillsCursor < 0 || m.skillsCursor >= len(m.skillsPicker.Items) {
 			return m, nil
 		}
-		m.activityHint = "正在删除远程技能..."
-		return m, tea.Batch(m.transitionProgress(progressExecuting), executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand("remove", selected.Slug, m.skillsPicker.RemoteQuery), m.localCommand))
+		selected := m.skillsPicker.Items[m.skillsCursor]
+		if !selected.Removable || strings.TrimSpace(selected.RemoveTarget) == "" {
+			return m, nil
+		}
+		m.activityHint = "正在删除已安装技能..."
+		return m, tea.Batch(m.transitionProgress(progressExecuting), executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand("remove-local", selected.RemoveTarget, m.skillsPicker.RemoteQuery), m.localCommand))
 	case "enter":
 		if m.activeSkillsPickerItemCount() == 0 {
 			m.closeSkillsPicker()
@@ -2259,7 +2313,7 @@ func (m model) handleSkillsPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.transitionProgress(progressExecuting), executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand("detail", selected.Slug, m.skillsPicker.RemoteQuery), m.localCommand))
 		}
 		selected := m.skillsPicker.Items[m.skillsCursor]
-		m.openToolPanel(buildSkillDetailPanel(selected))
+		m.openToolPanel(buildSkillDetailPanel(selected, m.skillsPicker.RemoteQuery))
 		return m, nil
 	default:
 		return m, nil
@@ -2749,12 +2803,6 @@ func (m model) useMinimalChrome() bool {
 
 func (m *model) syncViewport() {
 	content := renderEntries(m.entries, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot, m.streamingIndicatorSuffix(), m.streamingIndicatorTargetIndex())
-	if transient := m.renderTransientStatus(); transient != "" {
-		if strings.TrimSpace(content) != "" {
-			content += "\n"
-		}
-		content += transient
-	}
 	m.viewport.SetContent(content)
 	if m.shouldPinHistoryTop() {
 		m.viewport.GotoTop()
@@ -2824,6 +2872,9 @@ func (m model) View() string {
 	bodyMainPlaced := lipgloss.Place(m.width, bodyHeight, lipgloss.Center, lipgloss.Top, bodyMain)
 	base := lipgloss.JoinVertical(lipgloss.Left, topPlaced, bodyMainPlaced, statusBar)
 	if overlay := m.renderOverlay(); overlay != "" {
+		if m.toolPanel != nil {
+			return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, overlay)
+		}
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay)
 	}
 
@@ -3183,12 +3234,9 @@ func todoPanelSummary(items []TodoItem) string {
 }
 
 func (m model) renderTransientStatus() string {
-	status := strings.TrimSpace(m.activityHint)
+	status := m.activityStatusText()
 	if status == "" {
 		return ""
-	}
-	if m.streamingIndicatorTargetIndex() < 0 {
-		status += m.streamingIndicatorSuffix()
 	}
 	width := m.viewport.Width - 2
 	if width < 18 {
@@ -3198,6 +3246,17 @@ func (m model) renderTransientStatus() string {
 		trimForWidth(status, width),
 	}
 	return transientStatusStyle.Width(width).Render(strings.Join(lines, "\n"))
+}
+
+func (m model) activityStatusText() string {
+	status := strings.TrimSpace(m.activityHint)
+	if status == "" {
+		return ""
+	}
+	if m.streamingIndicatorTargetIndex() < 0 {
+		status += m.streamingIndicatorSuffix()
+	}
+	return status
 }
 
 func renderEntries(entries []entry, width int, height int, renderer *glamour.TermRenderer, snapshot Snapshot, streamingSuffix string, targetIndex int) string {
@@ -3233,6 +3292,9 @@ func (m model) renderStatusBar() string {
 		bodyWidth = 12
 	}
 	rightParts := []string{}
+	if activityStatus := m.activityStatusText(); activityStatus != "" {
+		rightParts = append(rightParts, statusBarDimStyle.Render(trimForWidth(activityStatus, maxInt(18, renderWidth/3))))
+	}
 	if footerHint := strings.TrimSpace(m.footerHint); footerHint != "" {
 		rightParts = append(rightParts, statusBarDimStyle.Render(trimForWidth(footerHint, maxInt(18, renderWidth/3))))
 	}
@@ -3305,7 +3367,7 @@ func (m model) renderOverlay() string {
 		content = m.renderConfirmOverlay()
 		expandedConfirm = m.confirmOverlayExpanded()
 	} else if m.toolPanel != nil {
-		width = minInt(m.contentWidth-6, 96)
+		width = m.toolPanelOverlayWidth()
 		content = m.renderToolPanel()
 	} else if m.loginForm != nil {
 		content = m.renderLoginForm()
@@ -3326,7 +3388,7 @@ func (m model) renderOverlay() string {
 		width = minInt(m.contentWidth-6, 92)
 		content = m.renderKnowledgePicker()
 	} else if m.skillsPicker != nil {
-		width = minInt(m.contentWidth-6, 100)
+		width = m.maxOverlayStyleWidth()
 		content = m.renderSkillsPicker()
 	} else if m.sessionPicker != nil {
 		width = m.sessionPickerOverlayWidth()
@@ -3352,7 +3414,84 @@ func (m model) renderOverlay() string {
 	if width < 24 {
 		width = 24
 	}
+	if m.toolPanel != nil {
+		return m.maximizedOverlayStyle().Render(content)
+	}
+	if m.skillsPicker != nil {
+		return m.maximizedOverlayStyle().Render(m.fitOverlayContent(content))
+	}
 	return overlayStyle.Width(width).Render(m.fitOverlayContent(content))
+}
+
+func (m model) maximizedOverlayStyle() lipgloss.Style {
+	style := overlayStyle.Width(m.maxOverlayStyleWidth()).Height(m.maxOverlayStyleHeight())
+	if m.height > 0 {
+		style = style.MaxHeight(m.height)
+	}
+	if m.width > 0 {
+		style = style.MaxWidth(m.width)
+	}
+	return style
+}
+
+func (m model) maxOverlayStyleWidth() int {
+	width := m.contentWidth - 6
+	if m.width > 0 {
+		width = m.width - overlayStyle.GetHorizontalBorderSize()
+		if width < 1 {
+			width = 1
+		}
+		return width
+	}
+	if width < 24 {
+		width = 24
+	}
+	return width
+}
+
+func (m model) maxOverlayStyleHeight() int {
+	height := 18
+	if m.height > 0 {
+		height = m.height - overlayStyle.GetVerticalBorderSize()
+		if height < 1 {
+			height = 1
+		}
+		return height
+	}
+	if height < 5 {
+		height = 5
+	}
+	return height
+}
+
+func (m model) maxOverlayContentWidth() int {
+	width := maxInt(24, m.contentWidth-16)
+	if m.width > 0 {
+		width = m.width - overlayStyle.GetHorizontalFrameSize()
+		if width < 1 {
+			width = 1
+		}
+		return width
+	}
+	if width < 18 {
+		width = 18
+	}
+	return width
+}
+
+func (m model) maxOverlayContentHeight() int {
+	height := 18
+	if m.height > 0 {
+		height = m.height - overlayStyle.GetVerticalFrameSize()
+		if height < 1 {
+			height = 1
+		}
+		return height
+	}
+	if height < 5 {
+		height = 5
+	}
+	return height
 }
 
 func (m model) sessionPickerOverlayWidth() int {
@@ -3784,33 +3923,22 @@ func (m model) renderToolPanel() string {
 		return ""
 	}
 	panel := m.toolPanel
-	overlayWidth := maxInt(24, m.contentWidth-16)
-	lines := []string{trimForWidth(fallback(strings.TrimSpace(panel.Title), "工具结果"), overlayWidth)}
-	if strings.TrimSpace(panel.Summary) != "" {
-		lines = append(lines, hintStyle.Render(trimForWidth(panel.Summary, overlayWidth)))
+	contentWidth := m.toolPanelContentWidth()
+	lines := []string{trimForWidth(fallback(toolPanelSingleLineText(panel.Title), "工具结果"), contentWidth)}
+	if summary := toolPanelSingleLineText(panel.Summary); summary != "" {
+		lines = append(lines, hintStyle.Render(trimForWidth(summary, contentWidth)))
 	}
 	if strings.TrimSpace(panel.Body) != "" {
-		lines = append(lines, "", m.toolPanelViewport.View())
+		bodyView := trimMultilineForWidth(m.toolPanelViewport.View(), contentWidth)
+		bodyHeight := maxInt(1, m.toolPanelViewport.Height)
+		bodyBlock := lipgloss.NewStyle().Width(contentWidth).Height(bodyHeight).MaxHeight(bodyHeight).Render(bodyView)
+		lines = append(lines, "", bodyBlock)
 	}
 	if len(panel.Actions) > 0 {
-		parts := make([]string, 0, len(panel.Actions))
-		for _, action := range panel.Actions {
-			label := fmt.Sprintf("[%s] %s", action.Key, action.Label)
-			if action.Disabled {
-				label += "(不可用)"
-			}
-			parts = append(parts, label)
-		}
-		lines = append(lines, "", hintStyle.Render(trimForWidth("操作: "+strings.Join(parts, "  "), overlayWidth)))
+		lines = append(lines, "", hintStyle.Render(trimForWidth(toolPanelActionsText(panel.Actions), contentWidth)))
 	}
-	hint := strings.TrimSpace(panel.Hint)
-	if hint == "" {
-		hint = "按 Enter 或 Esc 关闭，方向键或 j/k 滚动。"
-	} else {
-		hint += " 方向键或 j/k 滚动。"
-	}
-	lines = append(lines, "", hintStyle.Render(trimForWidth(hint, overlayWidth)))
-	return strings.Join(lines, "\n")
+	lines = append(lines, "", hintStyle.Render(trimForWidth(toolPanelHintText(panel), contentWidth)))
+	return limitMultilineHeight(strings.Join(lines, "\n"), m.toolPanelContentHeight())
 }
 
 func (m model) renderApprovalPicker() string {
@@ -4423,7 +4551,7 @@ func (m model) renderSkillsPicker() string {
 	if m.skillsPicker == nil {
 		return ""
 	}
-	overlayWidth := maxInt(24, m.contentWidth-16)
+	overlayWidth := m.maxOverlayContentWidth()
 	localTab := m.renderOverlayOption("本地技能", m.skillsPicker.ActiveTab != "remote")
 	remoteTab := m.renderOverlayOption("远程仓库", m.skillsPicker.ActiveTab == "remote")
 	lines := []string{
@@ -4675,7 +4803,7 @@ func buildTaskActionPicker(item TaskItem) *TaskActionPickerState {
 	}
 }
 
-func buildSkillDetailPanel(item SkillItem) *ToolPanel {
+func buildSkillDetailPanel(item SkillItem, query string) *ToolPanel {
 	body := []string{
 		fmt.Sprintf("名称: %s", item.Name),
 		fmt.Sprintf("来源: %s", fallback(strings.TrimSpace(item.SourceLabel), "<未填写>")),
@@ -4693,6 +4821,9 @@ func buildSkillDetailPanel(item SkillItem) *ToolPanel {
 	if strings.TrimSpace(item.Restriction) != "" {
 		body = append(body, fmt.Sprintf("能力标记: %s", item.Restriction))
 	}
+	if strings.TrimSpace(item.SkillMarkdown) != "" {
+		body = append(body, "", "SKILL.md 内容:", strings.TrimSpace(item.SkillMarkdown))
+	}
 	if len(item.ReferenceFiles) > 0 {
 		body = append(body, "", "参考文件:")
 		for _, file := range item.ReferenceFiles {
@@ -4708,6 +4839,12 @@ func buildSkillDetailPanel(item SkillItem) *ToolPanel {
 		Summary: fallback(strings.TrimSpace(item.Description), "当前技能没有额外说明。"),
 		Body:    strings.Join(body, "\n"),
 		Hint:    "Esc 关闭详情面板。",
+		Actions: []ToolPanelAction{{
+			Key:      "d",
+			Label:    "删除",
+			Command:  buildSkillsPickerCommand("remove-local-detail", item.RemoveTarget, query),
+			Disabled: !item.Removable || strings.TrimSpace(item.RemoveTarget) == "",
+		}},
 	}
 }
 
@@ -5333,10 +5470,13 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 	if footerHint := strings.TrimSpace(result.FooterHint); footerHint != "" {
 		m.footerHint = footerHint
 	}
+	if result.CloseToolPanel {
+		m.clearToolPanelState()
+	}
 	if result.LoginForm != nil {
 		m.resetOverlayScroll()
 		m.loginForm = newLoginFormState(*result.LoginForm)
-		m.toolPanel = nil
+		m.clearToolPanelState()
 		m.configForm = nil
 		m.approvalPicker = nil
 		m.sessionPicker = nil
@@ -5747,11 +5887,15 @@ func (m *model) closeTaskActionPicker(focusTasks bool) {
 	}
 }
 
-func (m *model) closeToolPanel() {
+func (m *model) clearToolPanelState() {
 	m.toolPanel = nil
 	m.resetOverlayScroll()
 	m.toolPanelViewport.SetContent("")
 	m.toolPanelViewport.GotoTop()
+}
+
+func (m *model) closeToolPanel() {
+	m.clearToolPanelState()
 	if m.skillsPicker == nil && m.knowledgePicker == nil && m.tasksPicker == nil && m.taskActionPicker == nil && m.sessionPicker == nil && m.approvalPicker == nil && m.loginForm == nil && m.configForm == nil && !m.showFlowPicker {
 		m.input.Focus()
 	} else {
@@ -5764,7 +5908,12 @@ func (m *model) openToolPanel(panel *ToolPanel) {
 	m.toolPanel = panel
 	m.resetOverlayScroll()
 	m.input.Blur()
-	m.syncToolPanelViewport()
+	if m.ready && m.width > 0 && m.height > 0 {
+		m.syncLayout()
+	} else {
+		m.syncToolPanelViewport()
+	}
+	m.toolPanelViewport.GotoTop()
 }
 
 func (m *model) moveLoginFormCursor(delta int) {
@@ -5871,15 +6020,123 @@ func (m *model) syncToolPanelViewport() {
 	if m.toolPanel == nil {
 		return
 	}
-	panelWidth := maxInt(24, minInt(m.contentWidth-18, 80))
-	panelHeight := maxInt(8, minInt(m.height-14, 24))
-	if panelHeight < 8 {
-		panelHeight = 8
-	}
+	panelWidth := m.toolPanelContentWidth()
+	panelHeight := m.toolPanelViewportHeight()
 	m.toolPanelViewport.Width = panelWidth
 	m.toolPanelViewport.Height = panelHeight
 	body := hardWrapText(m.toolPanel.Body, panelWidth)
 	m.toolPanelViewport.SetContent(body)
+}
+
+func (m model) toolPanelOverlayWidth() int {
+	width := m.maxOverlayStyleWidth()
+	if width < 24 {
+		width = 24
+	}
+	return width
+}
+
+func (m model) toolPanelContentWidth() int {
+	width := m.maxOverlayContentWidth()
+	if width < 18 {
+		width = 18
+	}
+	return width
+}
+
+func (m model) toolPanelViewportHeight() int {
+	available := m.maxOverlayContentHeight() - m.toolPanelFixedLineCount()
+	if available < 1 {
+		available = 1
+	}
+	return available
+}
+
+func (m model) toolPanelContentHeight() int {
+	if m.toolPanel == nil {
+		return 1
+	}
+	height := m.maxOverlayContentHeight()
+	if height < 1 {
+		height = 1
+	}
+	return height
+}
+
+func (m model) toolPanelFixedLineCount() int {
+	if m.toolPanel == nil {
+		return 0
+	}
+	contentWidth := m.toolPanelContentWidth()
+	lines := renderedLineCount(trimForWidth(fallback(toolPanelSingleLineText(m.toolPanel.Title), "工具结果"), contentWidth))
+	if summary := toolPanelSingleLineText(m.toolPanel.Summary); summary != "" {
+		lines += renderedLineCount(hintStyle.Render(trimForWidth(summary, contentWidth)))
+	}
+	if strings.TrimSpace(m.toolPanel.Body) != "" {
+		lines++
+	}
+	if len(m.toolPanel.Actions) > 0 {
+		lines++
+		lines += renderedLineCount(hintStyle.Render(trimForWidth(toolPanelActionsText(m.toolPanel.Actions), contentWidth)))
+	}
+	lines++
+	lines += renderedLineCount(hintStyle.Render(trimForWidth(toolPanelHintText(m.toolPanel), contentWidth)))
+	return lines
+}
+
+func toolPanelActionsText(actions []ToolPanelAction) string {
+	parts := make([]string, 0, len(actions))
+	for _, action := range actions {
+		label := fmt.Sprintf("[%s] %s", action.Key, action.Label)
+		if action.Disabled {
+			label += "(不可用)"
+		}
+		parts = append(parts, label)
+	}
+	return "操作: " + strings.Join(parts, "  ")
+}
+
+func toolPanelHintText(panel *ToolPanel) string {
+	hint := ""
+	if panel != nil {
+		hint = toolPanelSingleLineText(panel.Hint)
+	}
+	if hint == "" {
+		return "按 Enter 或 Esc 关闭，方向键或 j/k 滚动。"
+	}
+	return hint + " 方向键或 j/k 滚动。"
+}
+
+func toolPanelSingleLineText(content string) string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	fields := strings.Fields(content)
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.Join(fields, " ")
+}
+
+func limitMultilineHeight(content string, height int) string {
+	if height <= 0 || content == "" {
+		return content
+	}
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	lines := strings.Split(content, "\n")
+	if len(lines) <= height {
+		return content
+	}
+	return strings.Join(lines[:height], "\n")
+}
+
+func renderedLineCount(content string) int {
+	if content == "" {
+		return 0
+	}
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	return strings.Count(content, "\n") + 1
 }
 
 func (m *model) resetOverlayScroll() {
@@ -5912,6 +6169,9 @@ func (m model) overlayPageStep() int {
 }
 
 func (m model) overlayVisibleLineLimit() int {
+	if m.toolPanel != nil || m.skillsPicker != nil {
+		return m.maxOverlayContentHeight()
+	}
 	limit := m.height - overlayStyle.GetVerticalFrameSize() - 6
 	if m.loginForm != nil || m.confirmOverlayExpanded() {
 		limit = m.height - overlayStyle.GetVerticalFrameSize() - 2
@@ -7946,6 +8206,8 @@ func isExecutableSlashCommandInput(input string) bool {
 		return true
 	case strings.EqualFold(trimmed, "/session"):
 		return true
+	case strings.EqualFold(trimmed, "/session title"):
+		return true
 	case strings.EqualFold(trimmed, "/reasoning"):
 		return true
 	case strings.EqualFold(trimmed, "/reasoning status"):
@@ -7970,6 +8232,8 @@ func isExecutableSlashCommandInput(input string) bool {
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/upload ")) != ""
 	case strings.HasPrefix(strings.ToLower(trimmed), "/think "):
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/think ")) != ""
+	case strings.HasPrefix(strings.ToLower(trimmed), "/session title "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/session title ")) != ""
 	case strings.HasPrefix(strings.ToLower(trimmed), "/reasoning "):
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/reasoning ")) != ""
 	case strings.HasPrefix(strings.ToLower(trimmed), "/skills "):

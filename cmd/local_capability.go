@@ -69,6 +69,18 @@ func (p *callbackAuthRefreshProvider) ListSessions(ctx context.Context, flowID s
 	return p.Provider.ListSessions(ctx, flowID, offset, limit)
 }
 
+func (p *callbackAuthRefreshProvider) UpdateSessionTitle(ctx context.Context, flowID string, sessionID string, sessionTitle string) (string, error) {
+	title, err := p.Provider.UpdateSessionTitle(ctx, flowID, sessionID, sessionTitle)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return "", refreshErr
+	}
+	if !retry {
+		return title, err
+	}
+	return p.Provider.UpdateSessionTitle(ctx, flowID, sessionID, sessionTitle)
+}
+
 func (p *callbackAuthRefreshProvider) ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*provider.SessionMessageList, error) {
 	messages, err := p.Provider.ListSessionMessages(ctx, flowID, sessionID, offset, limit)
 	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)

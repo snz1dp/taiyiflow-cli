@@ -28,6 +28,7 @@ type stubProvider struct {
 	messages           *provider.SessionMessageList
 	runStats           *provider.RunStats
 	sessionContext     *provider.SessionContextPreview
+	updateSessionTitle func(context.Context, string, string, string) (string, error)
 	skillPreview       *provider.SkillResolvePreview
 	skillPreviewErr    error
 	uploadResult       *provider.UploadResult
@@ -80,6 +81,13 @@ func (s stubProvider) ListKnowledgeBases(context.Context, string, int, int) (*pr
 
 func (s stubProvider) ListSessions(context.Context, string, int, int) (*provider.SessionList, error) {
 	return nil, nil
+}
+
+func (s stubProvider) UpdateSessionTitle(ctx context.Context, flowID string, sessionID string, sessionTitle string) (string, error) {
+	if s.updateSessionTitle != nil {
+		return s.updateSessionTitle(ctx, flowID, sessionID, sessionTitle)
+	}
+	return strings.TrimSpace(sessionTitle), nil
 }
 
 func (s stubProvider) ListSessionMessages(context.Context, string, string, int, int) (*provider.SessionMessageList, error) {
@@ -725,6 +733,33 @@ func TestLoadSessionPickerItemsSortsByRecentAtDesc(t *testing.T) {
 	}
 	if !items[2].IsCurrent {
 		t.Fatalf("expected current session marker to be preserved, got %#v", items)
+	}
+}
+
+func TestLoadSessionPickerItemsUsesProviderSessionTitles(t *testing.T) {
+	now := time.Date(2026, time.May, 11, 12, 0, 0, 0, time.UTC)
+	providerStub := &sessionListProvider{responses: map[int]*provider.SessionList{
+		0: {
+			Total: 2,
+			Items: []provider.SessionSummary{
+				{ID: "session-1", Name: "服务端标题", UpdatedAt: now.Add(-1 * time.Hour)},
+				{ID: "session-2", Name: "原始标题", UpdatedAt: now.Add(-2 * time.Hour)},
+			},
+		},
+	}}
+
+	items, err := loadSessionPickerItems(context.Background(), providerStub, "flow-1", "session-2")
+	if err != nil {
+		t.Fatalf("loadSessionPickerItems failed: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %#v", items)
+	}
+	if items[0].Title != "服务端标题" {
+		t.Fatalf("expected provider title to be preserved, got %#v", items[0])
+	}
+	if items[1].Title != "原始标题" || !items[1].IsCurrent {
+		t.Fatalf("expected provider title and current flag to be preserved, got %#v", items[1])
 	}
 }
 

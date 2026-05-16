@@ -514,7 +514,8 @@ func (a *App) loadLoginSnapshotSession(ctx context.Context, providerClient provi
 		return
 	}
 	if title, titleErr := lookupSessionTitle(ctx, providerClient, flowID, snapshot.SessionID); titleErr == nil && strings.TrimSpace(title) != "" {
-		snapshot.SessionTitle = strings.TrimSpace(title)
+		sessionState.SessionTitle = strings.TrimSpace(title)
+		snapshot.SessionTitle = resolveSessionTitle(sessionState)
 	}
 	snapshot.History = loadRecentSessionHistory(ctx, providerClient, flowID, snapshot.SessionID)
 	snapshot.RequestStats = loadLatestSessionMetrics(ctx, providerClient, flowID, snapshot.SessionID)

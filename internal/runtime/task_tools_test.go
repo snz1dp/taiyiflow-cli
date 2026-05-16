@@ -518,7 +518,7 @@ func TestShellExecResolvesSkillAliasAsWorkingDirectory(t *testing.T) {
 	configValue.Skills.Directory = skillRoot
 
 	result, err := runtimeClient.shellExec(context.Background(), configValue, map[string]any{
-		"raw_command":        "pwd",
+		"raw_command":       "pwd",
 		"working_directory": "email-summary",
 	})
 	if err != nil {
@@ -767,6 +767,59 @@ func TestFileEditAcceptsNonUTF8TextWithoutTreatingItAsBinary(t *testing.T) {
 	}
 	if !bytes.Contains(updatedContent, []byte("title=updated")) {
 		t.Fatalf("expected updated ASCII segment, got %q", string(updatedContent))
+	}
+}
+
+func TestFileEditAcceptsReadFileLFContentAgainstCRLFFile(t *testing.T) {
+	workdir := t.TempDir()
+	filePath := workdir + "/main.go"
+	content := "package main\r\n\r\nfunc main() {\r\n\tprintln(\"hello\")\r\n}\r\n"
+	if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: workdir, ApprovalMode: "auto"}
+
+	readResult, err := runtimeClient.readFile(configValue, map[string]any{
+		"path":       "main.go",
+		"start_line": 3,
+		"end_line":   4,
+	})
+	if err != nil {
+		t.Fatalf("readFile failed: %v", err)
+	}
+	oldString := readResult["content"].(string)
+	if strings.Contains(oldString, "\r\n") {
+		t.Fatalf("expected readFile to normalize CRLF to LF, got %q", oldString)
+	}
+
+	result, err := runtimeClient.fileEdit(configValue, map[string]any{
+		"path":       "main.go",
+		"old_string": oldString,
+		"new_string": "func main() {\n\tprintln(\"updated\")",
+	})
+	if err != nil {
+		t.Fatalf("expected fileEdit to accept LF old_string copied from readFile, got %v", err)
+	}
+	if result["replacements"].(int) != 1 {
+		t.Fatalf("unexpected replacements: %#v", result)
+	}
+	if normalized, ok := result["normalized_old_string_match"].(bool); !ok || !normalized {
+		t.Fatalf("expected normalized_old_string_match flag, got %#v", result)
+	}
+	updatedContent, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("read updated file failed: %v", err)
+	}
+	updatedText := string(updatedContent)
+	if !strings.Contains(updatedText, "println(\"updated\")") {
+		t.Fatalf("expected updated content, got %q", updatedText)
+	}
+	if !strings.Contains(updatedText, "\r\n") {
+		t.Fatalf("expected edited file to preserve CRLF line endings, got %q", updatedText)
+	}
+	if strings.Contains(updatedText, "func main() {\n") {
+		t.Fatalf("expected edited block not to introduce bare LF into CRLF file, got %q", updatedText)
 	}
 }
 

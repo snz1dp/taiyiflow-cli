@@ -309,6 +309,40 @@ func TestGetSessionContextWindowParsesResponse(t *testing.T) {
 	}
 }
 
+func TestUpdateSessionTitlePostsSessionName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			t.Fatalf("expected POST request, got %s", request.Method)
+		}
+		if request.URL.Path != "/taiyi/composer/api/v1/agents/flows/demo-flow/sessions/session-123" {
+			http.NotFound(writer, request)
+			return
+		}
+		if got := request.Header.Get("Content-Type"); !strings.Contains(got, "application/json") {
+			t.Fatalf("expected json content type, got %q", got)
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request body failed: %v", err)
+		}
+		if payload["session_name"] != "用户询问录音问题" {
+			t.Fatalf("expected session_name payload, got %#v", payload)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"id":"session-123","session_name":"用户询问录音问题"}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	title, err := client.UpdateSessionTitle(context.Background(), "demo-flow", "session-123", "用户询问录音问题")
+	if err != nil {
+		t.Fatalf("expected UpdateSessionTitle to succeed, got %v", err)
+	}
+	if title != "用户询问录音问题" {
+		t.Fatalf("expected updated title to round-trip, got %q", title)
+	}
+}
+
 func TestGetMetadataParsesMaxInputTokens(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/taiyi/composer/api/v1/run/demo-flow/metadata" {

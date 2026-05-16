@@ -388,6 +388,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("配置路径: %s", path),
 		fmt.Sprintf("服务端地址: %s", fallbackConfigValue(config.BackendBaseURL, internalconfig.Default().BackendBaseURL)),
 		fmt.Sprintf("服务端前缀: %s", fallbackConfigValue(config.BackendAPIPrefix, internalconfig.Default().BackendAPIPrefix)),
+		fmt.Sprintf("认证端前缀: %s", fallbackConfigValue(config.AuthAPIPrefix, internalconfig.Default().AuthAPIPrefix)),
 		fmt.Sprintf("默认智能体: %s", fallbackConfigValue(config.DefaultFlow, "<未配置>")),
 		fmt.Sprintf("命令执行模式: %s", fallbackConfigValue(config.ApprovalMode, internalconfig.Default().ApprovalMode)),
 		fmt.Sprintf("默认思考模式: %t", config.ReasoningEnabled),

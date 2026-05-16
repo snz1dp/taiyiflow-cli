@@ -12,8 +12,8 @@ func TestSessionStoreSaveLoadSandboxPolicyOverride(t *testing.T) {
 	store := &SessionStore{rootDir: tempDir}
 
 	state := SessionState{
-		FlowID:                       "demo-flow",
-		Workdir:                      tempDir,
+		FlowID:                      "demo-flow",
+		Workdir:                     tempDir,
 		SandboxEscapePolicyOverride: "ALLOW",
 	}
 	if err := store.Save(state); err != nil {
@@ -64,8 +64,8 @@ func TestSessionStoreSaveLoadTodoItems(t *testing.T) {
 		t.Fatalf("new session store failed: %v", err)
 	}
 	state := SessionState{
-		FlowID:  "demo-flow",
-		Workdir: tempDir,
+		FlowID:    "demo-flow",
+		Workdir:   tempDir,
 		TodoItems: []TodoItem{{Title: "实现 shell/task", Status: "in-progress"}},
 	}
 	if err := store.Save(state); err != nil {
@@ -105,5 +105,43 @@ func TestSessionStoreSaveLoadApprovedSkillNames(t *testing.T) {
 	}
 	if loaded.ApprovedSkillNames[0] != "Context Review" || loaded.ApprovedSkillNames[1] != "email-summary" {
 		t.Fatalf("unexpected approved skill names: %#v", loaded.ApprovedSkillNames)
+	}
+}
+
+func TestSessionStoreSavePreservesExistingSessionTitleAliases(t *testing.T) {
+	tempDir := t.TempDir()
+	store := &SessionStore{rootDir: tempDir}
+
+	initial := SessionState{
+		FlowID:              "demo-flow",
+		Workdir:             tempDir,
+		SessionID:           "session-1",
+		SessionTitle:        "旧标题",
+		SessionTitleAliases: map[string]string{"session-1": "旧标题", "session-2": "历史标题"},
+	}
+	if err := store.Save(initial); err != nil {
+		t.Fatalf("save initial session failed: %v", err)
+	}
+
+	updated := SessionState{
+		FlowID:              "demo-flow",
+		Workdir:             tempDir,
+		SessionID:           "session-1",
+		SessionTitle:        "新标题",
+		SessionTitleAliases: map[string]string{"session-1": "新标题"},
+	}
+	if err := store.Save(updated); err != nil {
+		t.Fatalf("save updated session failed: %v", err)
+	}
+
+	loaded, err := store.Load("demo-flow", tempDir)
+	if err != nil {
+		t.Fatalf("load session failed: %v", err)
+	}
+	if loaded.LocalSessionTitle("session-1") != "新标题" {
+		t.Fatalf("expected updated alias for current session, got %#v", loaded.SessionTitleAliases)
+	}
+	if loaded.LocalSessionTitle("session-2") != "历史标题" {
+		t.Fatalf("expected existing alias to be preserved, got %#v", loaded.SessionTitleAliases)
 	}
 }

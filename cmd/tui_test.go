@@ -157,7 +157,7 @@ func TestExecuteTUISkillsPickerInstallDetailRefreshesPickerAndPanel(t *testing.T
 			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"远程技能摘要","version":"1.2.3","updatedAt":1710000000}]}`))
 		case "/api/v1/skills/remote-skill":
 			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"skill":{"slug":"remote-skill","displayName":"Remote Skill","summary":"远程技能摘要","updatedAt":1710000000},"latestVersion":{"version":"1.2.3"},"metadata":{"os":["macOS"],"systems":["cli"]},"owner":{"handle":"tester","displayName":"测试者"}}`))
+			_, _ = writer.Write([]byte(`{"skill":{"slug":"remote-skill","displayName":"Remote Skill","summary":"远程技能摘要","updatedAt":1710000000},"latestVersion":{"version":"1.2.3"},"metadata":{"os":["macOS"],"systems":["cli"]},"owner":{"handle":"tester","displayName":"测试者"},"metaContent":{"skillMd":"---\nname: Remote Skill\n---\n\n远程技能正文详情"}}`))
 		case "/api/v1/download":
 			archiveBytes := buildRemoteSkillArchive(t, "1.2.3")
 			writer.Header().Set("Content-Type", "application/zip")
@@ -202,6 +202,9 @@ func TestExecuteTUISkillsPickerInstallDetailRefreshesPickerAndPanel(t *testing.T
 	}
 	if !strings.Contains(result.Events[1].Panel.Body, "发布者: 测试者 (tester)") {
 		t.Fatalf("expected full remote detail panel, got %#v", result.Events[1].Panel)
+	}
+	if !strings.Contains(result.Events[1].Panel.Body, "SKILL.md 内容:") || !strings.Contains(result.Events[1].Panel.Body, "远程技能正文详情") {
+		t.Fatalf("expected remote skill markdown in detail panel, got %#v", result.Events[1].Panel)
 	}
 	defaultSkillsDir, dirErr := internalconfig.DefaultSkillsDir()
 	if dirErr != nil {
@@ -254,6 +257,85 @@ func TestExecuteTUISkillsPickerInstallSelectUsesRememberedSessionScope(t *testin
 	installedSkillPath := filepath.Join(workspaceDir, ".snz1dp", "skills", "remote-skill", "SKILL.md")
 	if _, statErr := os.Stat(installedSkillPath); statErr != nil {
 		t.Fatalf("expected workspace installed skill file, got %v", statErr)
+	}
+}
+
+func TestExecuteTUISkillsPickerRemoveLocalDetailRefreshesPickerAndClosesPanel(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	workspaceDir := t.TempDir()
+	registry := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/search":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"远程技能摘要","version":"1.2.3","updatedAt":1710000000}]}`))
+		case "/api/v1/download":
+			archiveBytes := buildRemoteSkillArchive(t, "1.2.3")
+			writer.Header().Set("Content-Type", "application/zip")
+			_, _ = writer.Write(archiveBytes)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer registry.Close()
+
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.RegistryURL = registry.URL
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	installedSkillDir := filepath.Join(workspaceDir, ".snz1dp", "skills", "remote-skill")
+	if err := os.MkdirAll(filepath.Join(installedSkillDir, ".snz1dp"), 0o755); err != nil {
+		t.Fatalf("create installed skill metadata dir failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(installedSkillDir, "SKILL.md"), []byte("---\nname: Remote Skill\ndescription: 已安装远程技能\ncategory: remote\n---\n\nInstalled body\n"), 0o644); err != nil {
+		t.Fatalf("write installed skill failed: %v", err)
+	}
+	originBody := fmt.Sprintf("{\"version\":1,\"registry\":%q,\"slug\":\"remote-skill\",\"installedVersion\":\"1.2.3\"}", registry.URL)
+	if err := os.WriteFile(filepath.Join(installedSkillDir, ".snz1dp", "origin.json"), []byte(originBody), 0o644); err != nil {
+		t.Fatalf("write installed skill origin failed: %v", err)
+	}
+	app := &App{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, configManager: manager, skillInstallScopeSession: internalconfig.SkillInstallScopeWorkspace, skillInstallScopePinned: true}
+
+	picker, err := buildTUISkillsPicker(config, workspaceDir, "remote")
+	if err != nil {
+		t.Fatalf("buildTUISkillsPicker failed: %v", err)
+	}
+	removableFound := false
+	for _, item := range picker.Items {
+		if item.RemoveTarget == "remote-skill" {
+			removableFound = item.Removable
+			break
+		}
+	}
+	if !removableFound {
+		t.Fatalf("expected installed remote skill to be marked removable, got %#v", picker.Items)
+	}
+
+	result, err := app.executeTUISkillsPickerCommand(config, workspaceDir, "/skills-picker remove-local-detail remote-skill remote")
+	if err != nil {
+		t.Fatalf("remove-local-detail failed: %v", err)
+	}
+	if !result.CloseToolPanel {
+		t.Fatalf("expected local detail removal to close panel, got %#v", result)
+	}
+	if result.SkillsPicker == nil {
+		t.Fatalf("expected refreshed picker, got %#v", result)
+	}
+	for _, item := range result.SkillsPicker.Items {
+		if item.RemoveTarget == "remote-skill" || item.Name == "Remote Skill" {
+			t.Fatalf("expected removed skill to disappear from local picker, got %#v", result.SkillsPicker.Items)
+		}
+	}
+	if len(result.Events) == 0 || !strings.Contains(result.Events[0].Text, "已删除技能") || !strings.Contains(result.Events[0].Text, "remote-skill") {
+		t.Fatalf("expected delete confirmation note, got %#v", result.Events)
+	}
+	if len(result.SkillsPicker.RemoteItems) != 1 || result.SkillsPicker.RemoteItems[0].Installed {
+		t.Fatalf("expected remote entry to become uninstalled, got %#v", result.SkillsPicker.RemoteItems)
 	}
 }
 
@@ -496,6 +578,9 @@ func TestBuildTUIHelpLinesUsesLoginOverlayWording(t *testing.T) {
 	if !strings.Contains(joined, "/refresh 刷新当前会话的历史消息") {
 		t.Fatalf("expected help text to include /refresh, got %q", joined)
 	}
+	if !strings.Contains(joined, "/session title <标题> 设置当前会话标题") {
+		t.Fatalf("expected help text to include /session title, got %q", joined)
+	}
 	if !strings.Contains(joined, "/todo [show|hide|status]") {
 		t.Fatalf("expected help text to include /todo sidebar command, got %q", joined)
 	}
@@ -513,6 +598,9 @@ func TestBuildTUIHelpLinesUsesLoginOverlayWording(t *testing.T) {
 	}
 	if !strings.Contains(readonlyJoined, "/refresh 刷新当前会话的历史消息") {
 		t.Fatalf("expected readonly help text to include /refresh, got %q", readonlyJoined)
+	}
+	if !strings.Contains(readonlyJoined, "/session title <标题> 设置当前会话标题") {
+		t.Fatalf("expected readonly help text to include /session title, got %q", readonlyJoined)
 	}
 	if strings.Contains(readonlyJoined, "查看登录状态") {
 		t.Fatalf("expected readonly help text to stop using legacy status wording, got %q", readonlyJoined)
@@ -544,6 +632,106 @@ func TestBuildInitialTUISnapshotLoadsSessionTodoItems(t *testing.T) {
 	}
 	if snapshot.TodoItems[0].Title != "实现右侧待办栏" || snapshot.TodoItems[0].Notes != "放到历史区右边" {
 		t.Fatalf("unexpected todo item mapping: %#v", snapshot.TodoItems[0])
+	}
+}
+
+func TestBuildTUISnapshotUsesProviderSessionTitle(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	workdir := t.TempDir()
+	if err := app.sessionStore.Save(agent.SessionState{
+		FlowID:       "flow-1",
+		Workdir:      workdir,
+		SessionID:    "session-1",
+		SessionTitle: "",
+	}); err != nil {
+		t.Fatalf("save session failed: %v", err)
+	}
+	providerStub := &sessionListProvider{responses: map[int]*provider.SessionList{
+		0: {
+			Total: 1,
+			Items: []provider.SessionSummary{{ID: "session-1", Name: "服务端标题"}},
+		},
+	}}
+	config := internalconfig.Default()
+	config.Workdir = workdir
+
+	snapshot, err := app.buildTUISnapshot(context.Background(), providerStub, config, "flow-1", backendStatus{Available: true})
+	if err != nil {
+		t.Fatalf("buildTUISnapshot failed: %v", err)
+	}
+	if snapshot.SessionTitle != "服务端标题" {
+		t.Fatalf("expected provider session title to win, got %#v", snapshot)
+	}
+}
+
+func TestExecuteTUISessionCommandUpdatesRemoteSessionTitle(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	workdir := t.TempDir()
+	if err := app.sessionStore.Save(agent.SessionState{
+		FlowID:          "flow-1",
+		FlowDisplayName: "Flow One",
+		Workdir:         workdir,
+		SessionID:       "session-1",
+		ContextDir:      workdir,
+		RequestMode:     provider.RequestTypeAgent,
+	}); err != nil {
+		t.Fatalf("save session failed: %v", err)
+	}
+	var gotFlowID string
+	var gotSessionID string
+	var gotTitle string
+	providerStub := &stubProvider{updateSessionTitle: func(_ context.Context, flowID string, sessionID string, sessionTitle string) (string, error) {
+		gotFlowID = flowID
+		gotSessionID = sessionID
+		gotTitle = sessionTitle
+		return sessionTitle, nil
+	}}
+
+	result, err := app.executeTUISessionCommand(context.Background(), providerStub, "/session title 项目排障", internaltui.Snapshot{
+		DefaultFlow:      "flow-1",
+		DefaultFlowLabel: "Flow One",
+		Workdir:          workdir,
+		ContextDir:       workdir,
+		RequestMode:      provider.RequestTypeAgent,
+		SessionID:        "session-1",
+	})
+	if err != nil {
+		t.Fatalf("executeTUISessionCommand failed: %v", err)
+	}
+	if result.Snapshot == nil || result.Snapshot.SessionTitle != "项目排障" {
+		t.Fatalf("expected updated snapshot title, got %#v", result.Snapshot)
+	}
+	if len(result.Events) != 1 || !strings.Contains(result.Events[0].Text, "项目排障") {
+		t.Fatalf("expected success note to mention title, got %#v", result.Events)
+	}
+	if gotFlowID != "flow-1" || gotSessionID != "session-1" || gotTitle != "项目排障" {
+		t.Fatalf("expected UpdateSessionTitle to receive flow/session/title, got flow=%q session=%q title=%q", gotFlowID, gotSessionID, gotTitle)
+	}
+	loaded, err := app.sessionStore.Load("flow-1", workdir)
+	if err != nil {
+		t.Fatalf("load session failed: %v", err)
+	}
+	if loaded.SessionTitle != "项目排障" {
+		t.Fatalf("expected session title to persist after remote update, got %#v", loaded)
+	}
+}
+
+func TestExecuteTUISessionCommandRejectsTitleForNewSession(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	workdir := t.TempDir()
+
+	result, err := app.executeTUISessionCommand(context.Background(), &stubProvider{}, "/session title 项目排障", internaltui.Snapshot{
+		DefaultFlow: "flow-1",
+		Workdir:     workdir,
+	})
+	if err != nil {
+		t.Fatalf("executeTUISessionCommand failed: %v", err)
+	}
+	if len(result.Events) != 1 || result.Events[0].Kind != internaltui.EventErrorNote {
+		t.Fatalf("expected error note for new session, got %#v", result.Events)
+	}
+	if !strings.Contains(result.Events[0].Text, "新会话") {
+		t.Fatalf("expected new session hint, got %#v", result.Events[0])
 	}
 }
 

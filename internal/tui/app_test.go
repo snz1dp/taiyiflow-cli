@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -167,6 +168,9 @@ func TestIsExecutableSlashCommandInputUsesSplitDialogueCommands(t *testing.T) {
 	}
 	if !isExecutableSlashCommandInput("/think 1") {
 		t.Fatalf("expected /think to be executable")
+	}
+	if !isExecutableSlashCommandInput("/session title 项目排障") {
+		t.Fatalf("expected /session title to be executable")
 	}
 	if !isExecutableSlashCommandInput("/todo hide") {
 		t.Fatalf("expected /todo hide to be executable")
@@ -1754,6 +1758,8 @@ func TestSyncViewportDoesNotAppendStreamingIndicatorToPreviousAssistantWhileSend
 		streamingIndicatorActive:   true,
 		streamingIndicatorFrame:    2,
 		activityHint:               "正在发送",
+		width:                      120,
+		contentWidth:               120,
 		viewport:                   viewport.Model{Width: 80, Height: 10},
 		currentStreamingEntryIndex: -1,
 	}
@@ -1763,8 +1769,11 @@ func TestSyncViewportDoesNotAppendStreamingIndicatorToPreviousAssistantWhileSend
 	if strings.Contains(got, "上一个回答...") {
 		t.Fatalf("expected previous assistant entry to stay unchanged, got %q", got)
 	}
-	if !strings.Contains(got, "正在发送...") {
-		t.Fatalf("expected transient status to show streaming indicator before first chunk, got %q", got)
+	if strings.Contains(got, "正在发送...") {
+		t.Fatalf("expected activity hint to stay out of history viewport, got %q", got)
+	}
+	if status := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(status, "正在发送...") {
+		t.Fatalf("expected status bar to show streaming indicator before first chunk, got %q", status)
 	}
 }
 
@@ -2085,6 +2094,149 @@ func TestHandleSkillsPickerEnterOpensToolPanel(t *testing.T) {
 	}
 }
 
+func TestHandleSkillsPickerDeleteOnLocalRunsRemoveCommand(t *testing.T) {
+	captured := ""
+	m := model{
+		ctx:   context.Background(),
+		input: textarea.New(),
+		skillsPicker: &SkillsPickerState{
+			Title:       "技能列表",
+			ActiveTab:   "local",
+			RemoteQuery: "remote debug",
+			Items: []SkillItem{{
+				Name:         "Remote Skill",
+				Description:  "已安装远程技能",
+				Removable:    true,
+				RemoveTarget: "remote-skill",
+			}},
+		},
+		localCommand: func(ctx context.Context, command string, snapshot Snapshot) (LocalCommandResult, error) {
+			captured = command
+			return LocalCommandResult{Handled: true}, nil
+		},
+	}
+
+	updatedModel, cmd := m.handleSkillsPickerKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	updated := updatedModel.(model)
+	if strings.TrimSpace(updated.activityHint) != "正在删除已安装技能..." {
+		t.Fatalf("unexpected activity hint: %q", updated.activityHint)
+	}
+	if cmd == nil {
+		t.Fatal("expected delete command")
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", msg)
+	}
+	for _, nested := range batch {
+		if nested != nil {
+			_ = nested()
+		}
+	}
+	if captured != "/skills-picker remove-local remote-skill remote debug" {
+		t.Fatalf("unexpected delete command: %q", captured)
+	}
+}
+
+func TestBuildSkillDetailPanelIncludesDeleteActionForRemovableSkill(t *testing.T) {
+	panel := buildSkillDetailPanel(SkillItem{
+		Name:          "Remote Skill",
+		Description:   "已安装远程技能",
+		SkillMarkdown: "---\nname: Remote Skill\n---\n\n详细内容",
+		Removable:     true,
+		RemoveTarget:  "remote-skill",
+		ReferenceFiles: []SkillReferenceItem{{
+			Path:        "references/guide.md",
+			Description: "参考说明",
+		}},
+	}, "remote debug")
+	if panel == nil {
+		t.Fatal("expected panel")
+	}
+	if !strings.Contains(panel.Body, "SKILL.md 内容:") || !strings.Contains(panel.Body, "详细内容") {
+		t.Fatalf("expected skill markdown content in panel body, got %#v", panel)
+	}
+	if strings.Index(panel.Body, "SKILL.md 内容:") > strings.Index(panel.Body, "参考文件:") {
+		t.Fatalf("expected skill markdown block to appear before references, got %#v", panel)
+	}
+	if len(panel.Actions) != 1 {
+		t.Fatalf("expected one action, got %#v", panel.Actions)
+	}
+	action := panel.Actions[0]
+	if action.Key != "d" || action.Disabled {
+		t.Fatalf("unexpected delete action: %#v", action)
+	}
+	if action.Command != "/skills-picker remove-local-detail remote-skill remote debug" {
+		t.Fatalf("unexpected delete action command: %#v", action)
+	}
+}
+
+func TestOpenToolPanelResetsViewportToTop(t *testing.T) {
+	body := strings.Join([]string{
+		"第1行",
+		"第2行",
+		"第3行",
+		"第4行",
+		"第5行",
+		"第6行",
+		"第7行",
+		"第8行",
+		"第9行",
+		"第10行",
+	}, "\n")
+	m := model{
+		contentWidth:      80,
+		height:            30,
+		input:             textarea.New(),
+		toolPanelViewport: viewport.New(24, 4),
+	}
+	m.toolPanelViewport.SetContent(body)
+	m.toolPanelViewport.GotoBottom()
+
+	m.openToolPanel(&ToolPanel{Title: "技能详情", Body: body})
+
+	if m.toolPanelViewport.YOffset != 0 {
+		t.Fatalf("expected viewport to reset to top, got offset %d", m.toolPanelViewport.YOffset)
+	}
+	if !strings.Contains(m.toolPanelViewport.View(), "第1行") {
+		t.Fatalf("expected viewport to show top content, got %q", m.toolPanelViewport.View())
+	}
+}
+
+func TestApplyLocalCommandResultCanCloseToolPanelWhenRefreshingSkillsPicker(t *testing.T) {
+	m := model{
+		toolPanel:         &ToolPanel{Title: "技能详情"},
+		toolPanelViewport: viewport.New(24, 4),
+		input:             textarea.New(),
+	}
+	m.toolPanelViewport.SetContent(strings.Join([]string{"第1行", "第2行", "第3行", "第4行", "第5行"}, "\n"))
+	m.toolPanelViewport.GotoBottom()
+
+	m.applyLocalCommandResult(LocalCommandResult{
+		Handled:        true,
+		CloseToolPanel: true,
+		SkillsPicker: &SkillsPickerState{
+			Title:     "技能列表",
+			ActiveTab: "local",
+			Items:     []SkillItem{{Name: "remote-skill"}},
+		},
+	})
+
+	if m.toolPanel != nil {
+		t.Fatalf("expected tool panel to close, got %#v", m.toolPanel)
+	}
+	if m.toolPanelViewport.YOffset != 0 {
+		t.Fatalf("expected tool panel viewport to reset after close, got %d", m.toolPanelViewport.YOffset)
+	}
+	if strings.TrimSpace(m.toolPanelViewport.View()) != "" {
+		t.Fatalf("expected tool panel viewport content to clear after close, got %q", m.toolPanelViewport.View())
+	}
+	if m.skillsPicker == nil || len(m.skillsPicker.Items) != 1 {
+		t.Fatalf("expected refreshed skills picker, got %#v", m.skillsPicker)
+	}
+}
+
 func TestHandleSkillsPickerTabSwitchesToRemote(t *testing.T) {
 	m := model{
 		skillsPicker: &SkillsPickerState{
@@ -2388,6 +2540,35 @@ func TestRenderSkillsPickerShowsPopularityAndDownloads(t *testing.T) {
 	}
 }
 
+func TestSkillsPickerOverlayUsesMaximumScreenSize(t *testing.T) {
+	m := model{
+		ready:        true,
+		width:        120,
+		height:       32,
+		contentWidth: 100,
+		skillsPicker: &SkillsPickerState{
+			Title:       "技能列表",
+			ActiveTab:   "remote",
+			RemoteItems: []RemoteSkillItem{},
+		},
+	}
+	for index := 1; index <= 40; index++ {
+		m.skillsPicker.RemoteItems = append(m.skillsPicker.RemoteItems, RemoteSkillItem{
+			Slug:        "remote-skill-" + strconv.Itoa(index),
+			DisplayName: "Remote Skill " + strconv.Itoa(index),
+			Summary:     "远程技能摘要 " + strconv.Itoa(index),
+		})
+	}
+
+	rendered := sanitizeTerminalText(m.renderOverlay())
+	if got := lipgloss.Width(rendered); got != m.width {
+		t.Fatalf("expected skills picker overlay width to use full screen width %d, got %d in %q", m.width, got, rendered)
+	}
+	if got := lipgloss.Height(rendered); got != m.height {
+		t.Fatalf("expected skills picker overlay height to use full screen height %d, got %d in %q", m.height, got, rendered)
+	}
+}
+
 func TestRenderToolPanelKeepsTitleAndHintWithinWidth(t *testing.T) {
 	m := model{
 		contentWidth:      40,
@@ -2402,7 +2583,515 @@ func TestRenderToolPanelKeepsTitleAndHintWithinWidth(t *testing.T) {
 	m.syncToolPanelViewport()
 
 	rendered := sanitizeTerminalText(m.renderToolPanel())
-	assertRenderedMaxLineWidth(t, rendered, 24)
+	assertRenderedMaxLineWidth(t, rendered, m.toolPanelContentWidth())
+}
+
+func TestToolPanelOverlayUsesMaximumScreenSize(t *testing.T) {
+	bodyLines := make([]string, 0, 80)
+	for index := 1; index <= 80; index++ {
+		bodyLines = append(bodyLines, "第"+strconv.Itoa(index)+"行远程技能详情内容")
+	}
+	m := model{
+		ready:             true,
+		width:             120,
+		height:            40,
+		contentWidth:      100,
+		input:             textarea.New(),
+		toolPanelViewport: viewport.New(0, 0),
+	}
+	m.openToolPanel(&ToolPanel{
+		Title:   "远程技能详情｜Remote Skill",
+		Summary: "用于验证技能详情窗口最大化。",
+		Body:    strings.Join(bodyLines, "\n"),
+		Hint:    "Esc 返回上层技能列表。",
+		Actions: []ToolPanelAction{{Key: "i", Label: "安装", Command: "/skills-picker install remote-skill"}},
+	})
+
+	if m.toolPanelViewport.Height <= 24 {
+		t.Fatalf("expected maximized tool panel viewport height to exceed old 24-line cap, got %d", m.toolPanelViewport.Height)
+	}
+	rendered := sanitizeTerminalText(m.renderOverlay())
+	if got := lipgloss.Width(rendered); got != m.width {
+		t.Fatalf("expected tool panel overlay width to use full screen width %d, got %d in %q", m.width, got, rendered)
+	}
+	if got := lipgloss.Height(rendered); got != m.height {
+		t.Fatalf("expected tool panel overlay height to use full screen height %d, got %d in %q", m.height, got, rendered)
+	}
+}
+
+func TestRenderOverlayKeepsToolPanelScrollInsideViewport(t *testing.T) {
+	bodyLines := make([]string, 0, 32)
+	for index := 1; index <= 32; index++ {
+		bodyLines = append(bodyLines, "第"+strconv.Itoa(index)+"行远程技能详情内容")
+	}
+	m := model{
+		contentWidth:      80,
+		height:            24,
+		toolPanelViewport: viewport.New(0, 0),
+		toolPanel: &ToolPanel{
+			Title:   "远程技能详情",
+			Summary: "用于验证滚动时只在正文区域内滚动。",
+			Body:    strings.Join(bodyLines, "\n"),
+			Hint:    "Esc 关闭详情。",
+		},
+	}
+
+	m.syncToolPanelViewport()
+	renderedPanel := m.renderToolPanel()
+	if got, limit := strings.Count(renderedPanel, "\n")+1, m.overlayVisibleLineLimit(); got > limit {
+		t.Fatalf("expected tool panel lines to fit overlay limit, got %d > %d", got, limit)
+	}
+	renderedOverlay := sanitizeTerminalText(m.renderOverlay())
+	if strings.Contains(renderedOverlay, "↑ 上方还有") || strings.Contains(renderedOverlay, "↓ 下方还有") {
+		t.Fatalf("expected tool panel to avoid outer overlay clipping hints, got %q", renderedOverlay)
+	}
+}
+
+func TestReopenToolPanelAfterScrollKeepsLayoutStable(t *testing.T) {
+	bodyLines := make([]string, 0, 40)
+	for index := 1; index <= 40; index++ {
+		bodyLines = append(bodyLines, "第"+strconv.Itoa(index)+"行远程技能详情内容")
+	}
+	m := model{
+		contentWidth:      80,
+		height:            24,
+		input:             textarea.New(),
+		toolPanelViewport: viewport.New(0, 0),
+		skillsPicker: &SkillsPickerState{
+			Title:     "技能列表",
+			ActiveTab: "remote",
+			RemoteItems: []RemoteSkillItem{{
+				Slug:        "remote-skill",
+				DisplayName: "Remote Skill",
+			}},
+		},
+	}
+	panel := &ToolPanel{
+		Title:   "远程技能详情",
+		Summary: "用于验证第二次打开后仍保持稳定布局。",
+		Body:    strings.Join(bodyLines, "\n"),
+		Hint:    "Esc 关闭详情。",
+	}
+
+	m.openToolPanel(panel)
+	m.toolPanelViewport.HalfViewDown()
+	m.closeToolPanel()
+	m.openToolPanel(panel)
+
+	if m.toolPanelViewport.YOffset != 0 {
+		t.Fatalf("expected reopened tool panel viewport to reset to top, got %d", m.toolPanelViewport.YOffset)
+	}
+	renderedOverlay := sanitizeTerminalText(m.renderOverlay())
+	if strings.Contains(renderedOverlay, "↑ 上方还有") || strings.Contains(renderedOverlay, "↓ 下方还有") {
+		t.Fatalf("expected reopened tool panel to avoid outer overlay clipping hints, got %q", renderedOverlay)
+	}
+	if !strings.Contains(renderedOverlay, "第1行远程技能详情内容") {
+		t.Fatalf("expected reopened tool panel to show top content, got %q", renderedOverlay)
+	}
+	if strings.Contains(renderedOverlay, "第40行远程技能详情内容") {
+		t.Fatalf("expected reopened tool panel not to jump near bottom, got %q", renderedOverlay)
+	}
+}
+
+func TestToolPanelOverlayHeightStaysStableAcrossScrollAndReopen(t *testing.T) {
+	bodyLines := make([]string, 0, 40)
+	for index := 1; index <= 40; index++ {
+		bodyLines = append(bodyLines, "第"+strconv.Itoa(index)+"行远程技能详情内容")
+	}
+	panel := &ToolPanel{
+		Title:   "远程技能详情",
+		Summary: "用于验证滚动时详情窗口高度保持稳定。",
+		Body:    strings.Join(bodyLines, "\n"),
+		Hint:    "Esc 关闭详情。",
+	}
+	m := model{
+		ready:             true,
+		width:             100,
+		height:            28,
+		contentWidth:      80,
+		input:             textarea.New(),
+		toolPanelViewport: viewport.New(0, 0),
+	}
+
+	m.openToolPanel(panel)
+	firstHeight := lipgloss.Height(sanitizeTerminalText(m.renderOverlay()))
+	m.toolPanelViewport.HalfViewDown()
+	scrolledHeight := lipgloss.Height(sanitizeTerminalText(m.renderOverlay()))
+	m.closeToolPanel()
+	m.openToolPanel(panel)
+	reopenedHeight := lipgloss.Height(sanitizeTerminalText(m.renderOverlay()))
+
+	if firstHeight != scrolledHeight || firstHeight != reopenedHeight {
+		t.Fatalf("expected overlay height to remain stable, got first=%d scrolled=%d reopened=%d", firstHeight, scrolledHeight, reopenedHeight)
+	}
+}
+
+func TestToolPanelOverlayHeightStaysStableNearBottom(t *testing.T) {
+	bodyLines := make([]string, 0, 16)
+	for index := 1; index <= 16; index++ {
+		bodyLines = append(bodyLines, "第"+strconv.Itoa(index)+"行远程技能详情内容")
+	}
+	m := model{
+		ready:             true,
+		width:             100,
+		height:            24,
+		contentWidth:      80,
+		input:             textarea.New(),
+		toolPanelViewport: viewport.New(0, 0),
+		toolPanel: &ToolPanel{
+			Title:   "远程技能详情",
+			Summary: "用于验证靠近底部时窗口高度保持稳定。",
+			Body:    strings.Join(bodyLines, "\n"),
+			Hint:    "Esc 关闭详情。",
+		},
+	}
+
+	m.syncToolPanelViewport()
+	firstHeight := lipgloss.Height(m.renderOverlay())
+	m.toolPanelViewport.HalfViewDown()
+	m.toolPanelViewport.HalfViewDown()
+	nearBottomHeight := lipgloss.Height(m.renderOverlay())
+
+	if firstHeight != nearBottomHeight {
+		t.Fatalf("expected overlay height to remain stable near bottom, got first=%d nearBottom=%d", firstHeight, nearBottomHeight)
+	}
+}
+
+func TestRenderToolPanelNormalizesCRLFBody(t *testing.T) {
+	m := model{
+		contentWidth:      80,
+		height:            24,
+		toolPanelViewport: viewport.New(0, 0),
+		toolPanel: &ToolPanel{
+			Title:   "远程技能详情",
+			Summary: "用于验证 CRLF 正文不会把终端布局打坏。",
+			Body:    "说明区\n\nSKILL.md 内容:\r\n第一行\r\n第二行\r\n第三行",
+			Hint:    "Esc 关闭详情。",
+		},
+	}
+
+	m.syncToolPanelViewport()
+	rendered := m.renderOverlay()
+	if strings.Contains(rendered, "\r") {
+		t.Fatalf("expected tool panel render to normalize CRLF, got %q", rendered)
+	}
+}
+
+func TestRenderToolPanelBodyBlockStaysStableAfterMultipleScrolls(t *testing.T) {
+	bodyLines := make([]string, 0, 18)
+	for index := 1; index <= 18; index++ {
+		line := "第" + strconv.Itoa(index) + "行远程技能详情内容"
+		if index >= 12 {
+			line += strings.Repeat("超长片段", 8)
+		}
+		bodyLines = append(bodyLines, line)
+	}
+	m := model{
+		ready:             true,
+		width:             100,
+		height:            24,
+		contentWidth:      80,
+		toolPanelViewport: viewport.New(0, 0),
+		toolPanel: &ToolPanel{
+			Title:   "远程技能详情",
+			Summary: "用于验证正文块在多次滚动后保持固定宽高。",
+			Body:    strings.Join(bodyLines, "\n"),
+			Hint:    "Esc 关闭详情。",
+		},
+	}
+
+	m.syncToolPanelViewport()
+	firstRendered := sanitizeTerminalText(m.renderToolPanel())
+	m.toolPanelViewport.HalfViewDown()
+	m.toolPanelViewport.HalfViewDown()
+	afterScrollRendered := sanitizeTerminalText(m.renderToolPanel())
+
+	assertRenderedMaxLineWidth(t, firstRendered, m.toolPanelContentWidth())
+	assertRenderedMaxLineWidth(t, afterScrollRendered, m.toolPanelContentWidth())
+	if lipgloss.Height(firstRendered) != lipgloss.Height(afterScrollRendered) {
+		t.Fatalf("expected tool panel height to stay stable after multiple scrolls, got first=%d after=%d", lipgloss.Height(firstRendered), lipgloss.Height(afterScrollRendered))
+	}
+}
+
+func TestRemoteDetailReopenAndScrollSequenceKeepsOverlayStable(t *testing.T) {
+	bodyLines := make([]string, 0, 28)
+	for index := 1; index <= 28; index++ {
+		bodyLines = append(bodyLines, "第"+strconv.Itoa(index)+"行远程技能详情内容")
+	}
+	panel := &ToolPanel{
+		Title:   "远程技能详情｜Remote Skill",
+		Summary: "用于验证远程详情反复打开和滚动后的窗口稳定性。",
+		Body:    strings.Join(bodyLines, "\n"),
+		Hint:    "Esc 返回上层技能列表。",
+	}
+	m := model{
+		ready:             true,
+		width:             100,
+		height:            24,
+		contentWidth:      80,
+		input:             textarea.New(),
+		toolPanelViewport: viewport.New(0, 0),
+		skillsPicker: &SkillsPickerState{
+			Title:     "技能列表",
+			ActiveTab: "remote",
+			RemoteItems: []RemoteSkillItem{{
+				Slug:        "remote-skill",
+				DisplayName: "Remote Skill",
+			}},
+		},
+	}
+
+	m.openToolPanel(panel)
+	for index := 0; index < 3; index++ {
+		m.toolPanelViewport.LineDown(1)
+	}
+	firstScrolled := sanitizeTerminalText(m.renderOverlay())
+	firstHeight := lipgloss.Height(firstScrolled)
+	m.closeToolPanel()
+	m.openToolPanel(panel)
+	for index := 0; index < 3; index++ {
+		m.toolPanelViewport.LineDown(1)
+	}
+	secondScrolled := sanitizeTerminalText(m.renderOverlay())
+	secondHeight := lipgloss.Height(secondScrolled)
+
+	if firstHeight != secondHeight {
+		t.Fatalf("expected overlay height to stay stable across reopen sequence, got first=%d second=%d", firstHeight, secondHeight)
+	}
+	assertRenderedMaxLineWidth(t, firstScrolled, m.width)
+	assertRenderedMaxLineWidth(t, secondScrolled, m.width)
+	if strings.Contains(secondScrolled, "↑ 上方还有") || strings.Contains(secondScrolled, "↓ 下方还有") {
+		t.Fatalf("expected reopened remote detail to avoid outer clipping hints, got %q", secondScrolled)
+	}
+}
+
+func TestMouseWheelScrollsToolPanelViewport(t *testing.T) {
+	bodyLines := make([]string, 0, 30)
+	for index := 1; index <= 30; index++ {
+		bodyLines = append(bodyLines, "第"+strconv.Itoa(index)+"行远程技能详情内容")
+	}
+	m := model{
+		ready:             true,
+		width:             100,
+		height:            24,
+		contentWidth:      80,
+		toolPanelViewport: viewport.New(0, 0),
+		toolPanel: &ToolPanel{
+			Title:   "远程技能详情",
+			Summary: "用于验证鼠标滚轮滚动详情正文。",
+			Body:    strings.Join(bodyLines, "\n"),
+			Hint:    "Esc 返回上层技能列表。",
+		},
+	}
+	m.syncToolPanelViewport()
+
+	updatedModel, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	updated := updatedModel.(model)
+	if updated.toolPanelViewport.YOffset == 0 {
+		t.Fatalf("expected mouse wheel down to scroll tool panel viewport, got %d", updated.toolPanelViewport.YOffset)
+	}
+
+	updatedModel, _ = updated.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp})
+	updated = updatedModel.(model)
+	if updated.toolPanelViewport.YOffset != 0 {
+		t.Fatalf("expected mouse wheel up to scroll tool panel viewport back to top, got %d", updated.toolPanelViewport.YOffset)
+	}
+}
+
+func TestViewPlacesToolPanelOverlayNearTop(t *testing.T) {
+	m := model{
+		ready:        true,
+		width:        100,
+		height:       24,
+		contentWidth: 80,
+		input:        textarea.New(),
+		toolPanel: &ToolPanel{
+			Title:   "远程技能详情",
+			Summary: "用于验证详情面板不会垂直居中漂移。",
+			Body:    "第1行\n第2行\n第3行\n第4行",
+			Hint:    "Esc 返回上层技能列表。",
+		},
+		toolPanelViewport: viewport.New(0, 0),
+	}
+	m.syncToolPanelViewport()
+
+	rendered := sanitizeTerminalText(m.View())
+	if got := firstBorderLineIndex(rendered); got != 0 {
+		t.Fatalf("expected tool panel overlay to start at top border line, got %d in %q", got, rendered)
+	}
+}
+
+func TestToolPanelViewDoesNotExceedScreenHeightAfterReopenAndScroll(t *testing.T) {
+	bodyLines := make([]string, 0, 40)
+	for index := 1; index <= 40; index++ {
+		bodyLines = append(bodyLines, "第"+strconv.Itoa(index)+"行远程技能详情内容")
+	}
+	m := model{
+		ready:             true,
+		width:             100,
+		height:            24,
+		contentWidth:      80,
+		input:             textarea.New(),
+		toolPanelViewport: viewport.New(0, 0),
+		skillsPicker: &SkillsPickerState{
+			Title:     "技能列表",
+			ActiveTab: "remote",
+			RemoteItems: []RemoteSkillItem{{
+				Slug:        "remote-skill",
+				DisplayName: "Remote Skill",
+			}},
+		},
+	}
+	panel := &ToolPanel{
+		Title:   "远程技能详情｜Remote Skill",
+		Summary: "用于验证重开并滚动后整屏高度不会超过终端高度。",
+		Body:    strings.Join(bodyLines, "\n"),
+		Hint:    "Esc 返回上层技能列表。",
+	}
+
+	m.openToolPanel(panel)
+	for index := 0; index < 4; index++ {
+		m.toolPanelViewport.LineDown(1)
+	}
+	m.closeToolPanel()
+	m.openToolPanel(panel)
+	for index := 0; index < 4; index++ {
+		m.toolPanelViewport.LineDown(1)
+	}
+
+	rendered := sanitizeTerminalText(m.View())
+	if got := lipgloss.Height(rendered); got > m.height {
+		t.Fatalf("expected view height <= screen height %d, got %d", m.height, got)
+	}
+}
+
+func TestToolPanelTopBorderStaysStableAcrossReopenAndPagedScroll(t *testing.T) {
+	bodyLines := []string{
+		"Slug: remote-skill",
+		"显示名称: Remote Skill",
+		"摘要: 用于验证远程技能详情反复打开与滚动后的边框稳定性。",
+		"最新版本: 1.2.3",
+		"发布者: Taiyi",
+		"支持系统: darwin, linux",
+		"适用环境: cli, vscode",
+		"仓库: default",
+		"",
+		"SKILL.md 内容:",
+	}
+	for index := 1; index <= 48; index++ {
+		line := "- 第" + strconv.Itoa(index) + "行技能说明"
+		if index%5 == 0 {
+			line += strings.Repeat(" 超长片段", 10)
+		}
+		bodyLines = append(bodyLines, line)
+	}
+	panel := &ToolPanel{
+		Title:   "远程技能详情｜Remote Skill",
+		Summary: "用于验证第二次打开后多次分页滚动不会把整个窗口往上顶。",
+		Body:    strings.Join(bodyLines, "\n"),
+		Hint:    "Esc 返回上层技能列表。",
+		Actions: []ToolPanelAction{{Key: "i", Label: "安装", Command: "/skills-picker install remote-skill"}},
+	}
+	m := model{
+		ready:             true,
+		width:             100,
+		height:            24,
+		contentWidth:      80,
+		input:             textarea.New(),
+		toolPanelViewport: viewport.New(0, 0),
+		skillsPicker: &SkillsPickerState{
+			Title:     "技能列表",
+			ActiveTab: "remote",
+			RemoteItems: []RemoteSkillItem{{
+				Slug:        "remote-skill",
+				DisplayName: "Remote Skill",
+			}},
+		},
+	}
+
+	m.openToolPanel(panel)
+	baseline := firstBorderLineIndex(sanitizeTerminalText(m.View()))
+	if baseline < 0 {
+		t.Fatalf("expected initial tool panel view to contain a border, got %q", sanitizeTerminalText(m.View()))
+	}
+
+	for index := 0; index < 3; index++ {
+		m.toolPanelViewport.HalfViewDown()
+	}
+	m.closeToolPanel()
+	m.openToolPanel(panel)
+
+	for index := 0; index < 6; index++ {
+		m.toolPanelViewport.HalfViewDown()
+		rendered := sanitizeTerminalText(m.View())
+		if got := firstBorderLineIndex(rendered); got != baseline {
+			t.Fatalf("expected top border line to stay at %d after reopen scroll %d, got %d in %q", baseline, index+1, got, rendered)
+		}
+	}
+}
+
+func TestRenderToolPanelKeepsOverlayLimitWithMultilineSummary(t *testing.T) {
+	bodyLines := make([]string, 0, 24)
+	for index := 1; index <= 24; index++ {
+		bodyLines = append(bodyLines, "第"+strconv.Itoa(index)+"行远程技能详情内容")
+	}
+	m := model{
+		contentWidth:      80,
+		height:            24,
+		toolPanelViewport: viewport.New(0, 0),
+		toolPanel: &ToolPanel{
+			Title:   "远程技能详情",
+			Summary: "第一行摘要\n第二行摘要\n第三行摘要",
+			Body:    strings.Join(bodyLines, "\n"),
+			Hint:    "Esc 返回上层技能列表。",
+			Actions: []ToolPanelAction{{Key: "i", Label: "安装", Command: "/skills-picker install remote-skill"}},
+		},
+	}
+
+	m.syncToolPanelViewport()
+	renderedPanel := sanitizeTerminalText(m.renderToolPanel())
+	if got, limit := strings.Count(renderedPanel, "\n")+1, m.overlayVisibleLineLimit(); got > limit {
+		t.Fatalf("expected multiline summary tool panel lines to fit overlay limit, got %d > %d with %q", got, limit, renderedPanel)
+	}
+}
+
+func TestToolPanelCapsVerboseRemoteSummary(t *testing.T) {
+	summaryLines := make([]string, 0, 32)
+	for index := 1; index <= 32; index++ {
+		summaryLines = append(summaryLines, "第"+strconv.Itoa(index)+"行远程技能摘要")
+	}
+	bodyLines := make([]string, 0, 32)
+	for index := 1; index <= 32; index++ {
+		bodyLines = append(bodyLines, "第"+strconv.Itoa(index)+"行 SKILL.md 内容")
+	}
+	m := model{
+		ready:             true,
+		width:             100,
+		height:            18,
+		contentWidth:      80,
+		input:             textarea.New(),
+		toolPanelViewport: viewport.New(0, 0),
+		toolPanel: &ToolPanel{
+			Title:   "远程技能详情",
+			Summary: strings.Join(summaryLines, "\n"),
+			Body:    strings.Join(bodyLines, "\n"),
+			Hint:    "Esc 返回上层技能列表。",
+			Actions: []ToolPanelAction{{Key: "i", Label: "安装", Command: "/skills-picker install remote-skill"}},
+		},
+	}
+
+	m.syncToolPanelViewport()
+	for index := 0; index < 4; index++ {
+		m.toolPanelViewport.HalfViewDown()
+	}
+	renderedPanel := sanitizeTerminalText(m.renderToolPanel())
+	if got, limit := strings.Count(renderedPanel, "\n")+1, m.toolPanelContentHeight(); got > limit {
+		t.Fatalf("expected verbose summary panel content height <= %d, got %d in %q", limit, got, renderedPanel)
+	}
+	renderedView := sanitizeTerminalText(m.View())
+	if got := lipgloss.Height(renderedView); got > m.height {
+		t.Fatalf("expected verbose summary view height <= screen height %d, got %d", m.height, got)
+	}
 }
 
 func assertRenderedMaxLineWidth(t *testing.T, rendered string, maxWidth int) {
@@ -2413,6 +3102,15 @@ func assertRenderedMaxLineWidth(t *testing.T, rendered string, maxWidth int) {
 			t.Fatalf("expected line width <= %d, got %d for %q", maxWidth, lipgloss.Width(line), line)
 		}
 	}
+}
+
+func firstBorderLineIndex(rendered string) int {
+	for index, line := range strings.Split(rendered, "\n") {
+		if strings.ContainsRune(line, '┏') || strings.ContainsRune(line, '┌') || strings.ContainsRune(line, '╭') {
+			return index
+		}
+	}
+	return -1
 }
 
 func TestContextUsageSegmentShowsCurrentRoundUsage(t *testing.T) {

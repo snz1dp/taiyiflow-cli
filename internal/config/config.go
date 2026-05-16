@@ -21,6 +21,7 @@ const (
 	defaultConfigRel                = "config/taiyiflow.yaml"
 	rootDirEnvName                  = "SNZ1DP_HOME"
 	DefaultBackendAPIPrefix         = "/taiyi/composer/api/v1"
+	DefaultAuthAPIPrefix            = "/xeai"
 	SkillInstallScopeUser           = "user"
 	SkillInstallScopeWorkspace      = "workspace"
 	DefaultHTTPTimeoutSeconds       = 300
@@ -49,6 +50,7 @@ const (
 type Config struct {
 	BackendBaseURL            string           `yaml:"backend_base_url"`
 	BackendAPIPrefix          string           `yaml:"backend_api_prefix,omitempty"`
+	AuthAPIPrefix             string           `yaml:"auth_api_prefix,omitempty"`
 	AccessToken               string           `yaml:"access_token,omitempty"`
 	PersistentToken           string           `yaml:"persistent_token,omitempty"`
 	DeviceID                  string           `yaml:"device_id,omitempty"`
@@ -107,6 +109,7 @@ func Default() Config {
 	return Config{
 		BackendBaseURL:            "https://snz1.cn",
 		BackendAPIPrefix:          DefaultBackendAPIPrefix,
+		AuthAPIPrefix:             DefaultAuthAPIPrefix,
 		ApprovalMode:              "confirm",
 		ReasoningEnabled:          false,
 		SandboxEscapePolicy:       SandboxEscapePolicyConfirm,

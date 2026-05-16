@@ -41,6 +41,7 @@ type RemoteSkillDetail struct {
 	Slug          string
 	DisplayName   string
 	Summary       string
+	SkillMarkdown string
 	Version       string
 	UpdatedAt     int64
 	OwnerHandle   string
@@ -84,13 +85,13 @@ type InstalledRemoteSkill struct {
 
 type remoteSearchResponse struct {
 	Results []struct {
-		Slug        string `json:"slug"`
-		DisplayName string `json:"displayName"`
-		Summary     string `json:"summary"`
+		Slug        string  `json:"slug"`
+		DisplayName string  `json:"displayName"`
+		Summary     string  `json:"summary"`
 		Popularity  float64 `json:"popularity"`
 		Downloads   int64   `json:"downloads"`
-		Version     string `json:"version"`
-		UpdatedAt   int64  `json:"updatedAt"`
+		Version     string  `json:"version"`
+		UpdatedAt   int64   `json:"updatedAt"`
 	} `json:"results"`
 }
 
@@ -99,6 +100,9 @@ type remoteDetailResponse struct {
 		Slug        string `json:"slug"`
 		DisplayName string `json:"displayName"`
 		Summary     string `json:"summary"`
+		Markdown    string `json:"markdown"`
+		Content     string `json:"content"`
+		Body        string `json:"body"`
 		UpdatedAt   int64  `json:"updatedAt"`
 	} `json:"skill"`
 	LatestVersion *struct {
@@ -112,6 +116,12 @@ type remoteDetailResponse struct {
 		Handle      string `json:"handle"`
 		DisplayName string `json:"displayName"`
 	} `json:"owner"`
+	MetaContent *struct {
+		SkillMarkdown string `json:"skillMd"`
+		Markdown      string `json:"markdown"`
+		Content       string `json:"content"`
+		Body          string `json:"body"`
+	} `json:"metaContent"`
 }
 
 type remoteOrigin struct {
@@ -177,6 +187,15 @@ func FetchRemoteDetail(config internalconfig.Config, slug string) (RemoteSkillDe
 		Slug:        strings.TrimSpace(response.Skill.Slug),
 		DisplayName: strings.TrimSpace(response.Skill.DisplayName),
 		Summary:     normalizeRemoteSkillSummary(response.Skill.Summary),
+		SkillMarkdown: pickRemoteSkillMarkdown(
+			response.Skill.Markdown,
+			response.Skill.Content,
+			response.Skill.Body,
+			remoteDetailMetaSkillMarkdown(response.MetaContent),
+			remoteDetailMetaMarkdown(response.MetaContent),
+			remoteDetailMetaContent(response.MetaContent),
+			remoteDetailMetaBody(response.MetaContent),
+		),
 		UpdatedAt:   response.Skill.UpdatedAt,
 		RegistryURL: registryURL,
 	}
@@ -354,6 +373,64 @@ func normalizeRemoteSkillSummary(value string) string {
 		}
 		trimmed = next
 	}
+}
+
+func pickRemoteSkillMarkdown(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func remoteDetailMetaSkillMarkdown(meta *struct {
+	SkillMarkdown string `json:"skillMd"`
+	Markdown      string `json:"markdown"`
+	Content       string `json:"content"`
+	Body          string `json:"body"`
+}) string {
+	if meta == nil {
+		return ""
+	}
+	return meta.SkillMarkdown
+}
+
+func remoteDetailMetaMarkdown(meta *struct {
+	SkillMarkdown string `json:"skillMd"`
+	Markdown      string `json:"markdown"`
+	Content       string `json:"content"`
+	Body          string `json:"body"`
+}) string {
+	if meta == nil {
+		return ""
+	}
+	return meta.Markdown
+}
+
+func remoteDetailMetaContent(meta *struct {
+	SkillMarkdown string `json:"skillMd"`
+	Markdown      string `json:"markdown"`
+	Content       string `json:"content"`
+	Body          string `json:"body"`
+}) string {
+	if meta == nil {
+		return ""
+	}
+	return meta.Content
+}
+
+func remoteDetailMetaBody(meta *struct {
+	SkillMarkdown string `json:"skillMd"`
+	Markdown      string `json:"markdown"`
+	Content       string `json:"content"`
+	Body          string `json:"body"`
+}) string {
+	if meta == nil {
+		return ""
+	}
+	return meta.Body
 }
 
 func registryRequest(registryURL string, requestPath string, query url.Values) ([]byte, error) {

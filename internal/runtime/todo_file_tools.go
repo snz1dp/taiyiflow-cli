@@ -119,6 +119,7 @@ func (r *ClientRuntime) fileEdit(config internalconfig.Config, arguments map[str
 	if oldString == "" {
 		return nil, newToolError("PARAM_ERROR", "file_edit 缺少 old_string")
 	}
+	newString := stringValue(arguments["new_string"])
 	resolvedPath, err := r.resolveAllowedFilePathWithPolicy(config, targetPath, false)
 	if err != nil {
 		return nil, err
@@ -141,7 +142,8 @@ func (r *ClientRuntime) fileEdit(config internalconfig.Config, arguments map[str
 		})
 		return result, newToolError("PATCH_CONFLICT", "%s", fileEditConflictMessage("文件内容摘要不匹配，当前="+beforeHash+"；请先 read_file 获取最新内容后再重试", result))
 	}
-	occurrences := strings.Count(before, oldString)
+	matchedOldString, matchedNewString := adaptFileEditLineEndings(before, oldString, newString)
+	occurrences := strings.Count(before, matchedOldString)
 	if occurrences == 0 {
 		result := buildFileEditDiagnosticResult(resolvedPath, before, beforeHash, oldString, map[string]any{
 			"status":       "not_found",
@@ -160,12 +162,11 @@ func (r *ClientRuntime) fileEdit(config internalconfig.Config, arguments map[str
 		})
 		return result, newToolError("PATCH_CONFLICT", "%s", fileEditConflictMessage(fmt.Sprintf("file_edit 匹配到 %d 处，需显式开启 replace_all 或提供更精确的 old_string", occurrences), result))
 	}
-	newString := stringValue(arguments["new_string"])
 	replacements := 1
-	after := strings.Replace(before, oldString, newString, 1)
+	after := strings.Replace(before, matchedOldString, matchedNewString, 1)
 	if replaceAll {
 		replacements = occurrences
-		after = strings.ReplaceAll(before, oldString, newString)
+		after = strings.ReplaceAll(before, matchedOldString, matchedNewString)
 	}
 	dryRun := boolValue(arguments["dry_run"])
 	afterHash := hashSHA256([]byte(after))
@@ -189,9 +190,38 @@ func (r *ClientRuntime) fileEdit(config internalconfig.Config, arguments map[str
 		"preview_before": trimMultilinePreview(oldString, 120),
 		"preview_after":  trimMultilinePreview(newString, 120),
 	}
+	if matchedOldString != oldString {
+		result["normalized_old_string_match"] = true
+	}
+	if matchedNewString != newString {
+		result["normalized_new_string_applied"] = true
+	}
 	r.writeStreamEventf(r.stdout, "[本地工具] file_edit %s 替换 %d 处%s\n", resolvedPath, replacements, map[bool]string{true: "（dry-run）", false: ""}[dryRun])
 	_ = appendAuditLog(config, "file_edit", map[string]any{"path": resolvedPath, "replacements": replacements, "dry_run": dryRun})
 	return result, nil
+}
+
+func adaptFileEditLineEndings(before string, oldString string, newString string) (string, string) {
+	if oldString == "" || strings.Count(before, oldString) > 0 {
+		return oldString, newString
+	}
+	normalizedOld := strings.ReplaceAll(oldString, "\r\n", "\n")
+	normalizedNew := strings.ReplaceAll(newString, "\r\n", "\n")
+	for _, newline := range []string{"\r\n", "\n"} {
+		candidateOld := normalizedOld
+		candidateNew := normalizedNew
+		if newline == "\r\n" {
+			candidateOld = strings.ReplaceAll(normalizedOld, "\n", newline)
+			candidateNew = strings.ReplaceAll(normalizedNew, "\n", newline)
+		}
+		if candidateOld == oldString {
+			continue
+		}
+		if strings.Count(before, candidateOld) > 0 {
+			return candidateOld, candidateNew
+		}
+	}
+	return oldString, newString
 }
 
 func buildFileEditDiagnosticResult(path string, before string, beforeHash string, oldString string, extras map[string]any) map[string]any {

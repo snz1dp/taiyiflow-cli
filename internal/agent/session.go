@@ -15,22 +15,23 @@ import (
 )
 
 type SessionState struct {
-	FlowID                         string     `json:"flow_id"`
-	FlowDisplayName                string     `json:"flow_display_name,omitempty"`
-	SessionID                      string     `json:"session_id"`
-	SessionTitle                   string     `json:"session_title,omitempty"`
-	Workdir                        string     `json:"workdir,omitempty"`
-	RequestMode                    string     `json:"request_mode,omitempty"`
-	ContextDir                     string     `json:"context_dir,omitempty"`
-	ReasoningOverride              string     `json:"reasoning_override,omitempty"`
-	InternetSearchOverride         string     `json:"internet_search_override,omitempty"`
-	AgentAutoLoopEnabledOverride   string     `json:"agent_auto_loop_enabled_override,omitempty"`
-	AgentAutoLoopMaxRoundsOverride *int       `json:"agent_auto_loop_max_rounds_override,omitempty"`
-	SandboxEscapePolicyOverride    string     `json:"sandbox_escape_policy_override,omitempty"`
-	SkillReviewPolicyOverride      string     `json:"skill_review_policy_override,omitempty"`
-	ApprovedSkillNames             []string   `json:"approved_skill_names,omitempty"`
-	TodoItems                      []TodoItem `json:"todo_items,omitempty"`
-	UpdatedAt                      time.Time  `json:"updated_at"`
+	FlowID                         string            `json:"flow_id"`
+	FlowDisplayName                string            `json:"flow_display_name,omitempty"`
+	SessionID                      string            `json:"session_id"`
+	SessionTitle                   string            `json:"session_title,omitempty"`
+	SessionTitleAliases            map[string]string `json:"session_title_aliases,omitempty"`
+	Workdir                        string            `json:"workdir,omitempty"`
+	RequestMode                    string            `json:"request_mode,omitempty"`
+	ContextDir                     string            `json:"context_dir,omitempty"`
+	ReasoningOverride              string            `json:"reasoning_override,omitempty"`
+	InternetSearchOverride         string            `json:"internet_search_override,omitempty"`
+	AgentAutoLoopEnabledOverride   string            `json:"agent_auto_loop_enabled_override,omitempty"`
+	AgentAutoLoopMaxRoundsOverride *int              `json:"agent_auto_loop_max_rounds_override,omitempty"`
+	SandboxEscapePolicyOverride    string            `json:"sandbox_escape_policy_override,omitempty"`
+	SkillReviewPolicyOverride      string            `json:"skill_review_policy_override,omitempty"`
+	ApprovedSkillNames             []string          `json:"approved_skill_names,omitempty"`
+	TodoItems                      []TodoItem        `json:"todo_items,omitempty"`
+	UpdatedAt                      time.Time         `json:"updated_at"`
 }
 
 type TodoItem struct {
@@ -41,6 +42,36 @@ type TodoItem struct {
 
 type SessionStore struct {
 	rootDir string
+}
+
+func (s SessionState) LocalSessionTitle(sessionID string) string {
+	trimmedSessionID := strings.TrimSpace(sessionID)
+	if trimmedSessionID == "" || len(s.SessionTitleAliases) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(s.SessionTitleAliases[trimmedSessionID])
+}
+
+func (s *SessionState) SetLocalSessionTitle(sessionID string, title string) {
+	if s == nil {
+		return
+	}
+	trimmedSessionID := strings.TrimSpace(sessionID)
+	trimmedTitle := strings.TrimSpace(title)
+	if trimmedSessionID == "" {
+		return
+	}
+	if trimmedTitle == "" {
+		delete(s.SessionTitleAliases, trimmedSessionID)
+		if len(s.SessionTitleAliases) == 0 {
+			s.SessionTitleAliases = nil
+		}
+		return
+	}
+	if s.SessionTitleAliases == nil {
+		s.SessionTitleAliases = map[string]string{}
+	}
+	s.SessionTitleAliases[trimmedSessionID] = trimmedTitle
 }
 
 func NewSessionStore() (*SessionStore, error) {
@@ -70,6 +101,7 @@ func (s *SessionStore) Load(flowID string, workdir string) (SessionState, error)
 	}
 	state.FlowDisplayName = strings.TrimSpace(state.FlowDisplayName)
 	state.SessionTitle = strings.TrimSpace(state.SessionTitle)
+	state.SessionTitleAliases = normalizeSessionTitleAliases(state.SessionTitleAliases)
 	if strings.TrimSpace(state.Workdir) == "" {
 		state.Workdir = normalizedWorkdir
 	}
@@ -97,6 +129,7 @@ func (s *SessionStore) Save(state SessionState) error {
 	state.FlowDisplayName = strings.TrimSpace(state.FlowDisplayName)
 	state.SessionTitle = strings.TrimSpace(state.SessionTitle)
 	state.Workdir = normalizeWorkdir(state.Workdir)
+	state.SessionTitleAliases = mergeSessionTitleAliases(readExistingSessionTitleAliases(s.filePath(state.FlowID, state.Workdir)), state.SessionTitleAliases)
 	state.RequestMode = normalizeRequestMode(state.RequestMode)
 	if strings.TrimSpace(state.ContextDir) == "" {
 		state.ContextDir = state.Workdir
@@ -160,6 +193,9 @@ func (s *SessionStore) List() ([]SessionState, error) {
 		if strings.TrimSpace(state.FlowID) == "" {
 			state.FlowID = strings.TrimSuffix(entry.Name(), ".json")
 		}
+		state.FlowDisplayName = strings.TrimSpace(state.FlowDisplayName)
+		state.SessionTitle = strings.TrimSpace(state.SessionTitle)
+		state.SessionTitleAliases = normalizeSessionTitleAliases(state.SessionTitleAliases)
 		states = append(states, state)
 	}
 
@@ -245,6 +281,55 @@ func normalizeApprovedSkillNames(items []string) []string {
 	return result
 }
 
+func readExistingSessionTitleAliases(filePath string) map[string]string {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil
+	}
+	var state SessionState
+	if err := json.Unmarshal(content, &state); err != nil {
+		return nil
+	}
+	return normalizeSessionTitleAliases(state.SessionTitleAliases)
+}
+
+func mergeSessionTitleAliases(existing map[string]string, current map[string]string) map[string]string {
+	normalizedExisting := normalizeSessionTitleAliases(existing)
+	normalizedCurrent := normalizeSessionTitleAliases(current)
+	if len(normalizedExisting) == 0 && len(normalizedCurrent) == 0 {
+		return nil
+	}
+	if len(normalizedExisting) == 0 {
+		return normalizedCurrent
+	}
+	if len(normalizedCurrent) == 0 {
+		return normalizedExisting
+	}
+	for key, value := range normalizedCurrent {
+		normalizedExisting[key] = value
+	}
+	return normalizedExisting
+}
+
+func normalizeSessionTitleAliases(value map[string]string) map[string]string {
+	if len(value) == 0 {
+		return nil
+	}
+	normalized := make(map[string]string, len(value))
+	for key, title := range value {
+		trimmedKey := strings.TrimSpace(key)
+		trimmedTitle := strings.TrimSpace(title)
+		if trimmedKey == "" || trimmedTitle == "" {
+			continue
+		}
+		normalized[trimmedKey] = trimmedTitle
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
 func normalizeReasoningOverride(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "on", "true", "enable", "enabled":
@@ -277,7 +362,6 @@ func normalizeAgentAutoLoopEnabledOverride(value string) string {
 		return ""
 	}
 }
-
 
 func normalizeAgentAutoLoopMaxRoundsOverride(value *int) *int {
 	if value == nil {

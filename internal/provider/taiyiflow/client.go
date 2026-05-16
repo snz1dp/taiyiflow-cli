@@ -226,21 +226,25 @@ type sessionListResponse struct {
 	Data   []sessionItemResponse `json:"data"`
 }
 
+type sessionUpdateRequest struct {
+	SessionName string `json:"session_name"`
+}
+
 type sessionMessageResponse struct {
-	ID          string         `json:"id"`
-	SessionID   string         `json:"session_id"`
-	RunID       string         `json:"run_id"`
-	Sender      string         `json:"sender"`
-	SenderName  string         `json:"sender_name"`
-	Text        string         `json:"text"`
-	ReasonText  string         `json:"reason_text"`
-	SearchResults []searchResultResponse `json:"search_results"`
-	SearchKeyword string       `json:"search_keyword"`
-	ReasoningEnabled bool      `json:"reasoning_enabled"`
-	SessionName string         `json:"session_name"`
-	Timestamp   string         `json:"timestamp"`
-	Error       bool           `json:"error"`
-	TokenUsage  map[string]any `json:"token_usage"`
+	ID               string                 `json:"id"`
+	SessionID        string                 `json:"session_id"`
+	RunID            string                 `json:"run_id"`
+	Sender           string                 `json:"sender"`
+	SenderName       string                 `json:"sender_name"`
+	Text             string                 `json:"text"`
+	ReasonText       string                 `json:"reason_text"`
+	SearchResults    []searchResultResponse `json:"search_results"`
+	SearchKeyword    string                 `json:"search_keyword"`
+	ReasoningEnabled bool                   `json:"reasoning_enabled"`
+	SessionName      string                 `json:"session_name"`
+	Timestamp        string                 `json:"timestamp"`
+	Error            bool                   `json:"error"`
+	TokenUsage       map[string]any         `json:"token_usage"`
 }
 
 type sessionMessagePageResponse struct {
@@ -267,9 +271,9 @@ type searchResultResponse struct {
 }
 
 type uploadFileResponse struct {
-	FlowID    string `json:"flow_id"`
-	FlowIDAlt string `json:"flowId"`
-	FilePath  string `json:"file_path"`
+	FlowID      string `json:"flow_id"`
+	FlowIDAlt   string `json:"flowId"`
+	FilePath    string `json:"file_path"`
 	FilePathAlt string `json:"filePath"`
 }
 
@@ -571,6 +575,54 @@ func (c *Client) ListSessions(ctx context.Context, flowID string, offset, limit 
 		Offset: payload.Offset,
 		Items:  items,
 	}, nil
+}
+
+func (c *Client) UpdateSessionTitle(ctx context.Context, flowID string, sessionID string, sessionTitle string) (string, error) {
+	trimmedFlowID := strings.TrimSpace(flowID)
+	trimmedSessionID := strings.TrimSpace(sessionID)
+	trimmedSessionTitle := strings.TrimSpace(sessionTitle)
+	if trimmedFlowID == "" {
+		return "", fmt.Errorf("更新会话标题失败: 智能体不能为空")
+	}
+	if trimmedSessionID == "" {
+		return "", fmt.Errorf("更新会话标题失败: 会话不能为空")
+	}
+
+	content, err := json.Marshal(sessionUpdateRequest{SessionName: trimmedSessionTitle})
+	if err != nil {
+		return "", fmt.Errorf("序列化更新会话标题请求失败: %w", err)
+	}
+
+	endpoint := c.apiURL(fmt.Sprintf(
+		"/agents/flows/%s/sessions/%s",
+		url.PathEscape(trimmedFlowID),
+		url.PathEscape(trimmedSessionID),
+	))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(content))
+	if err != nil {
+		return "", fmt.Errorf("创建更新会话标题请求失败: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	c.applyAuth(request)
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("更新会话标题失败: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= http.StatusBadRequest {
+		return "", readHTTPError("更新会话标题失败", response)
+	}
+
+	var payload sessionItemResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return "", fmt.Errorf("解析更新会话标题响应失败: %w", err)
+	}
+	if strings.TrimSpace(payload.SessionName) != "" {
+		return strings.TrimSpace(payload.SessionName), nil
+	}
+	return trimmedSessionTitle, nil
 }
 
 func (c *Client) ListKnowledgeBases(ctx context.Context, filter string, offset, limit int) (*provider.KnowledgeBaseList, error) {
