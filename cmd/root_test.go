@@ -1767,10 +1767,21 @@ func TestStreamTaskClearsStreamingEllipsisOnCanceledError(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
-
 	want := "答案...\b\b\b   \b\b\b"
 	if got := stdout.String(); got != want {
 		t.Fatalf("expected canceled stream to clear trailing ellipsis, got %q want %q", got, want)
+	}
+}
+
+func TestStripThinkControlTagsRemovesMarkers(t *testing.T) {
+	input := "回答前缀</think>\n正在执行服务端工具调用：搜索额度信息<think>"
+	got := stripThinkControlTags(input)
+
+	if strings.Contains(got, "<think>") || strings.Contains(got, "</think>") {
+		t.Fatalf("expected think control tags to be stripped, got %q", got)
+	}
+	if !strings.Contains(got, "回答前缀") || !strings.Contains(got, "正在执行服务端工具调用") {
+		t.Fatalf("expected visible text to remain after stripping think tags, got %q", got)
 	}
 }
 

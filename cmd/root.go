@@ -744,6 +744,7 @@ func (a *App) streamTaskWithSkillRetry(
 					chunk = "\n\n" + chunk
 				}
 				chunk = renderState.renderChunk(chunk, showThinking)
+				chunk = stripThinkControlTags(chunk)
 				clearIndicator := ""
 				if renderStreamingSuffix {
 					clearIndicator = renderState.clearStreamingSuffix()
@@ -767,6 +768,7 @@ func (a *App) streamTaskWithSkillRetry(
 			if showStreamEvents {
 				if message, ok := event.Data["message"].(string); ok && strings.TrimSpace(message) != "" {
 					message = sanitizeCLIStreamText(message)
+					message = stripThinkControlTags(message)
 					if strings.TrimSpace(message) == "" {
 						continue
 					}
@@ -904,6 +906,7 @@ func (a *App) streamTaskWithSkillRetry(
 		case provider.EventToolCall:
 			if text, ok := event.Data["text"].(string); ok && text != "" {
 				text = sanitizeCLIStreamText(text)
+				text = stripThinkControlTags(text)
 				if strings.TrimSpace(text) == "" {
 					continue
 				}
@@ -933,6 +936,7 @@ func (a *App) streamTaskWithSkillRetry(
 				continue
 			}
 			text := sanitizeCLIStreamText(buildCompressionProgressText(event.Data))
+			text = stripThinkControlTags(text)
 			if text == "" {
 				continue
 			}
@@ -1091,6 +1095,14 @@ func sanitizeCLIStreamText(content string) string {
 	cleaned := cmdANSIOSCRegexp.ReplaceAllString(content, "")
 	cleaned = cmdANSICSIRegexp.ReplaceAllString(cleaned, "")
 	return strings.ReplaceAll(cleaned, "\x1b", "")
+}
+
+func stripThinkControlTags(content string) string {
+	if content == "" {
+		return ""
+	}
+	cleaned := strings.ReplaceAll(content, "<think>", "")
+	return strings.ReplaceAll(cleaned, "</think>", "")
 }
 
 func isTerminalWriter(writer io.Writer) bool {

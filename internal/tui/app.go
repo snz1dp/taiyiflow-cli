@@ -3005,6 +3005,10 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 			m.snapshot.SessionTitle = strings.TrimSpace(event.SessionTitle)
 		}
 	}
+	if event.Kind == EventTodoUpdate {
+		m.refreshLayoutAfterStateChange()
+		return cmd
+	}
 	m.syncViewport()
 	return cmd
 }
@@ -5673,7 +5677,8 @@ func sanitizeTerminalText(content string) string {
 	cleaned = ansiOSCRegexp.ReplaceAllString(cleaned, "")
 	cleaned = ansiCSIRegexp.ReplaceAllString(cleaned, "")
 	cleaned = strings.ReplaceAll(cleaned, "\x1b", "")
-	return cleaned
+	cleaned = strings.ReplaceAll(cleaned, "<think>", "")
+	return strings.ReplaceAll(cleaned, "</think>", "")
 }
 
 func hardWrapText(content string, width int) string {
@@ -8082,10 +8087,13 @@ func (m model) isBusy() bool {
 
 func (m *model) startRequestStats(input string, runID string) {
 	m.resetAssistantChunkState()
+	previous := cloneRequestMetrics(&m.requestStats)
 	m.requestStats = RequestMetrics{
-		RunID:      runID,
-		StartedAt:  time.Now(),
-		InputChars: utf8.RuneCountInString(input),
+		RunID:       runID,
+		StartedAt:   time.Now(),
+		InputChars:  utf8.RuneCountInString(input),
+		TokenUsage:  previous.TokenUsage,
+		Compression: previous.Compression,
 	}
 }
 
@@ -8330,7 +8338,11 @@ func formatContextUsageGrid(currentTokens int, maxTokens int, cellCount int) str
 
 func (m model) inputContextUsageHint() string {
 	usage := m.requestStats.TokenUsage
+	compressionHint := formatCompressionStatusHint(m.requestStats.Compression)
 	if usage == nil || usage.ContextWindow == nil {
+		if compressionHint != "" {
+			return compressionHint
+		}
 		return m.defaultInputContextUsageHint()
 	}
 	contextWindow := usage.ContextWindow
@@ -8345,6 +8357,9 @@ func (m model) inputContextUsageHint() string {
 	}
 	if historyUsage := formatContextHistoryUsage(contextWindow); historyUsage != "" {
 		parts = append(parts, historyUsage)
+	}
+	if compressionHint != "" {
+		parts = append(parts, compressionHint)
 	}
 	if len(parts) > 0 {
 		return strings.Join(parts, " · ")
@@ -8385,6 +8400,28 @@ func formatContextHistoryUsage(contextWindow *ContextWindow) string {
 		return historyUsage
 	}
 	return historyUsage + "（" + strings.Join(breakdown, " / ") + "）"
+}
+
+func formatCompressionStatusHint(compression *CompressionStats) string {
+	if compression == nil {
+		return ""
+	}
+	parts := []string{}
+	if compression.BeforeTokens > 0 && compression.AfterTokens > 0 {
+		parts = append(parts, fmt.Sprintf("压缩%s→%s", formatCompactInt(compression.BeforeTokens), formatCompactInt(compression.AfterTokens)))
+	} else if compression.AfterTokens > 0 {
+		parts = append(parts, "压缩后"+formatCompactInt(compression.AfterTokens))
+	}
+	if compression.RemainingTokens > 0 {
+		parts = append(parts, "剩"+formatCompactInt(compression.RemainingTokens))
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, " ")
+	}
+	if compression.Count > 0 {
+		return fmt.Sprintf("已完成%d次压缩", compression.Count)
+	}
+	return ""
 }
 
 func resolveContextAvailableTokens(contextWindow *ContextWindow) int {

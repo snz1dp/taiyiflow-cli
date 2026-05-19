@@ -256,6 +256,35 @@ func TestViewHidesTodoSidebarWhenAllItemsCompleted(t *testing.T) {
 	}
 }
 
+func TestApplyEventTodoUpdateRefreshesSidebarLayoutImmediately(t *testing.T) {
+	input := textarea.New()
+	input.Prompt = "> "
+	appModel := model{
+		ready:    true,
+		width:    120,
+		height:   24,
+		snapshot: Snapshot{BackendAvailable: true},
+		input:    input,
+		viewport: viewport.New(0, 0),
+		entries:  []entry{{role: "system", content: "历史消息"}},
+	}
+	appModel.syncLayout()
+	initialWidth := appModel.viewport.Width
+
+	appModel.applyEvent(Event{Kind: EventTodoUpdate, TodoItems: []TodoItem{{Title: "实现右侧待办栏", Status: "in_progress"}}})
+
+	if appModel.todoPaneWidth() == 0 {
+		t.Fatal("expected todo pane width to become visible after todo update")
+	}
+	if appModel.viewport.Width >= initialWidth {
+		t.Fatalf("expected viewport width to shrink for todo sidebar, before=%d after=%d", initialWidth, appModel.viewport.Width)
+	}
+	rendered := sanitizeTerminalText(appModel.View())
+	if !strings.Contains(rendered, "待办(todo)") {
+		t.Fatalf("expected todo sidebar to render immediately after todo update, got %q", rendered)
+	}
+}
+
 func TestBuildRequestUsesAutoKnowledgeScopeWhenNoneSelected(t *testing.T) {
 	request := model{snapshot: Snapshot{
 		DefaultFlow:              "flow-1",
@@ -1710,6 +1739,18 @@ func TestSanitizeTerminalTextRemovesTmuxPassthrough(t *testing.T) {
 	content := "before" + renderITerm2InlineImage("QUJD", 24, 6) + "after"
 	if got := sanitizeTerminalText(content); got != "beforeafter" {
 		t.Fatalf("expected tmux passthrough image sequence to be removed, got %q", got)
+	}
+}
+
+func TestSanitizeTerminalTextStripsThinkControlTags(t *testing.T) {
+	content := "回答前缀</think>\n正在执行服务端工具调用：搜索额度信息<think>"
+	got := sanitizeTerminalText(content)
+
+	if strings.Contains(got, "<think>") || strings.Contains(got, "</think>") {
+		t.Fatalf("expected think control tags removed, got %q", got)
+	}
+	if !strings.Contains(got, "回答前缀") || !strings.Contains(got, "正在执行服务端工具调用") {
+		t.Fatalf("expected visible content retained, got %q", got)
 	}
 }
 
@@ -3882,6 +3923,44 @@ func TestStartRequestStatsResetsAssistantSplitState(t *testing.T) {
 	}
 	if model.lastAssistantMessageID != "" {
 		t.Fatalf("expected last assistant message id reset, got %q", model.lastAssistantMessageID)
+	}
+}
+
+func TestStartRequestStatsPreservesKnownContextAndCompressionHints(t *testing.T) {
+	model := model{
+		snapshot: Snapshot{SessionID: "session-123"},
+		requestStats: RequestMetrics{
+			TokenUsage: &TokenUsage{
+				ContextWindow: &ContextWindow{
+					MaxInputTokens:           8192,
+					CurrentRoundInputTokens:  2048,
+					NextRoundAvailableTokens: 6144,
+					ContextUsageTokens:       3072,
+					DirectMessageTokens:      2048,
+					CompressedHistoryTokens:  1024,
+				},
+			},
+			Compression: &CompressionStats{
+				Count:            1,
+				BeforeTokens:     9200,
+				AfterTokens:      6000,
+				RemainingTokens:  2192,
+				CompressionRatio: 0.65,
+			},
+		},
+	}
+
+	model.startRequestStats("问题", "run-1")
+	got := model.inputContextUsageHint()
+
+	if strings.Contains(got, "正在输出...") {
+		t.Fatalf("expected startRequestStats to preserve known context hint, got %q", got)
+	}
+	if !strings.Contains(got, "共8K剩6K可用") {
+		t.Fatalf("expected preserved context availability hint, got %q", got)
+	}
+	if !strings.Contains(got, "压缩9K→6K 剩2K") {
+		t.Fatalf("expected preserved compression hint, got %q", got)
 	}
 }
 
