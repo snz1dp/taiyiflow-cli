@@ -1102,7 +1102,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.shouldAnimateStreamingIndicator() || !m.streamingIndicatorActive {
 			return m, nil
 		}
-		m.streamingIndicatorFrame = (m.streamingIndicatorFrame + 1) % 4
+		m.streamingIndicatorFrame = (m.streamingIndicatorFrame + 1) % 5
 		m.syncViewport()
 		return m, m.scheduleStreamingIndicator()
 	case snapshotRefreshedMsg:
@@ -8041,7 +8041,7 @@ func (m model) streamingIndicatorSuffix() string {
 	if !m.streamingIndicatorActive || !m.shouldAnimateStreamingIndicator() {
 		return ""
 	}
-	frames := []string{".", "..", "...", "", ".", ".."}
+	frames := []string{".  ", "..  ", "...", " ..", "  ."}
 	return frames[m.streamingIndicatorFrame%len(frames)]
 }
 

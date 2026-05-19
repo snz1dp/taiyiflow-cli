@@ -1845,7 +1845,7 @@ func TestSnapshotRefreshRebuildsInitialEntriesAndContextBudget(t *testing.T) {
 	}
 }
 
-func TestStreamingIndicatorSuffixIncludesBlankFrame(t *testing.T) {
+func TestStreamingIndicatorSuffixUsesFixedWidthFrames(t *testing.T) {
 	model := model{
 		state:                    newProgressState(progressStreaming),
 		streamingIndicatorActive: true,
@@ -1855,12 +1855,13 @@ func TestStreamingIndicatorSuffixIncludesBlankFrame(t *testing.T) {
 		frame int
 		want  string
 	}{
-		{frame: 0, want: "."},
-		{frame: 1, want: ".."},
+		{frame: 0, want: ".  "},
+		{frame: 1, want: "..  "},
 		{frame: 2, want: "..."},
-		{frame: 3, want: ""},
-		{frame: 4, want: "."},
-		{frame: 5, want: ".."},
+		{frame: 3, want: " .."},
+		{frame: 4, want: "  ."},
+		{frame: 5, want: ".  "},
+		{frame: 6, want: "..  "},
 	}
 
 	for _, testCase := range testCases {
@@ -1872,8 +1873,8 @@ func TestStreamingIndicatorSuffixIncludesBlankFrame(t *testing.T) {
 }
 
 func TestRenderEntriesAppendsStreamingIndicatorToLatestAssistant(t *testing.T) {
-	rendered := sanitizeTerminalText(renderEntries([]entry{{role: "user", content: "问题"}, {role: "assistant", content: "回答"}}, 80, 20, nil, Snapshot{}, "...", 1))
-	if !strings.Contains(rendered, "回答...") {
+	rendered := sanitizeTerminalText(renderEntries([]entry{{role: "user", content: "问题"}, {role: "assistant", content: "回答"}}, 80, 20, nil, Snapshot{}, ".  ", 1))
+	if !strings.Contains(rendered, "回答.") {
 		t.Fatalf("expected assistant entry to include streaming indicator, got %q", rendered)
 	}
 }
@@ -1897,13 +1898,13 @@ func TestSyncViewportDoesNotAppendStreamingIndicatorToPreviousAssistantWhileSend
 
 	model.syncViewport()
 	got := sanitizeTerminalText(model.viewport.View())
-	if strings.Contains(got, "上一个回答...") {
+	if strings.Contains(got, "上一个回答.  ") || strings.Contains(got, "上一个回答..  ") || strings.Contains(got, "上一个回答...") || strings.Contains(got, "上一个回答 ..") || strings.Contains(got, "上一个回答  .") {
 		t.Fatalf("expected previous assistant entry to stay unchanged, got %q", got)
 	}
-	if strings.Contains(got, "正在发送...") {
+	if strings.Contains(got, "正在发送.  ") || strings.Contains(got, "正在发送..  ") || strings.Contains(got, "正在发送...") || strings.Contains(got, "正在发送 ..") || strings.Contains(got, "正在发送  .") {
 		t.Fatalf("expected activity hint to stay out of history viewport, got %q", got)
 	}
-	if status := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(status, "正在发送...") {
+	if status := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(status, "正在发送.  ") || strings.Contains(status, "正在发送..  ") || strings.Contains(status, "正在发送...") || strings.Contains(status, "正在发送 ..") || strings.Contains(status, "正在发送  .") {
 		t.Fatalf("expected status bar to stay free of activity hint before first chunk, got %q", status)
 	}
 }
@@ -1925,7 +1926,7 @@ func TestSyncViewportAppendsStreamingIndicatorToCurrentAssistantChunk(t *testing
 	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "新回答", MessageID: "msg-1"})
 	model.syncViewport()
 	got := sanitizeTerminalText(model.viewport.View())
-	if strings.Contains(got, "上一个回答...") {
+	if strings.Contains(got, "上一个回答.  ") || strings.Contains(got, "上一个回答..  ") || strings.Contains(got, "上一个回答...") || strings.Contains(got, "上一个回答 ..") || strings.Contains(got, "上一个回答  .") {
 		t.Fatalf("expected streaming indicator to leave previous assistant entry untouched, got %q", got)
 	}
 	if !strings.Contains(got, "新回答...") {
@@ -1966,7 +1967,7 @@ func TestInterruptRequestRemovesStreamingIndicator(t *testing.T) {
 	if suffix := updated.streamingIndicatorSuffix(); suffix != "" {
 		t.Fatalf("expected no streaming suffix after interrupt, got %q", suffix)
 	}
-	if got := sanitizeTerminalText(updated.viewport.View()); strings.Contains(got, "回答...") || strings.Contains(got, "请求已中断...") {
+	if got := sanitizeTerminalText(updated.viewport.View()); strings.Contains(got, "回答.  ") || strings.Contains(got, "回答..  ") || strings.Contains(got, "回答...") || strings.Contains(got, "回答 ..") || strings.Contains(got, "回答  .") || strings.Contains(got, "请求已中断.  ") || strings.Contains(got, "请求已中断..  ") || strings.Contains(got, "请求已中断...") || strings.Contains(got, "请求已中断 ..") || strings.Contains(got, "请求已中断  .") {
 		t.Fatalf("expected interrupt to remove streaming ellipsis from viewport, got %q", got)
 	}
 }
