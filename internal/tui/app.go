@@ -7405,7 +7405,7 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "技能自动补装策略", placeholder: "", description: "左右键或空格切换关闭(off)、确认(confirm)、自动安装(allow)。默认建议使用确认(confirm)。"},
 		{label: "自由文本技能搜索", placeholder: "", description: "左右键或空格切换是否允许按任务文本搜索远程技能候选。"},
 		{label: "技能仓库地址", placeholder: "https://mirror-cn.clawhub.com", description: "远程技能搜索、详情和安装默认使用该镜像站。"},
-		{label: "服务端文档解析类型", placeholder: "pdf,wav,mp3", description: "留空表示默认关闭；多个扩展名用逗号分隔，仅对显式配置的扩展名启用服务端文档结构化解析。"},
+		{label: "服务端文档解析类型", placeholder: "pdf,wav,mp3", description: "留空表示恢复内置默认值；多个扩展名用逗号分隔，仅对配置列表中的扩展名启用服务端文档结构化解析。"},
 	}
 }
 

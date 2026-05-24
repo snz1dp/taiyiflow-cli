@@ -498,6 +498,15 @@ func TestRunTaskOnceRefreshesPersistentLoginBeforeStream(t *testing.T) {
 		case backendAPIPath("/config"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"default_flow_id":"flow-1"}`)
+		case backendAPIPath("/session_id"):
+			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusUnauthorized)
+				fmt.Fprintf(writer, `{"detail":"unexpected auth %s"}`, got)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"session_id":"session-created"}`)
 		case backendAPIPath("/run/flow-1/stream"):
 			streamCalled = true
 			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
@@ -568,6 +577,9 @@ func TestRunTaskStreamRetryFlagOverridesSystemConfig(t *testing.T) {
 		case backendAPIPath("/config"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"default_flow_id":"flow-1"}`)
+		case backendAPIPath("/session_id"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"session_id":"session-created"}`)
 		case backendAPIPath("/run/flow-1/stream"):
 			streamCalls++
 			writer.Header().Set("Content-Type", "text/event-stream")
@@ -786,6 +798,9 @@ func runTaskAndCaptureStreamBody(t *testing.T, crossSessionMemoryEnabled bool, a
 		case backendAPIPath("/config"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"default_flow_id":"flow-1"}`)
+		case backendAPIPath("/session_id"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"session_id":"session-created"}`)
 		case backendAPIPath("/run/flow-1/stream"):
 			if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
 				t.Fatalf("decode stream request failed: %v", err)
@@ -885,16 +900,19 @@ func TestRunTaskWithFileUploadsAndForwardsInputFiles(t *testing.T) {
 		case backendAPIPath("/users/whoami/userinfo"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
+		case backendAPIPath("/session_id"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"session_id":"session-created"}`)
 		case backendAPIPath("/version"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"package":"taiyiflow","main_version":"1.0.0"}`)
 		case backendAPIPath("/config"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"default_flow_id":"flow-1"}`)
-		case backendAPIPath("/files/upload/flow-1"):
+		case backendAPIPath("/agents/upload/flow-1"):
 			uploadCalled = true
-			if got := request.FormValue("session_id"); got != "" {
-				t.Fatalf("expected empty session_id for first upload, got %q", got)
+			if got := request.FormValue("session_id"); got != "session-created" {
+				t.Fatalf("expected generated session_id for first upload, got %q", got)
 			}
 			file, header, err := request.FormFile("file")
 			if err != nil {
@@ -912,7 +930,7 @@ func TestRunTaskWithFileUploadsAndForwardsInputFiles(t *testing.T) {
 				t.Fatalf("unexpected uploaded payload: %q", string(payload))
 			}
 			writer.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(writer, `{"flow_id":"flow-1","file_path":"flow-1/flow-1/notes.txt"}`)
+			fmt.Fprint(writer, `{"flow_id":"flow-1","file_path":"flow-1/session-created/notes.txt"}`)
 		case backendAPIPath("/run/flow-1/stream"):
 			if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
 				t.Fatalf("decode stream request failed: %v", err)
@@ -957,8 +975,11 @@ func TestRunTaskWithFileUploadsAndForwardsInputFiles(t *testing.T) {
 	if !uploadCalled {
 		t.Fatal("expected upload endpoint to be called")
 	}
+	if got, _ := captured["session_id"].(string); got != "session-created" {
+		t.Fatalf("expected generated session_id to be reused by stream, got %#v", captured["session_id"])
+	}
 	inputFiles, ok := captured["files"].([]any)
-	if !ok || len(inputFiles) != 1 || inputFiles[0] != "flow-1/flow-1/notes.txt" {
+	if !ok || len(inputFiles) != 1 || inputFiles[0] != "flow-1/session-created/notes.txt" {
 		t.Fatalf("unexpected files payload: %#v", captured["files"])
 	}
 }
@@ -982,7 +1003,7 @@ func TestRunTaskWithExplicitSessionIDUsesUploadAndStreamSession(t *testing.T) {
 		case backendAPIPath("/config"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"default_flow_id":"flow-1"}`)
-		case backendAPIPath("/files/upload/flow-1"):
+		case backendAPIPath("/agents/upload/flow-1"):
 			if got := request.FormValue("session_id"); got != "session-explicit" {
 				t.Fatalf("expected upload session_id to use explicit value, got %q", got)
 			}
@@ -1115,6 +1136,15 @@ func TestCallbackAuthRefreshProviderRetriesStreamAfterUnauthorized(t *testing.T)
 	streamCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
+		case backendAPIPath("/session_id"):
+			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusUnauthorized)
+				fmt.Fprint(writer, `{"message":"未登录或会话令牌已失效","code":401}`)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"session_id":"session-created"}`)
 		case backendAPIPath("/run/flow-1/stream"):
 			streamCalls++
 			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
@@ -1169,8 +1199,8 @@ func TestCallbackAuthRefreshProviderRetriesStreamAfterUnauthorized(t *testing.T)
 	}
 	for range stream {
 	}
-	if streamCalls != 2 {
-		t.Fatalf("expected one failed stream and one retry, got %d calls", streamCalls)
+	if streamCalls != 1 {
+		t.Fatalf("expected stream request to run once after session bootstrap refresh, got %d calls", streamCalls)
 	}
 	if config.AccessToken != "access-1" || config.PersistentToken != "persist-2" {
 		t.Fatalf("expected in-memory config refreshed, got %#v", config)
@@ -1498,6 +1528,42 @@ func TestStreamTaskUpdatesSessionTitleFromStream(t *testing.T) {
 	}
 	if loaded.SessionTitle != "新会话标题" {
 		t.Fatalf("expected persisted session title, got %q", loaded.SessionTitle)
+	}
+}
+
+func TestStreamTaskCreatesSessionIDBeforeFirstStream(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+	workdir := t.TempDir()
+
+	stream := make(chan provider.StreamEvent, 1)
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	providerStub := &stubProvider{stream: stream}
+	state, err := app.streamTask(
+		context.Background(),
+		providerStub,
+		internalconfig.Config{Workdir: workdir},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent, Workdir: workdir},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+	if providerStub.lastRequest.SessionID != "session-created" {
+		t.Fatalf("expected generated session_id in stream request, got %#v", providerStub.lastRequest)
+	}
+	if state.SessionID != "session-created" {
+		t.Fatalf("expected returned session state to keep generated session_id, got %#v", state)
 	}
 }
 

@@ -121,6 +121,11 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			}
 			clientContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
 			commandExecutionTarget := "client"
+			ensuredSessionID, ensureErr := clientruntime.EnsureSessionID(runCtx, callbackProvider, sessionState.SessionID)
+			if ensureErr != nil {
+				return ensureErr
+			}
+			sessionState.SessionID = ensuredSessionID
 			stream, streamSession, streamErr := callbackProvider.Stream(runCtx, provider.StreamRequest{
 				FlowID:                    currentFlow,
 				Input:                     strings.TrimSpace(request.Input),
@@ -2773,11 +2778,16 @@ func executeTUIUploadCommand(ctx context.Context, providerClient provider.Provid
 	if flowID == "" {
 		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "当前未配置智能体，无法上传文件。"}}}, nil
 	}
-	uploadedPath, err := clientruntime.UploadInputFile(ctx, providerClient, flowID, snapshot.SessionID, firstNonEmpty(snapshot.ContextDir, snapshot.Workdir), argument)
+	ensuredSessionID, err := clientruntime.EnsureUploadSessionID(ctx, providerClient, snapshot.SessionID)
+	if err != nil {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
+	}
+	uploadedPath, err := clientruntime.UploadInputFile(ctx, providerClient, flowID, ensuredSessionID, firstNonEmpty(snapshot.ContextDir, snapshot.Workdir), argument)
 	if err != nil {
 		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
 	}
 	updatedSnapshot := snapshot
+	updatedSnapshot.SessionID = ensuredSessionID
 	updatedSnapshot.InputFiles = append(append([]string(nil), snapshot.InputFiles...), uploadedPath)
 	return tui.LocalCommandResult{
 		Handled:  true,

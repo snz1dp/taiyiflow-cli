@@ -206,12 +206,12 @@ func TestDefaultConfigIncludesAgentAutoLoopDefaults(t *testing.T) {
 	if config.CrossSessionMemoryEnabled {
 		t.Fatal("expected cross session memory to default to disabled")
 	}
-	if len(config.DocUnstructuredExts) != 0 {
-		t.Fatalf("expected doc_unstructured_exts to default to disabled, got %#v", config.DocUnstructuredExts)
+	if strings.Join(config.DocUnstructuredExts, ",") != strings.Join(defaultDocUnstructuredExts, ",") {
+		t.Fatalf("expected default doc_unstructured_exts %#v, got %#v", defaultDocUnstructuredExts, config.DocUnstructuredExts)
 	}
 }
 
-func TestManagerLoadMissingFileKeepsDocUnstructuredExtsDisabled(t *testing.T) {
+func TestManagerLoadMissingFileUsesDefaultDocUnstructuredExts(t *testing.T) {
 	tempDir := t.TempDir()
 	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
 
@@ -219,8 +219,8 @@ func TestManagerLoadMissingFileKeepsDocUnstructuredExtsDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config failed: %v", err)
 	}
-	if len(loaded.DocUnstructuredExts) != 0 {
-		t.Fatalf("expected doc_unstructured_exts to stay disabled without config file, got %#v", loaded.DocUnstructuredExts)
+	if strings.Join(loaded.DocUnstructuredExts, ",") != strings.Join(defaultDocUnstructuredExts, ",") {
+		t.Fatalf("expected default doc_unstructured_exts %#v, got %#v", defaultDocUnstructuredExts, loaded.DocUnstructuredExts)
 	}
 }
 func TestManagerLoadReadsCrossSessionMemoryEnabled(t *testing.T) {

@@ -57,12 +57,12 @@ func (a *App) showConfigHelp() error {
 		"  backend_base_url              服务端地址，需填写完整的 HTTP 或 HTTPS 地址。",
 		"  default_flow                  默认智能体 ID；留空时启动后自动选择。",
 		"  approval_mode                 命令执行模式；可选 confirm（每次确认）、auto（自动执行）、readonly（只读模式）。",
-		"  doc_unstructured_exts         逗号分隔扩展名；仅对显式配置的扩展名启用服务端文档结构化解析，未配置时默认关闭。",
+		"  doc_unstructured_exts         逗号分隔扩展名；未配置时使用内置默认值，可用自定义列表覆盖。",
 		"  skills_auto_install_policy    技能自动补装策略；可选 off、confirm、allow。",
 		"  cross_session_memory_enabled  跨会话记忆开关；可选 true、false。",
 		"",
 		"示例:",
-		"  taiyiflow-cli config set backend_base_url http://localhost:7860",
+		"  taiyiflow-cli config set backend_base_url https://snz1.cn",
 		"  taiyiflow-cli config set doc_unstructured_exts pdf,png",
 		"  taiyiflow-cli config unset doc_unstructured_exts",
 		"",
@@ -192,7 +192,7 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 	case "doc_unstructured_exts":
 		normalizedExts := internalconfig.NormalizeDocUnstructuredExts(splitConfigCSV(trimmedValue))
 		if len(normalizedExts) == 0 {
-			return fmt.Errorf("doc_unstructured_exts 不能为空；留空或清空代表默认关闭，如需关闭请使用 taiyiflow-cli config unset doc_unstructured_exts")
+			return fmt.Errorf("doc_unstructured_exts 不能为空；如需恢复内置默认值请使用 taiyiflow-cli config unset doc_unstructured_exts")
 		}
 		config.DocUnstructuredExts = normalizedExts
 	case "external_resource_access_policy":
@@ -420,7 +420,7 @@ func normalizeBackendBaseURL(value string) (string, error) {
 
 	parsed, err := url.Parse(trimmed)
 	if err != nil || strings.TrimSpace(parsed.Scheme) == "" || strings.TrimSpace(parsed.Host) == "" {
-		return "", fmt.Errorf("backend_base_url 必须是完整的 HTTP 地址，例如 http://localhost:4005")
+		return "", fmt.Errorf("backend_base_url 必须是完整的 HTTP 地址，例如 https://snz1.cn")
 	}
 
 	scheme := strings.ToLower(parsed.Scheme)
@@ -456,7 +456,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("技能自动补装策略: %s", fallbackConfigValue(config.Skills.AutoInstallPolicy, internalconfig.Default().Skills.AutoInstallPolicy)),
 		fmt.Sprintf("自由文本技能搜索: %t", config.Skills.FreeTextSearchEnabled),
 		fmt.Sprintf("技能仓库: %s", fallbackConfigValue(config.Skills.RegistryURL, internalconfig.Default().Skills.RegistryURL)),
-		fmt.Sprintf("文档服务端解析类型: %s", fallbackConfigValue(strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "), "<未配置，默认关闭>")),
+		fmt.Sprintf("文档服务端解析类型: %s", fallbackConfigValue(strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "), strings.Join(prefixDocumentExts(internalconfig.Default().DocUnstructuredExts), ", "))),
 		fmt.Sprintf("可访问外部资源目录: %s", fallbackConfigValue(strings.Join(config.SandboxRoots, ", "), "<仅当前工作目录>")),
 	}
 	return strings.Join(lines, "\n")

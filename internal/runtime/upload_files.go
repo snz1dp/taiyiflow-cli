@@ -10,6 +10,37 @@ import (
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
 
+// EnsureSessionID 返回当前请求所需的会话 ID；缺失时向服务端申请新的 session_id。
+func EnsureSessionID(ctx context.Context, providerClient provider.Provider, sessionID string) (string, error) {
+	trimmedSessionID := strings.TrimSpace(sessionID)
+	if trimmedSessionID != "" {
+		return trimmedSessionID, nil
+	}
+	if providerClient == nil {
+		return "", fmt.Errorf("创建会话失败: provider 不可用")
+	}
+	createdSessionID, err := providerClient.CreateSessionID(ctx)
+	if err != nil {
+		return "", fmt.Errorf("创建会话失败: 创建会话 ID 失败: %w", err)
+	}
+	trimmedSessionID = strings.TrimSpace(createdSessionID)
+	if trimmedSessionID == "" {
+		return "", fmt.Errorf("创建会话失败: 服务端未返回会话 ID")
+	}
+	return trimmedSessionID, nil
+}
+
+// EnsureUploadSessionID 返回上传所需的会话 ID；缺失时向服务端申请新的 session_id。
+func EnsureUploadSessionID(ctx context.Context, providerClient provider.Provider, sessionID string) (string, error) {
+	trimmedSessionID, err := EnsureSessionID(ctx, providerClient, sessionID)
+	if err == nil {
+		return trimmedSessionID, nil
+	}
+	message := err.Error()
+	message = strings.TrimPrefix(message, "创建会话失败: ")
+	return "", fmt.Errorf("上传文件失败: %s", message)
+}
+
 func UploadInputFile(
 	ctx context.Context,
 	providerClient provider.Provider,
@@ -18,11 +49,15 @@ func UploadInputFile(
 	baseDir string,
 	localPath string,
 ) (string, error) {
+	trimmedSessionID := strings.TrimSpace(sessionID)
+	if trimmedSessionID == "" {
+		return "", fmt.Errorf("上传文件失败: 当前会话 ID 不能为空")
+	}
 	resolvedPath, err := ResolveUploadFilePath(baseDir, localPath)
 	if err != nil {
 		return "", err
 	}
-	uploadResult, err := providerClient.UploadFile(ctx, flowID, sessionID, resolvedPath, "")
+	uploadResult, err := providerClient.UploadFile(ctx, flowID, trimmedSessionID, resolvedPath, "")
 	if err != nil {
 		return "", err
 	}

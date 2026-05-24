@@ -719,6 +719,9 @@ func (c *Client) UploadFile(ctx context.Context, flowID string, sessionID string
 	if trimmedFlowID == "" {
 		return nil, fmt.Errorf("上传文件失败: 智能体不能为空")
 	}
+	if trimmedSessionID == "" {
+		return nil, fmt.Errorf("上传文件失败: 当前会话 ID 不能为空")
+	}
 	if trimmedLocalPath == "" {
 		return nil, fmt.Errorf("上传文件失败: 本地文件路径不能为空")
 	}
@@ -731,8 +734,11 @@ func (c *Client) UploadFile(ctx context.Context, flowID string, sessionID string
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	if trimmedSessionID != "" {
-		if err := writer.WriteField("session_id", trimmedSessionID); err != nil {
+	if err := writer.WriteField("session_id", trimmedSessionID); err != nil {
+		return nil, fmt.Errorf("构造上传表单失败: %w", err)
+	}
+	if trimmedRemotePath != "" {
+		if err := writer.WriteField("file_path", trimmedRemotePath); err != nil {
 			return nil, fmt.Errorf("构造上传表单失败: %w", err)
 		}
 	}
@@ -751,8 +757,14 @@ func (c *Client) UploadFile(ctx context.Context, flowID string, sessionID string
 		return nil, fmt.Errorf("完成上传表单失败: %w", err)
 	}
 
-	endpoint := c.apiURL(fmt.Sprintf("/files/upload/%s", url.PathEscape(trimmedFlowID)))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
+	endpointURL, err := url.Parse(c.apiURL(fmt.Sprintf("/agents/upload/%s", url.PathEscape(trimmedFlowID))))
+	if err != nil {
+		return nil, fmt.Errorf("构造上传请求地址失败: %w", err)
+	}
+	query := endpointURL.Query()
+	query.Set("session_id", trimmedSessionID)
+	endpointURL.RawQuery = query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL.String(), &body)
 	if err != nil {
 		return nil, fmt.Errorf("创建上传请求失败: %w", err)
 	}
@@ -785,13 +797,14 @@ func (c *Client) RunDocumentUnstructured(ctx context.Context, request provider.D
 	if trimmedFlowID == "" {
 		return nil, fmt.Errorf("调用文档结构化服务失败: 文档结构化流程不能为空")
 	}
+	trimmedSessionID := strings.TrimSpace(request.SessionID)
 
 	body := streamRequestBody{
 		InputValue: request.Input,
 		InputType:  firstNonEmpty(strings.TrimSpace(request.InputType), "any"),
 		Files:      append([]string(nil), request.InputFiles...),
 		OutputType: firstNonEmpty(strings.TrimSpace(request.OutputType), "any"),
-		SessionID:  strings.TrimSpace(request.SessionID),
+		SessionID:  trimmedSessionID,
 	}
 
 	content, err := json.Marshal(body)
@@ -799,8 +812,16 @@ func (c *Client) RunDocumentUnstructured(ctx context.Context, request provider.D
 		return nil, fmt.Errorf("序列化文档结构化请求失败: %w", err)
 	}
 
-	endpoint := c.apiURL(fmt.Sprintf("/run/%s", url.PathEscape(trimmedFlowID)))
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(content))
+	endpointURL, err := url.Parse(c.apiURL(fmt.Sprintf("/run/%s", url.PathEscape(trimmedFlowID))))
+	if err != nil {
+		return nil, fmt.Errorf("构造文档结构化请求地址失败: %w", err)
+	}
+	if trimmedSessionID != "" {
+		query := endpointURL.Query()
+		query.Set("session_id", trimmedSessionID)
+		endpointURL.RawQuery = query.Encode()
+	}
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL.String(), bytes.NewReader(content))
 	if err != nil {
 		return nil, fmt.Errorf("创建文档结构化请求失败: %w", err)
 	}
@@ -831,7 +852,7 @@ func (c *Client) RunDocumentUnstructured(ctx context.Context, request provider.D
 	}
 
 	return &provider.DocumentUnstructuredResult{
-		SessionID: firstNonEmpty(strings.TrimSpace(resp.Header.Get(SessionHeader)), strings.TrimSpace(request.SessionID)),
+		SessionID: firstNonEmpty(strings.TrimSpace(resp.Header.Get(SessionHeader)), trimmedSessionID),
 		Output:    string(output),
 		MediaType: mediaType,
 	}, nil
@@ -1121,7 +1142,16 @@ func (c *Client) ResolveSkillPreview(ctx context.Context, request provider.Skill
 }
 
 func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
-	endpoint := c.apiURL(fmt.Sprintf("/run/%s/stream", url.PathEscape(request.FlowID)))
+	endpointURL, err := url.Parse(c.apiURL(fmt.Sprintf("/run/%s/stream", url.PathEscape(request.FlowID))))
+	if err != nil {
+		return nil, nil, fmt.Errorf("构造 stream 请求地址失败: %w", err)
+	}
+	trimmedSessionID := strings.TrimSpace(request.SessionID)
+	if trimmedSessionID != "" {
+		query := endpointURL.Query()
+		query.Set("session_id", trimmedSessionID)
+		endpointURL.RawQuery = query.Encode()
+	}
 	body := streamRequestBody{
 		InputValue:                request.Input,
 		InputType:                 firstNonEmpty(request.InputType, "any"),
@@ -1132,7 +1162,7 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 		KnowledgeDocs:             request.KnowledgeDocs,
 		OutputType:                firstNonEmpty(request.OutputType, "any"),
 		OutputComponent:           request.OutputComponent,
-		SessionID:                 request.SessionID,
+		SessionID:                 trimmedSessionID,
 		RunID:                     request.RunID,
 		RequestType:               provider.NormalizeRequestType(request.RequestType),
 		DeviceType:                firstNonEmpty(strings.TrimSpace(request.DeviceType), provider.DeviceTypeCLI),
@@ -1158,7 +1188,7 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 		return nil, nil, fmt.Errorf("序列化 stream 请求失败: %w", err)
 	}
 
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(content))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL.String(), bytes.NewReader(content))
 	if err != nil {
 		return nil, nil, fmt.Errorf("创建 stream 请求失败: %w", err)
 	}

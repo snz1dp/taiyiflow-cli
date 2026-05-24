@@ -22,6 +22,7 @@ type documentToolUploadCall struct {
 type documentToolProviderStub struct {
 	provider.Provider
 	serviceConfig *provider.ServiceConfig
+	createdSessionID string
 	uploadCalls   []documentToolUploadCall
 	runRequest    provider.DocumentUnstructuredRequest
 	runResult     *provider.DocumentUnstructuredResult
@@ -30,6 +31,13 @@ type documentToolProviderStub struct {
 
 func (s *documentToolProviderStub) GetServiceConfig(context.Context) (*provider.ServiceConfig, error) {
 	return s.serviceConfig, nil
+}
+
+func (s *documentToolProviderStub) CreateSessionID(context.Context) (string, error) {
+	if strings.TrimSpace(s.createdSessionID) != "" {
+		return s.createdSessionID, nil
+	}
+	return "session-created", nil
 }
 
 func (s *documentToolProviderStub) UploadFile(_ context.Context, flowID string, sessionID string, localPath string, remotePath string) (*provider.UploadResult, error) {
@@ -537,6 +545,52 @@ func TestExecuteClientToolPayloadWithProviderDocumentUnstructured(t *testing.T) 
 	}
 	if result["session_id"] != "session-2" {
 		t.Fatalf("expected returned session id, got %#v", result["session_id"])
+	}
+}
+
+func TestExecuteClientToolPayloadWithProviderDocumentUnstructuredCreatesSessionWhenMissing(t *testing.T) {
+	tempDir := t.TempDir()
+	localPath := filepath.Join(tempDir, "report.pdf")
+	if err := os.WriteFile(localPath, []byte("fake-pdf"), 0o644); err != nil {
+		t.Fatalf("write test file failed: %v", err)
+	}
+	providerStub := &documentToolProviderStub{
+		serviceConfig:    &provider.ServiceConfig{DocUnstructuredFlowID: "doc-flow", DocExts: []string{"pdf"}},
+		createdSessionID: "session-created",
+		runResult:        &provider.DocumentUnstructuredResult{MediaType: "application/json", Output: `{"items":[{"text":"parsed content"}]}`},
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	_, resultAny, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, internalconfig.Config{
+		Workdir:             tempDir,
+		ApprovalMode:        "auto",
+		DocUnstructuredExts: []string{"pdf"},
+	}, map[string]any{
+		"server":             map[string]any{"name": "local"},
+		"flow_id":            "chat-flow",
+		"client_context_dir": tempDir,
+		"function": map[string]any{
+			"name": "document_unstructured",
+			"arguments": map[string]any{
+				"path":  "report.pdf",
+				"input": "请提取正文",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected document_unstructured to succeed, got %v", err)
+	}
+	if len(providerStub.uploadCalls) != 1 || providerStub.uploadCalls[0].SessionID != "session-created" {
+		t.Fatalf("expected generated session_id to be used for upload, got %#v", providerStub.uploadCalls)
+	}
+	if providerStub.runRequest.SessionID != "session-created" {
+		t.Fatalf("expected generated session_id to be reused by run request, got %#v", providerStub.runRequest)
+	}
+	result, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected document_unstructured result map, got %#v", resultAny)
+	}
+	if result["session_id"] != "session-created" {
+		t.Fatalf("expected generated session id in result fallback, got %#v", result["session_id"])
 	}
 }
 

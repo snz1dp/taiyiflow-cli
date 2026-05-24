@@ -15,7 +15,7 @@ import (
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 )
 
-func TestLoadSkillPayloadIncludesBundledEnabledSkills(t *testing.T) {
+func TestLoadSkillPayloadIncludesBundledEnabledSkillsByDefault(t *testing.T) {
 	config := internalconfig.Default()
 	names, packages, err := loadSkillPayloadWithConfig(config)
 	if err != nil {
@@ -30,8 +30,8 @@ func TestLoadSkillPayloadIncludesBundledEnabledSkills(t *testing.T) {
 	if !containsIgnoreCase(names, "cross-platform-shell") {
 		t.Fatalf("expected cross-platform-shell in requested names: %#v", names)
 	}
-	if containsIgnoreCase(names, "document-unstructured") {
-		t.Fatalf("expected document-unstructured to stay disabled by default, got %#v", names)
+	if !containsIgnoreCase(names, "document-unstructured") {
+		t.Fatalf("expected document-unstructured to be enabled by default, got %#v", names)
 	}
 	if !containsIgnoreCase(names, "update-config") {
 		t.Fatalf("expected update-config in requested names: %#v", names)

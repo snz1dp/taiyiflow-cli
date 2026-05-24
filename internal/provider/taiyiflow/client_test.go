@@ -462,18 +462,24 @@ func TestUploadFilePostsMultipartFormAndParsesResponse(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != backendAPIPath("/files/upload/demo-flow") {
+		if request.URL.Path != backendAPIPath("/agents/upload/demo-flow") {
 			http.NotFound(writer, request)
 			return
 		}
 		if request.Method != http.MethodPost {
 			t.Fatalf("expected POST request, got %s", request.Method)
 		}
+		if got := request.URL.Query().Get("session_id"); got != "session-123" {
+			t.Fatalf("expected session_id query to be forwarded, got %q", got)
+		}
 		if err := request.ParseMultipartForm(1024 * 1024); err != nil {
 			t.Fatalf("parse multipart form failed: %v", err)
 		}
-		if request.FormValue("session_id") != "session-123" {
-			t.Fatalf("expected session_id to be forwarded, got %q", request.FormValue("session_id"))
+		if got := request.MultipartForm.Value["session_id"]; len(got) != 1 || got[0] != "session-123" {
+			t.Fatalf("expected multipart session_id to be forwarded, got %#v", got)
+		}
+		if request.FormValue("file_path") != "folder/remote.txt" {
+			t.Fatalf("expected file_path to be forwarded, got %q", request.FormValue("file_path"))
 		}
 		file, header, err := request.FormFile("file")
 		if err != nil {
@@ -508,6 +514,20 @@ func TestUploadFilePostsMultipartFormAndParsesResponse(t *testing.T) {
 	}
 }
 
+func TestUploadFileRejectsEmptySessionID(t *testing.T) {
+	tempDir := t.TempDir()
+	localPath := filepath.Join(tempDir, "demo.txt")
+	if err := os.WriteFile(localPath, []byte("hello upload"), 0o644); err != nil {
+		t.Fatalf("write temp file failed: %v", err)
+	}
+
+	client := NewClient("https://example.com", "")
+	_, err := client.UploadFile(context.Background(), "demo-flow", "", localPath, "")
+	if err == nil || !strings.Contains(err.Error(), "当前会话 ID 不能为空") {
+		t.Fatalf("expected empty session_id to be rejected, got %v", err)
+	}
+}
+
 func TestRunDocumentUnstructuredPostsSimplifiedRequestAndParsesResponse(t *testing.T) {
 	var captured map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -517,6 +537,9 @@ func TestRunDocumentUnstructuredPostsSimplifiedRequestAndParsesResponse(t *testi
 		}
 		if request.Method != http.MethodPost {
 			t.Fatalf("expected POST request, got %s", request.Method)
+		}
+		if got := request.URL.Query().Get("session_id"); got != "session-doc-1" {
+			t.Fatalf("expected session_id query to be forwarded, got %q", got)
 		}
 		if contentType := request.Header.Get("Content-Type"); !strings.Contains(contentType, "application/json") {
 			t.Fatalf("expected application/json content type, got %q", contentType)
@@ -826,6 +849,38 @@ func TestStreamIncludesCrossSessionMemoryRequestField(t *testing.T) {
 	}
 	if *captured.CrossSessionMemoryEnabled {
 		t.Fatal("expected cross_session_memory_enabled to preserve false override")
+	}
+}
+
+func TestStreamIncludesSessionIDInQueryAndBody(t *testing.T) {
+	var captured streamRequestBody
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != backendAPIPath("/run/demo-flow/stream") {
+			http.NotFound(writer, request)
+			return
+		}
+		if got := request.URL.Query().Get("session_id"); got != "session-123" {
+			t.Fatalf("expected session_id query to be forwarded, got %q", got)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request body failed: %v", err)
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	stream, _, err := client.Stream(context.Background(), provider.StreamRequest{
+		FlowID:    "demo-flow",
+		SessionID: "session-123",
+	})
+	if err != nil {
+		t.Fatalf("expected stream request to succeed, got %v", err)
+	}
+	for range stream {
+	}
+	if captured.SessionID != "session-123" {
+		t.Fatalf("expected session_id in request body, got %#v", captured)
 	}
 }
 

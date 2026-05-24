@@ -870,6 +870,46 @@ func TestExecuteTUIUploadCommandUploadsFileAndUpdatesSnapshot(t *testing.T) {
 	}
 }
 
+func TestExecuteTUIUploadCommandCreatesSessionWhenMissing(t *testing.T) {
+	tempDir := t.TempDir()
+	localFile := filepath.Join(tempDir, "report.txt")
+	if err := os.WriteFile(localFile, []byte("report"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+
+	var gotSessionID string
+	result, err := executeTUIUploadCommand(context.Background(), &stubProvider{uploadHook: func(_ context.Context, flowID string, sessionID string, localPath string, remotePath string) (*provider.UploadResult, error) {
+		gotSessionID = sessionID
+		if flowID != "flow-1" {
+			t.Fatalf("unexpected flow id: %q", flowID)
+		}
+		if localPath != localFile {
+			t.Fatalf("expected absolute local path %q, got %q", localFile, localPath)
+		}
+		if remotePath != "" {
+			t.Fatalf("expected empty remotePath, got %q", remotePath)
+		}
+		return &provider.UploadResult{FilePath: "flow-1/session-created/report.txt"}, nil
+	}}, "/upload report.txt", internaltui.Snapshot{
+		BackendAvailable: true,
+		DefaultFlow:      "flow-1",
+		Workdir:          tempDir,
+		ContextDir:       tempDir,
+	})
+	if err != nil {
+		t.Fatalf("executeTUIUploadCommand failed: %v", err)
+	}
+	if gotSessionID != "session-created" {
+		t.Fatalf("expected generated session_id, got %q", gotSessionID)
+	}
+	if result.Snapshot == nil || result.Snapshot.SessionID != "session-created" {
+		t.Fatalf("expected snapshot session_id to be updated, got %#v", result.Snapshot)
+	}
+	if len(result.Snapshot.InputFiles) != 1 || result.Snapshot.InputFiles[0] != "flow-1/session-created/report.txt" {
+		t.Fatalf("unexpected snapshot after upload: %#v", result.Snapshot)
+	}
+}
+
 func TestExecuteTUIThinkCommandListsAndShowsReasoning(t *testing.T) {
 	snapshot := internaltui.Snapshot{History: []internaltui.HistoryEntry{
 		{Role: "assistant", Content: "历史回答一\n\n[历史思考已隐藏，输入 /think 1 查看]", ThinkingText: "第一条思考", ThinkingIndex: 1},

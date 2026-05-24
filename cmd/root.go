@@ -512,9 +512,15 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	}
 	inputFiles := []string(nil)
 	if strings.TrimSpace(options.UploadFile) != "" {
+		uploadProviderClient := a.providerWithCallbackAuthRefresh(providerClient, &config)
+		ensuredSessionID, ensureErr := clientruntime.EnsureUploadSessionID(ctx, uploadProviderClient, sessionState.SessionID)
+		if ensureErr != nil {
+			return ensureErr
+		}
+		sessionState.SessionID = ensuredSessionID
 		uploadedPath, uploadErr := uploadInputFile(
 			ctx,
-			a.providerWithCallbackAuthRefresh(providerClient, &config),
+			uploadProviderClient,
 			flowID,
 			sessionState.SessionID,
 			firstNonEmpty(sessionState.ContextDir, workdir),
@@ -649,6 +655,11 @@ func (a *App) streamTaskWithSkillRetry(
 	}
 	clientContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir))
 	commandExecutionTarget := "client"
+	ensuredSessionID, err := clientruntime.EnsureSessionID(ctx, providerClient, sessionState.SessionID)
+	if err != nil {
+		return sessionState, err
+	}
+	sessionState.SessionID = ensuredSessionID
 	stream, streamSession, err := providerClient.Stream(ctx, provider.StreamRequest{
 		FlowID:                    flowID,
 		Input:                     strings.TrimSpace(task),

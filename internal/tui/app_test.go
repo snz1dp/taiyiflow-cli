@@ -721,7 +721,7 @@ func TestRenderConfigFormGroupsFieldsByCategory(t *testing.T) {
 	}
 }
 
-func TestRenderConfigFormShowsDocUnstructuredDisabledByDefaultHint(t *testing.T) {
+func TestRenderConfigFormShowsDocUnstructuredDefaultHint(t *testing.T) {
 	state := newConfigFormState(ConfigFormState{
 		Title: "配置设置",
 	})
@@ -733,11 +733,11 @@ func TestRenderConfigFormShowsDocUnstructuredDisabledByDefaultHint(t *testing.T)
 	}
 
 	rendered := sanitizeTerminalText(model.renderConfigForm())
-	if !strings.Contains(rendered, "文档服务端解析类型") {
+	if !strings.Contains(rendered, "服务端文档解析类型") {
 		t.Fatalf("expected doc unstructured field rendered, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "留空表示默认关闭") {
-		t.Fatalf("expected doc unstructured field to mention disabled-by-default state, got %q", rendered)
+	if !strings.Contains(rendered, "留空表示恢复内置默认值") {
+		t.Fatalf("expected doc unstructured field to mention built-in default state, got %q", rendered)
 	}
 }
 
@@ -797,7 +797,7 @@ func TestRenderConfigFormUsesTextInputForAgentAutoLoopMaxRounds(t *testing.T) {
 	if !strings.Contains(rendered, "智能体自动续跑最大轮数") {
 		t.Fatalf("expected max rounds field rendered, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "填写 0-100 的整数，0 表示禁用") {
+	if !strings.Contains(rendered, "填写 0-10000 的整数，0 表示禁用") {
 		t.Fatalf("expected numeric hint for max rounds field, got %q", rendered)
 	}
 	if strings.Contains(rendered, "智能体自动续跑默认开关") || strings.Contains(rendered, "恢复默认(default)") {

@@ -52,6 +52,10 @@ func (r *ClientRuntime) documentUnstructured(
 		workingDirectory = strings.TrimSpace(config.Workdir)
 	}
 	currentSessionID := argumentString(arguments, "session_id")
+	currentSessionID, err = EnsureUploadSessionID(ctx, providerClient, currentSessionID)
+	if err != nil {
+		return nil, newToolError("EXECUTION_FAILED", "%v", err)
+	}
 	remotePaths := make([]string, 0, len(paths))
 	uploadedFiles := make([]map[string]any, 0, len(paths))
 	for _, rawPath := range paths {

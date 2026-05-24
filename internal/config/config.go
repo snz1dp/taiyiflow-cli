@@ -48,6 +48,30 @@ const (
 	DefaultClawHubRegistryURL       = "https://mirror-cn.clawhub.com"
 )
 
+var defaultDocUnstructuredExts = []string{
+	"jpg",
+	"jpeg",
+	"png",
+	"gif",
+	"svg",
+	"mp3",
+	"wav",
+	"ogg",
+	"flac",
+	"aif",
+	"m4a",
+	"aac",
+	"mp4",
+	"webm",
+	"avi",
+	"mov",
+	"flv",
+	"wmv",
+	"rmvb",
+	"mkv",
+	"pdf",
+}
+
 type Config struct {
 	BackendBaseURL            string           `yaml:"backend_base_url"`
 	BackendAPIPrefix          string           `yaml:"backend_api_prefix,omitempty"`
@@ -117,6 +141,7 @@ func Default() Config {
 		SandboxEscapePolicy:       SandboxEscapePolicyConfirm,
 		HTTPTimeoutSeconds:        DefaultHTTPTimeoutSeconds,
 		CommandTimeoutSeconds:     DefaultCommandTimeoutSeconds,
+		DocUnstructuredExts:       append([]string(nil), defaultDocUnstructuredExts...),
 		StreamIdleTimeoutSeconds:  DefaultStreamIdleTimeoutSeconds,
 		StreamRetryAttempts:       DefaultStreamRetryAttempts,
 		QRWaitTimeoutSeconds:      DefaultQRWaitTimeoutSeconds,

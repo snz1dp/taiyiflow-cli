@@ -199,11 +199,13 @@ func TestRenderConfigSummaryUsesExternalResourceAccessPolicyLabel(t *testing.T) 
 	}
 }
 
-func TestRenderConfigSummaryMarksDocUnstructuredExtsDisabledByDefault(t *testing.T) {
+func TestRenderConfigSummaryUsesDefaultDocUnstructuredExts(t *testing.T) {
 	config := internalconfig.Default()
 	summary := renderConfigSummary("/tmp/taiyiflow.yaml", config)
-	if !strings.Contains(summary, "文档服务端解析类型: <未配置，默认关闭>") {
-		t.Fatalf("expected doc unstructured summary to show disabled-by-default state, got %q", summary)
+	for _, expected := range []string{"文档服务端解析类型:", ".jpg", ".mp3", ".mp4", ".pdf"} {
+		if !strings.Contains(summary, expected) {
+			t.Fatalf("expected doc unstructured summary to contain %q, got %q", expected, summary)
+		}
 	}
 }
 
@@ -248,7 +250,7 @@ func TestRunConfigHelpOutputsLocalizedUsage(t *testing.T) {
 		"配置命令用于查看、设置或清空命令行（CLI）全局配置。",
 		"taiyiflow-cli config set <配置项> <值>",
 		"doc_unstructured_exts",
-		"未配置时默认关闭",
+		"未配置时使用内置默认值",
 		"readonly（只读模式）",
 	} {
 		if !strings.Contains(output, expected) {

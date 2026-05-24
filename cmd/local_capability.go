@@ -8,6 +8,7 @@ import (
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
+	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
 )
 
 type callbackAuthRefreshProvider struct {
@@ -190,6 +191,11 @@ func (p *callbackAuthRefreshProvider) ResolveSkillPreview(ctx context.Context, r
 }
 
 func (p *callbackAuthRefreshProvider) Stream(ctx context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
+	ensuredSessionID, ensureErr := clientruntime.EnsureSessionID(ctx, p, request.SessionID)
+	if ensureErr != nil {
+		return nil, nil, ensureErr
+	}
+	request.SessionID = ensuredSessionID
 	stream, session, err := p.Provider.Stream(ctx, request)
 	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
 	if refreshErr != nil {
