@@ -28,9 +28,11 @@ type localTask struct {
 	name            string
 	preview         string
 	cwd             string
+	sourceSkill     string
 	flowID          string
 	sessionID       string
 	runID           string
+	injectedEnvKeys []string
 	storeDir        string
 	metadataPath    string
 	stdoutPath      string
@@ -160,20 +162,22 @@ func (m *localTaskManager) startTask(
 	taskID := fmt.Sprintf("task-%d", time.Now().UnixNano())
 	metadataPath, stdoutPath, stderrPath := taskFilePaths(storeDir, taskID)
 	task := &localTask{
-		id:           taskID,
-		name:         strings.TrimSpace(fallbackString(argumentString(arguments, "taskName", "task_name"), taskID)),
-		preview:      commandPreview(arguments),
-		cwd:          payload.WorkingDirectory,
-		flowID:       strings.TrimSpace(stringValue(arguments["flow_id"])),
-		sessionID:    strings.TrimSpace(stringValue(arguments["session_id"])),
-		runID:        strings.TrimSpace(stringValue(arguments["run_id"])),
-		storeDir:     storeDir,
-		metadataPath: metadataPath,
-		stdoutPath:   stdoutPath,
-		stderrPath:   stderrPath,
-		startedAt:    time.Now(),
-		status:       "running",
-		cancel:       cancel,
+		id:              taskID,
+		name:            strings.TrimSpace(fallbackString(argumentString(arguments, "taskName", "task_name"), taskID)),
+		preview:         commandPreview(arguments),
+		cwd:             payload.WorkingDirectory,
+		sourceSkill:     payload.SourceSkill,
+		flowID:          strings.TrimSpace(stringValue(arguments["flow_id"])),
+		sessionID:       strings.TrimSpace(stringValue(arguments["session_id"])),
+		runID:           strings.TrimSpace(stringValue(arguments["run_id"])),
+		injectedEnvKeys: append([]string(nil), payload.InjectedEnvKeys...),
+		storeDir:        storeDir,
+		metadataPath:    metadataPath,
+		stdoutPath:      stdoutPath,
+		stderrPath:      stderrPath,
+		startedAt:       time.Now(),
+		status:          "running",
+		cancel:          cancel,
 	}
 
 	m.mu.Lock()
@@ -186,7 +190,14 @@ func (m *localTaskManager) startTask(
 		task.mu.Unlock()
 	}
 
-	_ = appendAuditLog(config, "task_start", map[string]any{"task_id": taskID, "command": task.preview, "cwd": task.cwd})
+	taskAudit := map[string]any{"task_id": taskID, "command": task.preview, "cwd": task.cwd}
+	if task.sourceSkill != "" {
+		taskAudit["source_skill"] = task.sourceSkill
+	}
+	if len(task.injectedEnvKeys) > 0 {
+		taskAudit["injected_env_keys"] = append([]string(nil), task.injectedEnvKeys...)
+	}
+	_ = appendAuditLog(config, "task_start", taskAudit)
 	runtimeClient.writeStreamEventf(runtimeClient.stdout, "[本地工具] shell_exec 后台任务 %s 已启动\n", taskID)
 
 	go m.waitTask(task, command, stdoutPipe, stderrPipe, config)
@@ -366,10 +377,10 @@ func (m *localTaskManager) taskCleanup(
 		deletedTaskIDs = append(deletedTaskIDs, taskID)
 	}
 	result := map[string]any{
-		"deleted":        len(deletedTaskIDs) > 0,
-		"deleted_count":  len(deletedTaskIDs),
+		"deleted":          len(deletedTaskIDs) > 0,
+		"deleted_count":    len(deletedTaskIDs),
 		"deleted_task_ids": deletedTaskIDs,
-		"running_count":  runningCount,
+		"running_count":    runningCount,
 	}
 	runtimeClient.writeStreamEventf(runtimeClient.stdout, "[本地工具] task_cleanup 删除 %d 个任务，保留 %d 个运行中任务\n", len(deletedTaskIDs), runningCount)
 	_ = appendAuditLog(config, "task_cleanup", map[string]any{"deleted_count": len(deletedTaskIDs), "running_count": runningCount})
@@ -469,12 +480,16 @@ func taskSummary(task *localTask) map[string]any {
 		"task_name":    task.name,
 		"command":      task.preview,
 		"cwd":          task.cwd,
+		"source_skill": task.sourceSkill,
 		"flow_id":      task.flowID,
 		"session_id":   task.sessionID,
 		"run_id":       task.runID,
 		"status":       task.status,
 		"started_at":   task.startedAt.Format(time.RFC3339),
 		"completed_at": "",
+	}
+	if len(task.injectedEnvKeys) > 0 {
+		result["injected_env_keys"] = append([]string(nil), task.injectedEnvKeys...)
 	}
 	if !task.completedAt.IsZero() {
 		result["completed_at"] = task.completedAt.Format(time.RFC3339)

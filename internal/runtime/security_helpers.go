@@ -506,7 +506,7 @@ func appendAuditLog(config internalconfig.Config, action string, payload map[str
 func sanitizeEnvOverrides(overrides map[string]string) map[string]string {
 	result := map[string]string{}
 	for key, value := range overrides {
-		if strings.TrimSpace(key) == "" || isSensitiveEnvKey(key) {
+		if strings.TrimSpace(key) == "" {
 			continue
 		}
 		result[key] = value

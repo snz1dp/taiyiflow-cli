@@ -15,11 +15,13 @@ import (
 const skillFileName = "SKILL.md"
 
 type Manifest struct {
-	Name          string      `yaml:"name"`
-	Description   string      `yaml:"description"`
-	Category      string      `yaml:"category"`
-	Prerequisites []string    `yaml:"prerequisites"`
-	Files         []SkillFile `yaml:"files,omitempty"`
+	Name          string         `yaml:"name"`
+	Description   string         `yaml:"description"`
+	Homepage      string         `yaml:"homepage,omitempty"`
+	Category      string         `yaml:"category"`
+	Prerequisites []string       `yaml:"prerequisites"`
+	Files         []SkillFile    `yaml:"files,omitempty"`
+	Metadata      map[string]any `yaml:"metadata,omitempty"`
 }
 
 type SkillFile struct {
@@ -56,6 +58,89 @@ func SkillDir(item Skill) string {
 		return filepath.Clean(rootDir)
 	}
 	return ""
+}
+
+func RequiredEnvKeys(item Skill) []string {
+	seen := map[string]bool{}
+	collectRequiredEnvKeys(item.Metadata, seen)
+	if len(seen) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(seen))
+	for key := range seen {
+		result = append(result, key)
+	}
+	sort.Slice(result, func(left, right int) bool {
+		return strings.ToLower(result[left]) < strings.ToLower(result[right])
+	})
+	return result
+}
+
+func collectRequiredEnvKeys(value any, seen map[string]bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		if requires, ok := typed["requires"]; ok {
+			collectRequiredEnvValues(requires, seen)
+		}
+		for _, nested := range typed {
+			collectRequiredEnvKeys(nested, seen)
+		}
+	case map[any]any:
+		if requires, ok := typed["requires"]; ok {
+			collectRequiredEnvValues(requires, seen)
+		}
+		for _, nested := range typed {
+			collectRequiredEnvKeys(nested, seen)
+		}
+	case []any:
+		for _, nested := range typed {
+			collectRequiredEnvKeys(nested, seen)
+		}
+	}
+}
+
+func collectRequiredEnvValues(value any, seen map[string]bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		collectRequiredEnvSlice(typed["env"], seen)
+	case map[any]any:
+		collectRequiredEnvSlice(typed["env"], seen)
+	}
+}
+
+func collectRequiredEnvSlice(value any, seen map[string]bool) {
+	for _, item := range metadataStringSlice(value) {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		seen[trimmed] = true
+	}
+}
+
+func metadataStringSlice(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			result = append(result, strings.TrimSpace(item))
+		}
+		return result
+	case []any:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			result = append(result, strings.TrimSpace(fmt.Sprint(item)))
+		}
+		return result
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return nil
+		}
+		return []string{trimmed}
+	default:
+		return nil
+	}
 }
 
 func ResolveDirectory(config internalconfig.Config) (string, error) {
@@ -259,9 +344,11 @@ func Summaries(items []Skill) []map[string]any {
 		result = append(result, map[string]any{
 			"name":          item.Name,
 			"description":   item.Description,
+			"homepage":      item.Homepage,
 			"category":      item.Category,
 			"prerequisites": item.Prerequisites,
 			"files":         item.Files,
+			"metadata":      item.Metadata,
 			"summary":       item.Summary,
 			"path":          item.Path,
 			"skill_dir":     SkillDir(item),
@@ -321,9 +408,11 @@ func ClientPackages(items []Skill, rootDir string) any {
 		skillsValue = append(skillsValue, map[string]any{
 			"name":          item.Name,
 			"description":   item.Description,
+			"homepage":      item.Homepage,
 			"category":      item.Category,
 			"prerequisites": item.Prerequisites,
 			"files":         item.Files,
+			"metadata":      item.Metadata,
 			"summary":       item.Summary,
 			"content":       item.Body,
 			"markdown":      renderClientSkillMarkdown(item),
@@ -474,21 +563,64 @@ func fileIdentity(path string) string {
 
 func parseSkillDocument(content string) (Manifest, string, error) {
 	trimmed := strings.ReplaceAll(content, "\r\n", "\n")
-	if !strings.HasPrefix(trimmed, "---\n") {
+	if strings.HasPrefix(trimmed, "---\n") {
+		frontmatter, body, ok := splitSkillDocumentSections(strings.TrimPrefix(trimmed, "---\n"))
+		if !ok {
+			return Manifest{}, "", fmt.Errorf("frontmatter 未正确结束")
+		}
+		manifest, err := parseSkillManifest(frontmatter)
+		if err != nil {
+			return Manifest{}, "", err
+		}
+		return manifest, body, nil
+	}
+	frontmatter, body, ok := splitSkillDocumentSections(trimmed)
+	if !ok || !looksLikeSkillManifest(frontmatter) {
 		return Manifest{}, trimmed, nil
 	}
-	remainder := strings.TrimPrefix(trimmed, "---\n")
-	endMarker := strings.Index(remainder, "\n---\n")
-	if endMarker < 0 {
-		return Manifest{}, "", fmt.Errorf("frontmatter 未正确结束")
-	}
-	frontmatter := remainder[:endMarker]
-	body := remainder[endMarker+5:]
-	manifest := Manifest{}
-	if err := yaml.Unmarshal([]byte(frontmatter), &manifest); err != nil {
-		return Manifest{}, "", fmt.Errorf("frontmatter 解析失败: %w", err)
+	manifest, err := parseSkillManifest(frontmatter)
+	if err != nil {
+		return Manifest{}, "", err
 	}
 	return manifest, body, nil
+}
+
+func splitSkillDocumentSections(content string) (string, string, bool) {
+	if endMarker := strings.Index(content, "\n---\n"); endMarker >= 0 {
+		return content[:endMarker], content[endMarker+5:], true
+	}
+	if strings.HasSuffix(content, "\n---") {
+		return strings.TrimSuffix(content, "\n---"), "", true
+	}
+	return "", "", false
+}
+
+func looksLikeSkillManifest(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "name:"),
+			strings.HasPrefix(trimmed, "description:"),
+			strings.HasPrefix(trimmed, "homepage:"),
+			strings.HasPrefix(trimmed, "category:"),
+			strings.HasPrefix(trimmed, "prerequisites:"),
+			strings.HasPrefix(trimmed, "files:"),
+			strings.HasPrefix(trimmed, "metadata:"):
+			return true
+		}
+	}
+	return false
+}
+
+func parseSkillManifest(frontmatter string) (Manifest, error) {
+	manifest := Manifest{}
+	if err := yaml.Unmarshal([]byte(frontmatter), &manifest); err != nil {
+		return Manifest{}, fmt.Errorf("frontmatter 解析失败: %w", err)
+	}
+	return manifest, nil
 }
 
 func summarize(body string) string {

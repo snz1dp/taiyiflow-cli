@@ -263,7 +263,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "shell_exec",
-			"description":          shellExecToolDescription(),
+			"description":          shellExecToolDescription() + " 可选传入 source_skill（或由上下文注入）以启用受控环境变量自动注入：runtime 只会读取该 skill metadata.requires.env 中声明的键，并仅从当前进程已存在的环境变量补入。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -274,6 +274,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 					"workingDirectory": map[string]any{"type": "string", "description": "命令工作目录，默认当前工作目录。"},
 					"timeout":          map[string]any{"type": "integer", "minimum": 1, "maximum": internalconfig.MaxCommandTimeoutSeconds},
 					"env":              map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+					"source_skill":     map[string]any{"type": "string", "description": "可选技能名称；提供后会按该 skill metadata.requires.env 自动补齐允许的环境变量。"},
 					"expectJson":       map[string]any{"type": "boolean"},
 					"background":       map[string]any{"type": "boolean", "description": "为 true 时转为后台任务并返回 task_id。"},
 					"taskName":         map[string]any{"type": "string", "description": "可选任务名称，便于 TUI 与模型识别。"},
@@ -430,7 +431,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "skill",
-			"description":          "按名称装载本地技能(skill)，返回可立即执行的技能提示内容(prompt)。",
+			"description":          "按名称装载本地技能(skill)，返回可立即执行的技能提示内容(prompt)，并附带 source_skill、requires_env、metadata 等上下文，供后续 shell_exec 等工具做受控能力补全。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -799,6 +800,7 @@ func (r *ClientRuntime) skill(config internalconfig.Config, arguments map[string
 	return map[string]any{
 		"name":         item.Name,
 		"description":  item.Description,
+		"homepage":     item.Homepage,
 		"input":        argumentString(arguments, "input"),
 		"prompt":       item.Body,
 		"markdown":     skills.Markdown(*item),
@@ -806,8 +808,11 @@ func (r *ClientRuntime) skill(config internalconfig.Config, arguments map[string
 		"skill_dir":    skills.SkillDir(*item),
 		"root_dir":     item.RootDir,
 		"source":       item.Source,
+		"source_skill": item.Name,
 		"relative_dir": item.RelativeDir,
 		"files":        item.Files,
+		"metadata":     item.Metadata,
+		"requires_env": skills.RequiredEnvKeys(*item),
 		"kind":         "prompt",
 	}, nil
 }

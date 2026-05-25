@@ -20,6 +20,7 @@ import (
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
 )
 
 const (
@@ -270,6 +271,15 @@ func enrichToolArgumentsWithContext(arguments map[string]any, payload map[string
 		}
 		if clientContextDir != "" {
 			cloned["working_directory"] = clientContextDir
+		}
+	}
+	if strings.TrimSpace(argumentString(cloned, "source_skill", "sourceSkill")) == "" {
+		if sourceSkill := strings.TrimSpace(stringValue(payload["source_skill"])); sourceSkill != "" {
+			cloned["source_skill"] = sourceSkill
+		} else if sourceSkill := strings.TrimSpace(nestedString(payload, "context", "source_skill")); sourceSkill != "" {
+			cloned["source_skill"] = sourceSkill
+		} else if sourceSkill := strings.TrimSpace(nestedString(payload, "context", "sourceSkill")); sourceSkill != "" {
+			cloned["source_skill"] = sourceSkill
 		}
 	}
 	return cloned
@@ -646,10 +656,17 @@ func (r *ClientRuntime) runCommand(
 
 	command.Dir = payload.WorkingDirectory
 	command.Env = mergeEnv(payload.EnvOverrides)
-	_ = appendAuditLog(config, "run_command", map[string]any{
+	auditPayload := map[string]any{
 		"command": commandPreview(arguments),
 		"cwd":     payload.WorkingDirectory,
-	})
+	}
+	if payload.SourceSkill != "" {
+		auditPayload["source_skill"] = payload.SourceSkill
+	}
+	if len(payload.InjectedEnvKeys) > 0 {
+		auditPayload["injected_env_keys"] = append([]string(nil), payload.InjectedEnvKeys...)
+	}
+	_ = appendAuditLog(config, "run_command", auditPayload)
 
 	stdoutPipe, err := command.StdoutPipe()
 	if err != nil {
@@ -697,6 +714,12 @@ func (r *ClientRuntime) runCommand(
 		"exit_code": command.ProcessState.ExitCode(),
 		"cwd":       payload.WorkingDirectory,
 	}
+	if payload.SourceSkill != "" {
+		result["source_skill"] = payload.SourceSkill
+	}
+	if len(payload.InjectedEnvKeys) > 0 {
+		result["injected_env_keys"] = append([]string(nil), payload.InjectedEnvKeys...)
+	}
 
 	if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
 		r.writeStreamEventf(r.stdout, "[本地命令] %s（超时，>%ds）\n", commandPreview(arguments), payload.Timeout)
@@ -710,12 +733,19 @@ func (r *ClientRuntime) runCommand(
 		if message == "" {
 			message = waitErr.Error()
 		}
-		_ = appendAuditLog(config, "run_command_failed", map[string]any{
+		failureAudit := map[string]any{
 			"command":   commandPreview(arguments),
 			"cwd":       payload.WorkingDirectory,
 			"exit_code": command.ProcessState.ExitCode(),
 			"error":     message,
-		})
+		}
+		if payload.SourceSkill != "" {
+			failureAudit["source_skill"] = payload.SourceSkill
+		}
+		if len(payload.InjectedEnvKeys) > 0 {
+			failureAudit["injected_env_keys"] = append([]string(nil), payload.InjectedEnvKeys...)
+		}
+		_ = appendAuditLog(config, "run_command_failed", failureAudit)
 		r.writeStreamEventf(r.stdout, "[本地命令] %s（失败，%s，退出码 %d）\n", commandPreview(arguments), formatCommandDuration(time.Since(startedAt)), command.ProcessState.ExitCode())
 		return nil, fmt.Errorf("命令执行失败: %s", message)
 	}
@@ -734,11 +764,18 @@ func (r *ClientRuntime) runCommand(
 	if r.streamEventLogsEnabled && stderr != "" && !strings.HasSuffix(stderr, "\n") {
 		fmt.Fprintln(r.stderr)
 	}
-	_ = appendAuditLog(config, "run_command_succeeded", map[string]any{
+	successAudit := map[string]any{
 		"command":   commandPreview(arguments),
 		"cwd":       payload.WorkingDirectory,
 		"exit_code": command.ProcessState.ExitCode(),
-	})
+	}
+	if payload.SourceSkill != "" {
+		successAudit["source_skill"] = payload.SourceSkill
+	}
+	if len(payload.InjectedEnvKeys) > 0 {
+		successAudit["injected_env_keys"] = append([]string(nil), payload.InjectedEnvKeys...)
+	}
+	_ = appendAuditLog(config, "run_command_succeeded", successAudit)
 	r.writeStreamEventf(r.stdout, "[本地命令] %s（成功，%s，退出码 %d）\n", commandPreview(arguments), formatCommandDuration(time.Since(startedAt)), command.ProcessState.ExitCode())
 
 	return result, nil
@@ -772,6 +809,8 @@ type commandArguments struct {
 	WorkingDirectory string
 	Timeout          int
 	EnvOverrides     map[string]string
+	SourceSkill      string
+	InjectedEnvKeys  []string
 	ExpectJSON       bool
 }
 
@@ -802,6 +841,10 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 		}
 	}
 	envOverrides = sanitizeEnvOverrides(envOverrides)
+	sourceSkill, envOverrides, injectedEnvKeys, err := resolveSourceSkillEnv(config, argumentString(arguments, "source_skill", "sourceSkill"), envOverrides)
+	if err != nil {
+		return commandArguments{}, err
+	}
 
 	rawCommand := argumentString(arguments, "rawCommand", "raw_command")
 	if rawCommand != "" {
@@ -811,6 +854,8 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 			WorkingDirectory: workingDirectory,
 			Timeout:          timeout,
 			EnvOverrides:     envOverrides,
+			SourceSkill:      sourceSkill,
+			InjectedEnvKeys:  injectedEnvKeys,
 			ExpectJSON:       argumentBool(arguments, "expectJson", "expect_json"),
 		}, nil
 	}
@@ -822,6 +867,9 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 
 	args := stringSlice(arguments["args"])
 	commandName, args, rawCommand = normalizeLegacyCommandField(commandName, args, workingDirectory, runtime.GOOS)
+	if rawCommand == "" {
+		commandName, args, rawCommand = normalizeStructuredCommandField(commandName, args, runtime.GOOS)
+	}
 	if rawCommand != "" {
 		return commandArguments{
 			Mode:             "shell",
@@ -829,6 +877,8 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 			WorkingDirectory: workingDirectory,
 			Timeout:          timeout,
 			EnvOverrides:     envOverrides,
+			SourceSkill:      sourceSkill,
+			InjectedEnvKeys:  injectedEnvKeys,
 			ExpectJSON:       argumentBool(arguments, "expectJson", "expect_json"),
 		}, nil
 	}
@@ -839,8 +889,64 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 		WorkingDirectory: workingDirectory,
 		Timeout:          timeout,
 		EnvOverrides:     envOverrides,
+		SourceSkill:      sourceSkill,
+		InjectedEnvKeys:  injectedEnvKeys,
 		ExpectJSON:       argumentBool(arguments, "expectJson", "expect_json"),
 	}, nil
+}
+
+func resolveSourceSkillEnv(config internalconfig.Config, sourceSkill string, envOverrides map[string]string) (string, map[string]string, []string, error) {
+	trimmed := strings.TrimSpace(sourceSkill)
+	if trimmed == "" {
+		return "", envOverrides, nil, nil
+	}
+	item, _, err := skills.LoadByName(config, trimmed)
+	if err != nil {
+		return "", nil, nil, newToolError("PARAM_ERROR", "source_skill 无效: %s", trimmed)
+	}
+	requiredEnvKeys := skills.RequiredEnvKeys(*item)
+	if len(requiredEnvKeys) == 0 {
+		return item.Name, envOverrides, nil, nil
+	}
+	merged := map[string]string{}
+	for key, value := range envOverrides {
+		merged[key] = value
+	}
+	injectedEnvKeys := make([]string, 0, len(requiredEnvKeys))
+	missingEnvKeys := make([]string, 0, len(requiredEnvKeys))
+	for _, key := range requiredEnvKeys {
+		trimmedKey := strings.TrimSpace(key)
+		if trimmedKey == "" {
+			continue
+		}
+		if _, ok := merged[trimmedKey]; ok {
+			continue
+		}
+		value, ok := os.LookupEnv(trimmedKey)
+		if !ok {
+			missingEnvKeys = append(missingEnvKeys, trimmedKey)
+			continue
+		}
+		merged[trimmedKey] = value
+		injectedEnvKeys = append(injectedEnvKeys, trimmedKey)
+	}
+	if len(missingEnvKeys) > 0 {
+		sort.Strings(missingEnvKeys)
+		return "", nil, nil, newToolError("MISSING_ENV", "skill %s 缺少必需环境变量: %s", item.Name, strings.Join(missingEnvKeys, ", "))
+	}
+	sort.Strings(injectedEnvKeys)
+	return item.Name, merged, injectedEnvKeys, nil
+}
+
+func normalizeStructuredCommandField(commandName string, args []string, goos string) (string, []string, string) {
+	trimmed := strings.TrimSpace(commandName)
+	if trimmed == "" {
+		return "", args, ""
+	}
+	if !isLikelyEnvAssignment(trimmed) && !isShellBuiltinOnly(trimmed, goos) {
+		return trimmed, args, ""
+	}
+	return "", nil, joinShellCommand(trimmed, args, goos)
 }
 
 func defaultCommandTimeoutSeconds(config internalconfig.Config) int {
@@ -1048,6 +1154,84 @@ func isLikelyEnvAssignment(token string) bool {
 			continue
 		}
 		return false
+	}
+	return true
+}
+
+func joinShellCommand(commandName string, args []string, goos string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, quoteShellToken(commandName, goos))
+	for _, arg := range args {
+		parts = append(parts, quoteShellToken(arg, goos))
+	}
+	return strings.Join(parts, " ")
+}
+
+func quoteShellToken(token string, goos string) string {
+	if goos == "windows" {
+		return quoteWindowsCommandToken(token)
+	}
+	return quotePOSIXShellToken(token)
+}
+
+func quotePOSIXShellToken(token string) string {
+	if isLikelyEnvAssignment(token) {
+		separator := strings.IndexRune(token, '=')
+		return token[:separator+1] + quotePOSIXShellText(token[separator+1:])
+	}
+	return quotePOSIXShellText(token)
+}
+
+func quotePOSIXShellText(token string) string {
+	if token == "" {
+		return "''"
+	}
+	if isPOSIXShellSafeToken(token) {
+		return token
+	}
+	return "'" + strings.ReplaceAll(token, "'", `'"'"'`) + "'"
+}
+
+func isPOSIXShellSafeToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	for _, char := range token {
+		switch {
+		case char >= 'a' && char <= 'z':
+		case char >= 'A' && char <= 'Z':
+		case char >= '0' && char <= '9':
+		case strings.ContainsRune("@%_+=:,./-", char):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func quoteWindowsCommandToken(token string) string {
+	if token == "" {
+		return `""`
+	}
+	if isWindowsCommandSafeToken(token) {
+		return token
+	}
+	return `"` + strings.ReplaceAll(token, `"`, `\"`) + `"`
+}
+
+func isWindowsCommandSafeToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	for _, char := range token {
+		switch {
+		case char >= 'a' && char <= 'z':
+		case char >= 'A' && char <= 'Z':
+		case char >= '0' && char <= '9':
+		case strings.ContainsRune("@%_+=:,./-", char):
+		default:
+			return false
+		}
 	}
 	return true
 }

@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -273,6 +274,89 @@ func TestLoadFileFallsBackToMeaningfulSummary(t *testing.T) {
 	}
 	if item.Summary != item.Description {
 		t.Fatalf("expected summary fallback to meaningful paragraph, got %#v", item)
+	}
+}
+
+func TestLoadFileSupportsMetadataWithoutOpeningFrontmatterMarker(t *testing.T) {
+	tempDir := t.TempDir()
+	skillDir := filepath.Join(tempDir, "wan-video")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	content := "name: alibaba-ai-video-wan-video\n" +
+		"description: Alibaba Cloud Wanx Video Generation - Text to Video, Image to Video, Video Editing\n" +
+		"homepage: https://help.aliyun.com/zh/model-studio/video-generation\n" +
+		"metadata:\n" +
+		"  {\n" +
+		"    \"openclaw\":\n" +
+		"      {\n" +
+		"        \"emoji\": \"🎬\",\n" +
+		"        \"requires\": { \"env\": [\"DASHSCOPE_API_KEY\"] },\n" +
+		"        \"install\": [],\n" +
+		"      },\n" +
+		"  }\n" +
+		"---\n\n" +
+		"# 阿里云万相视频生成 (Wanx Video)\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill failed: %v", err)
+	}
+
+	item, err := LoadFile(tempDir, filepath.Join(skillDir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("load file failed: %v", err)
+	}
+	if item.Name != "alibaba-ai-video-wan-video" {
+		t.Fatalf("unexpected name: %q", item.Name)
+	}
+	if item.Homepage != "https://help.aliyun.com/zh/model-studio/video-generation" {
+		t.Fatalf("unexpected homepage: %q", item.Homepage)
+	}
+	metadata, ok := item.Metadata["openclaw"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected openclaw metadata map, got %#v", item.Metadata)
+	}
+	if metadata["emoji"] != "🎬" {
+		t.Fatalf("unexpected metadata emoji: %#v", metadata)
+	}
+	requires, ok := metadata["requires"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected requires metadata map, got %#v", metadata)
+	}
+	envList, ok := requires["env"].([]any)
+	if !ok || len(envList) != 1 || envList[0] != "DASHSCOPE_API_KEY" {
+		t.Fatalf("unexpected env requirements: %#v", requires)
+	}
+	if item.Body != "# 阿里云万相视频生成 (Wanx Video)" {
+		t.Fatalf("unexpected body: %q", item.Body)
+	}
+	markdown := Markdown(item)
+	if !strings.HasPrefix(markdown, "---\n") {
+		t.Fatalf("expected markdown to render canonical frontmatter, got %q", markdown)
+	}
+	if !strings.Contains(markdown, "homepage: https://help.aliyun.com/zh/model-studio/video-generation") {
+		t.Fatalf("expected markdown to include homepage, got %q", markdown)
+	}
+	if !strings.Contains(markdown, "DASHSCOPE_API_KEY") {
+		t.Fatalf("expected markdown to include metadata, got %q", markdown)
+	}
+	item.Enabled = true
+	packages, ok := ClientPackages([]Skill{item}, tempDir).([]map[string]any)
+	if !ok || len(packages) != 1 {
+		t.Fatalf("unexpected client packages payload: %#v", packages)
+	}
+	skillsPayload, ok := packages[0]["skills"].([]map[string]any)
+	if !ok || len(skillsPayload) != 1 {
+		t.Fatalf("unexpected nested skills payload: %#v", packages[0])
+	}
+	metadataPayload, ok := skillsPayload[0]["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected metadata in payload, got %#v", skillsPayload[0])
+	}
+	if _, ok := metadataPayload["openclaw"]; !ok {
+		t.Fatalf("expected openclaw metadata in payload, got %#v", metadataPayload)
+	}
+	if got := skillsPayload[0]["homepage"]; got != item.Homepage {
+		t.Fatalf("unexpected homepage payload: %s", fmt.Sprintf("%#v", got))
 	}
 }
 

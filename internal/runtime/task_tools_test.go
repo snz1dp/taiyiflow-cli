@@ -117,6 +117,31 @@ func TestNormalizeCommandArgumentsKeepsShellSyntaxAsRawCommand(t *testing.T) {
 	}
 }
 
+func TestNormalizeCommandArgumentsUsesShellForStructuredBuiltinCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("builtin test uses POSIX export")
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir()}
+
+	payload, err := runtimeClient.normalizeCommandArguments(map[string]any{
+		"command": "export",
+		"args":    []any{"TASK_TEST_VALUE=hello world"},
+	}, configValue)
+	if err != nil {
+		t.Fatalf("normalizeCommandArguments failed: %v", err)
+	}
+	if payload.Mode != "shell" {
+		t.Fatalf("expected shell mode, got %#v", payload)
+	}
+	if payload.RawCommand != "export TASK_TEST_VALUE='hello world'" {
+		t.Fatalf("unexpected raw command: %#v", payload)
+	}
+	if payload.Command != "" || payload.Args != nil {
+		t.Fatalf("expected structured builtin to clear exec command fields, got %#v", payload)
+	}
+}
+
 func TestNormalizeLegacyCommandFieldUsesRawForWindowsBuiltins(t *testing.T) {
 	commandName, args, rawCommand := normalizeLegacyCommandField(`dir /b`, nil, t.TempDir(), "windows")
 	if commandName != "" {
@@ -141,6 +166,138 @@ func TestNormalizeLegacyCommandFieldPreservesQuotedArguments(t *testing.T) {
 	if len(args) != 2 || args[0] != "-c" || args[1] != "print('ok')" {
 		t.Fatalf("unexpected args: %#v", args)
 	}
+}
+
+func TestShellExecReceivesExplicitSensitiveEnvOverrides(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell test uses POSIX shell")
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
+
+	result, err := runtimeClient.shellExec(context.Background(), configValue, map[string]any{
+		"command": "sh",
+		"args":    []any{"-lc", `printf %s "$DASHSCOPE_API_KEY"`},
+		"env": map[string]any{
+			"DASHSCOPE_API_KEY": "secret-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("shellExec failed: %v", err)
+	}
+	if strings.TrimSpace(stringValue(result["stdout"])) != "secret-1" {
+		t.Fatalf("expected explicit env override to reach subprocess, got %#v", result)
+	}
+	if result["exit_code"] != 0 {
+		t.Fatalf("expected zero exit code, got %#v", result)
+	}
+}
+
+func TestShellExecInjectsRequiredEnvFromSourceSkill(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell test uses POSIX shell")
+	}
+	workdir := t.TempDir()
+	skillRoot := t.TempDir()
+	skillDir := filepath.Join(skillRoot, "wan-video")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir failed: %v", err)
+	}
+	content := "---\nname: wan-video\ndescription: 视频生成\nmetadata:\n  openclaw:\n    requires:\n      env:\n        - DASHSCOPE_API_KEY\n---\n\n使用万相视频能力。\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill failed: %v", err)
+	}
+	t.Setenv("DASHSCOPE_API_KEY", "secret-from-host")
+
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: workdir, ApprovalMode: "auto"}
+	configValue.Skills.Directory = skillRoot
+
+	result, err := runtimeClient.shellExec(context.Background(), configValue, map[string]any{
+		"command":      "sh",
+		"args":         []any{"-lc", `printf %s "$DASHSCOPE_API_KEY"`},
+		"source_skill": "wan-video",
+	})
+	if err != nil {
+		t.Fatalf("shellExec failed: %v", err)
+	}
+	if strings.TrimSpace(stringValue(result["stdout"])) != "secret-from-host" {
+		t.Fatalf("expected source skill env injection to reach subprocess, got %#v", result)
+	}
+	if result["source_skill"] != "wan-video" {
+		t.Fatalf("expected source_skill in result, got %#v", result)
+	}
+	injectedEnvKeys := stringSlice(result["injected_env_keys"])
+	if len(injectedEnvKeys) != 1 || injectedEnvKeys[0] != "DASHSCOPE_API_KEY" {
+		t.Fatalf("expected injected env keys in result, got %#v", result)
+	}
+	if result["exit_code"] != 0 {
+		t.Fatalf("expected zero exit code, got %#v", result)
+	}
+}
+
+func TestShellExecRejectsMissingRequiredEnvFromSourceSkill(t *testing.T) {
+	workdir := t.TempDir()
+	skillRoot := t.TempDir()
+	skillDir := filepath.Join(skillRoot, "wan-video")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir failed: %v", err)
+	}
+	content := "---\nname: wan-video\ndescription: 视频生成\nmetadata:\n  openclaw:\n    requires:\n      env:\n        - DASHSCOPE_API_KEY\n---\n\n使用万相视频能力。\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill failed: %v", err)
+	}
+
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: workdir, ApprovalMode: "auto"}
+	configValue.Skills.Directory = skillRoot
+
+	_, err := runtimeClient.normalizeCommandArguments(map[string]any{
+		"raw_command":  "printf 'noop'",
+		"source_skill": "wan-video",
+	}, configValue)
+	if err == nil {
+		t.Fatal("expected missing required env to fail")
+	}
+	toolErr, ok := err.(toolError)
+	if !ok || toolErr.Code != "MISSING_ENV" {
+		t.Fatalf("expected MISSING_ENV error, got %#v", err)
+	}
+}
+
+func TestShellExecBackgroundSupportsStructuredBuiltinCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("builtin test uses POSIX export")
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
+
+	result, err := runtimeClient.shellExec(context.Background(), configValue, map[string]any{
+		"command":    "export",
+		"args":       []any{"TASK_TEST_VALUE=hello world"},
+		"background": true,
+		"task_name":  "export-task",
+	})
+	if err != nil {
+		t.Fatalf("shellExec background failed: %v", err)
+	}
+	taskID := result["task_id"].(string)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		output, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": taskID})
+		if outputErr != nil {
+			t.Fatalf("taskOutput failed: %v", outputErr)
+		}
+		if output["status"].(string) != "running" {
+			if output["status"].(string) != "completed" {
+				t.Fatalf("expected completed task, got %#v", output)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expected structured builtin background task to finish")
 }
 
 func TestTaskStopCancelsBackgroundCommand(t *testing.T) {
@@ -185,15 +342,27 @@ func TestTaskManagerRestoresPersistedTaskAcrossManagerInstances(t *testing.T) {
 	t.Setenv(config.RootDirEnvName(), t.TempDir())
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto", SandboxEscapePolicy: internalconfig.SandboxEscapePolicyAllow}
+	skillRoot := t.TempDir()
+	skillDir := filepath.Join(skillRoot, "wan-video")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir failed: %v", err)
+	}
+	content := "---\nname: wan-video\ndescription: 视频生成\nmetadata:\n  openclaw:\n    requires:\n      env:\n        - DASHSCOPE_API_KEY\n---\n\n使用万相视频能力。\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill failed: %v", err)
+	}
+	t.Setenv("DASHSCOPE_API_KEY", "persisted-secret")
+	configValue.Skills.Directory = skillRoot
 	manager := newLocalTaskManager()
 
 	result, err := manager.startTask(runtimeClient, configValue, map[string]any{
-		"raw_command": "printf 'persisted task\\n'",
-		"background":  true,
-		"task_name":   "persisted-task",
-		"flow_id":     "demo-flow",
-		"session_id":  "session-1",
-		"run_id":      "run-1",
+		"raw_command":  "printf 'persisted task\\n'",
+		"background":   true,
+		"task_name":    "persisted-task",
+		"source_skill": "wan-video",
+		"flow_id":      "demo-flow",
+		"session_id":   "session-1",
+		"run_id":       "run-1",
 	})
 	if err != nil {
 		t.Fatalf("startTask failed: %v", err)
@@ -221,6 +390,13 @@ func TestTaskManagerRestoresPersistedTaskAcrossManagerInstances(t *testing.T) {
 	if tasks[0]["session_id"] != "session-1" {
 		t.Fatalf("expected restored session_id, got %#v", tasks[0])
 	}
+	if tasks[0]["source_skill"] != "wan-video" {
+		t.Fatalf("expected restored source_skill, got %#v", tasks[0])
+	}
+	injectedEnvKeys := stringSlice(tasks[0]["injected_env_keys"])
+	if len(injectedEnvKeys) != 1 || injectedEnvKeys[0] != "DASHSCOPE_API_KEY" {
+		t.Fatalf("expected restored injected env keys, got %#v", tasks[0])
+	}
 	expectedWorkdir, pathErr := filepath.EvalSymlinks(configValue.Workdir)
 	if pathErr != nil {
 		expectedWorkdir = configValue.Workdir
@@ -235,29 +411,44 @@ func TestTaskManagerRestoresPersistedTaskAcrossManagerInstances(t *testing.T) {
 	if !strings.Contains(output["stdout"].(string), "persisted task") {
 		t.Fatalf("expected restored stdout, got %#v", output)
 	}
+	if output["source_skill"] != "wan-video" {
+		t.Fatalf("expected restored source_skill in output, got %#v", output)
+	}
 	if strings.TrimSpace(stringValue(output["stdout_path"])) == "" {
 		t.Fatalf("expected stdout_path in restored output, got %#v", output)
 	}
 }
 
-func TestExecuteClientToolPayloadShellExecPersistsContextIdentifiers(t *testing.T) {
+func TestExecuteClientToolPayloadShellExecPersistsContextIdentifiersAndSourceSkill(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell test uses POSIX shell")
 	}
 	t.Setenv(config.RootDirEnvName(), t.TempDir())
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto", SandboxEscapePolicy: internalconfig.SandboxEscapePolicyAllow}
+	skillRoot := t.TempDir()
+	skillDir := filepath.Join(skillRoot, "wan-video")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir failed: %v", err)
+	}
+	content := "---\nname: wan-video\ndescription: 视频生成\nmetadata:\n  openclaw:\n    requires:\n      env:\n        - DASHSCOPE_API_KEY\n---\n\n使用万相视频能力。\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill failed: %v", err)
+	}
+	t.Setenv("DASHSCOPE_API_KEY", "secret-from-context")
+	configValue.Skills.Directory = skillRoot
 
 	toolName, resultAny, err := runtimeClient.ExecuteClientToolPayload(context.Background(), configValue, map[string]any{
 		"flow_id": "demo-flow",
-		"context": map[string]any{"session_id": "session-ctx", "run_id": "run-ctx"},
+		"context": map[string]any{"session_id": "session-ctx", "run_id": "run-ctx", "source_skill": "wan-video"},
 		"server":  map[string]any{"name": "local"},
 		"function": map[string]any{
 			"name": "shell_exec",
 			"arguments": map[string]any{
-				"raw_command": "printf 'ctx task\\n'",
-				"background":  true,
-				"task_name":   "ctx-task",
+				"command":    "sh",
+				"args":       []any{"-lc", `printf %s "$DASHSCOPE_API_KEY"`},
+				"background": true,
+				"task_name":  "ctx-task",
 			},
 		},
 	})
@@ -279,6 +470,12 @@ func TestExecuteClientToolPayloadShellExecPersistsContextIdentifiers(t *testing.
 		if output["status"].(string) != "running" {
 			if output["flow_id"] != "demo-flow" || output["session_id"] != "session-ctx" || output["run_id"] != "run-ctx" {
 				t.Fatalf("expected context identifiers in task output, got %#v", output)
+			}
+			if output["source_skill"] != "wan-video" {
+				t.Fatalf("expected source_skill in task output, got %#v", output)
+			}
+			if strings.TrimSpace(stringValue(output["stdout"])) != "secret-from-context" {
+				t.Fatalf("expected context source skill env injection, got %#v", output)
 			}
 			return
 		}
@@ -486,7 +683,7 @@ func TestSkillReturnsInvocationPayload(t *testing.T) {
 	if err := os.MkdirAll(skillDir+"/reviewer", 0o755); err != nil {
 		t.Fatalf("mkdir skill dir failed: %v", err)
 	}
-	content := "---\nname: Code Review\ndescription: 审查变更\ncategory: engineering\n---\n\n检查回归风险。\n"
+	content := "---\nname: Code Review\ndescription: 审查变更\nhomepage: https://example.com/code-review\ncategory: engineering\nmetadata:\n  openclaw:\n    requires:\n      env:\n        - REVIEW_API_KEY\n---\n\n检查回归风险。\n"
 	if err := os.WriteFile(skillDir+"/reviewer/SKILL.md", []byte(content), 0o644); err != nil {
 		t.Fatalf("write skill failed: %v", err)
 	}
@@ -501,6 +698,9 @@ func TestSkillReturnsInvocationPayload(t *testing.T) {
 	result, err := runtimeClient.skill(configValue, map[string]any{"name": "Code Review", "input": "检查 cmd/root.go"})
 	if err != nil {
 		t.Fatalf("skill failed: %v", err)
+	}
+	if result["source_skill"].(string) != "Code Review" {
+		t.Fatalf("expected source_skill in skill result, got %#v", result)
 	}
 	if result["name"].(string) != "Code Review" {
 		t.Fatalf("unexpected skill result: %#v", result)
@@ -522,6 +722,20 @@ func TestSkillReturnsInvocationPayload(t *testing.T) {
 	}
 	if result["relative_dir"].(string) != "reviewer" {
 		t.Fatalf("unexpected skill relative_dir: %#v", result)
+	}
+	if result["homepage"].(string) != "https://example.com/code-review" {
+		t.Fatalf("unexpected skill homepage: %#v", result)
+	}
+	requiresEnv := stringSlice(result["requires_env"])
+	if len(requiresEnv) != 1 || requiresEnv[0] != "REVIEW_API_KEY" {
+		t.Fatalf("unexpected skill requires_env: %#v", result)
+	}
+	metadata, ok := result["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected metadata in skill result, got %#v", result)
+	}
+	if _, ok := metadata["openclaw"]; !ok {
+		t.Fatalf("expected openclaw metadata in skill result, got %#v", metadata)
 	}
 }
 

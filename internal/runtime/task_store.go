@@ -13,19 +13,21 @@ import (
 )
 
 type persistedTaskState struct {
-	TaskID      string    `json:"task_id"`
-	TaskName    string    `json:"task_name"`
-	Command     string    `json:"command"`
-	CWD         string    `json:"cwd"`
-	FlowID      string    `json:"flow_id,omitempty"`
-	SessionID   string    `json:"session_id,omitempty"`
-	RunID       string    `json:"run_id,omitempty"`
-	Status      string    `json:"status"`
-	StartedAt   time.Time `json:"started_at"`
-	CompletedAt time.Time `json:"completed_at,omitempty"`
-	ExitCode    int       `json:"exit_code,omitempty"`
-	HasExitCode bool      `json:"has_exit_code,omitempty"`
-	LastError   string    `json:"error,omitempty"`
+	TaskID          string    `json:"task_id"`
+	TaskName        string    `json:"task_name"`
+	Command         string    `json:"command"`
+	CWD             string    `json:"cwd"`
+	SourceSkill     string    `json:"source_skill,omitempty"`
+	FlowID          string    `json:"flow_id,omitempty"`
+	SessionID       string    `json:"session_id,omitempty"`
+	RunID           string    `json:"run_id,omitempty"`
+	InjectedEnvKeys []string  `json:"injected_env_keys,omitempty"`
+	Status          string    `json:"status"`
+	StartedAt       time.Time `json:"started_at"`
+	CompletedAt     time.Time `json:"completed_at,omitempty"`
+	ExitCode        int       `json:"exit_code,omitempty"`
+	HasExitCode     bool      `json:"has_exit_code,omitempty"`
+	LastError       string    `json:"error,omitempty"`
 }
 
 func defaultTaskStoreDir() (string, error) {
@@ -100,42 +102,46 @@ func loadPersistedTask(metadataPath string, storeDir string) (*localTask, error)
 	}
 	stdoutPath, stderrPath := strings.TrimSuffix(metadataPath, ".json")+".stdout", strings.TrimSuffix(metadataPath, ".json")+".stderr"
 	return &localTask{
-		id:           strings.TrimSpace(state.TaskID),
-		name:         strings.TrimSpace(state.TaskName),
-		preview:      strings.TrimSpace(state.Command),
-		cwd:          strings.TrimSpace(state.CWD),
-		flowID:       strings.TrimSpace(state.FlowID),
-		sessionID:    strings.TrimSpace(state.SessionID),
-		runID:        strings.TrimSpace(state.RunID),
-		startedAt:    state.StartedAt,
-		completedAt:  state.CompletedAt,
-		status:       strings.TrimSpace(state.Status),
-		exitCode:     state.ExitCode,
-		hasExitCode:  state.HasExitCode,
-		lastError:    strings.TrimSpace(state.LastError),
-		storeDir:     storeDir,
-		metadataPath: metadataPath,
-		stdoutPath:   stdoutPath,
-		stderrPath:   stderrPath,
+		id:              strings.TrimSpace(state.TaskID),
+		name:            strings.TrimSpace(state.TaskName),
+		preview:         strings.TrimSpace(state.Command),
+		cwd:             strings.TrimSpace(state.CWD),
+		sourceSkill:     strings.TrimSpace(state.SourceSkill),
+		flowID:          strings.TrimSpace(state.FlowID),
+		sessionID:       strings.TrimSpace(state.SessionID),
+		runID:           strings.TrimSpace(state.RunID),
+		injectedEnvKeys: append([]string(nil), state.InjectedEnvKeys...),
+		startedAt:       state.StartedAt,
+		completedAt:     state.CompletedAt,
+		status:          strings.TrimSpace(state.Status),
+		exitCode:        state.ExitCode,
+		hasExitCode:     state.HasExitCode,
+		lastError:       strings.TrimSpace(state.LastError),
+		storeDir:        storeDir,
+		metadataPath:    metadataPath,
+		stdoutPath:      stdoutPath,
+		stderrPath:      stderrPath,
 	}, nil
 }
 
 func (m *localTaskManager) persistTask(task *localTask) error {
 	task.mu.RLock()
 	state := persistedTaskState{
-		TaskID:      task.id,
-		TaskName:    task.name,
-		Command:     task.preview,
-		CWD:         task.cwd,
-		FlowID:      task.flowID,
-		SessionID:   task.sessionID,
-		RunID:       task.runID,
-		Status:      task.status,
-		StartedAt:   task.startedAt,
-		CompletedAt: task.completedAt,
-		ExitCode:    task.exitCode,
-		HasExitCode: task.hasExitCode,
-		LastError:   task.lastError,
+		TaskID:          task.id,
+		TaskName:        task.name,
+		Command:         task.preview,
+		CWD:             task.cwd,
+		SourceSkill:     task.sourceSkill,
+		FlowID:          task.flowID,
+		SessionID:       task.sessionID,
+		RunID:           task.runID,
+		InjectedEnvKeys: append([]string(nil), task.injectedEnvKeys...),
+		Status:          task.status,
+		StartedAt:       task.startedAt,
+		CompletedAt:     task.completedAt,
+		ExitCode:        task.exitCode,
+		HasExitCode:     task.hasExitCode,
+		LastError:       task.lastError,
 	}
 	metadataPath := task.metadataPath
 	task.mu.RUnlock()
