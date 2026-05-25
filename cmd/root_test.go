@@ -710,7 +710,7 @@ func TestStreamTaskSendsEnvironmentInTweaks(t *testing.T) {
 			t.Fatalf("expected environment hint to contain %q, got %q", expected, environmentHint)
 		}
 	}
-	for _, unexpected := range []string{"command + args", "rawCommand", "fork/exec ... not supported", ".pdf", ".docx", "local.document_unstructured"} {
+	for _, unexpected := range []string{"shell_exec", "command + args", "rawCommand", "fork/exec ... not supported", ".pdf", ".docx", "local.document_unstructured"} {
 		if strings.Contains(environmentHint, unexpected) {
 			t.Fatalf("expected environment hint to omit %q, got %q", unexpected, environmentHint)
 		}

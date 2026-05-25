@@ -78,6 +78,71 @@ func TestNormalizeCommandArgumentsUsesConfigCommandTimeout(t *testing.T) {
 	}
 }
 
+func TestNormalizeCommandArgumentsSplitsSimpleCommandField(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir()}
+
+	payload, err := runtimeClient.normalizeCommandArguments(map[string]any{
+		"command": `git status --short`,
+	}, configValue)
+	if err != nil {
+		t.Fatalf("normalizeCommandArguments failed: %v", err)
+	}
+	if payload.Mode != "exec" {
+		t.Fatalf("expected exec mode, got %#v", payload)
+	}
+	if payload.Command != "git" {
+		t.Fatalf("expected command git, got %#v", payload)
+	}
+	if len(payload.Args) != 2 || payload.Args[0] != "status" || payload.Args[1] != "--short" {
+		t.Fatalf("unexpected args: %#v", payload.Args)
+	}
+}
+
+func TestNormalizeCommandArgumentsKeepsShellSyntaxAsRawCommand(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir()}
+
+	payload, err := runtimeClient.normalizeCommandArguments(map[string]any{
+		"command": `git status | cat`,
+	}, configValue)
+	if err != nil {
+		t.Fatalf("normalizeCommandArguments failed: %v", err)
+	}
+	if payload.Mode != "shell" {
+		t.Fatalf("expected shell mode, got %#v", payload)
+	}
+	if payload.RawCommand != `git status | cat` {
+		t.Fatalf("unexpected raw command: %#v", payload)
+	}
+}
+
+func TestNormalizeLegacyCommandFieldUsesRawForWindowsBuiltins(t *testing.T) {
+	commandName, args, rawCommand := normalizeLegacyCommandField(`dir /b`, nil, t.TempDir(), "windows")
+	if commandName != "" {
+		t.Fatalf("expected empty exec command, got %q", commandName)
+	}
+	if args != nil {
+		t.Fatalf("expected nil args, got %#v", args)
+	}
+	if rawCommand != `dir /b` {
+		t.Fatalf("expected raw command fallback, got %q", rawCommand)
+	}
+}
+
+func TestNormalizeLegacyCommandFieldPreservesQuotedArguments(t *testing.T) {
+	commandName, args, rawCommand := normalizeLegacyCommandField(`python -c "print('ok')"`, nil, t.TempDir(), runtime.GOOS)
+	if rawCommand != "" {
+		t.Fatalf("expected exec mode, got raw command %q", rawCommand)
+	}
+	if commandName != "python" {
+		t.Fatalf("expected python command, got %q", commandName)
+	}
+	if len(args) != 2 || args[0] != "-c" || args[1] != "print('ok')" {
+		t.Fatalf("unexpected args: %#v", args)
+	}
+}
+
 func TestTaskStopCancelsBackgroundCommand(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell test uses POSIX shell")

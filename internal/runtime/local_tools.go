@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -104,6 +105,30 @@ func argumentInt(arguments map[string]any, defaultValue int, keys ...string) int
 		}
 	}
 	return defaultValue
+}
+
+func CurrentShellExecCommandArgsExample() string {
+	if runtime.GOOS == "windows" {
+		return `{"command":"cmd","args":["/C","dir"]}`
+	}
+	return `{"command":"ls","args":["-la"]}`
+}
+
+func CurrentShellExecRawCommandExample() string {
+	if runtime.GOOS == "windows" {
+		return `{"rawCommand":"dir | more"}`
+	}
+	return `{"rawCommand":"ls -la | cat"}`
+}
+
+func shellExecToolDescription() string {
+	return fmt.Sprintf(
+		"执行结构化本地 Shell 命令，支持前台执行或后台任务句柄返回。当前 OS: %s/%s。按当前 OS 选择命令，不要假设 Linux、macOS、Windows 的命令语义等价。优先使用 command + args，不要把整条命令塞进 command；示例: %s。只有需要管道、重定向或 shell 内建命令时才使用 rawCommand；示例: %s。",
+		runtime.GOOS,
+		runtime.GOARCH,
+		CurrentShellExecCommandArgsExample(),
+		CurrentShellExecRawCommandExample(),
+	)
 }
 
 func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]any {
@@ -238,14 +263,14 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "shell_exec",
-			"description":          "执行结构化本地 Shell 命令，支持前台执行或后台任务句柄返回。",
+			"description":          shellExecToolDescription(),
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"rawCommand":       map[string]any{"type": "string", "description": "直接交给 shell 执行的原始命令。"},
-					"command":          map[string]any{"type": "string", "description": "可执行文件名；与 args 配合使用。"},
-					"args":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"rawCommand":       map[string]any{"type": "string", "description": fmt.Sprintf("直接交给 shell 执行的原始命令。仅在需要管道、重定向或 shell 内建命令时使用；当前 OS 示例：%s。", CurrentShellExecRawCommandExample())},
+					"command":          map[string]any{"type": "string", "description": fmt.Sprintf("可执行文件名；优先与 args 配合使用，不要把整条命令塞进 command。当前 OS 结构化示例：%s。", CurrentShellExecCommandArgsExample())},
+					"args":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "命令参数数组，仅在使用 command 时生效。"},
 					"workingDirectory": map[string]any{"type": "string", "description": "命令工作目录，默认当前工作目录。"},
 					"timeout":          map[string]any{"type": "integer", "minimum": 1, "maximum": internalconfig.MaxCommandTimeoutSeconds},
 					"env":              map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},

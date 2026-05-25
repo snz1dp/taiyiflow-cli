@@ -70,6 +70,12 @@ var defaultDocUnstructuredExts = []string{
 	"rmvb",
 	"mkv",
 	"pdf",
+	"doc",
+	"docx",
+	"xls",
+	"xlsx",
+	"ppt",
+	"pptx",
 }
 
 type Config struct {

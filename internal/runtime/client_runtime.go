@@ -26,6 +26,26 @@ const (
 	localToolServerName = "local"
 )
 
+var windowsShellBuiltins = map[string]struct{}{
+	"assoc": {}, "break": {}, "call": {}, "cd": {}, "chdir": {}, "cls": {}, "color": {},
+	"copy": {}, "date": {}, "del": {}, "dir": {}, "echo": {}, "endlocal": {}, "erase": {},
+	"exit": {}, "for": {}, "ftype": {}, "goto": {}, "if": {}, "md": {}, "mkdir": {},
+	"mklink": {}, "move": {}, "path": {}, "pause": {}, "popd": {}, "prompt": {},
+	"pushd": {}, "rd": {}, "ren": {}, "rename": {}, "rmdir": {}, "set": {},
+	"setlocal": {}, "shift": {}, "start": {}, "time": {}, "title": {}, "type": {},
+	"ver": {}, "verify": {}, "vol": {},
+}
+
+var posixShellOnlyBuiltins = map[string]struct{}{
+	"alias": {}, "bg": {}, "bind": {}, "builtin": {}, "cd": {}, "command": {},
+	"compgen": {}, "complete": {}, "declare": {}, "dirs": {}, "disown": {}, "enable": {},
+	"eval": {}, "exec": {}, "export": {}, "fc": {}, "fg": {}, "getopts": {}, "hash": {},
+	"help": {}, "history": {}, "jobs": {}, "local": {}, "logout": {}, "popd": {},
+	"pushd": {}, "read": {}, "readonly": {}, "return": {}, "set": {}, "shift": {},
+	"shopt": {}, "source": {}, "suspend": {}, "times": {}, "trap": {}, "typeset": {},
+	"ulimit": {}, "umask": {}, "unalias": {}, "unset": {}, "wait": {},
+}
+
 type AskUserOption struct {
 	Label string
 	Value string
@@ -801,6 +821,17 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 	}
 
 	args := stringSlice(arguments["args"])
+	commandName, args, rawCommand = normalizeLegacyCommandField(commandName, args, workingDirectory, runtime.GOOS)
+	if rawCommand != "" {
+		return commandArguments{
+			Mode:             "shell",
+			RawCommand:       rawCommand,
+			WorkingDirectory: workingDirectory,
+			Timeout:          timeout,
+			EnvOverrides:     envOverrides,
+			ExpectJSON:       argumentBool(arguments, "expectJson", "expect_json"),
+		}, nil
+	}
 	return commandArguments{
 		Mode:             "exec",
 		Command:          commandName,
@@ -814,6 +845,211 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 
 func defaultCommandTimeoutSeconds(config internalconfig.Config) int {
 	return internalconfig.NormalizeCommandTimeoutSeconds(config.CommandTimeoutSeconds)
+}
+
+func normalizeLegacyCommandField(commandName string, args []string, workingDirectory string, goos string) (string, []string, string) {
+	trimmed := strings.TrimSpace(commandName)
+	if trimmed == "" || len(args) != 0 {
+		return trimmed, args, ""
+	}
+	if looksLikeExecutablePath(trimmed, workingDirectory) {
+		return trimmed, nil, ""
+	}
+	if containsShellSyntax(trimmed, goos) {
+		return "", nil, trimmed
+	}
+	parsed, err := splitCommandLine(trimmed, goos)
+	if err != nil || len(parsed) == 0 {
+		return "", nil, trimmed
+	}
+	if isLikelyEnvAssignment(parsed[0]) || isShellBuiltinOnly(parsed[0], goos) {
+		return "", nil, trimmed
+	}
+	return parsed[0], parsed[1:], ""
+}
+
+func looksLikeExecutablePath(commandName string, workingDirectory string) bool {
+	trimmed := strings.TrimSpace(commandName)
+	if trimmed == "" {
+		return false
+	}
+
+	checkPath := ""
+	if filepath.IsAbs(trimmed) {
+		checkPath = trimmed
+	} else if strings.Contains(trimmed, string(filepath.Separator)) || strings.Contains(trimmed, "/") || strings.Contains(trimmed, `\\`) {
+		checkPath = filepath.Join(workingDirectory, trimmed)
+	}
+	if checkPath == "" {
+		return false
+	}
+
+	info, err := os.Stat(checkPath)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
+func containsShellSyntax(command string, goos string) bool {
+	inSingleQuotes := false
+	inDoubleQuotes := false
+	escaped := false
+	for _, char := range command {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inSingleQuotes {
+			if char == '\'' {
+				inSingleQuotes = false
+			}
+			continue
+		}
+		if inDoubleQuotes {
+			switch char {
+			case '"':
+				inDoubleQuotes = false
+			case '\\':
+				if goos != "windows" {
+					escaped = true
+				}
+			}
+			continue
+		}
+
+		switch char {
+		case '\'':
+			inSingleQuotes = true
+		case '"':
+			inDoubleQuotes = true
+		case '|', '&', ';', '<', '>', '(', ')', '$', '`', '*', '?', '[', ']', '{', '}', '!', '\n', '\r':
+			return true
+		case '%', '^':
+			if goos == "windows" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func splitCommandLine(command string, goos string) ([]string, error) {
+	var fields []string
+	var current strings.Builder
+	tokenStarted := false
+	inSingleQuotes := false
+	inDoubleQuotes := false
+	runes := []rune(command)
+
+	flush := func() {
+		if !tokenStarted {
+			return
+		}
+		fields = append(fields, current.String())
+		current.Reset()
+		tokenStarted = false
+	}
+
+	for index := 0; index < len(runes); index++ {
+		char := runes[index]
+		if inSingleQuotes {
+			if char == '\'' {
+				inSingleQuotes = false
+				continue
+			}
+			current.WriteRune(char)
+			tokenStarted = true
+			continue
+		}
+		if inDoubleQuotes {
+			switch char {
+			case '"':
+				inDoubleQuotes = false
+			case '\\':
+				if goos == "windows" {
+					if index+1 < len(runes) && (runes[index+1] == '"' || runes[index+1] == '\\') {
+						current.WriteRune(runes[index+1])
+						index++
+					} else {
+						current.WriteRune(char)
+					}
+				} else if index+1 < len(runes) {
+					current.WriteRune(runes[index+1])
+					index++
+				} else {
+					current.WriteRune(char)
+				}
+			default:
+				current.WriteRune(char)
+			}
+			tokenStarted = true
+			continue
+		}
+
+		switch char {
+		case '\'', '"':
+			tokenStarted = true
+			if char == '\'' {
+				inSingleQuotes = true
+			} else {
+				inDoubleQuotes = true
+			}
+		case ' ', '\t', '\n', '\r':
+			flush()
+		case '\\':
+			tokenStarted = true
+			if goos != "windows" && index+1 < len(runes) {
+				current.WriteRune(runes[index+1])
+				index++
+			} else {
+				current.WriteRune(char)
+			}
+		default:
+			current.WriteRune(char)
+			tokenStarted = true
+		}
+	}
+
+	if inSingleQuotes || inDoubleQuotes {
+		return nil, fmt.Errorf("命令包含未闭合的引号")
+	}
+	flush()
+	return fields, nil
+}
+
+func isShellBuiltinOnly(commandName string, goos string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(commandName))
+	if normalized == "" {
+		return false
+	}
+	if goos == "windows" {
+		_, exists := windowsShellBuiltins[normalized]
+		return exists
+	}
+	_, exists := posixShellOnlyBuiltins[normalized]
+	return exists
+}
+
+func isLikelyEnvAssignment(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	separator := strings.IndexRune(token, '=')
+	if separator <= 0 {
+		return false
+	}
+	for index, char := range token[:separator] {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || char == '_' {
+			continue
+		}
+		if index > 0 && char >= '0' && char <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func buildCommand(ctx context.Context, payload commandArguments) (*exec.Cmd, error) {

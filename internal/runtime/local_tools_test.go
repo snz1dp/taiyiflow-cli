@@ -204,7 +204,7 @@ func TestFileEditToolDefinitionMentionsRetryHintReuse(t *testing.T) {
 	t.Fatal("expected file_edit tool definition")
 }
 
-func TestShellExecToolDefinitionKeepsOnlyBasicExecutionSummary(t *testing.T) {
+func TestShellExecToolDefinitionIncludesPlatformGuidanceAndExamples(t *testing.T) {
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	definitions := runtimeClient.clientToolDefinitionsForMode("agent")
 	for _, item := range definitions {
@@ -216,10 +216,22 @@ func TestShellExecToolDefinitionKeepsOnlyBasicExecutionSummary(t *testing.T) {
 		if !strings.Contains(description, "前台执行") || !strings.Contains(description, "后台任务句柄") {
 			t.Fatalf("expected shell_exec description to keep basic execution summary, got %q", description)
 		}
-		for _, unexpected := range []string{"当前 OS", "command + args", "rawCommand", "fork/exec ... not supported"} {
-			if strings.Contains(description, unexpected) {
-				t.Fatalf("expected shell_exec description to omit %q, got %q", unexpected, description)
+		for _, expected := range []string{"当前 OS:", "按当前 OS 选择命令", "command + args", "rawCommand", CurrentShellExecCommandArgsExample(), CurrentShellExecRawCommandExample()} {
+			if !strings.Contains(description, expected) {
+				t.Fatalf("expected shell_exec description to contain %q, got %q", expected, description)
 			}
+		}
+		inputSchema, _ := item["inputSchema"].(map[string]any)
+		properties, _ := inputSchema["properties"].(map[string]any)
+		commandSchema, _ := properties["command"].(map[string]any)
+		commandDescription, _ := commandSchema["description"].(string)
+		if !strings.Contains(commandDescription, "不要把整条命令塞进 command") || !strings.Contains(commandDescription, CurrentShellExecCommandArgsExample()) {
+			t.Fatalf("expected command schema to include structured example, got %q", commandDescription)
+		}
+		rawCommandSchema, _ := properties["rawCommand"].(map[string]any)
+		rawCommandDescription, _ := rawCommandSchema["description"].(string)
+		if !strings.Contains(rawCommandDescription, CurrentShellExecRawCommandExample()) {
+			t.Fatalf("expected rawCommand schema to include shell example, got %q", rawCommandDescription)
 		}
 		return
 	}
