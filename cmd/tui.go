@@ -355,9 +355,6 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				}
 				emit(eventToEmit)
 			}
-			if summary := loadLatestSearchResultsSummary(runCtx, callbackProvider, currentFlow, sessionState.SessionID); summary != "" {
-				emit(tui.Event{Kind: tui.EventSystemNote, Text: summary})
-			}
 			if retryRequested {
 				continue
 			}
