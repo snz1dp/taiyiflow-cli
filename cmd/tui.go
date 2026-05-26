@@ -704,27 +704,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		case trimmed == "!":
 			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "! 用法: !<shell 命令>"}}}, nil
 		case strings.HasPrefix(trimmed, "!"):
-			rawCommand := strings.TrimSpace(strings.TrimPrefix(trimmed, "!"))
-			if rawCommand == "" {
-				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "! 用法: !<shell 命令>"}}}, nil
-			}
-			localConfig, err := a.configManager.Load()
-			if err != nil {
-				return tui.LocalCommandResult{}, err
-			}
-			effectiveConfig := localConfig
-			if flowID := strings.TrimSpace(snapshot.DefaultFlow); flowID != "" {
-				sessionState, sessionErr := a.prepareSession(flowID, false, snapshot.Workdir, snapshot.RequestMode)
-				if sessionErr == nil {
-					effectiveConfig = applyEffectiveSandboxEscapePolicy(localConfig, sessionState.SandboxEscapePolicyOverride, "")
-				}
-			}
-			runtimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), io.Discard, io.Discard)
-			result, err := runtimeClient.ExecuteShellCommand(commandCtx, effectiveConfig, rawCommand)
-			if err != nil {
-				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
-			}
-			return tui.LocalCommandResult{Handled: true, Events: buildLocalShellCommandEvents(rawCommand, result)}, nil
+			return a.executeTUILocalShellCommand(commandCtx, trimmed, snapshot)
 		case trimmed == "/clear":
 			return tui.LocalCommandResult{Handled: true, ClearHistory: true}, nil
 		case strings.EqualFold(trimmed, "/session") || strings.HasPrefix(strings.ToLower(trimmed), "/session "):
@@ -1047,6 +1027,172 @@ func buildLocalShellCommandEvents(command string, result map[string]any) []tui.E
 		}
 	}
 	return events
+}
+
+func (a *App) executeTUILocalShellCommand(ctx context.Context, command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
+	rawCommand := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(command), "!"))
+	if rawCommand == "" {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "! 用法: !<shell 命令>"}}}, nil
+	}
+	localConfig, err := a.configManager.Load()
+	if err != nil {
+		return tui.LocalCommandResult{}, err
+	}
+	effectiveConfig := localConfig
+	if flowID := strings.TrimSpace(snapshot.DefaultFlow); flowID != "" {
+		sessionState, sessionErr := a.prepareSession(flowID, false, snapshot.Workdir, snapshot.RequestMode)
+		if sessionErr == nil {
+			effectiveConfig = applyEffectiveSandboxEscapePolicy(localConfig, sessionState.SandboxEscapePolicyOverride, "")
+		}
+	}
+	mode, detail := classifyTUILocalShellCommand(rawCommand)
+	switch mode {
+	case tuiLocalShellModeBackground:
+		return executeTUILocalShellTask(ctx, effectiveConfig, rawCommand, detail)
+	case tuiLocalShellModeUnsupported:
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: detail}}}, nil
+	default:
+		runtimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), io.Discard, io.Discard)
+		result, execErr := runtimeClient.ExecuteShellCommand(ctx, effectiveConfig, rawCommand)
+		if execErr != nil {
+			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: execErr.Error()}}}, nil
+		}
+		return tui.LocalCommandResult{Handled: true, Events: buildLocalShellCommandEvents(rawCommand, result)}, nil
+	}
+}
+
+type tuiLocalShellMode string
+
+const (
+	tuiLocalShellModeForeground  tuiLocalShellMode = "foreground"
+	tuiLocalShellModeBackground  tuiLocalShellMode = "background"
+	tuiLocalShellModeUnsupported tuiLocalShellMode = "unsupported"
+)
+
+func classifyTUILocalShellCommand(rawCommand string) (tuiLocalShellMode, string) {
+	trimmed := strings.TrimSpace(rawCommand)
+	if trimmed == "" {
+		return tuiLocalShellModeForeground, ""
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return tuiLocalShellModeForeground, ""
+	}
+	commandName := strings.ToLower(strings.TrimSpace(fields[0]))
+	if commandName == "tail" && tailFollowModeRequested(fields[1:]) {
+		return tuiLocalShellModeBackground, "follow"
+	}
+	if isTUIInteractiveShellCommand(commandName) {
+		return tuiLocalShellModeUnsupported, fmt.Sprintf("TUI 的 ! 仅支持会自行结束的非交互命令；%s 需要交互终端，请改在系统终端执行。", commandName)
+	}
+	return tuiLocalShellModeForeground, ""
+}
+
+func tailFollowModeRequested(args []string) bool {
+	for _, arg := range args {
+		trimmed := strings.TrimSpace(arg)
+		if trimmed == "" || trimmed == "--" {
+			continue
+		}
+		if trimmed == "--follow" || strings.HasPrefix(trimmed, "--follow=") {
+			return true
+		}
+		if !strings.HasPrefix(trimmed, "-") {
+			continue
+		}
+		if trimmed == "-f" || trimmed == "-F" {
+			return true
+		}
+		for _, char := range trimmed[1:] {
+			if char == 'f' || char == 'F' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isTUIInteractiveShellCommand(commandName string) bool {
+	_, ok := tuiInteractiveShellCommands[strings.ToLower(strings.TrimSpace(commandName))]
+	return ok
+}
+
+var tuiInteractiveShellCommands = map[string]struct{}{
+	"htop":   {},
+	"less":   {},
+	"man":    {},
+	"more":   {},
+	"nano":   {},
+	"screen": {},
+	"ssh":    {},
+	"tailf":  {},
+	"tmux":   {},
+	"top":    {},
+	"vi":     {},
+	"view":   {},
+	"vim":    {},
+	"watch":  {},
+}
+
+func executeTUILocalShellTask(ctx context.Context, config internalconfig.Config, rawCommand string, reason string) (tui.LocalCommandResult, error) {
+	runtimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), io.Discard, io.Discard)
+	toolName, resultAny, err := runtimeClient.ExecuteClientToolPayload(ctx, config, buildLocalToolPayload("shell_exec", map[string]any{
+		"rawCommand": rawCommand,
+		"background": true,
+		"taskName":   buildTUILocalShellTaskName(rawCommand),
+	}))
+	if err != nil {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
+	}
+	resultMap, _ := resultAny.(map[string]any)
+	if resultMap == nil {
+		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "后台任务已启动，但返回结果无法解析。"}}}, nil
+	}
+	taskID := strings.TrimSpace(stringMapValue(resultMap, "task_id"))
+	status := fallbackString(stringMapValue(resultMap, "status"), "running")
+	message := fmt.Sprintf("! %s\n已转为后台任务执行（%s）。", strings.TrimSpace(rawCommand), status)
+	if taskID != "" {
+		message += fmt.Sprintf(" task_id: %s\n可用 /tasks output %s 查看输出，或 /tasks capture %s 持续读取。", taskID, taskID, taskID)
+	}
+	if reason == "follow" {
+		message += "\n检测到 follow 模式；为避免 TUI 前台阻塞，已自动切到后台任务。"
+	}
+	panel := buildTUILocalShellTaskPanel(toolName, rawCommand, resultMap)
+	events := []tui.Event{{Kind: tui.EventSystemNote, Text: message}}
+	if panel != nil {
+		events = append(events, tui.Event{Kind: tui.EventToolPanel, Panel: panel})
+	}
+	return tui.LocalCommandResult{Handled: true, Events: events}, nil
+}
+
+func buildTUILocalShellTaskPanel(toolName string, rawCommand string, resultMap map[string]any) *tui.ToolPanel {
+	if len(resultMap) == 0 {
+		return nil
+	}
+	taskID := fallbackString(stringMapValue(resultMap, "task_id"), "<unknown>")
+	status := fallbackString(stringMapValue(resultMap, "status"), "unknown")
+	lines := []string{fmt.Sprintf("命令: %s", strings.TrimSpace(rawCommand))}
+	if cwd := strings.TrimSpace(stringMapValue(resultMap, "cwd")); cwd != "" {
+		lines = append(lines, "cwd: "+cwd)
+	}
+	lines = append(lines, "task_id: "+taskID)
+	return &tui.ToolPanel{
+		Title:   "后台任务(" + strings.TrimSpace(toolName) + ")",
+		Summary: fmt.Sprintf("%s · %s", taskID, status),
+		Body:    strings.Join(lines, "\n"),
+		Hint:    "可用 /tasks output <task_id> 查看输出，/tasks capture <task_id> 持续读取，或 /tasks stop <task_id> 停止任务。",
+	}
+}
+
+func buildTUILocalShellTaskName(rawCommand string) string {
+	trimmed := strings.TrimSpace(rawCommand)
+	if trimmed == "" {
+		return "TUI 本地命令"
+	}
+	if len(trimmed) > 48 {
+		trimmed = trimmed[:48] + "..."
+	}
+	return "TUI ! " + trimmed
 }
 
 func resolveFlowLabel(flowID string, fromSnapshot string, fromCache string) string {

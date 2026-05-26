@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
@@ -364,6 +365,100 @@ func TestExecuteTUISkillsPickerRemoveLocalDetailRefreshesPickerAndClosesPanel(t 
 	}
 	if len(result.SkillsPicker.RemoteItems) != 1 || result.SkillsPicker.RemoteItems[0].Installed {
 		t.Fatalf("expected remote entry to become uninstalled, got %#v", result.SkillsPicker.RemoteItems)
+	}
+}
+
+func TestExecuteTUILocalShellCommandAutoBackgroundsTailFollow(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.Workdir = t.TempDir()
+	config.ApprovalMode = "auto"
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	app := &App{configManager: manager}
+
+	result, execErr := app.executeTUILocalShellCommand(context.Background(), "!tail -f /dev/null", internaltui.Snapshot{})
+	if execErr != nil {
+		t.Fatalf("executeTUILocalShellCommand failed: %v", execErr)
+	}
+	if !result.Handled {
+		t.Fatalf("expected local shell command to be handled, got %#v", result)
+	}
+	if len(result.Events) < 2 {
+		t.Fatalf("expected note and task panel events, got %#v", result.Events)
+	}
+	if !strings.Contains(result.Events[0].Text, "已转为后台任务执行") {
+		t.Fatalf("expected background task note, got %#v", result.Events[0])
+	}
+	if !strings.Contains(result.Events[0].Text, "follow 模式") {
+		t.Fatalf("expected follow-mode explanation, got %#v", result.Events[0])
+	}
+	if result.Events[1].Panel == nil {
+		t.Fatalf("expected task panel event, got %#v", result.Events)
+	}
+	panel := result.Events[1].Panel
+	if !strings.Contains(panel.Title, "后台任务") {
+		t.Fatalf("expected task panel title, got %#v", panel)
+	}
+	taskID := strings.TrimSpace(strings.SplitN(panel.Summary, " · ", 2)[0])
+	if taskID == "" || taskID == "<unknown>" {
+		t.Fatalf("expected concrete task id, got %#v", panel)
+	}
+	output, tasksPanel, outputErr := app.executeTasksSlashCommand(context.Background(), config, "/tasks")
+	if outputErr != nil {
+		t.Fatalf("expected /tasks to list background task, got %v", outputErr)
+	}
+	if tasksPanel == nil || !strings.Contains(tasksPanel.Body, taskID) {
+		t.Fatalf("expected /tasks to include task id %q, output=%q panel=%#v", taskID, output, tasksPanel)
+	}
+	if _, _, stopErr := runLocalUserTool(context.Background(), config, "task_stop", map[string]any{"task_id": taskID}); stopErr != nil {
+		t.Fatalf("expected task_stop to succeed, got %v", stopErr)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_, detailsAny, detailsErr := runLocalReadTool(context.Background(), config, "task_output", map[string]any{"task_id": taskID})
+		if detailsErr != nil {
+			t.Fatalf("expected task_output to succeed, got %v", detailsErr)
+		}
+		details, _ := detailsAny.(map[string]any)
+		if strings.TrimSpace(stringMapValue(details, "status")) != "running" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("expected background task %s to stop within deadline", taskID)
+}
+
+func TestExecuteTUILocalShellCommandRejectsInteractiveTTYCommand(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.Workdir = t.TempDir()
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	app := &App{configManager: manager}
+
+	result, execErr := app.executeTUILocalShellCommand(context.Background(), "!vim README.md", internaltui.Snapshot{})
+	if execErr != nil {
+		t.Fatalf("executeTUILocalShellCommand failed: %v", execErr)
+	}
+	if !result.Handled || len(result.Events) != 1 {
+		t.Fatalf("expected one handled error event, got %#v", result)
+	}
+	if result.Events[0].Kind != internaltui.EventErrorNote {
+		t.Fatalf("expected error note, got %#v", result.Events[0])
+	}
+	if !strings.Contains(result.Events[0].Text, "需要交互终端") {
+		t.Fatalf("expected interactive terminal guidance, got %#v", result.Events[0])
 	}
 }
 
