@@ -656,8 +656,12 @@ func (r *ClientRuntime) runCommand(
 
 	command.Dir = payload.WorkingDirectory
 	command.Env = mergeEnv(payload.EnvOverrides)
-	if r.stdin != nil {
-		command.Stdin = r.stdin
+	stdin, err := r.resolveCommandStdin(ctx, payload)
+	if err != nil {
+		return nil, err
+	}
+	if stdin != nil {
+		command.Stdin = stdin
 	}
 	auditPayload := map[string]any{
 		"command": commandPreview(arguments),
@@ -809,6 +813,9 @@ type commandArguments struct {
 	RawCommand       string
 	Command          string
 	Args             []string
+	HasStdin         bool
+	Stdin            string
+	StdinPrompt      string
 	WorkingDirectory string
 	Timeout          int
 	EnvOverrides     map[string]string
@@ -848,12 +855,21 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 	if err != nil {
 		return commandArguments{}, err
 	}
+	rawStdin, hasStdin := firstArgument(arguments, "stdin")
+	stdin := ""
+	if hasStdin {
+		stdin = stringValue(rawStdin)
+	}
+	stdinPrompt := argumentString(arguments, "stdinPrompt", "stdin_prompt")
 
-	rawCommand := argumentString(arguments, "rawCommand", "raw_command")
+	rawCommand := normalizeTransportEscapes(argumentString(arguments, "rawCommand", "raw_command"))
 	if rawCommand != "" {
 		return commandArguments{
 			Mode:             "shell",
 			RawCommand:       rawCommand,
+			HasStdin:         hasStdin,
+			Stdin:            stdin,
+			StdinPrompt:      stdinPrompt,
 			WorkingDirectory: workingDirectory,
 			Timeout:          timeout,
 			EnvOverrides:     envOverrides,
@@ -863,12 +879,12 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 		}, nil
 	}
 
-	commandName := strings.TrimSpace(stringValue(arguments["command"]))
+	commandName := strings.TrimSpace(normalizeTransportEscapes(stringValue(arguments["command"])))
 	if commandName == "" {
 		return commandArguments{}, fmt.Errorf("command 或 raw_command 至少需要提供一个")
 	}
 
-	args := stringSlice(arguments["args"])
+	args := normalizeTransportEscapedArgs(stringSlice(arguments["args"]))
 	commandName, args, rawCommand = normalizeLegacyCommandField(commandName, args, workingDirectory, runtime.GOOS)
 	if rawCommand == "" {
 		commandName, args, rawCommand = normalizeStructuredCommandField(commandName, args, runtime.GOOS)
@@ -877,6 +893,9 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 		return commandArguments{
 			Mode:             "shell",
 			RawCommand:       rawCommand,
+			HasStdin:         hasStdin,
+			Stdin:            stdin,
+			StdinPrompt:      stdinPrompt,
 			WorkingDirectory: workingDirectory,
 			Timeout:          timeout,
 			EnvOverrides:     envOverrides,
@@ -889,6 +908,9 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 		Mode:             "exec",
 		Command:          commandName,
 		Args:             args,
+		HasStdin:         hasStdin,
+		Stdin:            stdin,
+		StdinPrompt:      stdinPrompt,
 		WorkingDirectory: workingDirectory,
 		Timeout:          timeout,
 		EnvOverrides:     envOverrides,
@@ -939,6 +961,88 @@ func resolveSourceSkillEnv(config internalconfig.Config, sourceSkill string, env
 	}
 	sort.Strings(injectedEnvKeys)
 	return item.Name, merged, injectedEnvKeys, nil
+}
+
+func (r *ClientRuntime) resolveCommandStdin(ctx context.Context, payload commandArguments) (io.Reader, error) {
+	if payload.HasStdin {
+		return strings.NewReader(payload.Stdin), nil
+	}
+	if strings.TrimSpace(payload.StdinPrompt) != "" {
+		response, err := r.promptAskUser(ctx, AskUserRequest{
+			Questions: []AskUserQuestion{{
+				Name:        "stdin",
+				Label:       payload.StdinPrompt,
+				InputFormat: "text",
+			}},
+		})
+		if err != nil {
+			return nil, err
+		}
+		stdin := stringValue(response.Answers["stdin"])
+		if !strings.HasSuffix(stdin, "\n") {
+			stdin += "\n"
+		}
+		return strings.NewReader(stdin), nil
+	}
+	if r.stdin != nil {
+		return r.stdin, nil
+	}
+	return nil, nil
+}
+
+func normalizeTransportEscapedArgs(args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	normalized := make([]string, 0, len(args))
+	for _, arg := range args {
+		normalized = append(normalized, normalizeTransportEscapes(arg))
+	}
+	return normalized
+}
+
+func normalizeTransportEscapes(value string) string {
+	if !strings.Contains(value, `\`) {
+		return value
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(value))
+	changed := false
+	for index := 0; index < len(value); index++ {
+		char := value[index]
+		if char != '\\' || index+1 >= len(value) {
+			builder.WriteByte(char)
+			continue
+		}
+
+		next := value[index+1]
+		switch next {
+		case '\\', '"', '\'':
+			builder.WriteByte(next)
+			index++
+			changed = true
+		case 'n':
+			builder.WriteByte('\n')
+			index++
+			changed = true
+		case 'r':
+			builder.WriteByte('\r')
+			index++
+			changed = true
+		case 't':
+			builder.WriteByte('\t')
+			index++
+			changed = true
+		default:
+			// 保留 \$ 等非传输层转义，避免改变 shell 语义。
+			builder.WriteByte(char)
+		}
+	}
+	if !changed {
+		return value
+	}
+	return builder.String()
 }
 
 func normalizeStructuredCommandField(commandName string, args []string, goos string) (string, []string, string) {

@@ -835,6 +835,45 @@ func TestRunCommandForwardsStdinToChildProcess(t *testing.T) {
 	}
 }
 
+func TestRunCommandUsesPromptedStdinToChildProcess(t *testing.T) {
+	if os.Getenv("TAIYIFLOW_HELPER_PROCESS") == "stdin-echo" {
+		content, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			_, _ = os.Stderr.WriteString(err.Error())
+			os.Exit(1)
+		}
+		_, _ = os.Stdout.Write(content)
+		os.Exit(0)
+	}
+
+	runtimeClient := NewClientRuntime(strings.NewReader("host stdin should not be used\n"), io.Discard, io.Discard)
+	runtimeClient.SetAskUserPrompter(func(ctx context.Context, request AskUserRequest) (AskUserResponse, error) {
+		if len(request.Questions) != 1 {
+			t.Fatalf("expected one stdin question, got %#v", request.Questions)
+		}
+		if got := request.Questions[0].Label; got != "请输入命令所需输入" {
+			t.Fatalf("unexpected stdin prompt label: %q", got)
+		}
+		return AskUserResponse{Answers: map[string]any{"stdin": "input from overlay"}}, nil
+	})
+	config := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
+
+	result, err := runtimeClient.runCommand(context.Background(), config, map[string]any{
+		"command":      os.Args[0],
+		"args":         []string{"-test.run=TestRunCommandUsesPromptedStdinToChildProcess$"},
+		"stdin_prompt": "请输入命令所需输入",
+		"env": map[string]string{
+			"TAIYIFLOW_HELPER_PROCESS": "stdin-echo",
+		},
+	})
+	if err != nil {
+		t.Fatalf("run command failed: %v", err)
+	}
+	if got := stringValue(result["stdout"]); got != "input from overlay\n" {
+		t.Fatalf("expected child process to receive prompted stdin, got %q", got)
+	}
+}
+
 func TestPermissionRuleDeniesMutatingClientTool(t *testing.T) {
 	tempDir := t.TempDir()
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)

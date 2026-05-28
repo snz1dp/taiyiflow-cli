@@ -123,7 +123,7 @@ func CurrentShellExecRawCommandExample() string {
 
 func shellExecToolDescription() string {
 	return fmt.Sprintf(
-		"执行结构化本地 Shell 命令，支持前台执行或后台任务句柄返回。当前 OS: %s/%s。按当前 OS 选择命令，不要假设 Linux、macOS、Windows 的命令语义等价。优先使用 command + args，不要把整条命令塞进 command；示例: %s。只有需要管道、重定向或 shell 内建命令时才使用 rawCommand；示例: %s。",
+		"执行结构化本地 Shell 命令，支持前台执行或后台任务句柄返回。当前 OS: %s/%s。按当前 OS 选择命令，不要假设 Linux、macOS、Windows 的命令语义等价。优先使用 command + args，不要把整条命令塞进 command；示例: %s。只有需要管道、重定向或 shell 内建命令时才使用 rawCommand；示例: %s。需要命令输入时，优先显式提供 stdin；若希望客户端在执行前向用户收集输入，可提供 stdin_prompt。",
 		runtime.GOOS,
 		runtime.GOARCH,
 		CurrentShellExecCommandArgsExample(),
@@ -274,6 +274,8 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 					"workingDirectory": map[string]any{"type": "string", "description": "命令工作目录，默认当前工作目录。"},
 					"timeout":          map[string]any{"type": "integer", "minimum": 1, "maximum": internalconfig.MaxCommandTimeoutSeconds},
 					"env":              map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+					"stdin":            map[string]any{"type": "string", "description": "可选标准输入(stdin)内容；提供后会直接送给子进程，而不是复用宿主输入流。"},
+					"stdinPrompt":      map[string]any{"type": "string", "description": "可选输入提示；当未显式提供 stdin 时，客户端会先向用户收集一行输入，再把该内容写入子进程 stdin。"},
 					"source_skill":     map[string]any{"type": "string", "description": "可选技能名称；提供后会按该 skill metadata.requires.env 自动补齐允许的环境变量。"},
 					"expectJson":       map[string]any{"type": "boolean"},
 					"background":       map[string]any{"type": "boolean", "description": "为 true 时转为后台任务并返回 task_id。"},

@@ -73,7 +73,7 @@ func (r *ClientRuntime) shellExec(
 		result["mode"] = "foreground"
 		return result, nil
 	}
-	return sharedLocalTaskManager.startTask(r, config, arguments)
+	return sharedLocalTaskManager.startTask(ctx, r, config, arguments)
 }
 
 func (r *ClientRuntime) taskOutput(
@@ -116,6 +116,7 @@ func (r *ClientRuntime) terminalCapture(
 }
 
 func (m *localTaskManager) startTask(
+	ctx context.Context,
 	runtimeClient *ClientRuntime,
 	config internalconfig.Config,
 	arguments map[string]any,
@@ -138,6 +139,14 @@ func (m *localTaskManager) startTask(
 	}
 	command.Dir = payload.WorkingDirectory
 	command.Env = mergeEnv(payload.EnvOverrides)
+	stdin, err := runtimeClient.resolveCommandStdin(ctx, payload)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if stdin != nil {
+		command.Stdin = stdin
+	}
 
 	stdoutPipe, err := command.StdoutPipe()
 	if err != nil {

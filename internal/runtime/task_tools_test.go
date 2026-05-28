@@ -168,6 +168,52 @@ func TestNormalizeLegacyCommandFieldPreservesQuotedArguments(t *testing.T) {
 	}
 }
 
+func TestNormalizeCommandArgumentsToleratesTransportEscapedQuotes(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir()}
+
+	payload, err := runtimeClient.normalizeCommandArguments(map[string]any{
+		"command": `python -c \"print('ok')\"`,
+	}, configValue)
+	if err != nil {
+		t.Fatalf("normalizeCommandArguments failed: %v", err)
+	}
+	if payload.Mode != "exec" {
+		t.Fatalf("expected exec mode, got %#v", payload)
+	}
+	if payload.Command != "python" {
+		t.Fatalf("expected python command, got %#v", payload)
+	}
+	if len(payload.Args) != 2 || payload.Args[0] != "-c" || payload.Args[1] != "print('ok')" {
+		t.Fatalf("unexpected args: %#v", payload.Args)
+	}
+}
+
+func TestNormalizeTransportEscapesPreservesEscapedDollar(t *testing.T) {
+	if got := normalizeTransportEscapes(`printf \"%s\" \"\$HOME\"`); got != `printf "%s" "\$HOME"` {
+		t.Fatalf("unexpected normalized command: %q", got)
+	}
+}
+
+func TestShellExecRawCommandKeepsEscapedDollarLiteral(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell test uses POSIX shell")
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
+	t.Setenv("HOME", "/tmp/should-not-expand")
+
+	result, err := runtimeClient.shellExec(context.Background(), configValue, map[string]any{
+		"raw_command": `printf \"%s\" \"\$HOME\"`,
+	})
+	if err != nil {
+		t.Fatalf("shellExec failed: %v", err)
+	}
+	if got := strings.TrimSpace(stringValue(result["stdout"])); got != "$HOME" {
+		t.Fatalf("expected escaped dollar to remain literal, got %q", got)
+	}
+}
+
 func TestShellExecReceivesExplicitSensitiveEnvOverrides(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell test uses POSIX shell")
@@ -355,7 +401,7 @@ func TestTaskManagerRestoresPersistedTaskAcrossManagerInstances(t *testing.T) {
 	configValue.Skills.Directory = skillRoot
 	manager := newLocalTaskManager()
 
-	result, err := manager.startTask(runtimeClient, configValue, map[string]any{
+	result, err := manager.startTask(context.Background(), runtimeClient, configValue, map[string]any{
 		"raw_command":  "printf 'persisted task\\n'",
 		"background":   true,
 		"task_name":    "persisted-task",
