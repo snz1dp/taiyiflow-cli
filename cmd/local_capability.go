@@ -179,6 +179,11 @@ func (p *callbackAuthRefreshProvider) GetMetadata(ctx context.Context, flowID st
 }
 
 func (p *callbackAuthRefreshProvider) ResolveSkillPreview(ctx context.Context, request provider.SkillResolveRequest) (*provider.SkillResolvePreview, error) {
+	ensuredSessionID, ensureErr := clientruntime.EnsureSessionID(ctx, p, request.SessionID)
+	if ensureErr != nil {
+		return nil, ensureErr
+	}
+	request.SessionID = ensuredSessionID
 	preview, err := p.Provider.ResolveSkillPreview(ctx, request)
 	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
 	if refreshErr != nil {

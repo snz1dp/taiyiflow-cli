@@ -234,7 +234,7 @@ func TestGetRunStatsPollsCompressionRecordsUntilAvailable(t *testing.T) {
 		case backendAPIPath("/agents/flows/demo-flow/sessions/session-123/messages"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"total":1,"offset":0,"data":[{"id":"message-1","run_id":"run-123","token_usage":{"input_tokens":120,"output_tokens":40,"total_tokens":160}}]}`)
-		case backendAPIPath("/agents/dialogue/run-123/compressions"):
+		case backendAPIPath("/agents/flows/demo-flow/sessions/session-123/run/run-123/compressions"):
 			compressionRequests++
 			writer.Header().Set("Content-Type", "application/json")
 			if compressionRequests == 1 {
@@ -668,9 +668,9 @@ func TestGetCurrentUserInfoParsesResponse(t *testing.T) {
 }
 
 func TestResolveSkillPreviewPostsRequestAndParsesResponse(t *testing.T) {
-	var captured skillResolveRequestBody
+	var captured map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != backendAPIPath("/agents/skills/resolve") {
+		if request.URL.Path != backendAPIPath("/agents/flows/demo-flow/sessions/session-123/skills/resolve") {
 			http.NotFound(writer, request)
 			return
 		}
@@ -704,20 +704,28 @@ func TestResolveSkillPreviewPostsRequestAndParsesResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected resolve skill preview to succeed, got %v", err)
 	}
-	if captured.FlowID != "demo-flow" || captured.SessionID != "session-123" {
-		t.Fatalf("expected flow/session ids to be preserved, got %#v", captured)
+	if _, ok := captured["flow_id"]; ok {
+		t.Fatalf("expected request body to omit flow_id, got %#v", captured)
 	}
-	if captured.RequestType != provider.RequestTypeAgent {
-		t.Fatalf("expected normalized request type %q, got %q", provider.RequestTypeAgent, captured.RequestType)
+	if _, ok := captured["session_id"]; ok {
+		t.Fatalf("expected request body to omit session_id, got %#v", captured)
 	}
-	if captured.CommandExecutionTarget != "client" {
-		t.Fatalf("expected command target client, got %q", captured.CommandExecutionTarget)
+	if _, ok := captured["owner_user_id"]; ok {
+		t.Fatalf("expected request body to omit owner_user_id, got %#v", captured)
 	}
-	if len(captured.RequestedSkillNames) != 2 || captured.RequestedSkillNames[1] != "debug-helper" {
-		t.Fatalf("expected requested skill names to be preserved, got %#v", captured.RequestedSkillNames)
+	if captured["request_type"] != provider.RequestTypeAgent {
+		t.Fatalf("expected normalized request type %q, got %#v", provider.RequestTypeAgent, captured["request_type"])
 	}
-	if len(captured.AvailableTools) != 2 || captured.AvailableTools[0] != "shell_exec" {
-		t.Fatalf("expected available tools to be preserved, got %#v", captured.AvailableTools)
+	if captured["command_execution_target"] != "client" {
+		t.Fatalf("expected command target client, got %#v", captured["command_execution_target"])
+	}
+	requestedSkillNames, ok := captured["requested_skill_names"].([]any)
+	if !ok || len(requestedSkillNames) != 2 || requestedSkillNames[1] != "debug-helper" {
+		t.Fatalf("expected requested skill names to be preserved, got %#v", captured["requested_skill_names"])
+	}
+	availableTools, ok := captured["available_tools"].([]any)
+	if !ok || len(availableTools) != 2 || availableTools[0] != "shell_exec" {
+		t.Fatalf("expected available tools to be preserved, got %#v", captured["available_tools"])
 	}
 	if preview == nil {
 		t.Fatal("expected resolve preview response")

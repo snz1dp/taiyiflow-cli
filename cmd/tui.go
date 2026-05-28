@@ -3516,16 +3516,18 @@ func buildTUISkillsPicker(config internalconfig.Config, contextDir string, query
 			Category:       item.Category,
 			SourceLabel:    sourceDisplayLabel(item.Source),
 			StateLabel:     skillStateLabel(item, config),
+			Disabled:       containsNormalizedSkillName(config.Skills.Disabled, item.Name),
 			RootDir:        item.RootDir,
 			RelativeDir:    item.RelativeDir,
 			Restriction:    skillRestrictionNote(item.Name),
 			SkillMarkdown:  strings.TrimSpace(skills.Markdown(item)),
+			ToggleTarget:   removeTarget,
 			Removable:      removeTarget != "",
 			RemoveTarget:   removeTarget,
 			ReferenceFiles: referenceFiles,
 		})
 	}
-	hint := "使用方向键选择，Enter 查看详情，已安装项按 d 删除，Tab 切换标签，Esc 关闭。"
+	hint := "使用方向键选择，Enter 查看详情，已安装项按 x 禁用或恢复、按 d 删除，Tab 切换标签，Esc 关闭。"
 	if len(pickerItems) == 0 {
 		hint = "当前没有可展示的技能，Esc 关闭。"
 	}
@@ -3598,8 +3600,21 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 			args = args[1:]
 		}
 	}
-	buildPicker := func(query string) (tui.LocalCommandResult, error) {
-		picker, err := buildTUISkillsPicker(skillConfig, resolvedContextDir, query)
+	currentSkillConfig := func() internalconfig.Config {
+		current := skillConfig
+		if a.configManager != nil {
+			loaded, err := a.configManager.Load()
+			if err == nil {
+				current = loaded
+			}
+		}
+		if strings.TrimSpace(resolvedContextDir) != "" {
+			current.Workdir = resolvedContextDir
+		}
+		return current
+	}
+	buildRemotePicker := func(query string) (tui.LocalCommandResult, error) {
+		picker, err := buildTUISkillsPicker(currentSkillConfig(), resolvedContextDir, query)
 		if err != nil {
 			return tui.LocalCommandResult{}, err
 		}
@@ -3608,8 +3623,18 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 		}
 		return tui.LocalCommandResult{Handled: true, SkillsPicker: picker}, nil
 	}
+	buildLocalPicker := func(query string) (tui.LocalCommandResult, error) {
+		picker, err := buildTUISkillsPicker(currentSkillConfig(), resolvedContextDir, query)
+		if err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+		if picker != nil {
+			picker.ActiveTab = "local"
+		}
+		return tui.LocalCommandResult{Handled: true, SkillsPicker: picker}, nil
+	}
 	buildDetailResult := func(slug string, query string, note string) (tui.LocalCommandResult, error) {
-		result, err := buildPicker(query)
+		result, err := buildRemotePicker(query)
 		if err != nil {
 			return tui.LocalCommandResult{}, err
 		}
@@ -3638,6 +3663,26 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 			result.Events = append(result.Events, tui.Event{Kind: tui.EventSystemNote, Text: note})
 		}
 		result.Events = append(result.Events, tui.Event{Kind: tui.EventToolPanel, Panel: buildRemoteSkillPanel(panelItem, query)})
+		return result, nil
+	}
+	buildLocalDetailResult := func(target string, query string, note string) (tui.LocalCommandResult, error) {
+		result, err := buildLocalPicker(query)
+		if err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+		if note != "" {
+			result.Events = append(result.Events, tui.Event{Kind: tui.EventSystemNote, Text: note})
+		}
+		if result.SkillsPicker == nil {
+			return result, nil
+		}
+		for _, item := range result.SkillsPicker.Items {
+			if strings.EqualFold(strings.TrimSpace(item.ToggleTarget), strings.TrimSpace(target)) || strings.EqualFold(strings.TrimSpace(item.RemoveTarget), strings.TrimSpace(target)) {
+				result.Events = append(result.Events, tui.Event{Kind: tui.EventToolPanel, Panel: buildLocalSkillDetailPanel(item, query)})
+				return result, nil
+			}
+		}
+		result.Events = append(result.Events, tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("未找到已安装技能: %s", target)})
 		return result, nil
 	}
 	splitTargetAndQuery := func(values []string) (string, string, error) {
@@ -3679,7 +3724,7 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 		installConfig.Skills.InstallScope = internalconfig.NormalizeSkillInstallScope(scope)
 		resultData, installErr := skills.InstallRemote(installConfig, slug, "", false)
 		if installErr != nil {
-			result, pickerErr := buildPicker(query)
+			result, pickerErr := buildRemotePicker(query)
 			if pickerErr != nil {
 				return tui.LocalCommandResult{}, pickerErr
 			}
@@ -3703,7 +3748,7 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 		if reopenDetail {
 			return buildDetailResult(slug, query, note)
 		}
-		result, pickerErr := buildPicker(query)
+		result, pickerErr := buildRemotePicker(query)
 		if pickerErr != nil {
 			return tui.LocalCommandResult{}, pickerErr
 		}
@@ -3712,7 +3757,7 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 	}
 	executeLocalRemove := func(target string, query string, closeToolPanel bool) (tui.LocalCommandResult, error) {
 		output, commandErr := a.executeSkillsCommand([]string{"remove", target})
-		result, pickerErr := buildPicker(query)
+		result, pickerErr := buildLocalPicker(query)
 		if pickerErr != nil {
 			return tui.LocalCommandResult{}, pickerErr
 		}
@@ -3724,8 +3769,32 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 		result.Events = []tui.Event{{Kind: tui.EventSystemNote, Text: output}}
 		return result, nil
 	}
+	executeLocalToggle := func(target string, query string, enable bool, reopenDetail bool) (tui.LocalCommandResult, error) {
+		action := "disable"
+		if enable {
+			action = "enable"
+		}
+		output, commandErr := a.executeSkillsCommand([]string{action, target})
+		if commandErr != nil {
+			result, pickerErr := buildLocalPicker(query)
+			if pickerErr != nil {
+				return tui.LocalCommandResult{}, pickerErr
+			}
+			result.Events = []tui.Event{{Kind: tui.EventErrorNote, Text: commandErr.Error()}}
+			return result, nil
+		}
+		if reopenDetail {
+			return buildLocalDetailResult(target, query, output)
+		}
+		result, pickerErr := buildLocalPicker(query)
+		if pickerErr != nil {
+			return tui.LocalCommandResult{}, pickerErr
+		}
+		result.Events = []tui.Event{{Kind: tui.EventSystemNote, Text: output}}
+		return result, nil
+	}
 	buildInstallPromptResult := func(slug string, query string, reopenDetail bool) (tui.LocalCommandResult, error) {
-		result, err := buildPicker(query)
+		result, err := buildRemotePicker(query)
 		if err != nil {
 			return tui.LocalCommandResult{}, err
 		}
@@ -3735,7 +3804,7 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 	}
 	switch action {
 	case "open", "refresh", "search":
-		return buildPicker(strings.TrimSpace(strings.Join(args, " ")))
+		return buildRemotePicker(strings.TrimSpace(strings.Join(args, " ")))
 	case "detail":
 		slug, query, err := splitSlugAndQuery(args)
 		if err != nil {
@@ -3767,7 +3836,7 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 			return executeInstall(slug, a.resolveSkillInstallScope(skillConfig), false, false, query)
 		}
 		output, commandErr := a.executeSkillsCommand([]string{action, slug})
-		result, pickerErr := buildPicker(query)
+		result, pickerErr := buildRemotePicker(query)
 		if pickerErr != nil {
 			return tui.LocalCommandResult{}, pickerErr
 		}
@@ -3783,6 +3852,12 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 			return tui.LocalCommandResult{}, err
 		}
 		return executeLocalRemove(target, query, action == "remove-local-detail")
+	case "disable-local", "enable-local", "disable-local-detail", "enable-local-detail":
+		target, query, err := splitTargetAndQuery(args)
+		if err != nil {
+			return tui.LocalCommandResult{}, err
+		}
+		return executeLocalToggle(target, query, strings.HasPrefix(action, "enable"), strings.HasSuffix(action, "-detail"))
 	case "install-detail", "update-detail", "remove-detail":
 		slug, query, err := splitSlugAndQuery(args)
 		if err != nil {
@@ -3794,7 +3869,7 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 		}
 		output, commandErr := a.executeSkillsCommand([]string{baseAction, slug})
 		if commandErr != nil {
-			result, pickerErr := buildPicker(query)
+			result, pickerErr := buildRemotePicker(query)
 			if pickerErr != nil {
 				return tui.LocalCommandResult{}, pickerErr
 			}
@@ -3890,6 +3965,65 @@ func buildRemoteSkillPanel(item tui.RemoteSkillItem, query string) *tui.ToolPane
 			{Key: "u", Label: "更新", Command: buildHiddenSkillsPickerCommand("update-detail", item.Slug, query), Disabled: !item.Installed},
 			{Key: "d", Label: "删除", Command: buildHiddenSkillsPickerCommand("remove-detail", item.Slug, query), Disabled: !item.Installed},
 		},
+	}
+}
+
+func buildLocalSkillDetailPanel(item tui.SkillItem, query string) *tui.ToolPanel {
+	body := []string{
+		fmt.Sprintf("名称: %s", item.Name),
+		fmt.Sprintf("来源: %s", firstNonEmpty(strings.TrimSpace(item.SourceLabel), "<未填写>")),
+		fmt.Sprintf("状态: %s", firstNonEmpty(strings.TrimSpace(item.StateLabel), "<未填写>")),
+	}
+	if strings.TrimSpace(item.Category) != "" {
+		body = append(body, fmt.Sprintf("分类: %s", item.Category))
+	}
+	if strings.TrimSpace(item.RootDir) != "" {
+		body = append(body, fmt.Sprintf("根目录: %s", item.RootDir))
+	}
+	if strings.TrimSpace(item.RelativeDir) != "" {
+		body = append(body, fmt.Sprintf("相对目录: %s", item.RelativeDir))
+	}
+	if strings.TrimSpace(item.Restriction) != "" {
+		body = append(body, fmt.Sprintf("能力标记: %s", item.Restriction))
+	}
+	if strings.TrimSpace(item.SkillMarkdown) != "" {
+		body = append(body, "", "SKILL.md 内容:", strings.TrimSpace(item.SkillMarkdown))
+	}
+	if len(item.ReferenceFiles) > 0 {
+		body = append(body, "", "参考文件:")
+		for _, file := range item.ReferenceFiles {
+			line := "- " + firstNonEmpty(strings.TrimSpace(file.Path), "<未填写>")
+			if strings.TrimSpace(file.Description) != "" {
+				line += " - " + strings.TrimSpace(file.Description)
+			}
+			body = append(body, line)
+		}
+	}
+	actions := []tui.ToolPanelAction{}
+	if strings.TrimSpace(item.ToggleTarget) != "" {
+		toggleAction := tui.ToolPanelAction{
+			Key:     "x",
+			Label:   "禁用",
+			Command: buildHiddenSkillsPickerCommand("disable-local-detail", item.ToggleTarget, query),
+		}
+		if item.Disabled {
+			toggleAction.Label = "恢复候选"
+			toggleAction.Command = buildHiddenSkillsPickerCommand("enable-local-detail", item.ToggleTarget, query)
+		}
+		actions = append(actions, toggleAction)
+	}
+	actions = append(actions, tui.ToolPanelAction{
+		Key:      "d",
+		Label:    "删除",
+		Command:  buildHiddenSkillsPickerCommand("remove-local-detail", item.RemoveTarget, query),
+		Disabled: !item.Removable || strings.TrimSpace(item.RemoveTarget) == "",
+	})
+	return &tui.ToolPanel{
+		Title:   fmt.Sprintf("技能详情｜%s", item.Name),
+		Summary: firstNonEmpty(strings.TrimSpace(item.Description), "当前技能没有额外说明。"),
+		Body:    strings.Join(body, "\n"),
+		Hint:    "Esc 关闭详情面板。",
+		Actions: actions,
 	}
 }
 

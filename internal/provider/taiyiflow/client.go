@@ -321,9 +321,6 @@ type sessionContextPreviewResponse struct {
 }
 
 type skillResolveRequestBody struct {
-	FlowID                 string   `json:"flow_id,omitempty"`
-	SessionID              string   `json:"session_id,omitempty"`
-	OwnerUserID            string   `json:"owner_user_id,omitempty"`
 	RequestType            string   `json:"request_type,omitempty"`
 	RuntimeStrategy        string   `json:"runtime_strategy,omitempty"`
 	CommandExecutionTarget string   `json:"command_execution_target,omitempty"`
@@ -1085,10 +1082,15 @@ func (c *Client) GetMetadata(ctx context.Context, flowID string) (*provider.Meta
 }
 
 func (c *Client) ResolveSkillPreview(ctx context.Context, request provider.SkillResolveRequest) (*provider.SkillResolvePreview, error) {
+	trimmedFlowID := strings.TrimSpace(request.FlowID)
+	trimmedSessionID := strings.TrimSpace(request.SessionID)
+	if trimmedFlowID == "" {
+		return nil, fmt.Errorf("请求技能预览失败: 智能体不能为空")
+	}
+	if trimmedSessionID == "" {
+		return nil, fmt.Errorf("请求技能预览失败: 会话不能为空")
+	}
 	body := skillResolveRequestBody{
-		FlowID:                 strings.TrimSpace(request.FlowID),
-		SessionID:              strings.TrimSpace(request.SessionID),
-		OwnerUserID:            strings.TrimSpace(request.OwnerUserID),
 		RequestType:            provider.NormalizeRequestType(request.RequestType),
 		RuntimeStrategy:        strings.TrimSpace(request.RuntimeStrategy),
 		CommandExecutionTarget: strings.TrimSpace(request.CommandExecutionTarget),
@@ -1100,7 +1102,11 @@ func (c *Client) ResolveSkillPreview(ctx context.Context, request provider.Skill
 	if err != nil {
 		return nil, fmt.Errorf("序列化技能预览请求失败: %w", err)
 	}
-	endpoint := c.apiURL("/agents/skills/resolve")
+	endpoint := c.apiURL(fmt.Sprintf(
+		"/agents/flows/%s/sessions/%s/skills/resolve",
+		url.PathEscape(trimmedFlowID),
+		url.PathEscape(trimmedSessionID),
+	))
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(content))
 	if err != nil {
 		return nil, fmt.Errorf("创建技能预览请求失败: %w", err)
@@ -1268,7 +1274,7 @@ func (c *Client) GetRunStats(ctx context.Context, flowID string, sessionID strin
 		}
 	}
 
-	compressions, err := c.fetchCompressionRecords(ctx, runID)
+	compressions, err := c.fetchCompressionRecords(ctx, flowID, sessionID, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1277,14 +1283,20 @@ func (c *Client) GetRunStats(ctx context.Context, flowID string, sessionID strin
 	return stats, nil
 }
 
-func (c *Client) fetchCompressionRecords(ctx context.Context, runID string) ([]provider.CompressionRecord, error) {
+func (c *Client) fetchCompressionRecords(ctx context.Context, flowID string, sessionID string, runID string) ([]provider.CompressionRecord, error) {
+	flowID = strings.TrimSpace(flowID)
+	sessionID = strings.TrimSpace(sessionID)
+	runID = strings.TrimSpace(runID)
+	if flowID == "" || sessionID == "" || runID == "" {
+		return nil, nil
+	}
 	attempts := c.compressionPollAttempts
 	if attempts < 1 {
 		attempts = 1
 	}
 	delay := c.compressionPollDelay
 	for attempt := 0; attempt < attempts; attempt++ {
-		compressionPayload, err := c.fetchCompressionPayload(ctx, runID)
+		compressionPayload, err := c.fetchCompressionPayload(ctx, flowID, sessionID, runID)
 		if err != nil {
 			return nil, err
 		}
@@ -1375,9 +1387,11 @@ func (c *Client) GetSessionContextWindow(ctx context.Context, flowID string, ses
 	return preview, nil
 }
 
-func (c *Client) fetchCompressionPayload(ctx context.Context, runID string) ([]compressionRecordResponse, error) {
+func (c *Client) fetchCompressionPayload(ctx context.Context, flowID string, sessionID string, runID string) ([]compressionRecordResponse, error) {
 	compressionEndpoint := c.apiURL(fmt.Sprintf(
-		"/agents/dialogue/%s/compressions",
+		"/agents/flows/%s/sessions/%s/run/%s/compressions",
+		url.PathEscape(flowID),
+		url.PathEscape(sessionID),
 		url.PathEscape(runID),
 	))
 	compressionRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, compressionEndpoint, nil)

@@ -89,7 +89,6 @@ type StreamRequest struct {
 type SkillResolveRequest struct {
 	FlowID                 string
 	SessionID              string
-	OwnerUserID            string
 	RequestType            string
 	RuntimeStrategy        string
 	CommandExecutionTarget string

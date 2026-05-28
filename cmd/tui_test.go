@@ -338,6 +338,12 @@ func TestExecuteTUISkillsPickerRemoveLocalDetailRefreshesPickerAndClosesPanel(t 
 	for _, item := range picker.Items {
 		if item.RemoveTarget == "remote-skill" {
 			removableFound = item.Removable
+			if item.ToggleTarget != "remote-skill" {
+				t.Fatalf("expected toggle target for installed remote skill, got %#v", item)
+			}
+			if item.Disabled {
+				t.Fatalf("expected installed remote skill to default enabled, got %#v", item)
+			}
 			break
 		}
 	}
@@ -365,6 +371,93 @@ func TestExecuteTUISkillsPickerRemoveLocalDetailRefreshesPickerAndClosesPanel(t 
 	}
 	if len(result.SkillsPicker.RemoteItems) != 1 || result.SkillsPicker.RemoteItems[0].Installed {
 		t.Fatalf("expected remote entry to become uninstalled, got %#v", result.SkillsPicker.RemoteItems)
+	}
+}
+
+func TestExecuteTUISkillsPickerDisableLocalDetailRefreshesPickerAndKeepsSkillInstalled(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	workspaceDir := t.TempDir()
+	registry := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/search":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"远程技能摘要","version":"1.2.3","updatedAt":1710000000}]}`))
+		case "/api/v1/download":
+			archiveBytes := buildRemoteSkillArchive(t, "1.2.3")
+			writer.Header().Set("Content-Type", "application/zip")
+			_, _ = writer.Write(archiveBytes)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer registry.Close()
+
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.RegistryURL = registry.URL
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	installedSkillDir := filepath.Join(workspaceDir, ".snz1dp", "skills", "remote-skill")
+	if err := os.MkdirAll(filepath.Join(installedSkillDir, ".snz1dp"), 0o755); err != nil {
+		t.Fatalf("create installed skill metadata dir failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(installedSkillDir, "SKILL.md"), []byte("---\nname: Remote Skill\ndescription: 已安装远程技能\ncategory: remote\n---\n\nInstalled body\n"), 0o644); err != nil {
+		t.Fatalf("write installed skill failed: %v", err)
+	}
+	originBody := fmt.Sprintf("{\"version\":1,\"registry\":%q,\"slug\":\"remote-skill\",\"installedVersion\":\"1.2.3\"}", registry.URL)
+	if err := os.WriteFile(filepath.Join(installedSkillDir, ".snz1dp", "origin.json"), []byte(originBody), 0o644); err != nil {
+		t.Fatalf("write installed skill origin failed: %v", err)
+	}
+	app := &App{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, configManager: manager, skillInstallScopeSession: internalconfig.SkillInstallScopeWorkspace, skillInstallScopePinned: true}
+
+	result, err := app.executeTUISkillsPickerCommand(config, workspaceDir, "/skills-picker disable-local-detail remote-skill remote")
+	if err != nil {
+		t.Fatalf("disable-local-detail failed: %v", err)
+	}
+	if result.CloseToolPanel {
+		t.Fatalf("expected local disable to keep detail open, got %#v", result)
+	}
+	if result.SkillsPicker == nil {
+		t.Fatalf("expected refreshed picker, got %#v", result)
+	}
+	if result.SkillsPicker.ActiveTab != "local" {
+		t.Fatalf("expected local tab to remain active, got %#v", result.SkillsPicker)
+	}
+	if len(result.Events) < 2 || !strings.Contains(result.Events[0].Text, "已禁用技能候选资格") {
+		t.Fatalf("expected disable confirmation note, got %#v", result.Events)
+	}
+	if result.Events[1].Panel == nil || !strings.Contains(result.Events[1].Panel.Body, "状态: 显式禁用") {
+		t.Fatalf("expected refreshed local detail panel, got %#v", result.Events)
+	}
+	disabledFound := false
+	for _, item := range result.SkillsPicker.Items {
+		if item.ToggleTarget == "remote-skill" {
+			disabledFound = true
+			if !item.Disabled || item.StateLabel != "显式禁用" {
+				t.Fatalf("expected picker item disabled after toggle, got %#v", item)
+			}
+		}
+	}
+	if !disabledFound {
+		t.Fatalf("expected disabled installed skill to stay in picker, got %#v", result.SkillsPicker.Items)
+	}
+	updatedConfig, err := manager.Load()
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	if !containsIgnoreCase(updatedConfig.Skills.Disabled, "Remote Skill") {
+		t.Fatalf("expected disabled skill recorded, got %#v", updatedConfig.Skills.Disabled)
+	}
+	if _, statErr := os.Stat(filepath.Join(installedSkillDir, "SKILL.md")); statErr != nil {
+		t.Fatalf("expected installed skill files kept after disable, got %v", statErr)
+	}
+	if len(result.SkillsPicker.RemoteItems) != 1 || !result.SkillsPicker.RemoteItems[0].Installed {
+		t.Fatalf("expected remote entry to remain installed, got %#v", result.SkillsPicker.RemoteItems)
 	}
 }
 

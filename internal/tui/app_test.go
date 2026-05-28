@@ -2309,11 +2309,56 @@ func TestHandleSkillsPickerDeleteOnLocalRunsRemoveCommand(t *testing.T) {
 	}
 }
 
-func TestBuildSkillDetailPanelIncludesDeleteActionForRemovableSkill(t *testing.T) {
+func TestHandleSkillsPickerToggleDisableOnLocalRunsDisableCommand(t *testing.T) {
+	captured := ""
+	m := model{
+		ctx:   context.Background(),
+		input: textarea.New(),
+		skillsPicker: &SkillsPickerState{
+			Title:       "技能列表",
+			ActiveTab:   "local",
+			RemoteQuery: "remote debug",
+			Items: []SkillItem{{
+				Name:         "Remote Skill",
+				Description:  "已安装远程技能",
+				ToggleTarget: "remote-skill",
+			}},
+		},
+		localCommand: func(ctx context.Context, command string, snapshot Snapshot) (LocalCommandResult, error) {
+			captured = command
+			return LocalCommandResult{Handled: true}, nil
+		},
+	}
+
+	updatedModel, cmd := m.handleSkillsPickerKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	updated := updatedModel.(model)
+	if strings.TrimSpace(updated.activityHint) != "正在禁用已安装技能..." {
+		t.Fatalf("unexpected activity hint: %q", updated.activityHint)
+	}
+	if cmd == nil {
+		t.Fatal("expected disable command")
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", msg)
+	}
+	for _, nested := range batch {
+		if nested != nil {
+			_ = nested()
+		}
+	}
+	if captured != "/skills-picker disable-local remote-skill remote debug" {
+		t.Fatalf("unexpected disable command: %q", captured)
+	}
+}
+
+func TestBuildSkillDetailPanelIncludesToggleAndDeleteActionsForRemovableSkill(t *testing.T) {
 	panel := buildSkillDetailPanel(SkillItem{
 		Name:          "Remote Skill",
 		Description:   "已安装远程技能",
 		SkillMarkdown: "---\nname: Remote Skill\n---\n\n详细内容",
+		ToggleTarget:  "remote-skill",
 		Removable:     true,
 		RemoveTarget:  "remote-skill",
 		ReferenceFiles: []SkillReferenceItem{{
@@ -2330,15 +2375,22 @@ func TestBuildSkillDetailPanelIncludesDeleteActionForRemovableSkill(t *testing.T
 	if strings.Index(panel.Body, "SKILL.md 内容:") > strings.Index(panel.Body, "参考文件:") {
 		t.Fatalf("expected skill markdown block to appear before references, got %#v", panel)
 	}
-	if len(panel.Actions) != 1 {
-		t.Fatalf("expected one action, got %#v", panel.Actions)
+	if len(panel.Actions) != 2 {
+		t.Fatalf("expected two actions, got %#v", panel.Actions)
 	}
-	action := panel.Actions[0]
-	if action.Key != "d" || action.Disabled {
-		t.Fatalf("unexpected delete action: %#v", action)
+	toggleAction := panel.Actions[0]
+	if toggleAction.Key != "x" || toggleAction.Disabled {
+		t.Fatalf("unexpected toggle action: %#v", toggleAction)
 	}
-	if action.Command != "/skills-picker remove-local-detail remote-skill remote debug" {
-		t.Fatalf("unexpected delete action command: %#v", action)
+	if toggleAction.Command != "/skills-picker disable-local-detail remote-skill remote debug" {
+		t.Fatalf("unexpected toggle action command: %#v", toggleAction)
+	}
+	deleteAction := panel.Actions[1]
+	if deleteAction.Key != "d" || deleteAction.Disabled {
+		t.Fatalf("unexpected delete action: %#v", deleteAction)
+	}
+	if deleteAction.Command != "/skills-picker remove-local-detail remote-skill remote debug" {
+		t.Fatalf("unexpected delete action command: %#v", deleteAction)
 	}
 }
 

@@ -135,10 +135,12 @@ type SkillItem struct {
 	Category       string
 	SourceLabel    string
 	StateLabel     string
+	Disabled       bool
 	RootDir        string
 	RelativeDir    string
 	Restriction    string
 	SkillMarkdown  string
+	ToggleTarget   string
 	Removable      bool
 	RemoveTarget   string
 	ReferenceFiles []SkillReferenceItem
@@ -2683,6 +2685,24 @@ func (m model) handleSkillsPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.activityHint = "正在删除已安装技能..."
 		return m, tea.Batch(m.transitionProgress(progressExecuting), executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand("remove-local", selected.RemoveTarget, m.skillsPicker.RemoteQuery), m.localCommand))
+	case "x":
+		if m.skillsPicker.ActiveTab != "local" {
+			return m, nil
+		}
+		if m.skillsCursor < 0 || m.skillsCursor >= len(m.skillsPicker.Items) {
+			return m, nil
+		}
+		selected := m.skillsPicker.Items[m.skillsCursor]
+		if strings.TrimSpace(selected.ToggleTarget) == "" {
+			return m, nil
+		}
+		action := "disable-local"
+		m.activityHint = "正在禁用已安装技能..."
+		if selected.Disabled {
+			action = "enable-local"
+			m.activityHint = "正在恢复技能候选资格..."
+		}
+		return m, tea.Batch(m.transitionProgress(progressExecuting), executeLocalCommandCmd(m.ctx, m.snapshot, buildSkillsPickerCommand(action, selected.ToggleTarget, m.skillsPicker.RemoteQuery), m.localCommand))
 	case "enter":
 		if m.activeSkillsPickerItemCount() == 0 {
 			m.closeSkillsPicker()
@@ -5298,17 +5318,31 @@ func buildSkillDetailPanel(item SkillItem, query string) *ToolPanel {
 			body = append(body, line)
 		}
 	}
+	actions := []ToolPanelAction{}
+	if strings.TrimSpace(item.ToggleTarget) != "" {
+		toggleAction := ToolPanelAction{
+			Key:     "x",
+			Label:   "禁用",
+			Command: buildSkillsPickerCommand("disable-local-detail", item.ToggleTarget, query),
+		}
+		if item.Disabled {
+			toggleAction.Label = "恢复候选"
+			toggleAction.Command = buildSkillsPickerCommand("enable-local-detail", item.ToggleTarget, query)
+		}
+		actions = append(actions, toggleAction)
+	}
+	actions = append(actions, ToolPanelAction{
+		Key:      "d",
+		Label:    "删除",
+		Command:  buildSkillsPickerCommand("remove-local-detail", item.RemoveTarget, query),
+		Disabled: !item.Removable || strings.TrimSpace(item.RemoveTarget) == "",
+	})
 	return &ToolPanel{
 		Title:   fmt.Sprintf("技能详情｜%s", item.Name),
 		Summary: fallback(strings.TrimSpace(item.Description), "当前技能没有额外说明。"),
 		Body:    strings.Join(body, "\n"),
 		Hint:    "Esc 关闭详情面板。",
-		Actions: []ToolPanelAction{{
-			Key:      "d",
-			Label:    "删除",
-			Command:  buildSkillsPickerCommand("remove-local-detail", item.RemoveTarget, query),
-			Disabled: !item.Removable || strings.TrimSpace(item.RemoveTarget) == "",
-		}},
+		Actions: actions,
 	}
 }
 
