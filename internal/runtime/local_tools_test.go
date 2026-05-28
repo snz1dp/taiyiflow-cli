@@ -806,6 +806,35 @@ func TestSetStreamEventLogsEnabledSuppressesBracketLogs(t *testing.T) {
 	}
 }
 
+func TestRunCommandForwardsStdinToChildProcess(t *testing.T) {
+	if os.Getenv("TAIYIFLOW_HELPER_PROCESS") == "stdin-echo" {
+		content, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			_, _ = os.Stderr.WriteString(err.Error())
+			os.Exit(1)
+		}
+		_, _ = os.Stdout.Write(content)
+		os.Exit(0)
+	}
+
+	runtimeClient := NewClientRuntime(strings.NewReader("hello from stdin\n"), io.Discard, io.Discard)
+	config := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
+
+	result, err := runtimeClient.runCommand(context.Background(), config, map[string]any{
+		"command": os.Args[0],
+		"args":    []string{"-test.run=TestRunCommandForwardsStdinToChildProcess$"},
+		"env": map[string]string{
+			"TAIYIFLOW_HELPER_PROCESS": "stdin-echo",
+		},
+	})
+	if err != nil {
+		t.Fatalf("run command failed: %v", err)
+	}
+	if got := stringValue(result["stdout"]); got != "hello from stdin\n" {
+		t.Fatalf("expected child process to receive runtime stdin, got %q", got)
+	}
+}
+
 func TestPermissionRuleDeniesMutatingClientTool(t *testing.T) {
 	tempDir := t.TempDir()
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)

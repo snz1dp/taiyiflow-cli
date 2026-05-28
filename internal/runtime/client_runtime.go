@@ -656,6 +656,9 @@ func (r *ClientRuntime) runCommand(
 
 	command.Dir = payload.WorkingDirectory
 	command.Env = mergeEnv(payload.EnvOverrides)
+	if r.stdin != nil {
+		command.Stdin = r.stdin
+	}
 	auditPayload := map[string]any{
 		"command": commandPreview(arguments),
 		"cwd":     payload.WorkingDirectory,
