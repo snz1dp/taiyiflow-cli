@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -77,8 +78,62 @@ func explainBackendFailure(err error) string {
 	case strings.Contains(message, "502"), strings.Contains(message, "503"), strings.Contains(message, "504"), strings.Contains(message, "500"):
 		return "太乙智启服务暂时不可用"
 	default:
+		if detail := extractBackendFailureDetail(err); detail != "" {
+			return detail
+		}
 		return "当前无法连接太乙智启服务"
 	}
+}
+
+func extractBackendFailureDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	message := strings.TrimSpace(err.Error())
+	if message == "" {
+		return ""
+	}
+
+	candidates := []string{message}
+	if start := strings.Index(message, "{"); start >= 0 {
+		if end := strings.LastIndex(message, "}"); end > start {
+			candidates = append(candidates, strings.TrimSpace(message[start:end+1]))
+		}
+	}
+
+	for _, candidate := range candidates {
+		detail := parseBackendFailureDetail(candidate)
+		if detail != "" {
+			return detail
+		}
+	}
+
+	return ""
+}
+
+func parseBackendFailureDetail(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
+		return ""
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return ""
+	}
+
+	detailRaw, ok := payload["detail"]
+	if !ok {
+		return ""
+	}
+
+	var detail string
+	if err := json.Unmarshal(detailRaw, &detail); err == nil {
+		return strings.TrimSpace(detail)
+	}
+
+	return strings.TrimSpace(string(detailRaw))
 }
 
 func normalizeStreamEventError(raw any) error {

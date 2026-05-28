@@ -35,6 +35,35 @@ func TestInspectBackendStatusTreatsAuthenticationErrorAsAvailable(t *testing.T) 
 	}
 }
 
+func TestInspectBackendStatusUsesJSONDetailReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != backendAPIPath("/version") {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusBadRequest)
+		_, _ = writer.Write([]byte(`{"detail":"版本接口暂不可用"}`))
+	}))
+	defer server.Close()
+
+	app := &App{}
+	status := app.inspectBackendStatus(context.Background(), providerclient.NewClient(server.URL, ""), server.URL)
+	if status.Available {
+		t.Fatalf("expected backend to be unavailable, got %#v", status)
+	}
+	if got := status.Reason; got != "版本接口暂不可用" {
+		t.Fatalf("unexpected backend reason: %q", got)
+	}
+}
+
+func TestExplainBackendFailureFallsBackWithoutJSONDetail(t *testing.T) {
+	err := errors.New(`获取版本信息失败: {"message":"bad request"}`)
+	if got := explainBackendFailure(err); got != "当前无法连接太乙智启服务" {
+		t.Fatalf("unexpected fallback backend reason: %q", got)
+	}
+}
+
 func TestNormalizeStreamEventError(t *testing.T) {
 	t.Run("user canceled", func(t *testing.T) {
 		err := normalizeStreamEventError("读取流失败: context canceled")
