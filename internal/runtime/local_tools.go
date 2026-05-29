@@ -447,6 +447,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 	}
 	definitions = append(definitions, browserClientToolDefinitions()...)
+	definitions = append(definitions, computerClientToolDefinitions()...)
 	if !r.interactivePromptsEnabled {
 		filtered := definitions[:0]
 		for _, definition := range definitions {
@@ -489,6 +490,9 @@ func allowedClientToolSetForMode(mode string) map[string]bool {
 		browserToolTabsContext: true,
 		browserToolReadText:    true,
 		browserToolReadConsole: true,
+		computerToolDisplaysContext: true,
+		computerToolWindowsContext:  true,
+		computerToolScreenshot:      true,
 	}
 }
 
@@ -497,6 +501,9 @@ func RequiresClientToolConfirmation(config internalconfig.Config, payload map[st
 	arguments := nestedMap(payload, "function", "arguments")
 	if isBrowserTool(toolName) {
 		return browserToolRequiresConfirmation(config, toolName, arguments)
+	}
+	if isComputerTool(toolName) {
+		return computerToolRequiresConfirmation(config, toolName, arguments)
 	}
 	if strings.TrimSpace(config.ApprovalMode) == "readonly" && mutatingClientTool(toolName) {
 		return false
@@ -523,6 +530,9 @@ func (r *ClientRuntime) authorizeClientTool(toolName string, arguments map[strin
 	mode := strings.TrimSpace(config.ApprovalMode)
 	if isBrowserTool(toolName) {
 		return r.authorizeBrowserTool(toolName, arguments, config)
+	}
+	if isComputerTool(toolName) {
+		return r.authorizeComputerTool(toolName, arguments, config)
 	}
 	if isWriteConfirmationTool(toolName) {
 		if mode == "readonly" {
@@ -633,6 +643,9 @@ func mutatingClientTool(toolName string) bool {
 	if isBrowserTool(toolName) {
 		return !browserReadOnlyTool(toolName)
 	}
+	if isComputerTool(toolName) {
+		return !computerReadOnlyTool(toolName)
+	}
 	switch canonicalClientToolName(toolName) {
 	case "shell_exec", "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit", "document_unstructured", "write_file":
 		return true
@@ -655,6 +668,9 @@ func previewClientTool(toolName string, arguments map[string]any) string {
 	name := argumentString(arguments, "name")
 	if isBrowserTool(toolName) {
 		return previewBrowserTool(toolName, arguments)
+	}
+	if isComputerTool(toolName) {
+		return previewComputerTool(toolName, arguments)
 	}
 	switch canonicalClientToolName(toolName) {
 	case "ask_user":

@@ -76,6 +76,7 @@ type ClientRuntime struct {
 	stderr                      io.Writer
 	askUserPrompter             AskUserPrompter
 	browserToolExecutor         BrowserToolExecutor
+	computerToolExecutor        ComputerToolExecutor
 	sandboxEscapeConfirmer      func(path string) (bool, error)
 	sandboxEscapePolicyOverride string
 	streamEventLogsEnabled      bool
@@ -83,7 +84,7 @@ type ClientRuntime struct {
 }
 
 func NewClientRuntime(stdin io.Reader, stdout io.Writer, stderr io.Writer) *ClientRuntime {
-	return &ClientRuntime{stdin: stdin, stdout: stdout, stderr: stderr, browserToolExecutor: defaultBrowserToolExecutor{}, streamEventLogsEnabled: true, interactivePromptsEnabled: true}
+	return &ClientRuntime{stdin: stdin, stdout: stdout, stderr: stderr, browserToolExecutor: defaultBrowserToolExecutor{}, computerToolExecutor: defaultComputerToolExecutor{}, streamEventLogsEnabled: true, interactivePromptsEnabled: true}
 }
 
 func (r *ClientRuntime) SetSandboxEscapeConfirmer(confirmer func(path string) (bool, error)) {
@@ -248,6 +249,8 @@ func (r *ClientRuntime) executeClientToolPayload(
 	default:
 		if isBrowserTool(toolName) {
 			result, err = r.browserTool(ctx, config, toolName, arguments)
+		} else if isComputerTool(toolName) {
+			result, err = r.computerTool(ctx, config, toolName, arguments)
 		} else {
 			err = fmt.Errorf("不支持的客户端工具: %s", toolName)
 		}

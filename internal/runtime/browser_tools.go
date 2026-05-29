@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -53,6 +54,7 @@ func (r *ClientRuntime) browserTool(
 	arguments map[string]any,
 ) (map[string]any, error) {
 	prepared := cloneArguments(arguments)
+	normalizeBrowserToolArguments(toolName, prepared)
 	if toolName == browserToolScreenshot {
 		pathValue, err := r.resolveBrowserScreenshotPath(config, prepared)
 		if err != nil {
@@ -65,6 +67,10 @@ func (r *ClientRuntime) browserTool(
 		executor = defaultBrowserToolExecutor{}
 	}
 	result, err := executor.ExecuteBrowserTool(ctx, config, toolName, prepared)
+	if err != nil {
+		return nil, err
+	}
+	result, err = normalizeBrowserToolResult(toolName, prepared, result)
 	if err != nil {
 		return nil, err
 	}
@@ -306,6 +312,104 @@ func cloneArguments(arguments map[string]any) map[string]any {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func normalizeBrowserToolArguments(toolName string, arguments map[string]any) {
+	switch strings.TrimSpace(toolName) {
+	case browserToolTabsCreate:
+		if strings.TrimSpace(argumentString(arguments, "url")) == "" {
+			arguments["url"] = "about:blank"
+		}
+		if _, ok := arguments["activate"]; !ok {
+			arguments["activate"] = true
+		}
+	case browserToolReadText:
+		if maxChars, ok := arguments["max_chars"]; ok {
+			if _, exists := arguments["max_length"]; !exists {
+				arguments["max_length"] = maxChars
+			}
+		} else if maxLength, ok := arguments["max_length"]; ok {
+			arguments["max_chars"] = maxLength
+		}
+	}
+}
+
+func normalizeBrowserToolResult(toolName string, arguments map[string]any, result map[string]any) (map[string]any, error) {
+	normalized := cloneArguments(result)
+	switch strings.TrimSpace(toolName) {
+	case browserToolTabsContext:
+		if _, ok := normalized["count"]; !ok {
+			switch tabs := normalized["tabs"].(type) {
+			case []any:
+				normalized["count"] = len(tabs)
+			case []map[string]any:
+				normalized["count"] = len(tabs)
+			}
+		}
+	case browserToolTabsCreate:
+		if strings.TrimSpace(stringValue(normalized["url"])) == "" {
+			normalized["url"] = fallbackString(argumentString(arguments, "url"), "about:blank")
+		}
+		if _, ok := normalized["created"]; !ok {
+			normalized["created"] = true
+		}
+		if _, ok := normalized["active"]; !ok {
+			normalized["active"] = boolValue(arguments["activate"])
+		}
+	case browserToolReadText:
+		selector := strings.TrimSpace(argumentString(arguments, "selector"))
+		if _, ok := normalized["selector"]; !ok {
+			normalized["selector"] = selector
+		}
+		textValue := stringValue(normalized["text"])
+		if _, ok := normalized["found"]; !ok {
+			normalized["found"] = selector == "" || strings.TrimSpace(textValue) != ""
+		}
+		if _, ok := normalized["total_length"]; !ok {
+			normalized["total_length"] = len(textValue)
+		}
+		if _, ok := normalized["truncated"]; !ok {
+			maxChars := intValue(arguments["max_chars"], 0)
+			totalLength := intValue(normalized["total_length"], len(textValue))
+			normalized["truncated"] = maxChars > 0 && totalLength > len(textValue) && len(textValue) >= maxChars
+		}
+	case browserToolReadConsole:
+		if _, ok := normalized["count"]; !ok {
+			switch entries := normalized["entries"].(type) {
+			case []any:
+				normalized["count"] = len(entries)
+			case []map[string]any:
+				normalized["count"] = len(entries)
+			}
+		}
+	case browserToolScreenshot:
+		pathValue := strings.TrimSpace(stringValue(normalized["path"]))
+		if pathValue == "" {
+			pathValue = strings.TrimSpace(argumentString(arguments, "path"))
+		}
+		if imageBase64 := strings.TrimSpace(stringValue(normalized["image_base64"])); imageBase64 != "" {
+			if pathValue == "" {
+				return nil, fmt.Errorf("浏览器截图结果缺少 path")
+			}
+			imageBytes, err := base64.StdEncoding.DecodeString(imageBase64)
+			if err != nil {
+				return nil, fmt.Errorf("解析浏览器截图结果失败: %w", err)
+			}
+			if err := writeFileAtomically(pathValue, imageBytes); err != nil {
+				return nil, fmt.Errorf("写入浏览器截图文件失败: %w", err)
+			}
+			normalized["path"] = pathValue
+			normalized["size"] = len(imageBytes)
+			if strings.TrimSpace(stringValue(normalized["content_type"])) == "" {
+				normalized["content_type"] = "image/png"
+			}
+			delete(normalized, "image_base64")
+			delete(normalized, "format")
+		} else if pathValue != "" {
+			normalized["path"] = pathValue
+		}
+	}
+	return normalized, nil
 }
 
 func (r *ClientRuntime) resolveBrowserScreenshotPath(config internalconfig.Config, arguments map[string]any) (string, error) {

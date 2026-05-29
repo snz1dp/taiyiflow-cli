@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"os"
@@ -73,6 +74,19 @@ type browserToolExecutorStub struct {
 	calls  []browserToolCall
 }
 
+type computerToolCall struct {
+	ToolName       string
+	Arguments      map[string]any
+	ApprovalMode   string
+	PermissionMode string
+}
+
+type computerToolExecutorStub struct {
+	result map[string]any
+	err    error
+	calls  []computerToolCall
+}
+
 func (s *browserToolExecutorStub) ExecuteBrowserTool(_ context.Context, config internalconfig.Config, toolName string, arguments map[string]any) (map[string]any, error) {
 	clonedArgs := map[string]any{}
 	for key, value := range arguments {
@@ -84,6 +98,26 @@ func (s *browserToolExecutorStub) ExecuteBrowserTool(_ context.Context, config i
 		ApprovalMode:   config.ApprovalMode,
 		BrowserMode:    config.Browser.Mode,
 		PermissionMode: config.Browser.PermissionMode,
+	})
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.result != nil {
+		return s.result, nil
+	}
+	return map[string]any{"tool": toolName}, nil
+}
+
+func (s *computerToolExecutorStub) ExecuteComputerTool(_ context.Context, config internalconfig.Config, toolName string, arguments map[string]any) (map[string]any, error) {
+	clonedArgs := map[string]any{}
+	for key, value := range arguments {
+		clonedArgs[key] = value
+	}
+	s.calls = append(s.calls, computerToolCall{
+		ToolName:       toolName,
+		Arguments:      clonedArgs,
+		ApprovalMode:   config.ApprovalMode,
+		PermissionMode: config.Computer.PermissionMode,
 	})
 	if s.err != nil {
 		return nil, s.err
@@ -1374,5 +1408,262 @@ func TestBrowserScreenshotAutoPathUsesWorkspaceScopedFile(t *testing.T) {
 	}
 	if !strings.HasSuffix(pathValue, ".png") {
 		t.Fatalf("expected png screenshot path, got %s", pathValue)
+	}
+}
+
+func TestBrowserTabsCreateDefaultsURLAndNormalizesResult(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	browserStub := &browserToolExecutorStub{result: map[string]any{"tab_id": "tab-create"}}
+	runtimeClient.SetBrowserToolExecutor(browserStub)
+	config := internalconfig.Config{
+		Workdir:      t.TempDir(),
+		ApprovalMode: "auto",
+		Browser: internalconfig.BrowserConfig{
+			Mode:           internalconfig.BrowserModeChromeSession,
+			PermissionMode: internalconfig.BrowserPermissionModeSkipAll,
+		},
+	}
+	toolName, resultAny, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name":      browserToolTabsCreate,
+			"arguments": map[string]any{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected tabs_create to succeed, got %v", err)
+	}
+	if toolName != browserToolTabsCreate {
+		t.Fatalf("unexpected tool name: %s", toolName)
+	}
+	if len(browserStub.calls) != 1 {
+		t.Fatalf("expected one browser executor call, got %#v", browserStub.calls)
+	}
+	if got := strings.TrimSpace(stringValue(browserStub.calls[0].Arguments["url"])); got != "about:blank" {
+		t.Fatalf("expected default tabs_create url about:blank, got %q", got)
+	}
+	if active := boolValue(browserStub.calls[0].Arguments["activate"]); !active {
+		t.Fatalf("expected tabs_create activate default true, got %#v", browserStub.calls[0].Arguments)
+	}
+	resultMap, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %#v", resultAny)
+	}
+	if got := strings.TrimSpace(stringValue(resultMap["url"])); got != "about:blank" {
+		t.Fatalf("expected normalized tabs_create url, got %#v", resultMap)
+	}
+	if !boolValue(resultMap["created"]) {
+		t.Fatalf("expected normalized created flag, got %#v", resultMap)
+	}
+	if !boolValue(resultMap["active"]) {
+		t.Fatalf("expected normalized active flag, got %#v", resultMap)
+	}
+}
+
+func TestBrowserReadTextNormalizesArgumentAliasAndResultShape(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	browserStub := &browserToolExecutorStub{result: map[string]any{"tab_id": "tab-read", "text": "hello world"}}
+	runtimeClient.SetBrowserToolExecutor(browserStub)
+	config := internalconfig.Config{
+		Workdir:      t.TempDir(),
+		ApprovalMode: "auto",
+		Browser: internalconfig.BrowserConfig{
+			Mode:           internalconfig.BrowserModeChromeSession,
+			PermissionMode: internalconfig.BrowserPermissionModeSkipAll,
+		},
+	}
+	_, resultAny, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": browserToolReadText,
+			"arguments": map[string]any{
+				"selector":  "main",
+				"max_chars": 5,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected read_text to succeed, got %v", err)
+	}
+	if len(browserStub.calls) != 1 {
+		t.Fatalf("expected one browser executor call, got %#v", browserStub.calls)
+	}
+	if got := intValue(browserStub.calls[0].Arguments["max_length"], 0); got != 5 {
+		t.Fatalf("expected max_length alias to be forwarded, got %#v", browserStub.calls[0].Arguments)
+	}
+	resultMap, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %#v", resultAny)
+	}
+	if got := strings.TrimSpace(stringValue(resultMap["selector"])); got != "main" {
+		t.Fatalf("expected normalized selector, got %#v", resultMap)
+	}
+	if !boolValue(resultMap["found"]) {
+		t.Fatalf("expected normalized found flag, got %#v", resultMap)
+	}
+	if got := intValue(resultMap["total_length"], 0); got != len("hello world") {
+		t.Fatalf("expected normalized total_length, got %#v", resultMap)
+	}
+	if boolValue(resultMap["truncated"]) {
+		t.Fatalf("expected fallback truncated=false without total_length drift, got %#v", resultMap)
+	}
+}
+
+func TestBrowserScreenshotDecodesExtensionResultToPath(t *testing.T) {
+	tempDir := t.TempDir()
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	expectedBytes := []byte("fake-png-bytes")
+	browserStub := &browserToolExecutorStub{result: map[string]any{
+		"tab_id":       "tab-shot",
+		"image_base64": base64.StdEncoding.EncodeToString(expectedBytes),
+		"format":       "png",
+	}}
+	runtimeClient.SetBrowserToolExecutor(browserStub)
+	config := internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		Browser: internalconfig.BrowserConfig{
+			Mode:           internalconfig.BrowserModeChromeSession,
+			PermissionMode: internalconfig.BrowserPermissionModeSkipAll,
+		},
+	}
+	_, resultAny, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": browserToolScreenshot,
+			"arguments": map[string]any{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected screenshot to succeed, got %v", err)
+	}
+	resultMap, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %#v", resultAny)
+	}
+	pathValue := strings.TrimSpace(stringValue(resultMap["path"]))
+	if pathValue == "" {
+		t.Fatalf("expected normalized screenshot path, got %#v", resultMap)
+	}
+	actualBytes, readErr := os.ReadFile(pathValue)
+	if readErr != nil {
+		t.Fatalf("expected screenshot file to be written, got %v", readErr)
+	}
+	if !bytes.Equal(actualBytes, expectedBytes) {
+		t.Fatalf("expected screenshot bytes %q, got %q", expectedBytes, actualBytes)
+	}
+	if got := intValue(resultMap["size"], 0); got != len(expectedBytes) {
+		t.Fatalf("expected screenshot size %d, got %#v", len(expectedBytes), resultMap)
+	}
+	if got := strings.TrimSpace(stringValue(resultMap["content_type"])); got != "image/png" {
+		t.Fatalf("expected screenshot content_type image/png, got %#v", resultMap)
+	}
+	if got := strings.TrimSpace(stringValue(resultMap["image_base64"])); got != "" {
+		t.Fatalf("expected image_base64 to be removed after normalization, got %#v", resultMap)
+	}
+}
+
+func TestExecuteClientToolPayloadDispatchesComputerTool(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	computerStub := &computerToolExecutorStub{result: map[string]any{"count": 2, "displays": []any{map[string]any{"display_id": "1"}, map[string]any{"display_id": "2"}}}}
+	runtimeClient.SetComputerToolExecutor(computerStub)
+	config := internalconfig.Config{
+		Workdir:      t.TempDir(),
+		ApprovalMode: "auto",
+		Computer: internalconfig.ComputerConfig{
+			PermissionMode: internalconfig.ComputerPermissionModeAsk,
+		},
+	}
+	toolName, resultAny, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name":      computerToolDisplaysContext,
+			"arguments": map[string]any{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected computer tool execution to succeed, got %v", err)
+	}
+	if toolName != computerToolDisplaysContext {
+		t.Fatalf("unexpected tool name: %s", toolName)
+	}
+	if len(computerStub.calls) != 1 || computerStub.calls[0].ToolName != computerToolDisplaysContext {
+		t.Fatalf("expected computer executor call, got %#v", computerStub.calls)
+	}
+	resultMap, ok := resultAny.(map[string]any)
+	if !ok || intValue(resultMap["count"], 0) != 2 {
+		t.Fatalf("unexpected computer tool result: %#v", resultAny)
+	}
+}
+
+func TestComputerPermissionModeAskOverridesAuto(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader("n\n"), io.Discard, io.Discard)
+	runtimeClient.SetComputerToolExecutor(&computerToolExecutorStub{})
+	config := internalconfig.Config{
+		Workdir:      t.TempDir(),
+		ApprovalMode: "auto",
+		Computer: internalconfig.ComputerConfig{
+			PermissionMode: internalconfig.ComputerPermissionModeAsk,
+		},
+	}
+	_, _, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": computerToolTypeText,
+			"arguments": map[string]any{
+				"text": "taiyiflow",
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "用户拒绝执行") {
+		t.Fatalf("expected computer ask mode to require confirmation, got %v", err)
+	}
+}
+
+func TestComputerScreenshotAutoPathUsesWorkspaceScopedFile(t *testing.T) {
+	tempDir := t.TempDir()
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	computerStub := &computerToolExecutorStub{result: map[string]any{"path": "", "size": 12}}
+	runtimeClient.SetComputerToolExecutor(computerStub)
+	config := internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		Computer: internalconfig.ComputerConfig{
+			PermissionMode: internalconfig.ComputerPermissionModeAsk,
+		},
+	}
+	_, resultAny, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name":      computerToolScreenshot,
+			"arguments": map[string]any{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected screenshot path auto generation to succeed, got %v", err)
+	}
+	if len(computerStub.calls) != 1 {
+		t.Fatalf("expected one computer executor call, got %#v", computerStub.calls)
+	}
+	pathValue := strings.TrimSpace(stringValue(computerStub.calls[0].Arguments["path"]))
+	if pathValue == "" {
+		t.Fatal("expected screenshot tool to receive auto-generated path")
+	}
+	resolvedTempDir, err := resolveWithExistingParent(tempDir)
+	if err != nil {
+		t.Fatalf("resolve temp dir failed: %v", err)
+	}
+	if !strings.HasPrefix(pathValue, resolvedTempDir) {
+		t.Fatalf("expected screenshot path under resolved workdir %s, got %s", resolvedTempDir, pathValue)
+	}
+	if !strings.HasSuffix(pathValue, ".png") {
+		t.Fatalf("expected png screenshot path, got %s", pathValue)
+	}
+	resultMap, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected result map, got %#v", resultAny)
+	}
+	if got := strings.TrimSpace(stringValue(resultMap["path"])); got != pathValue {
+		t.Fatalf("expected normalized screenshot path %s, got %#v", pathValue, resultMap)
 	}
 }

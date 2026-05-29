@@ -28,14 +28,19 @@
 
 - VS Code 默认构建任务：build taiyiflow-cli
 - `make build`：默认先更新 `browser-extension/chrome/dist`，再编译当前平台产物 `./taiyiflow-cli`
-- `make build-all`：使用本地 Go/Node 工具链，默认先更新 `browser-extension/chrome/dist`，再输出多平台产物到 `build/release/`
-- `make build-release`：仅执行多平台 Go 交叉编译；要求 `browser-extension/chrome/dist/manifest.json` 已存在，主要供容器内复用
-- `make release`：使用 Docker/Podman 构建发布产物；先通过 `snz1.cn/base/node:20-alpine` 刷新浏览器扩展 dist，再通过 `snz1.cn/dp/golang:1.25.0` 生成 `build/release/`
+- `make build-all`：使用本地 Go/Node 工具链，默认先更新 `browser-extension/chrome/dist`，再输出完整 release 集合到 `build/release/`；其中 darwin 产物会在当前 macOS 主机上以 `CGO_ENABLED=1` 原生构建
+- `make build-release`：生成完整 release 集合；要求当前主机为 macOS，内部会拆成 `make build-release-cross`（linux/windows）和 `make build-release-darwin-native`（darwin）
+- `make build-release-cross`：仅执行 linux/windows 发布产物的 Go 交叉编译；要求 `browser-extension/chrome/dist/manifest.json` 已存在，主要供容器内复用
+- `make build-release-darwin-native`：仅在当前 macOS 主机上生成 `darwin/amd64` 与 `darwin/arm64` 原生 CGO 产物
+- `make release`：使用 Docker/Podman 构建发布产物；先通过 `snz1.cn/base/node:20-alpine` 刷新浏览器扩展 dist，再在容器里生成 linux/windows 产物，最后回到 macOS 主机生成 darwin 原生产物
 - `make release-download-image`：基于 `build/release/` 构建发行下载镜像，镜像内会生成下载首页、`manifest.json` 与 `downloads/SHA256SUMS`
 - `make browser-extension-dist`：仅刷新浏览器扩展构建产物
 - `make browser-extension-dist-docker`：使用 `snz1.cn/base/node:20-alpine` 刷新浏览器扩展构建产物
+- `make verify-computer-live-darwin`：在 macOS 上打开一个可见的 Chromium 窗口，实机验证桌面 `double click`、`right click`、`drag` 与 `scroll` 行为；默认使用 Chrome，可通过 `TAIYIFLOW_COMPUTER_LIVE_BROWSER=edge|chromium|brave` 覆盖
 - 直接命令行构建：`go build -o taiyiflow-cli .`
 - 运行：`./taiyiflow-cli`
+
+桌面实机验证前提：执行 `make verify-computer-live-darwin` 前，需要先为当前终端/Go 进程授予 macOS 辅助功能权限；如果测试页面需要接收事件，验证过程中请不要切走前台浏览器窗口。
 
 发行下载镜像说明：根目录 [BUILD.yaml](BUILD.yaml) 与 [Dockerfile](Dockerfile) 参考 ctl 仓库的下载镜像结构，镜像默认发布名为 `snz1.cn/dp/ai/taiyi/taiyiflow-cli-download`，运行后通过静态页面暴露 `build/release/` 中的各平台产物。
 

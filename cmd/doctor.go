@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/browserbridge"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/computerbridge"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
 )
@@ -51,6 +52,7 @@ func (a *App) runDoctor(args []string) error {
 	fmt.Fprintf(a.stdout, "- 默认智能体: %s\n", flowDisplay)
 	fmt.Fprintf(a.stdout, "- 文件工具链: %s\n", detectLocalFileToolStatus())
 	fmt.Fprintf(a.stdout, "- 浏览器自动化: %s\n", detectBrowserAutomationStatus(config))
+	fmt.Fprintf(a.stdout, "- 桌面 ComputerUse: %s\n", detectComputerAutomationStatus(config))
 	fmt.Fprintf(a.stdout, "- 浏览器扩展链路: %s\n", detectBrowserNativeMessagingStatus(config, cwd))
 	if skillItems, directory, skillErr := skills.Discover(config); skillErr == nil {
 		enabledCount := 0
@@ -96,6 +98,22 @@ func detectBrowserAutomationStatus(config internalconfig.Config) string {
 	return strings.Join(parts, " | ")
 }
 
+func detectComputerAutomationStatus(config internalconfig.Config) string {
+	status := computerbridge.NewManager().Diagnose(config.Computer)
+	parts := []string{
+		fmt.Sprintf("权限模式: %s", computerPermissionModeDisplay(config.Computer.PermissionMode)),
+	}
+	if status.Available {
+		parts = append(parts, "状态: 可用")
+	} else {
+		parts = append(parts, "状态: 不可用")
+	}
+	if message := strings.TrimSpace(status.Message); message != "" {
+		parts = append(parts, message)
+	}
+	return strings.Join(parts, " | ")
+}
+
 func browserModeDisplay(value string) string {
 	switch strings.TrimSpace(value) {
 	case internalconfig.BrowserModeChromeSession:
@@ -119,6 +137,21 @@ func browserPermissionModeDisplay(value string) string {
 		return "跟随计划"
 	case internalconfig.BrowserPermissionModeSkipAll:
 		return "直接允许"
+	default:
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return "未设置"
+		}
+		return trimmed
+	}
+}
+
+func computerPermissionModeDisplay(value string) string {
+	switch strings.TrimSpace(value) {
+	case internalconfig.ComputerPermissionModeAsk:
+		return "逐次确认"
+	case internalconfig.ComputerPermissionModeFollowPlan:
+		return "跟随计划"
 	default:
 		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {

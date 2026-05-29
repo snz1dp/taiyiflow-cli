@@ -29,6 +29,7 @@ var bundledSkillDefinitions = []BundledSkillDefinition{
 	{Name: "loop", RelativeDir: "loop", Summary: "为重复性流程设计循环执行框架。", DefaultEnabled: true},
 	{Name: "schedule-remote-agents", RelativeDir: "schedule-remote-agents", Summary: "描述远程智能体调度方案与约束。", DefaultEnabled: true},
 	{Name: "taiyiflow-api", RelativeDir: "taiyiflow-api", Summary: "整理太乙智启接口与文档检索工作流。", DefaultEnabled: true},
+	{Name: "taiyiflow-computer", RelativeDir: "taiyiflow-computer", Summary: "通过本地 desktop ComputerUse 工具读取屏幕、窗口与输入能力，并根据 doctor/capability 选择可用动作。", DefaultEnabled: true},
 	{Name: "taiyiflow-in-chrome", RelativeDir: "taiyiflow-in-chrome", Summary: "通过本地浏览器工具控制当前浏览器会话或隔离实例，执行导航、点击、输入、截图与页面读取。", DefaultEnabled: true},
 	{Name: "run-skill-generator", RelativeDir: "run-skill-generator", Summary: "生成或更新技能模板与说明。", DefaultEnabled: true},
 }

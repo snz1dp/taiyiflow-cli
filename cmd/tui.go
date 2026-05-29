@@ -2032,8 +2032,126 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 		}
 	case "taiyiflow-in-chrome__tabs_context", "taiyiflow-in-chrome__tabs_create", "taiyiflow-in-chrome__navigate", "taiyiflow-in-chrome__click", "taiyiflow-in-chrome__type", "taiyiflow-in-chrome__screenshot", "taiyiflow-in-chrome__read_text", "taiyiflow-in-chrome__read_console":
 		return buildTUIBrowserToolPanel(toolName, resultMap)
+	case "taiyiflow-computer__displays_context", "taiyiflow-computer__windows_context", "taiyiflow-computer__focus_window", "taiyiflow-computer__screenshot", "taiyiflow-computer__mouse_move", "taiyiflow-computer__mouse_click", "taiyiflow-computer__mouse_drag", "taiyiflow-computer__scroll", "taiyiflow-computer__key_press", "taiyiflow-computer__type_text":
+		return buildTUIComputerToolPanel(toolName, resultMap)
 	default:
 		return nil
+	}
+}
+
+func buildTUIComputerToolPanel(toolName string, resultMap map[string]any) *tui.ToolPanel {
+	switch strings.TrimSpace(toolName) {
+	case "taiyiflow-computer__displays_context":
+		displays := mapSliceValue(resultMap, "displays")
+		if len(displays) == 0 {
+			return &tui.ToolPanel{
+				Title:   "桌面显示器",
+				Summary: "当前没有可用显示器信息",
+				Body:    "当前平台没有返回显示器上下文。",
+				Hint:    "若需要截图，可先确认 doctor 中的桌面 ComputerUse 状态。",
+			}
+		}
+		lines := make([]string, 0, len(displays))
+		for index, item := range displays {
+			prefix := "-"
+			if boolMapValueAny(item, "primary") {
+				prefix = "*"
+			}
+			lines = append(lines, fmt.Sprintf("%s %d. [%s] %s\n   %dx%d px · scale %.2f", prefix, index+1, fallbackString(stringMapValue(item, "display_id"), "<unknown>"), fallbackString(stringMapValue(item, "name"), "<unnamed>"), intMapValue(item, "width_px"), intMapValue(item, "height_px"), floatMapValue(item, "scale_factor")))
+		}
+		return &tui.ToolPanel{
+			Title:   "桌面显示器",
+			Summary: fmt.Sprintf("displays_context %d 块屏幕", len(displays)),
+			Body:    strings.Join(lines, "\n\n"),
+			Hint:    "带 * 的显示器是主屏；后续可继续截图或定位窗口。",
+		}
+	case "taiyiflow-computer__windows_context":
+		windows := mapSliceValue(resultMap, "windows")
+		if len(windows) == 0 {
+			return &tui.ToolPanel{
+				Title:   "桌面窗口",
+				Summary: "当前没有可用窗口信息",
+				Body:    "当前平台没有返回窗口上下文，或未授予辅助功能权限。",
+				Hint:    "若返回权限错误，请先在系统设置中授予辅助功能访问。",
+			}
+		}
+		lines := make([]string, 0, len(windows))
+		for index, item := range windows {
+			prefix := "-"
+			if boolMapValueAny(item, "frontmost") {
+				prefix = "*"
+			}
+			lines = append(lines, fmt.Sprintf("%s %d. [%s] %s\n   %s · (%d,%d) %dx%d", prefix, index+1, fallbackString(stringMapValue(item, "window_id"), "<unknown>"), fallbackString(stringMapValue(item, "title"), "<untitled>"), fallbackString(stringMapValue(item, "process_name"), "<process>"), intMapValue(item, "x"), intMapValue(item, "y"), intMapValue(item, "width"), intMapValue(item, "height")))
+		}
+		return &tui.ToolPanel{
+			Title:   "桌面窗口",
+			Summary: fmt.Sprintf("windows_context %d 个窗口", len(windows)),
+			Body:    strings.Join(lines, "\n\n"),
+			Hint:    "带 * 的窗口属于当前前台进程；后续可继续 focus_window、type_text 或截图。",
+		}
+	case "taiyiflow-computer__screenshot":
+		body := fmt.Sprintf("path: %s\nsize: %d bytes", fallbackString(stringMapValue(resultMap, "path"), "<missing>"), intMapValue(resultMap, "size"))
+		if displayID := strings.TrimSpace(stringMapValue(resultMap, "display_id")); displayID != "" {
+			body = "display_id: " + displayID + "\n" + body
+		}
+		return &tui.ToolPanel{
+			Title:   "桌面截图",
+			Summary: fallbackString(stringMapValue(resultMap, "path"), "screenshot"),
+			Body:    body,
+			Hint:    "截图已保存到本地文件；后续可结合 document_unstructured 或人工核对继续处理。",
+		}
+	default:
+		lines := []string{}
+		if windowID := strings.TrimSpace(stringMapValue(resultMap, "window_id")); windowID != "" {
+			lines = append(lines, "window_id: "+windowID)
+		}
+		if processName := strings.TrimSpace(stringMapValue(resultMap, "process_name")); processName != "" {
+			lines = append(lines, "process_name: "+processName)
+		}
+		if _, hasFromX := resultMap["from_x"]; hasFromX {
+			if _, hasFromY := resultMap["from_y"]; hasFromY {
+				lines = append(lines, fmt.Sprintf("from: (%d,%d)", intMapValue(resultMap, "from_x"), intMapValue(resultMap, "from_y")))
+			}
+		}
+		if _, hasToX := resultMap["to_x"]; hasToX {
+			if _, hasToY := resultMap["to_y"]; hasToY {
+				lines = append(lines, fmt.Sprintf("to: (%d,%d)", intMapValue(resultMap, "to_x"), intMapValue(resultMap, "to_y")))
+			}
+		}
+		if _, hasX := resultMap["x"]; hasX {
+			if _, hasY := resultMap["y"]; hasY {
+				lines = append(lines, fmt.Sprintf("position: (%d,%d)", intMapValue(resultMap, "x"), intMapValue(resultMap, "y")))
+			}
+		}
+		if _, hasDeltaX := resultMap["delta_x"]; hasDeltaX {
+			if _, hasDeltaY := resultMap["delta_y"]; hasDeltaY {
+				lines = append(lines, fmt.Sprintf("delta: (%d,%d)", intMapValue(resultMap, "delta_x"), intMapValue(resultMap, "delta_y")))
+			}
+		}
+		if button := strings.TrimSpace(stringMapValue(resultMap, "button")); button != "" {
+			lines = append(lines, "button: "+button)
+		}
+		if clickCount := intMapValue(resultMap, "click_count"); clickCount > 0 {
+			lines = append(lines, fmt.Sprintf("click_count: %d", clickCount))
+		}
+		if durationMS := intMapValue(resultMap, "duration_ms"); durationMS > 0 {
+			lines = append(lines, fmt.Sprintf("duration_ms: %d", durationMS))
+		}
+		if key := strings.TrimSpace(stringMapValue(resultMap, "key")); key != "" {
+			lines = append(lines, "key: "+key)
+		}
+		if textLength := intMapValue(resultMap, "text_length"); textLength > 0 {
+			lines = append(lines, fmt.Sprintf("text_length: %d", textLength))
+		}
+		if len(lines) == 0 {
+			lines = append(lines, "桌面操作已执行。")
+		}
+		return &tui.ToolPanel{
+			Title:   "桌面操作结果",
+			Summary: strings.TrimPrefix(strings.TrimSpace(toolName), "taiyiflow-computer__"),
+			Body:    strings.Join(lines, "\n"),
+			Hint:    "若需要继续定位界面状态，可先读取 displays_context、windows_context 或截图。",
+		}
 	}
 }
 
@@ -2232,6 +2350,23 @@ func intMapValue(payload map[string]any, key string) int {
 		}
 	}
 	return 0
+}
+
+func floatMapValue(payload map[string]any, key string) float64 {
+	value, ok := payload[key]
+	if !ok {
+		return 0
+	}
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	default:
+		return 0
+	}
 }
 
 func nestedMapValue(payload map[string]any, keys ...string) (map[string]any, bool) {

@@ -36,3 +36,27 @@ func TestDetectBrowserAutomationStatusUsesChineseLabels(t *testing.T) {
 		}
 	}
 }
+
+func TestDetectComputerAutomationStatusUsesChineseLabels(t *testing.T) {
+	config := internalconfig.Config{
+		Computer: internalconfig.ComputerConfig{
+			PermissionMode: internalconfig.ComputerPermissionModeAsk,
+		},
+	}
+
+	message := detectComputerAutomationStatus(config)
+	for _, expected := range []string{
+		"权限模式: 逐次确认",
+		"状态:",
+		"平台:",
+	} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("expected %q in %q", expected, message)
+		}
+	}
+	for _, unexpected := range []string{"permission_mode=", "desktop_permission="} {
+		if strings.Contains(message, unexpected) {
+			t.Fatalf("did not expect %q in %q", unexpected, message)
+		}
+	}
+}

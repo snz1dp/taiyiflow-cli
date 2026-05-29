@@ -6,6 +6,7 @@ APP_NAME := taiyiflow-cli
 GO ?= go
 NPM ?= npm
 CGO_ENABLED ?= 0
+DARWIN_CGO_ENABLED ?= 1
 
 BUILD_DIR := build
 RELEASE_DIR := $(BUILD_DIR)/release
@@ -19,17 +20,22 @@ BROWSER_EXTENSION_NODE_MODULES_STAMP := $(BROWSER_EXTENSION_DIR)/node_modules/.p
 DOCKER_CMD:=$(shell if [ -x "$(command -v podman)" ]; then echo podman; else echo docker; fi)
 GO_IMAGE ?= snz1.cn/dp/golang:1.25.0
 NODE_IMAGE ?= snz1.cn/base/node:20-alpine
+TAIYIFLOW_COMPUTER_LIVE_BROWSER ?= chrome
 
-PLATFORMS ?= darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64
+RELEASE_CROSS_PLATFORMS ?= linux/amd64 linux/arm64 windows/amd64 windows/arm64
+RELEASE_DARWIN_PLATFORMS ?= darwin/amd64 darwin/arm64
 
-.PHONY: help build build-all build-release release release-download-image browser-extension-dist browser-extension-dist-docker test clean check-go check-npm check-docker check-browser-extension-dist
+.PHONY: help build build-all build-release build-release-cross build-release-darwin-native verify-computer-live-darwin release release-download-image browser-extension-dist browser-extension-dist-docker test clean check-go check-npm check-docker check-browser-extension-dist
 
 help:
 	@printf '%s\n' \
 	  'make build                 Build current platform binary and refresh browser extension dist' \
-	  'make build-all             Build multi-platform binaries into build/release/ with local toolchains' \
-	  'make build-release         Build multi-platform binaries into build/release/ (requires browser extension dist)' \
-	  'make release               Build browser extension and release binaries via Docker/Podman' \
+	  'make build-all             Build full release set into build/release/ with local toolchains (darwin native requires macOS host)' \
+	  'make build-release         Build full release set into build/release/ (linux/windows cross + darwin native on macOS host)' \
+	  'make build-release-cross   Build linux/windows release binaries into build/release/' \
+	  'make build-release-darwin-native Build darwin release binaries on the current macOS host with CGO enabled' \
+	  'make verify-computer-live-darwin Run macOS live pointer verification against a visible Chromium window' \
+	  'make release               Build browser extension in container, then linux/windows cross binaries in container and darwin native binaries on the host' \
 	  'make release-download-image Build the release download image from build/release/' \
 	  'make browser-extension-dist Refresh browser extension dist only' \
 	  'make browser-extension-dist-docker Refresh browser extension dist via Docker/Podman' \
@@ -67,9 +73,14 @@ build: check-go browser-extension-dist
 build-all: browser-extension-dist build-release
 
 build-release: check-go check-browser-extension-dist
+	@if [[ "$$(uname -s)" != 'Darwin' ]]; then echo 'build-release 需要在 macOS 构建机上执行，以生成原生 darwin 发布产物；如只需 linux/windows，请改用 make build-release-cross'; exit 1; fi
+	@$(MAKE) build-release-cross
+	@$(MAKE) build-release-darwin-native
+
+build-release-cross: check-go check-browser-extension-dist
 	@mkdir -p $(RELEASE_DIR)
 	@set -e; \
-	for platform in $(PLATFORMS); do \
+	for platform in $(RELEASE_CROSS_PLATFORMS); do \
 		goos=$${platform%/*}; \
 		goarch=$${platform#*/}; \
 		ext=''; \
@@ -79,12 +90,29 @@ build-release: check-go check-browser-extension-dist
 		CGO_ENABLED=$(CGO_ENABLED) GOOS=$$goos GOARCH=$$goarch $(GO) build -trimpath -o "$$output" .; \
 	done
 
+build-release-darwin-native: check-go check-browser-extension-dist
+	@if [[ "$$(uname -s)" != 'Darwin' ]]; then echo 'build-release-darwin-native 仅支持在 macOS 构建机上执行'; exit 1; fi
+	@mkdir -p $(RELEASE_DIR)
+	@set -e; \
+	for platform in $(RELEASE_DARWIN_PLATFORMS); do \
+		goarch=$${platform#*/}; \
+		output='$(RELEASE_DIR)/$(APP_NAME)-darwin-'"$$goarch"; \
+		echo "==> $$output"; \
+		CGO_ENABLED=$(DARWIN_CGO_ENABLED) GOOS=darwin GOARCH=$$goarch $(GO) build -trimpath -o "$$output" .; \
+	done
+
+verify-computer-live-darwin: check-go
+	@if [[ "$$(uname -s)" != 'Darwin' ]]; then echo 'verify-computer-live-darwin 仅支持在 macOS 上执行'; exit 1; fi
+	@TAIYIFLOW_COMPUTER_LIVE_TEST=1 TAIYIFLOW_COMPUTER_LIVE_BROWSER=$(TAIYIFLOW_COMPUTER_LIVE_BROWSER) $(GO) test ./internal/computerbridge -run TestDarwinLivePointerVerification -count=1 -v
+
 release: check-docker browser-extension-dist-docker
+	@if [[ "$$(uname -s)" != 'Darwin' ]]; then echo 'make release 需要在 macOS 构建机上执行，以生成原生 darwin 发布产物'; exit 1; fi
 	@$(DOCKER_CMD) run --rm -v "$(ROOT_DIR):$(DOCKER_WORKDIR)" \
 		-e CGO_ENABLED=$(CGO_ENABLED) \
 		-e GODEBUG="invalidcpu=ignore" \
 		$(GO_IMAGE) \
-		bash -lc "cd $(DOCKER_WORKDIR) && make build-release"
+		bash -lc "cd $(DOCKER_WORKDIR) && make build-release-cross"
+	@$(MAKE) build-release-darwin-native
 
 release-download-image: check-docker release
 	@$(CTL_CMD) make docker --push

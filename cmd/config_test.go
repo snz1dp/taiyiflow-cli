@@ -237,8 +237,8 @@ func TestRenderConfigSummaryUsesExternalResourceAccessPolicyLabel(t *testing.T) 
 	if !strings.Contains(summary, "技能自动补装策略:") || !strings.Contains(summary, "自由文本技能搜索:") {
 		t.Fatalf("expected skill auto install labels, got %q", summary)
 	}
-	if !strings.Contains(summary, "浏览器自动化模式:") || !strings.Contains(summary, "浏览器权限模式:") {
-		t.Fatalf("expected browser config labels, got %q", summary)
+	if !strings.Contains(summary, "浏览器自动化模式:") || !strings.Contains(summary, "浏览器权限模式:") || !strings.Contains(summary, "桌面 ComputerUse 权限模式:") {
+		t.Fatalf("expected browser/computer config labels, got %q", summary)
 	}
 	if !strings.Contains(summary, "跨会话记忆: false") {
 		t.Fatalf("expected cross session memory label, got %q", summary)

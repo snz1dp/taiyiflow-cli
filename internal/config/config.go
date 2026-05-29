@@ -51,6 +51,8 @@ const (
 	BrowserPermissionModeAsk        = "ask"
 	BrowserPermissionModeFollowPlan = "follow_a_plan"
 	BrowserPermissionModeSkipAll    = "skip_all_permission_checks"
+	ComputerPermissionModeAsk       = "ask"
+	ComputerPermissionModeFollowPlan = "follow_a_plan"
 	BrowserChannelChrome            = "chrome"
 	BrowserChannelChromium          = "chromium"
 	BrowserChannelEdge              = "edge"
@@ -121,6 +123,7 @@ type Config struct {
 	SandboxRoots              []string         `yaml:"sandbox_roots,omitempty"`
 	PermissionRules           []PermissionRule `yaml:"permission_rules,omitempty"`
 	Browser                   BrowserConfig    `yaml:"browser,omitempty"`
+	Computer                  ComputerConfig   `yaml:"computer,omitempty"`
 	Skills                    SkillConfig      `yaml:"skills,omitempty"`
 }
 
@@ -135,6 +138,10 @@ type BrowserConfig struct {
 	SocketDir             string `yaml:"socket_dir,omitempty"`
 	RemoteDebuggingURL    string `yaml:"remote_debugging_url,omitempty"`
 	Headless              bool   `yaml:"headless,omitempty"`
+}
+
+type ComputerConfig struct {
+	PermissionMode string `yaml:"permission_mode,omitempty"`
 }
 
 type PermissionRule struct {
@@ -192,6 +199,9 @@ func Default() Config {
 			Channel:               BrowserChannelChrome,
 			ConnectTimeoutSeconds: DefaultBrowserConnectTimeout,
 			ExtensionSetup:        BrowserExtensionSetupNative,
+		},
+		Computer: ComputerConfig{
+			PermissionMode: ComputerPermissionModeAsk,
 		},
 		Skills: SkillConfig{
 			InstallScope:          SkillInstallScopeUser,
@@ -315,6 +325,15 @@ func NormalizeBrowserPermissionMode(value string) string {
 	}
 }
 
+func NormalizeComputerPermissionMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case ComputerPermissionModeFollowPlan:
+		return ComputerPermissionModeFollowPlan
+	default:
+		return ComputerPermissionModeAsk
+	}
+}
+
 func NormalizeBrowserChannel(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case BrowserChannelChromium:
@@ -359,6 +378,11 @@ func NormalizeBrowserConfig(value BrowserConfig) BrowserConfig {
 	value.ExtensionSetup = NormalizeBrowserExtensionSetup(value.ExtensionSetup)
 	value.SocketDir = strings.TrimSpace(value.SocketDir)
 	value.RemoteDebuggingURL = strings.TrimSpace(value.RemoteDebuggingURL)
+	return value
+}
+
+func NormalizeComputerConfig(value ComputerConfig) ComputerConfig {
+	value.PermissionMode = NormalizeComputerPermissionMode(value.PermissionMode)
 	return value
 }
 
@@ -557,6 +581,7 @@ func (m *Manager) Load() (Config, error) {
 		config.OutputLanguage = Default().OutputLanguage
 	}
 	config.Browser = NormalizeBrowserConfig(config.Browser)
+	config.Computer = NormalizeComputerConfig(config.Computer)
 	if strings.TrimSpace(config.Skills.RegistryURL) == "" {
 		config.Skills.RegistryURL = Default().Skills.RegistryURL
 	}
@@ -568,6 +593,7 @@ func (m *Manager) Save(config Config) error {
 	config.DocUnstructuredExts = NormalizeDocUnstructuredExts(config.DocUnstructuredExts)
 	config.PermissionRules = NormalizePermissionRules(config.PermissionRules)
 	config.Browser = NormalizeBrowserConfig(config.Browser)
+	config.Computer = NormalizeComputerConfig(config.Computer)
 	if err := os.MkdirAll(filepath.Dir(m.path), 0o755); err != nil {
 		return fmt.Errorf("创建配置目录失败: %w", err)
 	}

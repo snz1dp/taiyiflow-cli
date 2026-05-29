@@ -149,6 +149,15 @@ func TestReviewRequestModeIsReadOnlyForMutatingTools(t *testing.T) {
 	if modeAllowsClientTool(reviewRequestMode(), "taiyiflow-in-chrome__click") {
 		t.Fatal("expected review mode to reject mutating browser click tool")
 	}
+	if !modeAllowsClientTool(reviewRequestMode(), "taiyiflow-computer__displays_context") {
+		t.Fatal("expected review mode to allow readonly desktop displays_context")
+	}
+	if !modeAllowsClientTool(reviewRequestMode(), "taiyiflow-computer__screenshot") {
+		t.Fatal("expected review mode to allow readonly desktop screenshot")
+	}
+	if modeAllowsClientTool(reviewRequestMode(), "taiyiflow-computer__type_text") {
+		t.Fatal("expected review mode to reject mutating desktop type_text tool")
+	}
 }
 
 func TestExecuteTasksSlashCommandCapture(t *testing.T) {

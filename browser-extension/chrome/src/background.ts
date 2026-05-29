@@ -27,6 +27,7 @@ type ConsoleEntry = {
 
 type TabsContextResult = {
   active_tab_id: string;
+  count: number;
   tabs: Array<{
     tab_id: string;
     title: string;
@@ -100,7 +101,8 @@ async function ensurePageBridgeInjected(sender: chrome.runtime.MessageSender): P
   if (typeof tabId !== 'number') {
     return;
   }
-  const frameId = typeof sender.frameId === 'number' ? sender.frameId : 0;
+  const senderWithFrameID = sender as chrome.runtime.MessageSender & { frameId?: number };
+  const frameId = typeof senderWithFrameID.frameId === 'number' ? senderWithFrameID.frameId : 0;
   try {
     await chrome.scripting.executeScript({
       target: { tabId, frameIds: [frameId] },
@@ -253,32 +255,27 @@ async function handleTabsContext(): Promise<TabsContextResult> {
   if (!activeTab?.id) {
     throw new Error('no browser tab is available');
   }
+  const tabItems = tabs
+    .filter((tab: chrome.tabs.Tab): tab is chrome.tabs.Tab & { id: number; windowId: number } => typeof tab.id === 'number' && typeof tab.windowId === 'number')
+    .map((tab: chrome.tabs.Tab & { id: number; windowId: number }) => tabStateFromTab(tab));
   return {
     active_tab_id: String(activeTab.id),
-    tabs: tabs
-      .filter((tab): tab is chrome.tabs.Tab & { id: number; windowId: number } => typeof tab.id === 'number' && typeof tab.windowId === 'number')
-      .map((tab: chrome.tabs.Tab & { id: number; windowId: number }) => ({
-        tab_id: String(tab.id),
-        title: tab.title ?? '',
-        url: tab.url ?? '',
-        active: Boolean(tab.active),
-        window_id: tab.windowId,
-      })),
+    count: tabItems.length,
+    tabs: tabItems,
   };
 }
 
 async function handleTabsCreate(args: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const url = readRequiredString(args, 'url');
+  const url = readOptionalString(args, 'url') ?? 'about:blank';
   const active = readBoolean(args, 'active', true);
   const tab = await chrome.tabs.create({ url, active });
   if (typeof tab.id !== 'number') {
     throw new Error('created tab does not expose tab id');
   }
   return {
-    tab_id: String(tab.id),
-    title: tab.title ?? '',
+    ...tabStateFromTab(tab as chrome.tabs.Tab & { id: number; windowId: number }),
     url: tab.url ?? url,
-    active: Boolean(tab.active),
+    created: true,
   };
 }
 
@@ -286,13 +283,10 @@ async function handleNavigate(args: Record<string, unknown>): Promise<Record<str
   const tab = await resolveTargetTab(args);
   const url = readRequiredString(args, 'url');
   const updated = await chrome.tabs.update(tab.id, { url, active: true });
-  await waitForTabComplete(updated.id ?? tab.id);
-  return {
-    tab_id: String(updated.id ?? tab.id),
-    title: updated.title ?? '',
-    url: updated.url ?? url,
-    active: Boolean(updated.active),
-  };
+  const tabID = updated.id ?? tab.id;
+  await waitForTabComplete(tabID);
+  const state = await readTabState(tabID);
+  return { ...state, url: state.url || url };
 }
 
 async function handleClick(args: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -306,7 +300,7 @@ async function handleClick(args: Record<string, unknown>): Promise<Record<string
     element.click();
     return { ok: true, message: receivedSelector };
   }, selector);
-  return { tab_id: String(tab.id), selector };
+  return { ...(await readTabState(tab.id)), selector };
 }
 
 async function handleType(args: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -324,7 +318,7 @@ async function handleType(args: Record<string, unknown>): Promise<Record<string,
     element.dispatchEvent(new Event('change', { bubbles: true }));
     return { ok: true, message: receivedSelector };
   }, selector, text);
-  return { tab_id: String(tab.id), selector, text_length: text.length };
+  return { ...(await readTabState(tab.id)), selector, text_length: text.length };
 }
 
 async function handleScreenshot(args: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -334,8 +328,10 @@ async function handleScreenshot(args: Record<string, unknown>): Promise<Record<s
   await waitForTabComplete(tab.id);
   const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
   const imageBase64 = dataUrl.replace(/^data:image\/png;base64,/, '');
+  const state = await readTabState(tab.id);
   return {
-    tab_id: String(tab.id),
+    ...state,
+    path: readOptionalString(args, 'path') ?? '',
     image_base64: imageBase64,
     format: 'png',
   };
@@ -344,16 +340,27 @@ async function handleScreenshot(args: Record<string, unknown>): Promise<Record<s
 async function handleReadText(args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const tab = await resolveTargetTab(args);
   const selector = readOptionalString(args, 'selector');
-  const maxLength = readNumber(args, 'max_length', 4000);
-  const result = await runTabFunction(tab.id, (receivedSelector: string | null, receivedMaxLength: number) => {
+  const maxChars = readNumberFromKeys(args, ['max_chars', 'max_length'], 4000);
+  const result = await runTabFunction(tab.id, (receivedSelector: string | null, receivedMaxChars: number) => {
     const target = receivedSelector ? document.querySelector(receivedSelector) : document.body;
     const rawText = (target?.textContent ?? '').trim();
-    return rawText.slice(0, Math.max(receivedMaxLength, 0));
-  }, selector, maxLength);
+    const safeLimit = Number.isFinite(receivedMaxChars) ? Math.max(Math.floor(receivedMaxChars), 0) : 0;
+    return {
+      found: receivedSelector ? Boolean(target) : true,
+      text: safeLimit > 0 ? rawText.slice(0, safeLimit) : rawText,
+      truncated: safeLimit > 0 && rawText.length > safeLimit,
+      total_length: rawText.length,
+    };
+  }, selector, maxChars);
+  const state = await readTabState(tab.id);
+  const textResult: Record<string, unknown> = isRecord(result) ? result : {};
   return {
-    tab_id: String(tab.id),
+    ...state,
     selector: selector ?? '',
-    text: String(result),
+    text: typeof textResult.text === 'string' ? textResult.text : '',
+    found: Boolean(textResult.found),
+    truncated: Boolean(textResult.truncated),
+    total_length: readNumber(textResult, 'total_length', 0),
   };
 }
 
@@ -361,9 +368,14 @@ async function handleReadConsole(args: Record<string, unknown>): Promise<Record<
   const tab = await resolveTargetTab(args);
   const limit = readNumber(args, 'limit', 50);
   const entries = consoleEntriesByTab.get(tab.id) ?? [];
-  return {
+  const slicedEntries = entries.slice(Math.max(entries.length - limit, 0)).map((entry) => ({
+    ...entry,
     tab_id: String(tab.id),
-    entries: entries.slice(Math.max(entries.length - limit, 0)),
+  }));
+  return {
+    ...(await readTabState(tab.id)),
+    entries: slicedEntries,
+    count: slicedEntries.length,
   };
 }
 
@@ -422,6 +434,24 @@ async function waitForTabComplete(tabId: number): Promise<void> {
   });
 }
 
+function tabStateFromTab(tab: chrome.tabs.Tab & { id: number; windowId: number }): Record<string, unknown> {
+  return {
+    tab_id: String(tab.id),
+    title: tab.title ?? '',
+    url: tab.url ?? '',
+    active: Boolean(tab.active),
+    window_id: tab.windowId,
+  };
+}
+
+async function readTabState(tabId: number): Promise<Record<string, unknown>> {
+  const tab = await chrome.tabs.get(tabId);
+  if (typeof tab.id !== 'number' || typeof tab.windowId !== 'number') {
+    throw new Error(`tab not found: ${String(tabId)}`);
+  }
+  return tabStateFromTab(tab as chrome.tabs.Tab & { id: number; windowId: number });
+}
+
 function nextMessageID(): string {
   return `msg-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 }
@@ -458,6 +488,16 @@ function readNumber(record: Record<string, unknown>, key: string, fallback: numb
     if (Number.isFinite(parsed)) {
       return parsed;
     }
+  }
+  return fallback;
+}
+
+function readNumberFromKeys(record: Record<string, unknown>, keys: string[], fallback: number): number {
+  for (const key of keys) {
+    if (!(key in record)) {
+      continue;
+    }
+    return readNumber(record, key, fallback);
   }
   return fallback;
 }

@@ -254,6 +254,25 @@ func TestBundledSkillExtractsReferenceFiles(t *testing.T) {
 	}
 }
 
+func TestLoadBundledTaiyiFlowComputerSkill(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	config := internalconfig.Config{}
+
+	item, _, err := LoadByName(config, "taiyiflow-computer")
+	if err != nil {
+		t.Fatalf("load bundled skill failed: %v", err)
+	}
+	if item.Source != "bundled" {
+		t.Fatalf("expected bundled source, got %s", item.Source)
+	}
+	if !item.Enabled {
+		t.Fatal("expected bundled desktop computer skill enabled by default")
+	}
+	if !strings.Contains(item.Body, "taiyiflow-computer__") {
+		t.Fatalf("expected desktop computer skill body to mention tool namespace, got %q", item.Body)
+	}
+}
+
 func TestLoadFileFallsBackToMeaningfulSummary(t *testing.T) {
 	tempDir := t.TempDir()
 	skillDir := filepath.Join(tempDir, "summarized")
