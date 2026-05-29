@@ -30,6 +30,15 @@ await Promise.all([
     target: 'chrome120',
     sourcemap: false,
   }),
+  build({
+    entryPoints: [path.join(projectDir, 'src', 'page_bridge.ts')],
+    outfile: path.join(distDir, 'page_bridge.js'),
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'chrome120',
+    sourcemap: false,
+  }),
 ]);
 
 const manifest = await readFile(path.join(projectDir, 'manifest.json'), 'utf8');

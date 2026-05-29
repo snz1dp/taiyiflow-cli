@@ -92,7 +92,7 @@ func TestRunBrowserInstallFallsBackToEmbeddedExtensionProject(t *testing.T) {
 		t.Fatalf("default root dir failed: %v", err)
 	}
 	embeddedDir := filepath.Join(rootDir, "browser", "extension", "chrome")
-	for _, required := range []string{"manifest.json", "background.js", "content.js"} {
+	for _, required := range []string{"manifest.json", "background.js", "content.js", "page_bridge.js"} {
 		if _, err := os.Stat(filepath.Join(embeddedDir, required)); err != nil {
 			t.Fatalf("expected embedded extension asset %s to exist, got %v", required, err)
 		}

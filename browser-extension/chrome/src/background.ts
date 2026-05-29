@@ -55,13 +55,17 @@ chrome.action.onClicked.addListener(() => {
   void ensureNativeHostPort();
 });
 
-chrome.alarms.onAlarm.addListener((alarm) => {
+chrome.alarms.onAlarm.addListener((alarm: chrome.alarms.Alarm) => {
   if (alarm.name === KEEPALIVE_ALARM) {
     void ensureNativeHostPort();
   }
 });
 
-chrome.runtime.onMessage.addListener((message: unknown, sender) => {
+chrome.runtime.onMessage.addListener((message: unknown, sender: chrome.runtime.MessageSender) => {
+  if (isPageBridgeInstallRequest(message)) {
+    void ensurePageBridgeInjected(sender);
+    return;
+  }
   if (!isConsoleBridgeMessage(message)) {
     return;
   }
@@ -82,13 +86,35 @@ chrome.runtime.onMessage.addListener((message: unknown, sender) => {
   consoleEntriesByTab.set(tabId, entries);
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => {
+chrome.tabs.onRemoved.addListener((tabId: number) => {
   consoleEntriesByTab.delete(tabId);
 });
 
 async function bootstrap(): Promise<void> {
   chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
   await ensureNativeHostPort();
+}
+
+async function ensurePageBridgeInjected(sender: chrome.runtime.MessageSender): Promise<void> {
+  const tabId = sender.tab?.id;
+  if (typeof tabId !== 'number') {
+    return;
+  }
+  const frameId = typeof sender.frameId === 'number' ? sender.frameId : 0;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [frameId] },
+      files: ['page_bridge.js'],
+      world: 'MAIN',
+      injectImmediately: true,
+    });
+  } catch (error) {
+    console.warn('太乙智启页面桥注入失败', {
+      tabId,
+      frameId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 async function ensureNativeHostPort(): Promise<void> {
@@ -99,7 +125,7 @@ async function ensureNativeHostPort(): Promise<void> {
     const port = chrome.runtime.connectNative(HOST_NAME);
     nativePort = port;
     lastNativeHostError = '';
-    port.onMessage.addListener((message) => {
+    port.onMessage.addListener((message: NativeHostMessage) => {
       void handleNativeHostMessage(message as NativeHostMessage);
     });
     port.onDisconnect.addListener(() => {
@@ -223,7 +249,7 @@ function normalizeToolName(value: unknown): string {
 
 async function handleTabsContext(): Promise<TabsContextResult> {
   const tabs = await chrome.tabs.query({});
-  const activeTab = tabs.find((tab) => tab.active && tab.lastFocusedWindow) ?? tabs.find((tab) => tab.active) ?? tabs[0];
+  const activeTab = tabs.find((tab: chrome.tabs.Tab) => tab.active && tab.lastFocusedWindow) ?? tabs.find((tab: chrome.tabs.Tab) => tab.active) ?? tabs[0];
   if (!activeTab?.id) {
     throw new Error('no browser tab is available');
   }
@@ -231,7 +257,7 @@ async function handleTabsContext(): Promise<TabsContextResult> {
     active_tab_id: String(activeTab.id),
     tabs: tabs
       .filter((tab): tab is chrome.tabs.Tab & { id: number; windowId: number } => typeof tab.id === 'number' && typeof tab.windowId === 'number')
-      .map((tab) => ({
+      .map((tab: chrome.tabs.Tab & { id: number; windowId: number }) => ({
         tab_id: String(tab.id),
         title: tab.title ?? '',
         url: tab.url ?? '',
@@ -438,6 +464,10 @@ function readNumber(record: Record<string, unknown>, key: string, fallback: numb
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function isPageBridgeInstallRequest(value: unknown): value is { type: 'taiyiflow-install-page-bridge' } {
+  return isRecord(value) && value.type === 'taiyiflow-install-page-bridge';
 }
 
 function isConsoleBridgeMessage(value: unknown): value is { type: 'taiyiflow-console-event'; payload: ConsoleEntry } {

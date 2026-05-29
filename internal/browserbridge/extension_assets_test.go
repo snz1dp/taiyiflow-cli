@@ -20,6 +20,7 @@ func TestExtractEmbeddedBrowserExtensionWritesRuntimeFiles(t *testing.T) {
 		"manifest.json",
 		"background.js",
 		"content.js",
+		"page_bridge.js",
 	}
 	for _, relPath := range expectedFiles {
 		if _, err := os.Stat(filepath.Join(targetDir, relPath)); err != nil {

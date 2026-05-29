@@ -1,7 +1,5 @@
 const PAGE_BRIDGE_SOURCE = 'taiyiflow-page-console-bridge';
 
-installPageBridge();
-
 window.addEventListener('message', (event) => {
   if (event.source !== window) {
     return;
@@ -16,70 +14,14 @@ window.addEventListener('message', (event) => {
   });
 });
 
-function installPageBridge(): void {
-  const root = document.documentElement ?? document.head ?? document.body;
-  if (!root) {
-    window.addEventListener('DOMContentLoaded', installPageBridge, { once: true });
-    return;
+void requestPageBridgeInjection();
+
+async function requestPageBridgeInjection(): Promise<void> {
+  try {
+    await chrome.runtime.sendMessage({ type: 'taiyiflow-install-page-bridge' });
+  } catch {
+    // 页面桥注入失败时仅会缺少控制台采集，不阻断其他扩展能力。
   }
-  const script = document.createElement('script');
-  script.textContent = `(${injectConsoleBridge.toString()})(${JSON.stringify(PAGE_BRIDGE_SOURCE)});`;
-  root.appendChild(script);
-  script.remove();
-}
-
-function injectConsoleBridge(source: string): void {
-  const globalMarker = '__taiyiflowConsoleBridgeInstalled__';
-  const markerHost = window as Window & { [key: string]: boolean | undefined };
-  if (markerHost[globalMarker]) {
-    return;
-  }
-  markerHost[globalMarker] = true;
-
-  const serialize = (value: unknown): string => {
-    if (typeof value === 'string') {
-      return value;
-    }
-    if (value instanceof Error) {
-      return value.stack ?? value.message;
-    }
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return String(value);
-    }
-  };
-
-  const forward = (level: string, args: unknown[]): void => {
-    window.postMessage(
-      {
-        source,
-        payload: {
-          level,
-          text: args.map((item) => serialize(item)).join(' '),
-          href: location.href,
-          timestamp: new Date().toISOString(),
-        },
-      },
-      '*',
-    );
-  };
-
-  for (const level of ['log', 'info', 'warn', 'error', 'debug'] as const) {
-    const original = console[level];
-    console[level] = (...args: unknown[]) => {
-      forward(level, args);
-      original.apply(console, args);
-    };
-  }
-
-  window.addEventListener('error', (event) => {
-    forward('error', [event.message]);
-  });
-
-  window.addEventListener('unhandledrejection', (event) => {
-    forward('error', [event.reason]);
-  });
 }
 
 function isPageConsoleMessage(value: unknown): value is { source: string; payload: { level: string; text: string; href: string; timestamp: string } } {

@@ -26,9 +26,12 @@
 
 ## 构建
 
-- VS Code 默认构建任务：build taiyiflow
-- 命令行构建产物：go build -o taiyiflow-cli .
-- 运行：./taiyiflow-cli
+- VS Code 默认构建任务：build taiyiflow-cli
+- `make build`：默认先更新 `browser-extension/chrome/dist`，再编译当前平台产物 `./taiyiflow-cli`
+- `make build-all`：默认先更新 `browser-extension/chrome/dist`，再输出多平台产物到 `build/release/`
+- `make browser-extension-dist`：仅刷新浏览器扩展构建产物
+- 直接命令行构建：`go build -o taiyiflow-cli .`
+- 运行：`./taiyiflow-cli`
 
 ## 登录
 
@@ -51,7 +54,7 @@
 ## 浏览器扩展与内置资源
 
 - `chrome_session` 模式依赖 `taiyiflow-cli browser install` 安装 Native Messaging host，并在浏览器中加载扩展构建产物。
-- 对最终用户与发布产物，仓库内的 `browser-extension/chrome` 不是运行时必需项；若当前工作区缺少该目录，`browser install` 会自动抽取 CLI 内置的扩展源码到本地目录，再继续构建与加载。
+- 对最终用户与发布产物，仓库内的 `browser-extension/chrome` 不是运行时必需项；若当前工作区缺少该目录，`browser install` 会自动抽取 CLI 内置的扩展最小运行目录到本地目录，直接提供可加载产物。
 - 仓库内的 `browser-extension/chrome` 目前仍是扩展开发、调试与手工构建入口，主要服务于仓库维护；不要把“内置资源可运行”误解成“仓库源码目录可以直接删除”。
 
 ## 配置示例
