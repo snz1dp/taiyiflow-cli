@@ -163,7 +163,12 @@ func ResolveNativeMessagingPaths(config internalconfig.BrowserConfig, extensionP
 		BinaryPath:      absBinaryPath,
 	}
 	if result.ExtensionDir != "" {
-		result.ExtensionBuildDir = filepath.Join(result.ExtensionDir, "dist")
+		status := InspectBrowserExtensionProject(result.ExtensionDir)
+		if status.DistReady {
+			result.ExtensionBuildDir = status.DistDir
+		} else {
+			result.ExtensionBuildDir = filepath.Join(result.ExtensionDir, "dist")
+		}
 	}
 	return result, nil
 }
@@ -296,6 +301,8 @@ func RunNativeMessagingHost(ctx context.Context, config internalconfig.BrowserCo
 	if err != nil {
 		return err
 	}
+	stopInterruptReader := interruptNativeHostReaderOnCancel(ctx, stdin)
+	defer stopInterruptReader()
 	if err := os.MkdirAll(paths.StateDir, 0o755); err != nil {
 		return fmt.Errorf("创建本地消息宿主状态目录失败: %w", err)
 	}
@@ -321,6 +328,9 @@ func RunNativeMessagingHost(ctx context.Context, config internalconfig.BrowserCo
 		}
 		message, err := readNativeMessage(stdin)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if errors.Is(err, io.EOF) {
 				return nil
 			}
@@ -362,6 +372,27 @@ func RunNativeMessagingHost(ctx context.Context, config internalconfig.BrowserCo
 			bridge.markError(err.Error())
 			return err
 		}
+	}
+}
+
+func interruptNativeHostReaderOnCancel(ctx context.Context, reader io.Reader) func() {
+	if ctx == nil {
+		return func() {}
+	}
+	readCloser, ok := reader.(io.ReadCloser)
+	if !ok {
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = readCloser.Close()
+		case <-done:
+		}
+	}()
+	return func() {
+		close(done)
 	}
 }
 

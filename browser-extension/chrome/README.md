@@ -10,36 +10,36 @@
 
 ## 本地构建
 
-先在仓库根目录执行：
+对最终用户，先在仓库根目录执行：
 
 ```bash
-taiyiflow-cli browser install --build
+taiyiflow-cli browser install
 ```
 
-默认情况下，`browser install` 会优先使用仓库内的本目录；若当前工作区不是完整仓库，它会自动回退到 CLI 内置的扩展源码，并输出实际使用的扩展目录。
+默认情况下，`browser install` 会优先使用仓库内的本目录；若当前工作区不是完整仓库，它会自动回退到 CLI 内置的扩展资源，并输出实际使用的扩展目录。
 
 这意味着：
 
-- 对最终用户与发布产物，只要 CLI 内置资源存在，运行 `browser install` 时通常不需要仓库内的本目录。
+- 对最终用户与发布产物，只要 CLI 内置资源存在，运行 `browser install` 时通常不需要仓库内的本目录，也不需要安装 Node.js。
 - 对当前仓库的开发者，本目录仍是扩展源码维护、手工调试与直接执行 `npm install && npm run build` 的主入口；内置资源只是运行时兜底副本，不是替代源码维护目录。
 
 ## 仓库维护
 
 - `browser-extension/chrome` 是扩展源码的唯一真值源。
-- `browser-extension` 目录下新增了专门的 Go 资源包，直接嵌入本目录源码，再由 `internal/browserbridge` 引用；不再需要维护额外镜像副本。
+- `browser-extension` 目录下新增了专门的 Go 资源包，默认只嵌入本目录的 `dist/` 最小运行产物，再由 `internal/browserbridge` 引用；不再需要维护额外镜像副本。
 - 修改本目录源码后，不需要再执行额外同步命令；直接运行相关测试即可。
 - 提交前执行 `go test ./internal/browserbridge -run 'ExtractEmbeddedBrowserExtension|NativeMessaging'`，确认内置扩展抽取链路仍然正常。
 
-如果你不希望 CLI 自动构建，也可以改用：
+如果你在当前仓库中修改了扩展源码，需要手工重建产物，可以改用：
 
 ```bash
-taiyiflow-cli browser install
+taiyiflow-cli browser install --build
 cd browser-extension/chrome
 npm install
 npm run build
 ```
 
-构建产物会输出到 `dist/`。在浏览器扩展管理页中开启开发者模式后，选择“加载已解压的扩展程序”，指向 `dist/` 即可。加载后建议点击一次扩展图标，触发扩展后台与本地消息宿主建链，再执行：
+默认情况下，`browser install` 输出中给出的扩展加载目录会直接指向可用的 `dist/`。在浏览器扩展管理页中开启开发者模式后，选择“加载已解压的扩展程序”，指向该目录即可。加载后建议点击一次扩展图标，触发扩展后台与本地消息宿主建链，再执行：
 
 ```bash
 taiyiflow-cli doctor

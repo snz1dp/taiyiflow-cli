@@ -50,9 +50,9 @@ func (a *App) printBrowserUsage() {
 		"  taiyiflow-cli browser help",
 		"",
 		"说明:",
-		"  install 会生成本地消息宿主启动脚本与清单文件；加上 --build 后会执行 npm install && npm run build。",
-		"  对最终用户，若当前工作区没有 browser-extension/chrome，install 会自动回退到内置扩展源码。",
-		"  仓库内的 browser-extension/chrome 仍主要用于扩展开发、调试与手工构建。",
+		"  install 会生成本地消息宿主启动脚本与清单文件；若缺少工作区扩展目录，会自动抽取 CLI 内置的可加载扩展产物。",
+		"  仅在显式传入 --build 时，才会执行 npm install && npm run build。",
+		"  仓库内的 browser-extension/chrome 仍主要用于扩展开发、调试与手工重建产物。",
 		"  host 为内部模式，供浏览器通过本地消息协议启动；通常不需要手动执行。",
 	}
 	_, _ = fmt.Fprintln(a.stdout, strings.Join(lines, "\n"))
@@ -68,7 +68,7 @@ func (a *App) runBrowserInstall(args []string) error {
 	flagSet.StringVar(&channel, "channel", "", "浏览器通道（chrome|chromium|edge|brave）；默认使用当前配置")
 	flagSet.StringVar(&extensionDirFlag, "extension-dir", "", "扩展项目目录；默认自动从当前工作区向上探测 browser-extension/chrome")
 	flagSet.BoolVar(&buildExtension, "build", false, "安装本地消息宿主后自动执行 npm install && npm run build")
-	flagSet.BoolVar(&useEmbeddedExtension, "use-embedded-extension", false, "忽略工作区扩展目录，直接抽取并使用 CLI 内置扩展源码")
+	flagSet.BoolVar(&useEmbeddedExtension, "use-embedded-extension", false, "忽略工作区扩展目录，直接抽取并使用 CLI 内置扩展资源")
 	flagSet.BoolVar(&useEmbeddedExtension, "use-bundled-extension", false, "兼容旧参数；等价于 --use-embedded-extension")
 	if err := flagSet.Parse(args); err != nil {
 		return err
@@ -138,7 +138,7 @@ func (a *App) runBrowserInstall(args []string) error {
 		fmt.Fprintf(a.stdout, "- 构建产物: %s\n", formatBrowserExtensionBuildStatus(extensionStatus))
 		if strings.TrimSpace(buildSummary) != "" {
 			fmt.Fprintf(a.stdout, "- 构建验证: %s\n", buildSummary)
-		} else if extensionStatus.SourceReady {
+		} else if extensionStatus.SourceReady && !extensionStatus.DistReady {
 			fmt.Fprintf(a.stdout, "- 自动构建命令: taiyiflow-cli browser install --build\n")
 			fmt.Fprintf(a.stdout, "- 手动构建命令: cd %s && npm install && npm run build\n", result.ExtensionDir)
 		}
@@ -208,16 +208,16 @@ func resolveBrowserExtensionProject(currentDir, explicitDir string, useEmbedded 
 			return "", "", fmt.Errorf("解析扩展目录失败: %w", err)
 		}
 		status := browserbridge.InspectBrowserExtensionProject(absoluteDir)
-		if !status.SourceReady && !useEmbedded {
-			return "", "", fmt.Errorf("指定扩展目录缺少 package.json 或 manifest.json: %s", absoluteDir)
+		if !status.SourceReady && !status.DistReady && !useEmbedded {
+			return "", "", fmt.Errorf("指定扩展目录既不是扩展源码目录，也不是可加载运行目录: %s", absoluteDir)
 		}
-		if status.SourceReady && !useEmbedded {
+		if (status.SourceReady || status.DistReady) && !useEmbedded {
 			return absoluteDir, "指定目录", nil
 		}
 	}
 	if !useEmbedded {
 		detectedDir := detectChromeExtensionProjectDir(currentDir)
-		if status := browserbridge.InspectBrowserExtensionProject(detectedDir); status.SourceReady {
+		if status := browserbridge.InspectBrowserExtensionProject(detectedDir); status.SourceReady || status.DistReady {
 			return detectedDir, "工作区项目", nil
 		}
 	}
@@ -226,14 +226,17 @@ func resolveBrowserExtensionProject(currentDir, explicitDir string, useEmbedded 
 		return "", "", err
 	}
 	status := browserbridge.InspectBrowserExtensionProject(embeddedDir)
-	if !status.SourceReady {
-		return "", "", fmt.Errorf("抽取内置扩展资源后仍缺少 package.json 或 manifest.json: %s", embeddedDir)
+	if !status.DistReady {
+		return "", "", fmt.Errorf("抽取内置扩展资源后仍缺少可加载运行产物: %s", embeddedDir)
 	}
-	return embeddedDir, "内置资源", nil
+	return embeddedDir, "内置运行产物", nil
 }
 
 func buildBrowserExtensionProject(ctx context.Context, status browserbridge.BrowserExtensionProjectStatus) (string, error) {
 	if !status.SourceReady {
+		if status.DistReady {
+			return "", fmt.Errorf("当前目录仅包含可加载运行产物，无法执行构建: %s", status.Directory)
+		}
 		return "", fmt.Errorf("扩展目录缺少 package.json 或 manifest.json，无法执行构建: %s", status.Directory)
 	}
 	npmPath, err := browserInstallLookupPath("npm")
@@ -259,10 +262,22 @@ func formatBrowserExtensionSourceStatus(status browserbridge.BrowserExtensionPro
 	if status.SourceReady {
 		return "已找到 package.json 与 manifest.json"
 	}
+	if status.DistReady {
+		return "当前目录仅包含最小运行产物"
+	}
 	return "缺少 package.json 或 manifest.json"
 }
 
 func formatBrowserExtensionNPMStatus(status browserbridge.BrowserExtensionProjectStatus) string {
+	if status.DistReady && !status.SourceReady {
+		return "不适用（当前目录仅包含最小运行产物）"
+	}
+	if status.DistReady {
+		if status.NPMAvailable {
+			return fmt.Sprintf("可选重建可用 (%s)", status.NPMPath)
+		}
+		return "未找到 npm，但当前已存在可加载产物"
+	}
 	if status.NPMAvailable {
 		return fmt.Sprintf("可用 (%s)", status.NPMPath)
 	}
@@ -271,7 +286,7 @@ func formatBrowserExtensionNPMStatus(status browserbridge.BrowserExtensionProjec
 
 func formatBrowserExtensionBuildStatus(status browserbridge.BrowserExtensionProjectStatus) string {
 	if status.DistReady {
-		return fmt.Sprintf("已找到 %s", status.DistManifestPath)
+		return fmt.Sprintf("已就绪 (%s)", status.DistManifestPath)
 	}
 	return fmt.Sprintf("未找到 %s", status.DistManifestPath)
 }

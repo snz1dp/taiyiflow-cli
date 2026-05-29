@@ -81,17 +81,25 @@ func TestRunBrowserInstallFallsBackToEmbeddedExtensionProject(t *testing.T) {
 		t.Fatalf("runBrowserInstall failed: %v", err)
 	}
 	output := stdout.String()
-	if !strings.Contains(output, "扩展来源: 内置资源") {
+	if !strings.Contains(output, "扩展来源: 内置运行产物") {
 		t.Fatalf("expected output to mention embedded extension source, got %q", output)
+	}
+	if strings.Contains(output, "自动构建命令") {
+		t.Fatalf("expected embedded bundled extension to avoid build hint, got %q", output)
 	}
 	rootDir, err := internalconfig.DefaultRootDir()
 	if err != nil {
 		t.Fatalf("default root dir failed: %v", err)
 	}
 	embeddedDir := filepath.Join(rootDir, "browser", "extension", "chrome")
-	for _, required := range []string{"package.json", "manifest.json", filepath.Join("src", "background.ts")} {
+	for _, required := range []string{"manifest.json", "background.js", "content.js"} {
 		if _, err := os.Stat(filepath.Join(embeddedDir, required)); err != nil {
 			t.Fatalf("expected embedded extension asset %s to exist, got %v", required, err)
+		}
+	}
+	for _, unexpected := range []string{"package.json", filepath.Join("src", "background.ts"), filepath.Join("dist", "manifest.json")} {
+		if _, err := os.Stat(filepath.Join(embeddedDir, unexpected)); err == nil {
+			t.Fatalf("did not expect embedded extension asset %s", unexpected)
 		}
 	}
 }

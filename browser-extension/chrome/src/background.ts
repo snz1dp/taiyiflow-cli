@@ -141,7 +141,7 @@ function logNativeHostError(message: string): void {
   lastNativeHostError = normalized;
   if (normalized.includes('Specified native messaging host not found')) {
     console.error(
-      '太乙智启浏览器消息宿主未找到。请先运行 "taiyiflow-cli browser install --build"，然后在当前浏览器通道重新加载太乙智启扩展。如果刚切换过 chrome、chromium、edge 或 brave，也请重新执行一次安装。',
+      '太乙智启浏览器消息宿主未找到。请先运行 "taiyiflow-cli browser install"，然后在当前浏览器通道重新加载太乙智启扩展。若你刚修改过扩展源码，可额外执行一次 "taiyiflow-cli browser install --build"。如果刚切换过 chrome、chromium、edge 或 brave，也请重新执行一次安装。',
       { host: HOST_NAME, lastError: normalized, extensionID: chrome.runtime.id },
     );
     return;

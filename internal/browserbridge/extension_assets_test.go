@@ -8,7 +8,7 @@ import (
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 )
 
-func TestExtractEmbeddedBrowserExtensionWritesSourceFiles(t *testing.T) {
+func TestExtractEmbeddedBrowserExtensionWritesRuntimeFiles(t *testing.T) {
 	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 
@@ -18,12 +18,8 @@ func TestExtractEmbeddedBrowserExtensionWritesSourceFiles(t *testing.T) {
 	}
 	expectedFiles := []string{
 		"manifest.json",
-		"package.json",
-		"tsconfig.json",
-		filepath.Join("scripts", "build.mjs"),
-		filepath.Join("src", "background.ts"),
-		filepath.Join("src", "chrome.d.ts"),
-		filepath.Join("src", "content.ts"),
+		"background.js",
+		"content.js",
 	}
 	for _, relPath := range expectedFiles {
 		if _, err := os.Stat(filepath.Join(targetDir, relPath)); err != nil {
@@ -32,8 +28,14 @@ func TestExtractEmbeddedBrowserExtensionWritesSourceFiles(t *testing.T) {
 	}
 	unexpectedFiles := []string{
 		"README.md",
+		"package.json",
 		"package-lock.json",
+		"tsconfig.json",
 		filepath.Join("dist", "manifest.json"),
+		filepath.Join("scripts", "build.mjs"),
+		filepath.Join("src", "background.ts"),
+		filepath.Join("src", "chrome.d.ts"),
+		filepath.Join("src", "content.ts"),
 		filepath.Join("node_modules", ".package-lock.json"),
 	}
 	for _, relPath := range unexpectedFiles {

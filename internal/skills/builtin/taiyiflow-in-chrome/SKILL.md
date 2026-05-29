@@ -26,7 +26,7 @@ category: browser
 - c/local/taiyiflow-in-chrome__read_console
 
 限制说明：
-- 当前仓库已补齐浏览器扩展子项目、本地消息宿主安装链路、doctor 自检与当前会话模式执行链路；建议优先执行 taiyiflow-cli browser install --build，随后加载 install 输出中的扩展 dist 目录。
-- 对最终用户与发布产物，工作区中的 browser-extension/chrome 不是运行时必需项；若当前工作区没有该目录，browser install 会自动抽取 CLI 内置扩展源码到本地根目录，再继续构建与加载。
+- 当前仓库已补齐浏览器扩展子项目、本地消息宿主安装链路、doctor 自检与当前会话模式执行链路；对最终用户，优先执行 taiyiflow-cli browser install 即可，随后加载 install 输出中的扩展 dist 目录。
+- 对最终用户与发布产物，工作区中的 browser-extension/chrome 不是运行时必需项；若当前工作区没有该目录，browser install 会自动抽取 CLI 内置扩展资源到本地根目录，直接提供可加载的 dist 产物。
 - 仓库中的 browser-extension/chrome 目前仍作为扩展开发、调试与手工构建入口保留。
 - 浏览器工具的变更类操作会遵循浏览器权限模式与全局审批模式；当浏览器权限模式设为 `skip_all_permission_checks` 时，即使全局审批模式为 `readonly`，浏览器变更类工具也会按浏览器权限模式直接放行。

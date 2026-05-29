@@ -80,6 +80,10 @@ func InspectBrowserExtensionProject(extensionDir string) BrowserExtensionProject
 	}
 	if fileExists(status.DistManifestPath) {
 		status.DistReady = true
+	} else if fileExists(status.ManifestPath) && fileExists(filepath.Join(status.Directory, "background.js")) && fileExists(filepath.Join(status.Directory, "content.js")) {
+		status.DistDir = status.Directory
+		status.DistManifestPath = status.ManifestPath
+		status.DistReady = true
 	}
 	if npmPath, err := exec.LookPath("npm"); err == nil {
 		status.NPMPath = npmPath

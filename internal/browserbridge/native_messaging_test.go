@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -193,6 +194,35 @@ func TestRunNativeMessagingHostBridgesToolRequestsOverSocket(t *testing.T) {
 	}
 	if err := <-hostDone; err != nil {
 		t.Fatalf("host exited with error: %v", err)
+	}
+}
+
+func TestRunNativeMessagingHostStopsOnContextCancel(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	stdinReader, _ := io.Pipe()
+	stdout := &bytes.Buffer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hostDone := make(chan error, 1)
+	go func() {
+		hostDone <- RunNativeMessagingHost(ctx, internalconfig.BrowserConfig{Channel: internalconfig.BrowserChannelChrome}, stdinReader, stdout, ioDiscard{})
+	}()
+	paths, err := ResolveNativeMessagingPaths(internalconfig.BrowserConfig{Channel: internalconfig.BrowserChannelChrome}, "", "")
+	if err != nil {
+		t.Fatalf("resolve paths failed: %v", err)
+	}
+	if err := waitForNativeBridge(paths.StatePath, 3*time.Second); err != nil {
+		t.Fatalf("waitForNativeBridge failed: %v", err)
+	}
+	cancel()
+	select {
+	case err := <-hostDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected native host to exit after context cancellation")
 	}
 }
 
