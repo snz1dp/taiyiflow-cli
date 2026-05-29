@@ -75,13 +75,15 @@ type ClientRuntime struct {
 	stdout                      io.Writer
 	stderr                      io.Writer
 	askUserPrompter             AskUserPrompter
+	browserToolExecutor         BrowserToolExecutor
 	sandboxEscapeConfirmer      func(path string) (bool, error)
 	sandboxEscapePolicyOverride string
 	streamEventLogsEnabled      bool
+	interactivePromptsEnabled   bool
 }
 
 func NewClientRuntime(stdin io.Reader, stdout io.Writer, stderr io.Writer) *ClientRuntime {
-	return &ClientRuntime{stdin: stdin, stdout: stdout, stderr: stderr, streamEventLogsEnabled: true}
+	return &ClientRuntime{stdin: stdin, stdout: stdout, stderr: stderr, browserToolExecutor: defaultBrowserToolExecutor{}, streamEventLogsEnabled: true, interactivePromptsEnabled: true}
 }
 
 func (r *ClientRuntime) SetSandboxEscapeConfirmer(confirmer func(path string) (bool, error)) {
@@ -98,6 +100,17 @@ func (r *ClientRuntime) SetSandboxEscapePolicyOverride(policy string) {
 
 func (r *ClientRuntime) SetStreamEventLogsEnabled(enabled bool) {
 	r.streamEventLogsEnabled = enabled
+}
+
+func (r *ClientRuntime) SetInteractivePromptsEnabled(enabled bool) {
+	r.interactivePromptsEnabled = enabled
+}
+
+func (r *ClientRuntime) InteractivePromptsEnabled() bool {
+	if r == nil {
+		return false
+	}
+	return r.interactivePromptsEnabled
 }
 
 func (r *ClientRuntime) writeStreamEventf(writer io.Writer, format string, args ...any) {
@@ -233,7 +246,11 @@ func (r *ClientRuntime) executeClientToolPayload(
 	case "skill":
 		result, err = r.skill(config, arguments)
 	default:
-		err = fmt.Errorf("不支持的客户端工具: %s", toolName)
+		if isBrowserTool(toolName) {
+			result, err = r.browserTool(ctx, config, toolName, arguments)
+		} else {
+			err = fmt.Errorf("不支持的客户端工具: %s", toolName)
+		}
 	}
 	return toolName, result, err
 }
@@ -429,6 +446,9 @@ func normalizeAskUserInputFormat(value string, hasOptions bool) string {
 }
 
 func (r *ClientRuntime) promptAskUser(ctx context.Context, request AskUserRequest) (AskUserResponse, error) {
+	if !r.interactivePromptsEnabled {
+		return AskUserResponse{}, newToolError("PERMISSION_DENIED", "当前 task 模式不支持 ask_user 交互，请改为在工具参数中提供明确输入")
+	}
 	if r.askUserPrompter != nil {
 		return r.askUserPrompter(ctx, request)
 	}
@@ -599,6 +619,9 @@ func (r *ClientRuntime) submitCallback(
 }
 
 func (r *ClientRuntime) confirmCommand(arguments map[string]any, config internalconfig.Config) (bool, error) {
+	if !r.interactivePromptsEnabled {
+		return false, newToolError("PERMISSION_DENIED", "当前 task 模式不支持交互式命令确认，请将审批模式改为 auto 或预先放行命令")
+	}
 	switch strings.TrimSpace(config.ApprovalMode) {
 	case "auto":
 		return true, nil
@@ -968,6 +991,9 @@ func (r *ClientRuntime) resolveCommandStdin(ctx context.Context, payload command
 		return strings.NewReader(payload.Stdin), nil
 	}
 	if strings.TrimSpace(payload.StdinPrompt) != "" {
+		if !r.interactivePromptsEnabled {
+			return nil, newToolError("PERMISSION_DENIED", "当前 task 模式不支持 stdin_prompt，请显式提供 stdin")
+		}
 		response, err := r.promptAskUser(ctx, AskUserRequest{
 			Questions: []AskUserQuestion{{
 				Name:        "stdin",
@@ -983,6 +1009,9 @@ func (r *ClientRuntime) resolveCommandStdin(ctx context.Context, payload command
 			stdin += "\n"
 		}
 		return strings.NewReader(stdin), nil
+	}
+	if !r.interactivePromptsEnabled {
+		return nil, nil
 	}
 	if r.stdin != nil {
 		return r.stdin, nil

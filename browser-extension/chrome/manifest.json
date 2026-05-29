@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "TaiyiFlow Chrome Bridge",
+  "version": "0.1.0",
+  "description": "TaiyiFlow CLI 的 Chrome Native Messaging bridge。",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlZMW9e4h4HVDDAcUFSKv19ChmEs6kShuYMmi+Bd2XoCahR1wvH9H8aD8Vg0VgPfd21v1xkOFyawUJU8MKhh3wKVZfXdonMoS5Byd89hNnYPx9N0pIKNMkpcX/5b2m8V1xSW3clZCZl8by3KoZ6/295koPnDnuVoOyMMBvz9CM9CFgqS41+vihuZeiHq90fAI49U6+AUgzgJBFVTYbx+phhSaoTC+FaWRzllDjYdlkpbpfpmXwBmyyZ9uyneeRwtznC1teTBWfNE/T1K/yBqhIJzGUAbVXaR30r0NzVPv0373a0L0+hG1VoInKAo9CVQqMWYWoKwDndIJPRGgE6TIIwIDAQAB",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "activeTab",
+    "alarms",
+    "nativeMessaging",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_title": "TaiyiFlow Chrome Bridge"
+  }
+}

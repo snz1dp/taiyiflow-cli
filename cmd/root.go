@@ -133,6 +133,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 			return a.runTUI(ctx, []string{"/config"})
 		}
 		return a.runConfig(args[1:])
+	case "browser":
+		return a.runBrowser(ctx, args[1:])
 	case "doctor":
 		return a.runDoctor(args[1:])
 	case "agents":
@@ -469,6 +471,11 @@ func (a *App) clearInteractiveScreen() {
 
 func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string) error {
 	a.disableCLIFocusReporting()
+	if a.runtime != nil {
+		previousInteractivePromptsEnabled := a.runtime.InteractivePromptsEnabled()
+		a.runtime.SetInteractivePromptsEnabled(false)
+		defer a.runtime.SetInteractivePromptsEnabled(previousInteractivePromptsEnabled)
+	}
 
 	config, err := a.configManager.Load()
 	if err != nil {
@@ -710,6 +717,15 @@ func (a *App) streamTaskWithSkillRetry(
 		return sessionState, err
 	}
 	hasVisibleOutput := false
+	lastVisibleOutputEndedWithNewline := false
+	writeVisibleOutput := func(text string) {
+		if text == "" {
+			return
+		}
+		fmt.Fprint(a.stdout, text)
+		hasVisibleOutput = true
+		lastVisibleOutputEndedWithNewline = strings.HasSuffix(text, "\n")
+	}
 	renderState := cliStreamRenderState{}
 	renderStreamingSuffix := isTerminalWriter(a.stdout)
 	clearRenderedStreamingSuffix := func() {
@@ -752,7 +768,10 @@ func (a *App) streamTaskWithSkillRetry(
 			if chunk, ok := event.Data["chunk"].(string); ok && chunk != "" {
 				chunk = sanitizeCLIStreamText(chunk)
 				if renderState.splitNextAssistant && renderState.hasPrintedAssistant {
-					chunk = "\n\n" + chunk
+					chunk = strings.TrimLeft(chunk, "\r\n")
+					if !lastVisibleOutputEndedWithNewline {
+						chunk = "\n" + chunk
+					}
 				}
 				chunk = renderState.renderChunk(chunk, showThinking)
 				chunk = stripThinkControlTags(chunk)
@@ -767,8 +786,10 @@ func (a *App) streamTaskWithSkillRetry(
 						continue
 					}
 				}
-				fmt.Fprint(a.stdout, clearIndicator+chunk)
-				hasVisibleOutput = true
+				if clearIndicator != "" {
+					fmt.Fprint(a.stdout, clearIndicator)
+				}
+				writeVisibleOutput(chunk)
 				renderState.hasPrintedAssistant = true
 				renderState.splitNextAssistant = false
 				if renderStreamingSuffix {
@@ -787,11 +808,10 @@ func (a *App) streamTaskWithSkillRetry(
 						fmt.Fprint(a.stdout, clearIndicator)
 					}
 					if hasVisibleOutput {
-						fmt.Fprintf(a.stdout, "\n[系统提示]: %s\n", strings.TrimSpace(message))
+						writeVisibleOutput(fmt.Sprintf("\n[系统提示]: %s\n", strings.TrimSpace(message)))
 					} else {
-						fmt.Fprintf(a.stdout, "[系统提示]: %s\n", strings.TrimSpace(message))
+						writeVisibleOutput(fmt.Sprintf("[系统提示]: %s\n", strings.TrimSpace(message)))
 					}
-					hasVisibleOutput = true
 				}
 			}
 		case provider.EventError:
@@ -808,7 +828,7 @@ func (a *App) streamTaskWithSkillRetry(
 						a.confirmSkillAutoInstall,
 						func(text string) {
 							if showStreamEvents && strings.TrimSpace(text) != "" {
-								fmt.Fprintf(a.stdout, "[系统提示]: %s\n", text)
+								writeVisibleOutput(fmt.Sprintf("[系统提示]: %s\n", text))
 							}
 						},
 					)
@@ -831,10 +851,10 @@ func (a *App) streamTaskWithSkillRetry(
 							}
 						}
 						if hasVisibleOutput {
-							fmt.Fprintln(a.stdout)
+							writeVisibleOutput("\n")
 						}
 						if showStreamEvents {
-							fmt.Fprintf(a.stdout, "[系统提示]: 检测到缺失技能 %s，已尝试自动补装并重试当前请求。\n", strings.Join(missingSkillNames, ", "))
+							writeVisibleOutput(fmt.Sprintf("[系统提示]: 检测到缺失技能 %s，已尝试自动补装并重试当前请求。\n", strings.Join(missingSkillNames, ", ")))
 						}
 						return a.streamTaskWithSkillRetry(
 							ctx,
@@ -858,10 +878,10 @@ func (a *App) streamTaskWithSkillRetry(
 					fmt.Fprint(a.stdout, clearIndicator)
 				}
 				if hasVisibleOutput {
-					fmt.Fprintln(a.stdout)
+					writeVisibleOutput("\n")
 				}
 				if showStreamEvents {
-					fmt.Fprintf(a.stdout, "[系统提示]: 检测到流式连接中断，正在自动重试（%d/%d）...\n", retryCount+1, streamRetryLimit)
+					writeVisibleOutput(fmt.Sprintf("[系统提示]: 检测到流式连接中断，正在自动重试（%d/%d）...\n", retryCount+1, streamRetryLimit))
 				}
 				return a.streamTaskWithSkillRetry(
 					ctx,
@@ -915,6 +935,9 @@ func (a *App) streamTaskWithSkillRetry(
 				return sessionState, err
 			}
 		case provider.EventToolCall:
+			if !showStreamEvents {
+				continue
+			}
 			if text, ok := event.Data["text"].(string); ok && text != "" {
 				text = sanitizeCLIStreamText(text)
 				text = stripThinkControlTags(text)
@@ -926,20 +949,16 @@ func (a *App) streamTaskWithSkillRetry(
 				}
 				if status := tuiSearchActivityStatus(text); status != "" {
 					if hasVisibleOutput {
-						fmt.Fprintf(a.stdout, "\n[系统提示]: %s\n", status)
+						writeVisibleOutput(fmt.Sprintf("\n[系统提示]: %s\n", status))
 					} else {
-						fmt.Fprintf(a.stdout, "[系统提示]: %s\n", status)
+						writeVisibleOutput(fmt.Sprintf("[系统提示]: %s\n", status))
 					}
-					hasVisibleOutput = true
 					continue
 				}
-				if showStreamEvents {
-					if hasVisibleOutput {
-						fmt.Fprintf(a.stdout, "\n[工具调用]: %s\n", text)
-					} else {
-						fmt.Fprintf(a.stdout, "[工具调用]: %s\n", text)
-					}
-					hasVisibleOutput = true
+				if hasVisibleOutput {
+					writeVisibleOutput(fmt.Sprintf("\n[工具调用]: %s\n", text))
+				} else {
+					writeVisibleOutput(fmt.Sprintf("[工具调用]: %s\n", text))
 				}
 			}
 		case provider.EventCompressionStart, provider.EventCompressionEnd:
@@ -955,11 +974,10 @@ func (a *App) streamTaskWithSkillRetry(
 				fmt.Fprint(a.stdout, clearIndicator)
 			}
 			if hasVisibleOutput {
-				fmt.Fprintf(a.stdout, "\n[上下文压缩]: %s\n", text)
+				writeVisibleOutput(fmt.Sprintf("\n[上下文压缩]: %s\n", text))
 			} else {
-				fmt.Fprintf(a.stdout, "[上下文压缩]: %s\n", text)
+				writeVisibleOutput(fmt.Sprintf("[上下文压缩]: %s\n", text))
 			}
-			hasVisibleOutput = true
 		case provider.EventClose:
 			if clearIndicator := clearStreamingSuffixIfNeeded(renderStreamingSuffix, &renderState); clearIndicator != "" {
 				fmt.Fprint(a.stdout, clearIndicator)
@@ -969,11 +987,12 @@ func (a *App) streamTaskWithSkillRetry(
 					pending = strings.TrimLeft(pending, "\r\n")
 				}
 				if pending != "" {
-					fmt.Fprint(a.stdout, pending)
-					hasVisibleOutput = true
+					writeVisibleOutput(pending)
 				}
 			}
-			fmt.Fprintln(a.stdout)
+			if hasVisibleOutput && !lastVisibleOutputEndedWithNewline {
+				writeVisibleOutput("\n")
+			}
 		}
 	}
 
@@ -985,12 +1004,12 @@ func (a *App) streamTaskWithSkillRetry(
 			pending = strings.TrimLeft(pending, "\r\n")
 		}
 		if pending != "" {
-			fmt.Fprint(a.stdout, pending)
+			writeVisibleOutput(pending)
 		}
 	}
 
 	if summary := loadLatestSearchResultsSummary(ctx, providerClient, flowID, sessionState.SessionID); summary != "" {
-		fmt.Fprintln(a.stdout, summary)
+		writeVisibleOutput(summary + "\n")
 	}
 	return sessionState, nil
 }
@@ -1239,6 +1258,7 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "                     [任务描述]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli login [help|status|logout|password|qr]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli config [show|init|path|set|unset]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli browser [install|help]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli agents [list|current|use] [参数]")
 	fmt.Fprintf(a.stdout, "  %s\n", skillsCommandSynopsis())
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
@@ -1375,10 +1395,6 @@ func uploadInputFile(
 	localPath string,
 ) (string, error) {
 	return clientruntime.UploadInputFile(ctx, providerClient, flowID, sessionID, baseDir, localPath)
-}
-
-func resolveUploadFilePath(baseDir string, localPath string) (string, error) {
-	return clientruntime.ResolveUploadFilePath(baseDir, localPath)
 }
 
 func boolPtr(value bool) *bool {

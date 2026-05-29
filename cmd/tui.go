@@ -2030,9 +2030,117 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 			Body:    fmt.Sprintf("编辑前: %s\n编辑后: %s\n摘要前: %s\n摘要后: %s", fallbackString(stringMapValue(resultMap, "preview_before"), "<empty>"), fallbackString(stringMapValue(resultMap, "preview_after"), "<empty>"), fallbackString(stringMapValue(resultMap, "sha256_before"), "<missing>"), fallbackString(stringMapValue(resultMap, "sha256_after"), "<missing>")),
 			Hint:    "若替换范围过大，可改用更精确的 old_string 或关闭 replace_all。",
 		}
+	case "taiyiflow-in-chrome__tabs_context", "taiyiflow-in-chrome__tabs_create", "taiyiflow-in-chrome__navigate", "taiyiflow-in-chrome__click", "taiyiflow-in-chrome__type", "taiyiflow-in-chrome__screenshot", "taiyiflow-in-chrome__read_text", "taiyiflow-in-chrome__read_console":
+		return buildTUIBrowserToolPanel(toolName, resultMap)
 	default:
 		return nil
 	}
+}
+
+func buildTUIBrowserToolPanel(toolName string, resultMap map[string]any) *tui.ToolPanel {
+	switch strings.TrimSpace(toolName) {
+	case "taiyiflow-in-chrome__tabs_context":
+		tabs := mapSliceValue(resultMap, "tabs")
+		if len(tabs) == 0 {
+			return &tui.ToolPanel{
+				Title:   "浏览器标签页",
+				Summary: "当前没有可用标签页",
+				Body:    "当前浏览器没有可用标签页，可先调用 tabs_create 创建新标签页。",
+				Hint:    "通常建议先获取 tabs_context，再决定后续点击、输入或导航动作。",
+			}
+		}
+		lines := make([]string, 0, len(tabs))
+		for index, item := range tabs {
+			prefix := "-"
+			if boolMapValueAny(item, "active") {
+				prefix = "*"
+			}
+			lines = append(lines, fmt.Sprintf("%s %d. [%s] %s\n   %s", prefix, index+1, fallbackString(stringMapValue(item, "tab_id"), "<unknown>"), fallbackString(stringMapValue(item, "title"), "<untitled>"), fallbackString(stringMapValue(item, "url"), "<empty>")))
+		}
+		return &tui.ToolPanel{
+			Title:   "浏览器标签页",
+			Summary: fmt.Sprintf("tabs_context %d 个标签页", len(tabs)),
+			Body:    strings.Join(lines, "\n\n"),
+			Hint:    "带 * 的标签页是当前活动标签页；可继续使用 navigate、click、type、read_text 等工具。",
+		}
+	case "taiyiflow-in-chrome__read_text":
+		body := strings.TrimSpace(stringMapValue(resultMap, "text"))
+		if body == "" {
+			body = "页面文本为空。"
+		}
+		return &tui.ToolPanel{
+			Title:   "页面文本读取",
+			Summary: fmt.Sprintf("%s · %s", fallbackString(stringMapValue(resultMap, "tab_id"), "<active>"), fallbackString(stringMapValue(resultMap, "title"), fallbackString(stringMapValue(resultMap, "url"), "read_text"))),
+			Body:    body,
+			Hint:    "若结果过长，可在下一次调用中传入 max_chars 或更精确的 selector。",
+		}
+	case "taiyiflow-in-chrome__read_console":
+		entries := mapSliceValue(resultMap, "entries")
+		if len(entries) == 0 {
+			return &tui.ToolPanel{
+				Title:   "浏览器控制台",
+				Summary: fmt.Sprintf("%s 无控制台输出", fallbackString(stringMapValue(resultMap, "tab_id"), "<active>")),
+				Body:    "当前没有捕获到控制台输出或异常。",
+				Hint:    "可在页面交互后再次读取 read_console，查看最近日志。",
+			}
+		}
+		lines := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			lines = append(lines, fmt.Sprintf("[%s] %s\n%s", strings.ToUpper(fallbackString(stringMapValue(entry, "level"), "log")), fallbackString(stringMapValue(entry, "timestamp"), "<unknown>"), fallbackString(stringMapValue(entry, "text"), "<empty>")))
+		}
+		return &tui.ToolPanel{
+			Title:   "浏览器控制台",
+			Summary: fmt.Sprintf("read_console %d 条", len(entries)),
+			Body:    strings.Join(lines, "\n\n"),
+			Hint:    "包含 console 输出与未捕获异常；需要定位 DOM 变化时，建议配合 read_text 或 screenshot。",
+		}
+	case "taiyiflow-in-chrome__screenshot":
+		body := fmt.Sprintf("tab_id: %s\npath: %s\nsize: %d bytes", fallbackString(stringMapValue(resultMap, "tab_id"), "<active>"), fallbackString(stringMapValue(resultMap, "path"), "<missing>"), intMapValue(resultMap, "size"))
+		if title := strings.TrimSpace(stringMapValue(resultMap, "title")); title != "" {
+			body = "title: " + title + "\nurl: " + fallbackString(stringMapValue(resultMap, "url"), "<empty>") + "\n" + body
+		}
+		return &tui.ToolPanel{
+			Title:   "浏览器截图",
+			Summary: fallbackString(stringMapValue(resultMap, "path"), "screenshot"),
+			Body:    body,
+			Hint:    "截图已保存到本地文件；后续可配合 read_text 或 document_unstructured 继续处理图像内容。",
+		}
+	default:
+		lines := []string{}
+		if title := strings.TrimSpace(stringMapValue(resultMap, "title")); title != "" {
+			lines = append(lines, "title: "+title)
+		}
+		if url := strings.TrimSpace(stringMapValue(resultMap, "url")); url != "" {
+			lines = append(lines, "url: "+url)
+		}
+		if selector := strings.TrimSpace(stringMapValue(resultMap, "selector")); selector != "" {
+			lines = append(lines, "selector: "+selector)
+		}
+		if textLength := intMapValue(resultMap, "text_length"); textLength > 0 {
+			lines = append(lines, fmt.Sprintf("text_length: %d", textLength))
+		}
+		if len(lines) == 0 {
+			lines = append(lines, "浏览器操作已执行。")
+		}
+		return &tui.ToolPanel{
+			Title:   "浏览器操作结果",
+			Summary: strings.TrimPrefix(strings.TrimSpace(toolName), "taiyiflow-in-chrome__"),
+			Body:    strings.Join(lines, "\n"),
+			Hint:    "若需要确认页面状态，可继续读取 tabs_context、read_text 或截图。",
+		}
+	}
+}
+
+func boolMapValueAny(payload map[string]any, key string) bool {
+	value, ok := payload[key]
+	if !ok {
+		return false
+	}
+	typed, ok := value.(bool)
+	if !ok {
+		return false
+	}
+	return typed
 }
 
 func previewBuiltInCommand(payload map[string]any) string {
@@ -2470,7 +2578,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 
 	return &tui.ConfigFormState{
 		Title:       "服务端连接配置(server connection)",
-		Hint:        "修改服务端地址、思考模式和运行默认项。保存后会立即刷新连接状态。",
+		Hint:        "修改服务端地址、浏览器自动化和运行默认项。保存后会立即刷新连接状态。",
 		Path:        a.configManager.Path(),
 		SubmitText:  "保存配置",
 		FlowOptions: flowOptions,
@@ -2493,6 +2601,16 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			QRWaitTimeoutSeconds:      strconv.Itoa(config.QRWaitTimeoutSeconds),
 			AgentAutoLoopMaxRounds:    strconv.Itoa(config.AgentAutoLoopMaxRounds),
 			OutputLanguage:            strings.TrimSpace(config.OutputLanguage),
+			BrowserMode:               strings.TrimSpace(config.Browser.Mode),
+			BrowserPermissionMode:     strings.TrimSpace(config.Browser.PermissionMode),
+			BrowserChannel:            strings.TrimSpace(config.Browser.Channel),
+			BrowserExecutablePath:     strings.TrimSpace(config.Browser.ExecutablePath),
+			BrowserProfileDir:         strings.TrimSpace(config.Browser.ProfileDir),
+			BrowserConnectTimeout:     strconv.Itoa(config.Browser.ConnectTimeoutSeconds),
+			BrowserExtensionSetup:     strings.TrimSpace(config.Browser.ExtensionSetup),
+			BrowserSocketDir:          strings.TrimSpace(config.Browser.SocketDir),
+			BrowserRemoteDebuggingURL: strings.TrimSpace(config.Browser.RemoteDebuggingURL),
+			BrowserHeadless:           strconv.FormatBool(config.Browser.Headless),
 			SkillsInstallScope:        internalconfig.NormalizeSkillInstallScope(config.Skills.InstallScope),
 			SkillsAutoInstallPolicy:   internalconfig.NormalizeSkillAutoInstallPolicy(config.Skills.AutoInstallPolicy),
 			SkillsFreeTextSearch:      config.Skills.FreeTextSearchEnabled,
@@ -2609,6 +2727,66 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		config.OutputLanguage = internalconfig.Default().OutputLanguage
 	} else if err := assignConfigValue(&config, "output_language", submission.Values.OutputLanguage); err != nil {
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "output_language", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.BrowserMode) == "" {
+		config.Browser.Mode = internalconfig.Default().Browser.Mode
+	} else if err := assignConfigValue(&config, "browser_mode", submission.Values.BrowserMode); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "browser_mode", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.BrowserPermissionMode) == "" {
+		config.Browser.PermissionMode = internalconfig.Default().Browser.PermissionMode
+	} else if err := assignConfigValue(&config, "browser_permission_mode", submission.Values.BrowserPermissionMode); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "browser_permission_mode", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.BrowserChannel) == "" {
+		config.Browser.Channel = internalconfig.Default().Browser.Channel
+	} else if err := assignConfigValue(&config, "browser_channel", submission.Values.BrowserChannel); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "browser_channel", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.BrowserExecutablePath) == "" {
+		config.Browser.ExecutablePath = ""
+	} else if err := assignConfigValue(&config, "browser_executable_path", submission.Values.BrowserExecutablePath); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "browser_executable_path", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.BrowserProfileDir) == "" {
+		config.Browser.ProfileDir = ""
+	} else if err := assignConfigValue(&config, "browser_profile_dir", submission.Values.BrowserProfileDir); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "browser_profile_dir", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.BrowserConnectTimeout) == "" {
+		config.Browser.ConnectTimeoutSeconds = internalconfig.Default().Browser.ConnectTimeoutSeconds
+	} else if err := assignConfigValue(&config, "browser_connect_timeout_seconds", submission.Values.BrowserConnectTimeout); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "browser_connect_timeout_seconds", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.BrowserExtensionSetup) == "" {
+		config.Browser.ExtensionSetup = internalconfig.Default().Browser.ExtensionSetup
+	} else if err := assignConfigValue(&config, "browser_extension_setup", submission.Values.BrowserExtensionSetup); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "browser_extension_setup", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.BrowserSocketDir) == "" {
+		config.Browser.SocketDir = ""
+	} else if err := assignConfigValue(&config, "browser_socket_dir", submission.Values.BrowserSocketDir); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "browser_socket_dir", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.BrowserRemoteDebuggingURL) == "" {
+		config.Browser.RemoteDebuggingURL = ""
+	} else if err := assignConfigValue(&config, "browser_remote_debugging_url", submission.Values.BrowserRemoteDebuggingURL); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "browser_remote_debugging_url", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.BrowserHeadless) == "" {
+		config.Browser.Headless = internalconfig.Default().Browser.Headless
+	} else if err := assignConfigValue(&config, "browser_headless", submission.Values.BrowserHeadless); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "browser_headless", Message: err.Error()}
 	}
 
 	if err := assignConfigValue(&config, "skills_install_scope", submission.Values.SkillsInstallScope); err != nil {

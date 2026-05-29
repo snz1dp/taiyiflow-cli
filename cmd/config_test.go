@@ -82,6 +82,52 @@ func TestAssignConfigValueCommandTimeoutSeconds(t *testing.T) {
 	}
 }
 
+func TestAssignAndResetBrowserConfigValues(t *testing.T) {
+	config := internalconfig.Default()
+	if err := assignConfigValue(&config, "browser_mode", "isolated"); err != nil {
+		t.Fatalf("assignConfigValue browser_mode returned error: %v", err)
+	}
+	if config.Browser.Mode != internalconfig.BrowserModeIsolated {
+		t.Fatalf("expected browser mode %q, got %q", internalconfig.BrowserModeIsolated, config.Browser.Mode)
+	}
+	if err := assignConfigValue(&config, "browser_permission_mode", "skip_all_permission_checks"); err != nil {
+		t.Fatalf("assignConfigValue browser_permission_mode returned error: %v", err)
+	}
+	if config.Browser.PermissionMode != internalconfig.BrowserPermissionModeSkipAll {
+		t.Fatalf("expected browser permission mode %q, got %q", internalconfig.BrowserPermissionModeSkipAll, config.Browser.PermissionMode)
+	}
+	if err := assignConfigValue(&config, "browser_channel", "edge"); err != nil {
+		t.Fatalf("assignConfigValue browser_channel returned error: %v", err)
+	}
+	if config.Browser.Channel != internalconfig.BrowserChannelEdge {
+		t.Fatalf("expected browser channel %q, got %q", internalconfig.BrowserChannelEdge, config.Browser.Channel)
+	}
+	if err := assignConfigValue(&config, "browser_connect_timeout_seconds", "30"); err != nil {
+		t.Fatalf("assignConfigValue browser_connect_timeout_seconds returned error: %v", err)
+	}
+	if config.Browser.ConnectTimeoutSeconds != 30 {
+		t.Fatalf("expected browser connect timeout 30, got %d", config.Browser.ConnectTimeoutSeconds)
+	}
+	if err := assignConfigValue(&config, "browser_headless", "true"); err != nil {
+		t.Fatalf("assignConfigValue browser_headless returned error: %v", err)
+	}
+	if !config.Browser.Headless {
+		t.Fatal("expected browser headless to be enabled")
+	}
+	if err := resetConfigValue(&config, "browser_mode"); err != nil {
+		t.Fatalf("resetConfigValue browser_mode returned error: %v", err)
+	}
+	if config.Browser.Mode != internalconfig.Default().Browser.Mode {
+		t.Fatalf("expected default browser mode %q, got %q", internalconfig.Default().Browser.Mode, config.Browser.Mode)
+	}
+	if err := resetConfigValue(&config, "browser_headless"); err != nil {
+		t.Fatalf("resetConfigValue browser_headless returned error: %v", err)
+	}
+	if config.Browser.Headless != internalconfig.Default().Browser.Headless {
+		t.Fatalf("expected default browser headless %v, got %v", internalconfig.Default().Browser.Headless, config.Browser.Headless)
+	}
+}
+
 func TestAssignAndResetConfigValueAuthAPIPrefix(t *testing.T) {
 	config := internalconfig.Default()
 	if err := assignConfigValue(&config, "auth_prefix", "custom-auth/"); err != nil {
@@ -191,6 +237,9 @@ func TestRenderConfigSummaryUsesExternalResourceAccessPolicyLabel(t *testing.T) 
 	if !strings.Contains(summary, "技能自动补装策略:") || !strings.Contains(summary, "自由文本技能搜索:") {
 		t.Fatalf("expected skill auto install labels, got %q", summary)
 	}
+	if !strings.Contains(summary, "浏览器自动化模式:") || !strings.Contains(summary, "浏览器权限模式:") {
+		t.Fatalf("expected browser config labels, got %q", summary)
+	}
 	if !strings.Contains(summary, "跨会话记忆: false") {
 		t.Fatalf("expected cross session memory label, got %q", summary)
 	}
@@ -249,6 +298,8 @@ func TestRunConfigHelpOutputsLocalizedUsage(t *testing.T) {
 	for _, expected := range []string{
 		"配置命令用于查看、设置或清空命令行（CLI）全局配置。",
 		"taiyiflow-cli config set <配置项> <值>",
+		"browser_mode",
+		"browser_permission_mode",
 		"doc_unstructured_exts",
 		"未配置时使用内置默认值",
 		"readonly（只读模式）",

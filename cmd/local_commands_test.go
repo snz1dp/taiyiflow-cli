@@ -143,6 +143,12 @@ func TestReviewRequestModeIsReadOnlyForMutatingTools(t *testing.T) {
 	if !modeAllowsClientTool(reviewRequestMode(), "read_file") {
 		t.Fatal("expected review mode to allow read_file")
 	}
+	if !modeAllowsClientTool(reviewRequestMode(), "taiyiflow-in-chrome__tabs_context") {
+		t.Fatal("expected review mode to allow readonly browser tabs_context")
+	}
+	if modeAllowsClientTool(reviewRequestMode(), "taiyiflow-in-chrome__click") {
+		t.Fatal("expected review mode to reject mutating browser click tool")
+	}
 }
 
 func TestExecuteTasksSlashCommandCapture(t *testing.T) {

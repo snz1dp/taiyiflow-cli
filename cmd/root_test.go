@@ -36,6 +36,8 @@ type stubProvider struct {
 	uploadHook         func(context.Context, string, string, string, string) (*provider.UploadResult, error)
 	lastRequest        provider.StreamRequest
 	lastResolveRequest provider.SkillResolveRequest
+	submitResults      *[]provider.ClientCallResult
+	submitHook         func(provider.ClientCallResult) error
 }
 
 type sequenceStreamProvider struct {
@@ -149,7 +151,14 @@ func (s stubProvider) GetSessionContextWindow(context.Context, string, string) (
 	return s.sessionContext, nil
 }
 
-func (s stubProvider) SubmitClientCallResult(context.Context, provider.ClientCallResult) error {
+
+func (s stubProvider) SubmitClientCallResult(_ context.Context, result provider.ClientCallResult) error {
+	if s.submitHook != nil {
+		return s.submitHook(result)
+	}
+	if s.submitResults != nil {
+		*s.submitResults = append(*s.submitResults, result)
+	}
 	return nil
 }
 
@@ -847,6 +856,28 @@ func runTaskAndCaptureStreamBody(t *testing.T, crossSessionMemoryEnabled bool, a
 	return captured
 }
 
+func capturedHasClientTool(captured map[string]any, toolName string) bool {
+	servers, ok := captured["client_mcp_servers"].(map[string]any)
+	if !ok {
+		return false
+	}
+	entries, ok := servers["local"].([]any)
+	if !ok {
+		return false
+	}
+	for _, entry := range entries {
+		item, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := item["name"].(string)
+		if strings.TrimSpace(name) == toolName {
+			return true
+		}
+	}
+	return false
+}
+
 func TestUploadInputFileResolvesRelativePathAndReturnsServerPath(t *testing.T) {
 	baseDir := t.TempDir()
 	localDir := filepath.Join(baseDir, "docs")
@@ -1452,7 +1483,7 @@ func TestStreamTaskDoesNotPrefixFirstSystemNoteWithBlankLine(t *testing.T) {
 		t.Fatalf("streamTask failed: %v", err)
 	}
 
-	if got := stdout.String(); got != "[系统提示]: 准备开始\n\n" {
+	if got := stdout.String(); got != "[系统提示]: 准备开始\n" {
 		t.Fatalf("unexpected stdout: %q", got)
 	}
 }
@@ -1597,8 +1628,287 @@ func TestStreamTaskSplitsAssistantOutputWhenBackendRequestsNewMessage(t *testing
 		t.Fatalf("streamTask failed: %v", err)
 	}
 
-	if got := stdout.String(); got != "第一条\n\n第二条\n" {
+	if got := stdout.String(); got != "第一条\n第二条\n" {
 		t.Fatalf("unexpected stdout: %q", got)
+	}
+}
+
+func TestStreamTaskDoesNotShowToolCallStatusWhenStreamEventsDisabled(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	stream := make(chan provider.StreamEvent, 2)
+	stream <- provider.StreamEvent{Type: provider.EventToolCall, Data: map[string]any{"text": "internet search starting"}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err := app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+
+	if got := stdout.String(); got != "" {
+		t.Fatalf("expected no tool call status when stream events disabled, got %q", got)
+	}
+}
+
+func TestStreamTaskRejectsAskUserWhenInteractivePromptsDisabled(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(strings.NewReader("should-not-be-read\n"), &stdout, &stderr)
+	app.runtime.SetInteractivePromptsEnabled(false)
+
+	results := []provider.ClientCallResult{}
+	stream := make(chan provider.StreamEvent, 2)
+	stream <- provider.StreamEvent{Type: provider.EventClientTool, Data: map[string]any{
+		"flow_id": "demo-flow",
+		"context": map[string]any{
+			"session_id": "session-1",
+			"run_id":     "run-1",
+			"message_id": "message-1",
+		},
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"id":   "call-1",
+			"name": "ask_user",
+			"arguments": map[string]any{
+				"questions": []any{map[string]any{"name": "value", "label": "请输入值"}},
+			},
+		},
+	}}
+	stream <- provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}}
+	close(stream)
+
+	_, err := app.streamTask(
+		context.Background(),
+		&stubProvider{stream: stream, submitResults: &results},
+		internalconfig.Config{},
+		"demo-flow",
+		"demo task",
+		agent.SessionState{RequestMode: provider.RequestTypeAgent},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one client callback result, got %#v", results)
+	}
+	if results[0].Success {
+		t.Fatalf("expected ask_user callback to fail when prompts disabled, got %#v", results[0])
+	}
+	if !strings.Contains(results[0].ErrorMessage, "task 模式不支持 ask_user") {
+		t.Fatalf("expected task-mode ask_user rejection, got %#v", results[0])
+	}
+	if strings.Contains(stdout.String(), "[ask_user]") || strings.Contains(stdout.String(), "请输入答案") {
+		t.Fatalf("expected no ask_user prompt output, got %q", stdout.String())
+	}
+}
+
+func TestRunTaskOnceRejectsAskUserWithoutPrompting(t *testing.T) {
+	var callbackBody struct {
+		Success      bool   `json:"success"`
+		ErrorMessage string `json:"error_message"`
+	}
+	callbackCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
+		case backendAPIPath("/version"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"package":"taiyiflow","main_version":"1.0.0"}`)
+		case backendAPIPath("/session_id"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"session_id":"session-created"}`)
+		case backendAPIPath("/run/flow-1/stream"):
+			writer.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(writer, "event: client_tool\n")
+			fmt.Fprint(writer, "data: {\"flow_id\":\"flow-1\",\"context\":{\"session_id\":\"session-created\",\"run_id\":\"run-1\",\"message_id\":\"message-1\"},\"server\":{\"name\":\"local\"},\"function\":{\"id\":\"call-1\",\"name\":\"ask_user\",\"arguments\":{\"questions\":[{\"name\":\"value\",\"label\":\"请输入值\"}]}}}\n\n")
+			fmt.Fprint(writer, "event: close\ndata: {}\n\n")
+		case backendAPIPath("/agents/client/call/result"):
+			callbackCalled = true
+			defer request.Body.Close()
+			if err := json.NewDecoder(request.Body).Decode(&callbackBody); err != nil {
+				t.Fatalf("decode callback body failed: %v", err)
+			}
+			writer.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.DefaultFlow = "flow-1"
+	config.AccessToken = "access-1"
+	config.ApprovalMode = "auto"
+	config.PermissionRules = []internalconfig.PermissionRule{{Action: "allow", ToolName: "shell_exec"}}
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	store, err := agent.NewSessionStore()
+	if err != nil {
+		t.Fatalf("new session store failed: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := &App{
+		configManager: manager,
+		sessionStore:  store,
+		stdout:        &stdout,
+		stderr:        &stderr,
+		stdin:         strings.NewReader("should-not-be-read\n"),
+		runtime:       clientruntime.NewClientRuntime(strings.NewReader("should-not-be-read\n"), &stdout, &stderr),
+	}
+
+	if err := app.runTaskOnce(context.Background(), rootOptions{}, "测试任务"); err != nil {
+		t.Fatalf("runTaskOnce failed: %v", err)
+	}
+	if !callbackCalled {
+		t.Fatal("expected client callback to be submitted")
+	}
+	if callbackBody.Success {
+		t.Fatalf("expected task-mode ask_user callback to fail, got %#v", callbackBody)
+	}
+	if !strings.Contains(callbackBody.ErrorMessage, "task 模式不支持 ask_user") {
+		t.Fatalf("expected task-mode ask_user rejection, got %#v", callbackBody)
+	}
+	if strings.Contains(stdout.String(), "[ask_user]") || strings.Contains(stdout.String(), "请输入答案") {
+		t.Fatalf("expected no ask_user prompt output in task mode, got %q", stdout.String())
+	}
+}
+
+func TestRunTaskOnceDoesNotForwardHostStdinToShellExec(t *testing.T) {
+	if os.Getenv("TAIYIFLOW_HELPER_PROCESS") == "stdin-echo" {
+		content, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			_, _ = os.Stderr.WriteString(err.Error())
+			os.Exit(1)
+		}
+		_, _ = os.Stdout.Write(content)
+		os.Exit(0)
+	}
+
+	var callbackBody struct {
+		Success      bool           `json:"success"`
+		ErrorMessage string         `json:"error_message"`
+		Result       map[string]any `json:"result"`
+	}
+	callbackCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"张三","user_id":"u-1","user_name":"zhangsan"}`)
+		case backendAPIPath("/version"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"package":"taiyiflow","main_version":"1.0.0"}`)
+		case backendAPIPath("/session_id"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"session_id":"session-created"}`)
+		case backendAPIPath("/run/flow-1/stream"):
+			writer.Header().Set("Content-Type", "text/event-stream")
+			payload := fmt.Sprintf(`{"flow_id":"flow-1","context":{"session_id":"session-created","run_id":"run-1","message_id":"message-1"},"function":{"id":"call-1"},"server":{"name":"built_in_command"},"command":{"name":"run_command_via_client","arguments":{"command":%q,"args":["-test.run=TestRunTaskOnceDoesNotForwardHostStdinToShellExec$"],"env":{"TAIYIFLOW_HELPER_PROCESS":"stdin-echo"}},"policy":{"confirmation_required":false}}}`, os.Args[0])
+			fmt.Fprint(writer, "event: built_in\n")
+			fmt.Fprintf(writer, "data: %s\n\n", payload)
+			fmt.Fprint(writer, "event: close\ndata: {}\n\n")
+		case backendAPIPath("/agents/client/call/result"):
+			callbackCalled = true
+			defer request.Body.Close()
+			if err := json.NewDecoder(request.Body).Decode(&callbackBody); err != nil {
+				t.Fatalf("decode callback body failed: %v", err)
+			}
+			writer.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.DefaultFlow = "flow-1"
+	config.AccessToken = "access-1"
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	store, err := agent.NewSessionStore()
+	if err != nil {
+		t.Fatalf("new session store failed: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := &App{
+		configManager: manager,
+		sessionStore:  store,
+		stdout:        &stdout,
+		stderr:        &stderr,
+		stdin:         strings.NewReader("host stdin should not be forwarded\n"),
+		runtime:       clientruntime.NewClientRuntime(strings.NewReader("host stdin should not be forwarded\n"), &stdout, &stderr),
+	}
+
+	if err := app.runTaskOnce(context.Background(), rootOptions{}, "测试任务"); err != nil {
+		t.Fatalf("runTaskOnce failed: %v", err)
+	}
+	if !callbackCalled {
+		t.Fatal("expected client callback to be submitted")
+	}
+	if !callbackBody.Success {
+		t.Fatalf("expected shell_exec callback success, got %#v", callbackBody)
+	}
+	stdoutValue, _ := callbackBody.Result["stdout"].(string)
+	if stdoutValue != "" {
+		t.Fatalf("expected task mode not to forward host stdin, got %q", stdoutValue)
+	}
+}
+
+func TestRunTaskDoesNotAdvertiseAskUserTool(t *testing.T) {
+	for _, item := range []struct {
+		name string
+		args []string
+	}{
+		{name: "default agent", args: []string{"测试任务"}},
+		{name: "ask mode", args: []string{"--mode", "ask", "测试任务"}},
+		{name: "plan mode", args: []string{"--mode", "plan", "测试任务"}},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			captured := runTaskAndCaptureStreamBody(t, false, item.args)
+			if capturedHasClientTool(captured, "ask_user") {
+				t.Fatalf("expected task stream request not to advertise ask_user, got %#v", captured["client_mcp_servers"])
+			}
+		})
 	}
 }
 
@@ -1879,7 +2189,7 @@ func TestStreamTaskShowsToolCallOnlyWhenStreamEventsEnabled(t *testing.T) {
 		t.Fatalf("streamTask failed: %v", err)
 	}
 
-	if got := stdout.String(); got != "\n" {
+	if got := stdout.String(); got != "" {
 		t.Fatalf("expected tool call hidden by default, got %q", got)
 	}
 
@@ -1905,7 +2215,7 @@ func TestStreamTaskShowsToolCallOnlyWhenStreamEventsEnabled(t *testing.T) {
 		t.Fatalf("streamTask failed: %v", err)
 	}
 
-	if got := stdout.String(); got != "[工具调用]: read_file\n\n" {
+	if got := stdout.String(); got != "[工具调用]: read_file\n" {
 		t.Fatalf("expected tool call shown when stream events enabled, got %q", got)
 	}
 }
@@ -2028,7 +2338,7 @@ func TestStreamTaskShowsCompressionLifecycleOnlyWhenStreamEventsEnabled(t *testi
 	if err != nil {
 		t.Fatalf("streamTask failed: %v", err)
 	}
-	if got := stdout.String(); got != "\n" {
+	if got := stdout.String(); got != "" {
 		t.Fatalf("expected compression lifecycle hidden by default, got %q", got)
 	}
 

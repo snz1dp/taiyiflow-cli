@@ -57,12 +57,16 @@ func (a *App) showConfigHelp() error {
 		"  backend_base_url              服务端地址，需填写完整的 HTTP 或 HTTPS 地址。",
 		"  default_flow                  默认智能体 ID；留空时启动后自动选择。",
 		"  approval_mode                 命令执行模式；可选 confirm（每次确认）、auto（自动执行）、readonly（只读模式）。",
+		"  browser_mode                  浏览器自动化模式；可选 chrome_session（连接当前浏览器会话）、isolated（独立实例）。",
+		"  browser_permission_mode       浏览器变更工具审批；可选 ask、follow_a_plan、skip_all_permission_checks。",
 		"  doc_unstructured_exts         逗号分隔扩展名；未配置时使用内置默认值，可用自定义列表覆盖。",
 		"  skills_auto_install_policy    技能自动补装策略；可选 off、confirm、allow。",
 		"  cross_session_memory_enabled  跨会话记忆开关；可选 true、false。",
 		"",
 		"示例:",
 		"  taiyiflow-cli config set backend_base_url https://snz1.cn",
+		"  taiyiflow-cli config set browser_mode isolated",
+		"  taiyiflow-cli config set browser_remote_debugging_url http://127.0.0.1:9222",
 		"  taiyiflow-cli config set doc_unstructured_exts pdf,png",
 		"  taiyiflow-cli config unset doc_unstructured_exts",
 		"",
@@ -178,6 +182,62 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 		default:
 			return fmt.Errorf("approval_mode 仅支持 confirm、auto、readonly")
 		}
+	case "browser_mode":
+		normalizedMode := internalconfig.NormalizeBrowserMode(trimmedValue)
+		if strings.ToLower(trimmedValue) != normalizedMode {
+			return fmt.Errorf("browser_mode 仅支持 chrome_session、isolated")
+		}
+		config.Browser.Mode = normalizedMode
+	case "browser_permission_mode":
+		normalizedMode := internalconfig.NormalizeBrowserPermissionMode(trimmedValue)
+		if strings.ToLower(trimmedValue) != normalizedMode {
+			return fmt.Errorf("browser_permission_mode 仅支持 ask、follow_a_plan、skip_all_permission_checks")
+		}
+		config.Browser.PermissionMode = normalizedMode
+	case "browser_channel":
+		normalizedChannel := internalconfig.NormalizeBrowserChannel(trimmedValue)
+		if strings.ToLower(trimmedValue) != normalizedChannel {
+			return fmt.Errorf("browser_channel 仅支持 chrome、chromium、edge、brave")
+		}
+		config.Browser.Channel = normalizedChannel
+	case "browser_executable_path":
+		if trimmedValue == "" {
+			return fmt.Errorf("browser_executable_path 不能为空，如需清空请使用 taiyiflow-cli config unset browser_executable_path")
+		}
+		config.Browser.ExecutablePath = trimmedValue
+	case "browser_profile_dir":
+		if trimmedValue == "" {
+			return fmt.Errorf("browser_profile_dir 不能为空，如需清空请使用 taiyiflow-cli config unset browser_profile_dir")
+		}
+		config.Browser.ProfileDir = trimmedValue
+	case "browser_connect_timeout_seconds":
+		seconds, err := strconv.Atoi(trimmedValue)
+		if err != nil || seconds < 1 || seconds > internalconfig.MaxBrowserConnectTimeout {
+			return fmt.Errorf("browser_connect_timeout_seconds 仅支持 1-%d 的整数秒", internalconfig.MaxBrowserConnectTimeout)
+		}
+		config.Browser.ConnectTimeoutSeconds = seconds
+	case "browser_extension_setup":
+		normalizedSetup := internalconfig.NormalizeBrowserExtensionSetup(trimmedValue)
+		if strings.ToLower(trimmedValue) != normalizedSetup {
+			return fmt.Errorf("browser_extension_setup 仅支持 native_messaging、manual、none")
+		}
+		config.Browser.ExtensionSetup = normalizedSetup
+	case "browser_socket_dir":
+		if trimmedValue == "" {
+			return fmt.Errorf("browser_socket_dir 不能为空，如需清空请使用 taiyiflow-cli config unset browser_socket_dir")
+		}
+		config.Browser.SocketDir = trimmedValue
+	case "browser_remote_debugging_url":
+		if trimmedValue == "" {
+			return fmt.Errorf("browser_remote_debugging_url 不能为空，如需清空请使用 taiyiflow-cli config unset browser_remote_debugging_url")
+		}
+		config.Browser.RemoteDebuggingURL = trimmedValue
+	case "browser_headless":
+		normalized := strings.ToLower(trimmedValue)
+		if normalized != "true" && normalized != "false" {
+			return fmt.Errorf("browser_headless 仅支持 true 或 false")
+		}
+		config.Browser.Headless = normalized == "true"
 	case "reasoning_enabled":
 		normalized := strings.ToLower(trimmedValue)
 		if normalized != "true" && normalized != "false" {
@@ -323,6 +383,26 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.DefaultFlow = ""
 	case "approval_mode":
 		config.ApprovalMode = defaults.ApprovalMode
+	case "browser_mode":
+		config.Browser.Mode = defaults.Browser.Mode
+	case "browser_permission_mode":
+		config.Browser.PermissionMode = defaults.Browser.PermissionMode
+	case "browser_channel":
+		config.Browser.Channel = defaults.Browser.Channel
+	case "browser_executable_path":
+		config.Browser.ExecutablePath = ""
+	case "browser_profile_dir":
+		config.Browser.ProfileDir = ""
+	case "browser_connect_timeout_seconds":
+		config.Browser.ConnectTimeoutSeconds = defaults.Browser.ConnectTimeoutSeconds
+	case "browser_extension_setup":
+		config.Browser.ExtensionSetup = defaults.Browser.ExtensionSetup
+	case "browser_socket_dir":
+		config.Browser.SocketDir = ""
+	case "browser_remote_debugging_url":
+		config.Browser.RemoteDebuggingURL = ""
+	case "browser_headless":
+		config.Browser.Headless = defaults.Browser.Headless
 	case "reasoning_enabled":
 		config.ReasoningEnabled = defaults.ReasoningEnabled
 	case "workdir":
@@ -379,6 +459,26 @@ func normalizeConfigKey(key string) string {
 		return "backend_api_prefix"
 	case "auth_prefix", "auth_prefix_path", "login_api_prefix":
 		return "auth_api_prefix"
+	case "browser", "browser_run_mode", "browser_automation_mode":
+		return "browser_mode"
+	case "browser_permission", "browser_permissions", "browser_tool_permission_mode":
+		return "browser_permission_mode"
+	case "browser_browser", "browser_channel_name":
+		return "browser_channel"
+	case "browser_path", "browser_executable", "browser_binary":
+		return "browser_executable_path"
+	case "browser_profile", "browser_user_data_dir":
+		return "browser_profile_dir"
+	case "browser_connect_timeout", "browser_timeout", "browser_timeout_seconds":
+		return "browser_connect_timeout_seconds"
+	case "browser_manifest_setup", "browser_native_messaging_setup":
+		return "browser_extension_setup"
+	case "browser_socket", "browser_socket_path":
+		return "browser_socket_dir"
+	case "browser_debug_url", "browser_debugging_url", "browser_remote_debug_url", "browser_devtools_url":
+		return "browser_remote_debugging_url"
+	case "browser_is_headless":
+		return "browser_headless"
 	case "sandbox_escape_policy", "external_resource_policy":
 		return "external_resource_access_policy"
 	case "skill_package_review_policy", "skills_review_policy":
@@ -439,6 +539,15 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("认证端前缀: %s", fallbackConfigValue(config.AuthAPIPrefix, internalconfig.Default().AuthAPIPrefix)),
 		fmt.Sprintf("默认智能体: %s", fallbackConfigValue(config.DefaultFlow, "<未配置>")),
 		fmt.Sprintf("命令执行模式: %s", fallbackConfigValue(config.ApprovalMode, internalconfig.Default().ApprovalMode)),
+		fmt.Sprintf("浏览器自动化模式: %s", fallbackConfigValue(config.Browser.Mode, internalconfig.Default().Browser.Mode)),
+		fmt.Sprintf("浏览器权限模式: %s", fallbackConfigValue(config.Browser.PermissionMode, internalconfig.Default().Browser.PermissionMode)),
+		fmt.Sprintf("浏览器通道: %s", fallbackConfigValue(config.Browser.Channel, internalconfig.Default().Browser.Channel)),
+		fmt.Sprintf("浏览器可执行文件: %s", fallbackConfigValue(config.Browser.ExecutablePath, "<自动探测>")),
+		fmt.Sprintf("浏览器 Profile 目录: %s", fallbackConfigValue(config.Browser.ProfileDir, "<自动管理>")),
+		fmt.Sprintf("浏览器连接超时: %d 秒", config.Browser.ConnectTimeoutSeconds),
+		fmt.Sprintf("浏览器扩展接入: %s", fallbackConfigValue(config.Browser.ExtensionSetup, internalconfig.Default().Browser.ExtensionSetup)),
+		fmt.Sprintf("浏览器调试端点: %s", fallbackConfigValue(config.Browser.RemoteDebuggingURL, "<默认 127.0.0.1:9222>")),
+		fmt.Sprintf("浏览器 Headless: %t", config.Browser.Headless),
 		fmt.Sprintf("默认思考模式: %t", config.ReasoningEnabled),
 		fmt.Sprintf("工作目录: %s", fallbackConfigValue(config.Workdir, "<当前目录>")),
 		fmt.Sprintf("外部资源访问策略: %s", fallbackConfigValue(config.SandboxEscapePolicy, internalconfig.Default().SandboxEscapePolicy)),

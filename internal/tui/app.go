@@ -251,6 +251,16 @@ type ConfigFormValues struct {
 	QRWaitTimeoutSeconds      string
 	AgentAutoLoopMaxRounds    string
 	OutputLanguage            string
+	BrowserMode               string
+	BrowserPermissionMode     string
+	BrowserChannel            string
+	BrowserExecutablePath     string
+	BrowserProfileDir         string
+	BrowserConnectTimeout     string
+	BrowserExtensionSetup     string
+	BrowserSocketDir          string
+	BrowserRemoteDebuggingURL string
+	BrowserHeadless           string
 	SkillsInstallScope        string
 	SkillsAutoInstallPolicy   string
 	SkillsFreeTextSearch      bool
@@ -738,6 +748,11 @@ type configFormState struct {
 	writeConfirmationCursor  int
 	reasoningCursor          int
 	crossSessionMemoryCursor int
+	browserModeCursor        int
+	browserPermissionCursor  int
+	browserChannelCursor     int
+	browserExtensionCursor   int
+	browserHeadlessCursor    int
 	skillsCursor             int
 	skillsAutoInstallCursor  int
 	skillsFreeTextCursor     int
@@ -813,6 +828,16 @@ const (
 	configFieldQRWaitTimeout
 	configFieldAgentAutoLoopMaxRounds
 	configFieldOutputLanguage
+	configFieldBrowserMode
+	configFieldBrowserPermissionMode
+	configFieldBrowserChannel
+	configFieldBrowserExecutablePath
+	configFieldBrowserProfileDir
+	configFieldBrowserConnectTimeout
+	configFieldBrowserExtensionSetup
+	configFieldBrowserSocketDir
+	configFieldBrowserRemoteDebuggingURL
+	configFieldBrowserHeadless
 	configFieldSkillsInstallScope
 	configFieldSkillsAutoInstallPolicy
 	configFieldSkillsFreeTextSearch
@@ -2139,6 +2164,26 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveConfigApprovalCursor(-1)
 			return m, nil
 		}
+		if m.configForm.cursor == configFieldBrowserMode {
+			m.moveConfigBrowserModeCursor(-1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldBrowserPermissionMode {
+			m.moveConfigBrowserPermissionCursor(-1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldBrowserChannel {
+			m.moveConfigBrowserChannelCursor(-1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldBrowserExtensionSetup {
+			m.moveConfigBrowserExtensionCursor(-1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldBrowserHeadless {
+			m.moveConfigBrowserHeadlessCursor(-1)
+			return m, nil
+		}
 		if m.configForm.cursor == configFieldSandboxPolicy {
 			m.moveConfigSandboxCursor(-1)
 			return m, nil
@@ -2178,6 +2223,26 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "right", "l":
 		if m.configForm.cursor == configFieldApprovalMode {
 			m.moveConfigApprovalCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldBrowserMode {
+			m.moveConfigBrowserModeCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldBrowserPermissionMode {
+			m.moveConfigBrowserPermissionCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldBrowserChannel {
+			m.moveConfigBrowserChannelCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldBrowserExtensionSetup {
+			m.moveConfigBrowserExtensionCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldBrowserHeadless {
+			m.moveConfigBrowserHeadlessCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldSandboxPolicy {
@@ -2233,6 +2298,26 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldApprovalMode {
 			m.moveConfigApprovalCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldBrowserMode {
+			m.moveConfigBrowserModeCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldBrowserPermissionMode {
+			m.moveConfigBrowserPermissionCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldBrowserChannel {
+			m.moveConfigBrowserChannelCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldBrowserExtensionSetup {
+			m.moveConfigBrowserExtensionCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldBrowserHeadless {
+			m.moveConfigBrowserHeadlessCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldSandboxPolicy {
@@ -4675,6 +4760,9 @@ func (m model) renderConfigForm() string {
 
 	currentGroup := ""
 	for index, spec := range configFormFieldSpecs() {
+		if !configFieldVisible(m.configForm, index) {
+			continue
+		}
 		if group := configFormFieldGroup(index); group != "" && group != currentGroup {
 			currentGroup = group
 			lines = append(lines, commandHintStyle.Render("["+group+"]"))
@@ -4707,6 +4795,16 @@ func (m model) renderConfigForm() string {
 			lines = append(lines, m.renderConfigReasoningField())
 		case configFieldCrossSessionMemory:
 			lines = append(lines, m.renderConfigCrossSessionMemoryField())
+		case configFieldBrowserMode:
+			lines = append(lines, m.renderConfigBrowserModeField())
+		case configFieldBrowserPermissionMode:
+			lines = append(lines, m.renderConfigBrowserPermissionField())
+		case configFieldBrowserChannel:
+			lines = append(lines, m.renderConfigBrowserChannelField())
+		case configFieldBrowserExtensionSetup:
+			lines = append(lines, m.renderConfigBrowserExtensionField())
+		case configFieldBrowserHeadless:
+			lines = append(lines, m.renderConfigBrowserHeadlessField())
 		case configFieldSkillsInstallScope:
 			lines = append(lines, m.renderConfigSkillsInstallScopeField())
 		case configFieldSkillsAutoInstallPolicy:
@@ -4730,7 +4828,7 @@ func (m model) renderConfigForm() string {
 		submitText = "保存配置"
 	}
 	lines = append(lines,
-		commandHintStyle.Render(submitText+"，退出键(Esc)关闭，切换键(Tab)切换字段，回车键(Enter)下一项，保存键(Ctrl+S)保存。"),
+		commandHintStyle.Render(submitText+"，退出键(Esc)关闭，切换键(Tab)切换字段，左右键/空格切换选项，回车键(Enter)下一项，保存键(Ctrl+S)保存。"),
 	)
 	return strings.Join(lines, "\n")
 }
@@ -4899,6 +4997,61 @@ func (m model) renderConfigCrossSessionMemoryField() string {
 		}
 		item := marker + " " + option.Label
 		if m.configForm.cursor == configFieldCrossSessionMemory && selected {
+			parts = append(parts, selectedFlowStyle.Render(item))
+		} else if selected {
+			parts = append(parts, valueStyle.Render(item))
+		} else {
+			parts = append(parts, commandHintStyle.Render(item))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m model) renderConfigBrowserModeField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	return m.renderConfigChoiceField(configFieldBrowserMode, m.configForm.browserModeCursor, configBrowserModeChoices())
+}
+
+func (m model) renderConfigBrowserPermissionField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	return m.renderConfigChoiceField(configFieldBrowserPermissionMode, m.configForm.browserPermissionCursor, configBrowserPermissionChoices())
+}
+
+func (m model) renderConfigBrowserChannelField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	return m.renderConfigChoiceField(configFieldBrowserChannel, m.configForm.browserChannelCursor, configBrowserChannelChoices())
+}
+
+func (m model) renderConfigBrowserExtensionField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	return m.renderConfigChoiceField(configFieldBrowserExtensionSetup, m.configForm.browserExtensionCursor, configBrowserExtensionSetupChoices())
+}
+
+func (m model) renderConfigBrowserHeadlessField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	return m.renderConfigChoiceField(configFieldBrowserHeadless, m.configForm.browserHeadlessCursor, configBrowserHeadlessChoices())
+}
+
+func (m model) renderConfigChoiceField(field int, selectedIndex int, options []ConfigChoice) string {
+	parts := make([]string, 0, len(options))
+	for index, option := range options {
+		selected := index == selectedIndex
+		marker := "( )"
+		if selected {
+			marker = "(*)"
+		}
+		item := marker + " " + option.Label
+		if m.configForm != nil && m.configForm.cursor == field && selected {
 			parts = append(parts, selectedFlowStyle.Render(item))
 		} else if selected {
 			parts = append(parts, valueStyle.Render(item))
@@ -6810,11 +6963,18 @@ func (m *model) moveConfigFormCursor(delta int) {
 	if isConfigTextField(current) {
 		m.configForm.inputs[current].Blur()
 	}
-	m.configForm.cursor += delta
-	if m.configForm.cursor < 0 {
-		m.configForm.cursor = len(m.configForm.inputs) - 1
-	} else if m.configForm.cursor >= len(m.configForm.inputs) {
-		m.configForm.cursor = 0
+	next := current
+	for attempts := 0; attempts < len(m.configForm.inputs); attempts++ {
+		next += delta
+		if next < 0 {
+			next = len(m.configForm.inputs) - 1
+		} else if next >= len(m.configForm.inputs) {
+			next = 0
+		}
+		if configFieldVisible(m.configForm, next) {
+			m.configForm.cursor = next
+			break
+		}
 	}
 	if isConfigTextField(m.configForm.cursor) {
 		m.configForm.inputs[m.configForm.cursor].Focus()
@@ -6875,6 +7035,26 @@ func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
 	crossSessionMemoryChoices := configCrossSessionMemoryChoices()
 	if m.configForm.crossSessionMemoryCursor >= 0 && m.configForm.crossSessionMemoryCursor < len(crossSessionMemoryChoices) {
 		submission.Values.CrossSessionMemoryEnabled = strings.TrimSpace(crossSessionMemoryChoices[m.configForm.crossSessionMemoryCursor].Value) == "true"
+	}
+	browserModeChoices := configBrowserModeChoices()
+	if m.configForm.browserModeCursor >= 0 && m.configForm.browserModeCursor < len(browserModeChoices) {
+		submission.Values.BrowserMode = strings.TrimSpace(browserModeChoices[m.configForm.browserModeCursor].Value)
+	}
+	browserPermissionChoices := configBrowserPermissionChoices()
+	if m.configForm.browserPermissionCursor >= 0 && m.configForm.browserPermissionCursor < len(browserPermissionChoices) {
+		submission.Values.BrowserPermissionMode = strings.TrimSpace(browserPermissionChoices[m.configForm.browserPermissionCursor].Value)
+	}
+	browserChannelChoices := configBrowserChannelChoices()
+	if m.configForm.browserChannelCursor >= 0 && m.configForm.browserChannelCursor < len(browserChannelChoices) {
+		submission.Values.BrowserChannel = strings.TrimSpace(browserChannelChoices[m.configForm.browserChannelCursor].Value)
+	}
+	browserExtensionChoices := configBrowserExtensionSetupChoices()
+	if m.configForm.browserExtensionCursor >= 0 && m.configForm.browserExtensionCursor < len(browserExtensionChoices) {
+		submission.Values.BrowserExtensionSetup = strings.TrimSpace(browserExtensionChoices[m.configForm.browserExtensionCursor].Value)
+	}
+	browserHeadlessChoices := configBrowserHeadlessChoices()
+	if m.configForm.browserHeadlessCursor >= 0 && m.configForm.browserHeadlessCursor < len(browserHeadlessChoices) {
+		submission.Values.BrowserHeadless = strings.TrimSpace(browserHeadlessChoices[m.configForm.browserHeadlessCursor].Value)
 	}
 	skillsChoices := configSkillsInstallScopeChoices()
 	if m.configForm.skillsCursor >= 0 && m.configForm.skillsCursor < len(skillsChoices) {
@@ -6973,6 +7153,11 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 		writeConfirmationCursor:  configChoiceIndex(configWriteConfirmationChoices(), values.WriteConfirmationPolicy),
 		reasoningCursor:          configChoiceIndex(configReasoningChoices(), reasoningChoiceValue(values.ReasoningEnabled)),
 		crossSessionMemoryCursor: configChoiceIndex(configCrossSessionMemoryChoices(), boolChoiceValue(values.CrossSessionMemoryEnabled)),
+		browserModeCursor:        configChoiceIndex(configBrowserModeChoices(), values.BrowserMode),
+		browserPermissionCursor:  configChoiceIndex(configBrowserPermissionChoices(), values.BrowserPermissionMode),
+		browserChannelCursor:     configChoiceIndex(configBrowserChannelChoices(), values.BrowserChannel),
+		browserExtensionCursor:   configChoiceIndex(configBrowserExtensionSetupChoices(), values.BrowserExtensionSetup),
+		browserHeadlessCursor:    configChoiceIndex(configBrowserHeadlessChoices(), boolChoiceString(values.BrowserHeadless)),
 		skillsCursor:             configChoiceIndex(configSkillsInstallScopeChoices(), values.SkillsInstallScope),
 		skillsAutoInstallCursor:  configChoiceIndex(configSkillsAutoInstallChoices(), values.SkillsAutoInstallPolicy),
 		skillsFreeTextCursor:     configChoiceIndex(configSkillsFreeTextSearchChoices(), boolChoiceValue(values.SkillsFreeTextSearch)),
@@ -7435,6 +7620,16 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "扫码等待超时（秒）", placeholder: "30", description: "二维码登录在自动轮询时使用该默认值；大于等于 0 的整数秒，0 表示持续等待直到手动取消。"},
 		{label: "智能体自动续跑最大轮数", placeholder: "0", description: "仅对智能体模式生效；填写 0-10000 的整数，0 表示禁用。"},
 		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
+		{label: "浏览器模式", placeholder: "", description: "左右键或空格切换当前会话与隔离实例。"},
+		{label: "浏览器权限模式", placeholder: "", description: "左右键或空格切换逐次确认、跟随计划、直接允许。该项优先控制浏览器变更操作。"},
+		{label: "浏览器通道", placeholder: "", description: "左右键或空格切换 chrome、chromium、edge、brave。"},
+		{label: "浏览器可执行文件路径", placeholder: "/Applications/Google Chrome.app/...", description: "可选；留空表示按浏览器通道自动探测。"},
+		{label: "浏览器数据目录", placeholder: "/path/to/profile", description: "可选；isolated 模式下可指定用户数据目录。"},
+		{label: "浏览器连接超时（秒）", placeholder: "15", description: "填写 1-120 的整数秒。"},
+		{label: "扩展安装方式", placeholder: "", description: "左右键或空格切换本地消息、手动管理、不接扩展。"},
+		{label: "浏览器桥接 socket 目录", placeholder: "/tmp/taiyiflow-cli-browser", description: "可选；留空时自动使用客户端默认 socket 目录。"},
+		{label: "远程调试地址", placeholder: "http://127.0.0.1:9222", description: "兼容调试字段；当前会话模式默认走本地消息链路，通常可留空。"},
+		{label: "隔离浏览器无头模式", placeholder: "", description: "左右键或空格切换是否启用无头模式；仅对 isolated 生效。"},
 		{label: "技能安装位置", placeholder: "", description: "左右键或空格切换用户目录(user)或工作区(workspace)。"},
 		{label: "技能自动补装策略", placeholder: "", description: "左右键或空格切换关闭(off)、确认(confirm)、自动安装(allow)。默认建议使用确认(confirm)。"},
 		{label: "自由文本技能搜索", placeholder: "", description: "左右键或空格切换是否允许按任务文本搜索远程技能候选。"},
@@ -7453,6 +7648,8 @@ func configFormFieldGroup(index int) string {
 		return "运行与超时"
 	case configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage:
 		return "会话与输出"
+	case configFieldBrowserMode, configFieldBrowserPermissionMode, configFieldBrowserChannel, configFieldBrowserExecutablePath, configFieldBrowserProfileDir, configFieldBrowserConnectTimeout, configFieldBrowserExtensionSetup, configFieldBrowserSocketDir, configFieldBrowserRemoteDebuggingURL, configFieldBrowserHeadless:
+		return "浏览器自动化"
 	case configFieldSkillsInstallScope, configFieldSkillsAutoInstallPolicy, configFieldSkillsFreeTextSearch, configFieldSkillsRegistryURL:
 		return "技能配置"
 	case configFieldDocUnstructuredExts:
@@ -7464,51 +7661,71 @@ func configFormFieldGroup(index int) string {
 
 func configFormFieldValue(index int, values ConfigFormValues) string {
 	switch index {
-	case 0:
+	case configFieldBackendBaseURL:
 		return strings.TrimSpace(values.BackendBaseURL)
-	case 1:
+	case configFieldDefaultFlow:
 		return ""
-	case 2:
+	case configFieldApprovalMode:
 		return ""
-	case 3:
+	case configFieldSandboxPolicy:
 		return ""
-	case 4:
+	case configFieldSkillReviewPolicy:
 		return ""
-	case 5:
+	case configFieldWriteConfirmationPolicy:
 		return ""
-	case 6:
+	case configFieldSandboxRoots:
 		return strings.TrimSpace(values.SandboxRoots)
-	case 7:
+	case configFieldPermissionRules:
 		return strings.TrimSpace(values.PermissionRules)
-	case 8:
+	case configFieldReasoningMode:
 		return ""
-	case 9:
+	case configFieldWorkdir:
 		return strings.TrimSpace(values.Workdir)
-	case 10:
+	case configFieldHTTPTimeout:
 		return strings.TrimSpace(values.HTTPTimeoutSeconds)
-	case 11:
+	case configFieldCommandTimeout:
 		return strings.TrimSpace(values.CommandTimeoutSeconds)
-	case 12:
+	case configFieldStreamIdleTimeout:
 		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
-	case 13:
+	case configFieldStreamRetryAttempts:
 		return strings.TrimSpace(values.StreamRetryAttempts)
-	case 14:
+	case configFieldCrossSessionMemory:
 		return ""
-	case 15:
+	case configFieldQRWaitTimeout:
 		return strings.TrimSpace(values.QRWaitTimeoutSeconds)
-	case 16:
+	case configFieldAgentAutoLoopMaxRounds:
 		return strings.TrimSpace(values.AgentAutoLoopMaxRounds)
-	case 17:
+	case configFieldOutputLanguage:
 		return strings.TrimSpace(values.OutputLanguage)
-	case 18:
+	case configFieldBrowserMode:
 		return ""
-	case 19:
+	case configFieldBrowserPermissionMode:
 		return ""
-	case 20:
+	case configFieldBrowserChannel:
 		return ""
-	case 21:
+	case configFieldBrowserExecutablePath:
+		return strings.TrimSpace(values.BrowserExecutablePath)
+	case configFieldBrowserProfileDir:
+		return strings.TrimSpace(values.BrowserProfileDir)
+	case configFieldBrowserConnectTimeout:
+		return strings.TrimSpace(values.BrowserConnectTimeout)
+	case configFieldBrowserExtensionSetup:
+		return ""
+	case configFieldBrowserSocketDir:
+		return strings.TrimSpace(values.BrowserSocketDir)
+	case configFieldBrowserRemoteDebuggingURL:
+		return strings.TrimSpace(values.BrowserRemoteDebuggingURL)
+	case configFieldBrowserHeadless:
+		return ""
+	case configFieldSkillsInstallScope:
+		return ""
+	case configFieldSkillsAutoInstallPolicy:
+		return ""
+	case configFieldSkillsFreeTextSearch:
+		return ""
+	case configFieldSkillsRegistryURL:
 		return strings.TrimSpace(values.SkillsRegistryURL)
-	case 22:
+	case configFieldDocUnstructuredExts:
 		return strings.TrimSpace(values.DocUnstructuredExts)
 	default:
 		return ""
@@ -7517,54 +7734,84 @@ func configFormFieldValue(index int, values ConfigFormValues) string {
 
 func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 	values := ConfigFormValues{}
-	if len(inputs) > 0 {
-		values.BackendBaseURL = strings.TrimSpace(inputs[0].Value())
+	if len(inputs) > configFieldBackendBaseURL {
+		values.BackendBaseURL = strings.TrimSpace(inputs[configFieldBackendBaseURL].Value())
 	}
-	if len(inputs) > 1 {
-		values.DefaultFlow = strings.TrimSpace(inputs[1].Value())
+	if len(inputs) > configFieldDefaultFlow {
+		values.DefaultFlow = strings.TrimSpace(inputs[configFieldDefaultFlow].Value())
 	}
-	if len(inputs) > 6 {
-		values.SandboxRoots = strings.TrimSpace(inputs[6].Value())
+	if len(inputs) > configFieldSandboxRoots {
+		values.SandboxRoots = strings.TrimSpace(inputs[configFieldSandboxRoots].Value())
 	}
-	if len(inputs) > 7 {
-		values.PermissionRules = strings.TrimSpace(inputs[7].Value())
+	if len(inputs) > configFieldPermissionRules {
+		values.PermissionRules = strings.TrimSpace(inputs[configFieldPermissionRules].Value())
 	}
-	if len(inputs) > 9 {
-		values.Workdir = strings.TrimSpace(inputs[9].Value())
+	if len(inputs) > configFieldWorkdir {
+		values.Workdir = strings.TrimSpace(inputs[configFieldWorkdir].Value())
 	}
-	if len(inputs) > 10 {
-		values.HTTPTimeoutSeconds = strings.TrimSpace(inputs[10].Value())
+	if len(inputs) > configFieldHTTPTimeout {
+		values.HTTPTimeoutSeconds = strings.TrimSpace(inputs[configFieldHTTPTimeout].Value())
 	}
-	if len(inputs) > 11 {
-		values.CommandTimeoutSeconds = strings.TrimSpace(inputs[11].Value())
+	if len(inputs) > configFieldCommandTimeout {
+		values.CommandTimeoutSeconds = strings.TrimSpace(inputs[configFieldCommandTimeout].Value())
 	}
-	if len(inputs) > 12 {
-		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[12].Value())
+	if len(inputs) > configFieldStreamIdleTimeout {
+		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[configFieldStreamIdleTimeout].Value())
 	}
-	if len(inputs) > 13 {
-		values.StreamRetryAttempts = strings.TrimSpace(inputs[13].Value())
+	if len(inputs) > configFieldStreamRetryAttempts {
+		values.StreamRetryAttempts = strings.TrimSpace(inputs[configFieldStreamRetryAttempts].Value())
 	}
-	if len(inputs) > 15 {
-		values.QRWaitTimeoutSeconds = strings.TrimSpace(inputs[15].Value())
+	if len(inputs) > configFieldQRWaitTimeout {
+		values.QRWaitTimeoutSeconds = strings.TrimSpace(inputs[configFieldQRWaitTimeout].Value())
 	}
-	if len(inputs) > 16 {
-		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[16].Value())
+	if len(inputs) > configFieldAgentAutoLoopMaxRounds {
+		values.AgentAutoLoopMaxRounds = strings.TrimSpace(inputs[configFieldAgentAutoLoopMaxRounds].Value())
 	}
-	if len(inputs) > 17 {
-		values.OutputLanguage = strings.TrimSpace(inputs[17].Value())
+	if len(inputs) > configFieldOutputLanguage {
+		values.OutputLanguage = strings.TrimSpace(inputs[configFieldOutputLanguage].Value())
 	}
-	if len(inputs) > 21 {
-		values.SkillsRegistryURL = strings.TrimSpace(inputs[21].Value())
+	if len(inputs) > configFieldBrowserMode {
+		values.BrowserMode = strings.TrimSpace(inputs[configFieldBrowserMode].Value())
 	}
-	if len(inputs) > 22 {
-		values.DocUnstructuredExts = strings.TrimSpace(inputs[22].Value())
+	if len(inputs) > configFieldBrowserPermissionMode {
+		values.BrowserPermissionMode = strings.TrimSpace(inputs[configFieldBrowserPermissionMode].Value())
+	}
+	if len(inputs) > configFieldBrowserChannel {
+		values.BrowserChannel = strings.TrimSpace(inputs[configFieldBrowserChannel].Value())
+	}
+	if len(inputs) > configFieldBrowserExecutablePath {
+		values.BrowserExecutablePath = strings.TrimSpace(inputs[configFieldBrowserExecutablePath].Value())
+	}
+	if len(inputs) > configFieldBrowserProfileDir {
+		values.BrowserProfileDir = strings.TrimSpace(inputs[configFieldBrowserProfileDir].Value())
+	}
+	if len(inputs) > configFieldBrowserConnectTimeout {
+		values.BrowserConnectTimeout = strings.TrimSpace(inputs[configFieldBrowserConnectTimeout].Value())
+	}
+	if len(inputs) > configFieldBrowserExtensionSetup {
+		values.BrowserExtensionSetup = strings.TrimSpace(inputs[configFieldBrowserExtensionSetup].Value())
+	}
+	if len(inputs) > configFieldBrowserSocketDir {
+		values.BrowserSocketDir = strings.TrimSpace(inputs[configFieldBrowserSocketDir].Value())
+	}
+	if len(inputs) > configFieldBrowserRemoteDebuggingURL {
+		values.BrowserRemoteDebuggingURL = strings.TrimSpace(inputs[configFieldBrowserRemoteDebuggingURL].Value())
+	}
+	if len(inputs) > configFieldBrowserHeadless {
+		values.BrowserHeadless = strings.TrimSpace(inputs[configFieldBrowserHeadless].Value())
+	}
+	if len(inputs) > configFieldSkillsRegistryURL {
+		values.SkillsRegistryURL = strings.TrimSpace(inputs[configFieldSkillsRegistryURL].Value())
+	}
+	if len(inputs) > configFieldDocUnstructuredExts {
+		values.DocUnstructuredExts = strings.TrimSpace(inputs[configFieldDocUnstructuredExts].Value())
 	}
 	return values
 }
 
 func isConfigTextField(index int) bool {
 	switch index {
-	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldStreamRetryAttempts, configFieldQRWaitTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldSkillsRegistryURL, configFieldDocUnstructuredExts:
+	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldStreamRetryAttempts, configFieldQRWaitTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldBrowserExecutablePath, configFieldBrowserProfileDir, configFieldBrowserConnectTimeout, configFieldBrowserSocketDir, configFieldBrowserRemoteDebuggingURL, configFieldSkillsRegistryURL, configFieldDocUnstructuredExts:
 		return true
 	default:
 		return false
@@ -7609,6 +7856,26 @@ func configFieldKey(index int) string {
 		return "agent_auto_loop_max_rounds"
 	case configFieldOutputLanguage:
 		return "output_language"
+	case configFieldBrowserMode:
+		return "browser_mode"
+	case configFieldBrowserPermissionMode:
+		return "browser_permission_mode"
+	case configFieldBrowserChannel:
+		return "browser_channel"
+	case configFieldBrowserExecutablePath:
+		return "browser_executable_path"
+	case configFieldBrowserProfileDir:
+		return "browser_profile_dir"
+	case configFieldBrowserConnectTimeout:
+		return "browser_connect_timeout_seconds"
+	case configFieldBrowserExtensionSetup:
+		return "browser_extension_setup"
+	case configFieldBrowserSocketDir:
+		return "browser_socket_dir"
+	case configFieldBrowserRemoteDebuggingURL:
+		return "browser_remote_debugging_url"
+	case configFieldBrowserHeadless:
+		return "browser_headless"
 	case configFieldSkillsInstallScope:
 		return "skills_install_scope"
 	case configFieldSkillsAutoInstallPolicy:
@@ -7739,6 +8006,76 @@ func (m *model) moveConfigCrossSessionMemoryCursor(delta int) {
 	m.syncLayout()
 }
 
+func (m *model) moveConfigBrowserModeCursor(delta int) {
+	choices := configBrowserModeChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.browserModeCursor += delta
+	if m.configForm.browserModeCursor < 0 {
+		m.configForm.browserModeCursor = len(choices) - 1
+	} else if m.configForm.browserModeCursor >= len(choices) {
+		m.configForm.browserModeCursor = 0
+	}
+	m.syncLayout()
+}
+
+func (m *model) moveConfigBrowserPermissionCursor(delta int) {
+	choices := configBrowserPermissionChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.browserPermissionCursor += delta
+	if m.configForm.browserPermissionCursor < 0 {
+		m.configForm.browserPermissionCursor = len(choices) - 1
+	} else if m.configForm.browserPermissionCursor >= len(choices) {
+		m.configForm.browserPermissionCursor = 0
+	}
+	m.syncLayout()
+}
+
+func (m *model) moveConfigBrowserChannelCursor(delta int) {
+	choices := configBrowserChannelChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.browserChannelCursor += delta
+	if m.configForm.browserChannelCursor < 0 {
+		m.configForm.browserChannelCursor = len(choices) - 1
+	} else if m.configForm.browserChannelCursor >= len(choices) {
+		m.configForm.browserChannelCursor = 0
+	}
+	m.syncLayout()
+}
+
+func (m *model) moveConfigBrowserExtensionCursor(delta int) {
+	choices := configBrowserExtensionSetupChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.browserExtensionCursor += delta
+	if m.configForm.browserExtensionCursor < 0 {
+		m.configForm.browserExtensionCursor = len(choices) - 1
+	} else if m.configForm.browserExtensionCursor >= len(choices) {
+		m.configForm.browserExtensionCursor = 0
+	}
+	m.syncLayout()
+}
+
+func (m *model) moveConfigBrowserHeadlessCursor(delta int) {
+	choices := configBrowserHeadlessChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.browserHeadlessCursor += delta
+	if m.configForm.browserHeadlessCursor < 0 {
+		m.configForm.browserHeadlessCursor = len(choices) - 1
+	} else if m.configForm.browserHeadlessCursor >= len(choices) {
+		m.configForm.browserHeadlessCursor = 0
+	}
+	m.syncLayout()
+}
+
 func (m *model) moveConfigSkillsCursor(delta int) {
 	choices := configSkillsInstallScopeChoices()
 	if m.configForm == nil || len(choices) == 0 {
@@ -7789,6 +8126,45 @@ func configCrossSessionMemoryChoices() []ConfigChoice {
 	return []ConfigChoice{{Value: "true", Label: "开启"}, {Value: "false", Label: "关闭"}}
 }
 
+func configBrowserModeChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: internalconfig.BrowserModeChromeSession, Label: "当前会话", Description: "通过浏览器扩展与本地消息链路接入当前浏览器会话。"},
+		{Value: internalconfig.BrowserModeIsolated, Label: "隔离实例", Description: "启动一个独立浏览器实例执行自动化操作。"},
+	}
+}
+
+func configBrowserPermissionChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: internalconfig.BrowserPermissionModeAsk, Label: "每次确认", Description: "浏览器变更操作逐次确认。"},
+		{Value: internalconfig.BrowserPermissionModeFollowPlan, Label: "跟随计划", Description: "仅在全局命令执行模式为每次确认时弹出浏览器确认。"},
+		{Value: internalconfig.BrowserPermissionModeSkipAll, Label: "直接允许", Description: "浏览器变更操作直接放行，不再弹出浏览器确认。"},
+	}
+}
+
+func configBrowserChannelChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: internalconfig.BrowserChannelChrome, Label: "Chrome", Description: "默认优先使用 Google Chrome。"},
+		{Value: internalconfig.BrowserChannelChromium, Label: "Chromium", Description: "使用 Chromium 通道。"},
+		{Value: internalconfig.BrowserChannelEdge, Label: "Edge", Description: "使用 Microsoft Edge 通道。"},
+		{Value: internalconfig.BrowserChannelBrave, Label: "Brave", Description: "使用 Brave 通道。"},
+	}
+}
+
+func configBrowserExtensionSetupChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: internalconfig.BrowserExtensionSetupNative, Label: "本地消息", Description: "默认方式；由命令行安装宿主并通过扩展建链。"},
+		{Value: internalconfig.BrowserExtensionSetupManual, Label: "手动管理", Description: "保留手动加载扩展与手动维护宿主安装。"},
+		{Value: internalconfig.BrowserExtensionSetupNone, Label: "不接扩展", Description: "不通过扩展接当前浏览器会话。"},
+	}
+}
+
+func configBrowserHeadlessChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: "false", Label: "关闭", Description: "显示隔离浏览器窗口。"},
+		{Value: "true", Label: "开启", Description: "以无头模式运行隔离浏览器。"},
+	}
+}
+
 func reasoningChoiceValue(enabled bool) string {
 	if enabled {
 		return "on"
@@ -7798,6 +8174,13 @@ func reasoningChoiceValue(enabled bool) string {
 
 func boolChoiceValue(enabled bool) string {
 	if enabled {
+		return "true"
+	}
+	return "false"
+}
+
+func boolChoiceString(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), "true") {
 		return "true"
 	}
 	return "false"
@@ -7828,6 +8211,35 @@ func normalizeConfigFlowChoices(options []ConfigChoice, currentValue string) []C
 		}
 	}
 	return choices
+}
+
+func configFieldVisible(form *configFormState, index int) bool {
+	if form == nil {
+		return true
+	}
+	browserMode := configChoiceValue(configBrowserModeChoices(), form.browserModeCursor, internalconfig.BrowserModeChromeSession)
+	browserExtensionSetup := configChoiceValue(configBrowserExtensionSetupChoices(), form.browserExtensionCursor, internalconfig.BrowserExtensionSetupNative)
+	switch index {
+	case configFieldBrowserExecutablePath, configFieldBrowserProfileDir, configFieldBrowserHeadless:
+		return browserMode == internalconfig.BrowserModeIsolated
+	case configFieldBrowserExtensionSetup:
+		return browserMode == internalconfig.BrowserModeChromeSession
+	case configFieldBrowserSocketDir:
+		return browserMode == internalconfig.BrowserModeChromeSession && browserExtensionSetup != internalconfig.BrowserExtensionSetupNone
+	case configFieldBrowserRemoteDebuggingURL:
+		return false
+	default:
+		return true
+	}
+}
+
+func configChoiceValue(options []ConfigChoice, index int, fallbackValue string) string {
+	if index >= 0 && index < len(options) {
+		if value := strings.TrimSpace(options[index].Value); value != "" {
+			return value
+		}
+	}
+	return strings.TrimSpace(fallbackValue)
 }
 
 func configApprovalChoices() []ConfigChoice {
@@ -7904,7 +8316,7 @@ func configChoiceLabel(options []ConfigChoice, index int, fallbackLabel string) 
 }
 
 func activeConfigFormValue(form *configFormState) string {
-	if form == nil || form.cursor < 0 || form.cursor >= len(form.inputs) {
+	if form == nil || form.cursor < 0 || form.cursor >= len(form.inputs) || !isConfigTextField(form.cursor) {
 		return ""
 	}
 	return strings.TrimSpace(form.inputs[form.cursor].Value())

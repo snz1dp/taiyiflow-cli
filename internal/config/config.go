@@ -46,6 +46,20 @@ const (
 	SkillAutoInstallPolicyConfirm   = "confirm"
 	SkillAutoInstallPolicyAllow     = "allow"
 	DefaultClawHubRegistryURL       = "https://mirror-cn.clawhub.com"
+	BrowserModeChromeSession        = "chrome_session"
+	BrowserModeIsolated             = "isolated"
+	BrowserPermissionModeAsk        = "ask"
+	BrowserPermissionModeFollowPlan = "follow_a_plan"
+	BrowserPermissionModeSkipAll    = "skip_all_permission_checks"
+	BrowserChannelChrome            = "chrome"
+	BrowserChannelChromium          = "chromium"
+	BrowserChannelEdge              = "edge"
+	BrowserChannelBrave             = "brave"
+	BrowserExtensionSetupNative     = "native_messaging"
+	BrowserExtensionSetupManual     = "manual"
+	BrowserExtensionSetupNone       = "none"
+	DefaultBrowserConnectTimeout    = 15
+	MaxBrowserConnectTimeout        = 120
 )
 
 var defaultDocUnstructuredExts = []string{
@@ -106,7 +120,21 @@ type Config struct {
 	WriteConfirmationPolicy   string           `yaml:"write_confirmation_policy,omitempty"`
 	SandboxRoots              []string         `yaml:"sandbox_roots,omitempty"`
 	PermissionRules           []PermissionRule `yaml:"permission_rules,omitempty"`
+	Browser                   BrowserConfig    `yaml:"browser,omitempty"`
 	Skills                    SkillConfig      `yaml:"skills,omitempty"`
+}
+
+type BrowserConfig struct {
+	Mode                  string `yaml:"mode,omitempty"`
+	PermissionMode        string `yaml:"permission_mode,omitempty"`
+	Channel               string `yaml:"channel,omitempty"`
+	ExecutablePath        string `yaml:"executable_path,omitempty"`
+	ProfileDir            string `yaml:"profile_dir,omitempty"`
+	ConnectTimeoutSeconds int    `yaml:"connect_timeout_seconds,omitempty"`
+	ExtensionSetup        string `yaml:"extension_setup,omitempty"`
+	SocketDir             string `yaml:"socket_dir,omitempty"`
+	RemoteDebuggingURL    string `yaml:"remote_debugging_url,omitempty"`
+	Headless              bool   `yaml:"headless,omitempty"`
 }
 
 type PermissionRule struct {
@@ -158,6 +186,13 @@ func Default() Config {
 		AuditEnabled:              false,
 		SkillReviewPolicy:         SkillReviewPolicyConfirm,
 		WriteConfirmationPolicy:   WriteConfirmationPolicyConfirm,
+		Browser: BrowserConfig{
+			Mode:                  BrowserModeChromeSession,
+			PermissionMode:        BrowserPermissionModeAsk,
+			Channel:               BrowserChannelChrome,
+			ConnectTimeoutSeconds: DefaultBrowserConnectTimeout,
+			ExtensionSetup:        BrowserExtensionSetupNative,
+		},
 		Skills: SkillConfig{
 			InstallScope:          SkillInstallScopeUser,
 			AutoInstallPolicy:     SkillAutoInstallPolicyOff,
@@ -258,6 +293,73 @@ func NormalizeSkillAutoInstallPolicy(value string) string {
 	default:
 		return SkillAutoInstallPolicyOff
 	}
+}
+
+func NormalizeBrowserMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case BrowserModeIsolated:
+		return BrowserModeIsolated
+	default:
+		return BrowserModeChromeSession
+	}
+}
+
+func NormalizeBrowserPermissionMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case BrowserPermissionModeFollowPlan:
+		return BrowserPermissionModeFollowPlan
+	case BrowserPermissionModeSkipAll:
+		return BrowserPermissionModeSkipAll
+	default:
+		return BrowserPermissionModeAsk
+	}
+}
+
+func NormalizeBrowserChannel(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case BrowserChannelChromium:
+		return BrowserChannelChromium
+	case BrowserChannelEdge:
+		return BrowserChannelEdge
+	case BrowserChannelBrave:
+		return BrowserChannelBrave
+	default:
+		return BrowserChannelChrome
+	}
+}
+
+func NormalizeBrowserExtensionSetup(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case BrowserExtensionSetupManual:
+		return BrowserExtensionSetupManual
+	case BrowserExtensionSetupNone:
+		return BrowserExtensionSetupNone
+	default:
+		return BrowserExtensionSetupNative
+	}
+}
+
+func NormalizeBrowserConnectTimeoutSeconds(value int) int {
+	if value < 1 {
+		return DefaultBrowserConnectTimeout
+	}
+	if value > MaxBrowserConnectTimeout {
+		return MaxBrowserConnectTimeout
+	}
+	return value
+}
+
+func NormalizeBrowserConfig(value BrowserConfig) BrowserConfig {
+	value.Mode = NormalizeBrowserMode(value.Mode)
+	value.PermissionMode = NormalizeBrowserPermissionMode(value.PermissionMode)
+	value.Channel = NormalizeBrowserChannel(value.Channel)
+	value.ExecutablePath = strings.TrimSpace(value.ExecutablePath)
+	value.ProfileDir = strings.TrimSpace(value.ProfileDir)
+	value.ConnectTimeoutSeconds = NormalizeBrowserConnectTimeoutSeconds(value.ConnectTimeoutSeconds)
+	value.ExtensionSetup = NormalizeBrowserExtensionSetup(value.ExtensionSetup)
+	value.SocketDir = strings.TrimSpace(value.SocketDir)
+	value.RemoteDebuggingURL = strings.TrimSpace(value.RemoteDebuggingURL)
+	return value
 }
 
 func NormalizeWriteConfirmationPolicy(value string) string {
@@ -454,6 +556,7 @@ func (m *Manager) Load() (Config, error) {
 	if config.OutputLanguage == "" {
 		config.OutputLanguage = Default().OutputLanguage
 	}
+	config.Browser = NormalizeBrowserConfig(config.Browser)
 	if strings.TrimSpace(config.Skills.RegistryURL) == "" {
 		config.Skills.RegistryURL = Default().Skills.RegistryURL
 	}
@@ -464,6 +567,7 @@ func (m *Manager) Load() (Config, error) {
 func (m *Manager) Save(config Config) error {
 	config.DocUnstructuredExts = NormalizeDocUnstructuredExts(config.DocUnstructuredExts)
 	config.PermissionRules = NormalizePermissionRules(config.PermissionRules)
+	config.Browser = NormalizeBrowserConfig(config.Browser)
 	if err := os.MkdirAll(filepath.Dir(m.path), 0o755); err != nil {
 		return fmt.Errorf("创建配置目录失败: %w", err)
 	}

@@ -91,6 +91,136 @@ func TestNormalizeSkillAutoInstallPolicy(t *testing.T) {
 	}
 }
 
+func TestNormalizeBrowserMode(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{input: "", expected: BrowserModeChromeSession},
+		{input: "chrome_session", expected: BrowserModeChromeSession},
+		{input: "isolated", expected: BrowserModeIsolated},
+		{input: "ISOLATED", expected: BrowserModeIsolated},
+		{input: "unexpected", expected: BrowserModeChromeSession},
+	}
+	for _, item := range cases {
+		if got := NormalizeBrowserMode(item.input); got != item.expected {
+			t.Fatalf("NormalizeBrowserMode(%q) = %q, want %q", item.input, got, item.expected)
+		}
+	}
+}
+
+func TestNormalizeBrowserPermissionMode(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{input: "", expected: BrowserPermissionModeAsk},
+		{input: "ask", expected: BrowserPermissionModeAsk},
+		{input: "follow_a_plan", expected: BrowserPermissionModeFollowPlan},
+		{input: "skip_all_permission_checks", expected: BrowserPermissionModeSkipAll},
+		{input: "unexpected", expected: BrowserPermissionModeAsk},
+	}
+	for _, item := range cases {
+		if got := NormalizeBrowserPermissionMode(item.input); got != item.expected {
+			t.Fatalf("NormalizeBrowserPermissionMode(%q) = %q, want %q", item.input, got, item.expected)
+		}
+	}
+}
+
+func TestNormalizeBrowserChannel(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{input: "", expected: BrowserChannelChrome},
+		{input: "chromium", expected: BrowserChannelChromium},
+		{input: "edge", expected: BrowserChannelEdge},
+		{input: "brave", expected: BrowserChannelBrave},
+		{input: "unexpected", expected: BrowserChannelChrome},
+	}
+	for _, item := range cases {
+		if got := NormalizeBrowserChannel(item.input); got != item.expected {
+			t.Fatalf("NormalizeBrowserChannel(%q) = %q, want %q", item.input, got, item.expected)
+		}
+	}
+}
+
+func TestNormalizeBrowserExtensionSetup(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{input: "", expected: BrowserExtensionSetupNative},
+		{input: "native_messaging", expected: BrowserExtensionSetupNative},
+		{input: "manual", expected: BrowserExtensionSetupManual},
+		{input: "none", expected: BrowserExtensionSetupNone},
+		{input: "unexpected", expected: BrowserExtensionSetupNative},
+	}
+	for _, item := range cases {
+		if got := NormalizeBrowserExtensionSetup(item.input); got != item.expected {
+			t.Fatalf("NormalizeBrowserExtensionSetup(%q) = %q, want %q", item.input, got, item.expected)
+		}
+	}
+}
+
+func TestNormalizeBrowserConnectTimeoutSeconds(t *testing.T) {
+	cases := []struct {
+		input    int
+		expected int
+	}{
+		{input: 0, expected: DefaultBrowserConnectTimeout},
+		{input: 1, expected: 1},
+		{input: MaxBrowserConnectTimeout + 1, expected: MaxBrowserConnectTimeout},
+		{input: -1, expected: DefaultBrowserConnectTimeout},
+	}
+	for _, item := range cases {
+		if got := NormalizeBrowserConnectTimeoutSeconds(item.input); got != item.expected {
+			t.Fatalf("NormalizeBrowserConnectTimeoutSeconds(%d) = %d, want %d", item.input, got, item.expected)
+		}
+	}
+}
+
+func TestNormalizeBrowserConfig(t *testing.T) {
+	got := NormalizeBrowserConfig(BrowserConfig{
+		Mode:                  "isolated",
+		PermissionMode:        "skip_all_permission_checks",
+		Channel:               "edge",
+		ExecutablePath:        "  /Applications/Google Chrome.app/Contents/MacOS/Google Chrome  ",
+		ProfileDir:            "  /tmp/profile  ",
+		ConnectTimeoutSeconds: MaxBrowserConnectTimeout + 10,
+		ExtensionSetup:        "manual",
+		SocketDir:             "  /tmp/socket  ",
+		RemoteDebuggingURL:    "  http://127.0.0.1:9222  ",
+	})
+	if got.Mode != BrowserModeIsolated {
+		t.Fatalf("expected normalized browser mode %q, got %q", BrowserModeIsolated, got.Mode)
+	}
+	if got.PermissionMode != BrowserPermissionModeSkipAll {
+		t.Fatalf("expected normalized browser permission mode %q, got %q", BrowserPermissionModeSkipAll, got.PermissionMode)
+	}
+	if got.Channel != BrowserChannelEdge {
+		t.Fatalf("expected normalized browser channel %q, got %q", BrowserChannelEdge, got.Channel)
+	}
+	if got.ExecutablePath != "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" {
+		t.Fatalf("expected trimmed executable path, got %q", got.ExecutablePath)
+	}
+	if got.ProfileDir != "/tmp/profile" {
+		t.Fatalf("expected trimmed profile dir, got %q", got.ProfileDir)
+	}
+	if got.ConnectTimeoutSeconds != MaxBrowserConnectTimeout {
+		t.Fatalf("expected normalized browser timeout %d, got %d", MaxBrowserConnectTimeout, got.ConnectTimeoutSeconds)
+	}
+	if got.ExtensionSetup != BrowserExtensionSetupManual {
+		t.Fatalf("expected normalized browser extension setup %q, got %q", BrowserExtensionSetupManual, got.ExtensionSetup)
+	}
+	if got.SocketDir != "/tmp/socket" {
+		t.Fatalf("expected trimmed socket dir, got %q", got.SocketDir)
+	}
+	if got.RemoteDebuggingURL != "http://127.0.0.1:9222" {
+		t.Fatalf("expected trimmed remote debugging url, got %q", got.RemoteDebuggingURL)
+	}
+}
+
 func TestNormalizeStreamIdleTimeoutSeconds(t *testing.T) {
 	cases := []struct {
 		input    int
@@ -205,6 +335,18 @@ func TestDefaultConfigIncludesAgentAutoLoopDefaults(t *testing.T) {
 	}
 	if config.CrossSessionMemoryEnabled {
 		t.Fatal("expected cross session memory to default to disabled")
+	}
+	if config.Browser.Mode != BrowserModeChromeSession {
+		t.Fatalf("expected default browser mode %q, got %q", BrowserModeChromeSession, config.Browser.Mode)
+	}
+	if config.Browser.PermissionMode != BrowserPermissionModeAsk {
+		t.Fatalf("expected default browser permission mode %q, got %q", BrowserPermissionModeAsk, config.Browser.PermissionMode)
+	}
+	if config.Browser.Channel != BrowserChannelChrome {
+		t.Fatalf("expected default browser channel %q, got %q", BrowserChannelChrome, config.Browser.Channel)
+	}
+	if config.Browser.ConnectTimeoutSeconds != DefaultBrowserConnectTimeout {
+		t.Fatalf("expected default browser timeout %d, got %d", DefaultBrowserConnectTimeout, config.Browser.ConnectTimeoutSeconds)
 	}
 	if strings.Join(config.DocUnstructuredExts, ",") != strings.Join(defaultDocUnstructuredExts, ",") {
 		t.Fatalf("expected default doc_unstructured_exts %#v, got %#v", defaultDocUnstructuredExts, config.DocUnstructuredExts)
@@ -490,6 +632,48 @@ func TestManagerLoadNormalizesInvalidHTTPTimeoutSeconds(t *testing.T) {
 	}
 	if loaded.HTTPTimeoutSeconds != MaxHTTPTimeoutSeconds {
 		t.Fatalf("expected normalized http timeout %d, got %d", MaxHTTPTimeoutSeconds, loaded.HTTPTimeoutSeconds)
+	}
+}
+
+func TestManagerLoadNormalizesBrowserConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
+
+	content := []byte("backend_base_url: http://localhost:7860\nbrowser:\n  mode: unexpected\n  permission_mode: unexpected\n  channel: edge\n  executable_path: '  /Applications/Chrome  '\n  profile_dir: '  /tmp/profile  '\n  connect_timeout_seconds: 999\n  extension_setup: manual\n  socket_dir: '  /tmp/socket  '\n  remote_debugging_url: '  http://127.0.0.1:9222  '\n")
+	if err := os.WriteFile(manager.path, content, 0o644); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	if loaded.Browser.Mode != BrowserModeChromeSession {
+		t.Fatalf("expected normalized browser mode %q, got %q", BrowserModeChromeSession, loaded.Browser.Mode)
+	}
+	if loaded.Browser.PermissionMode != BrowserPermissionModeAsk {
+		t.Fatalf("expected normalized browser permission mode %q, got %q", BrowserPermissionModeAsk, loaded.Browser.PermissionMode)
+	}
+	if loaded.Browser.Channel != BrowserChannelEdge {
+		t.Fatalf("expected normalized browser channel %q, got %q", BrowserChannelEdge, loaded.Browser.Channel)
+	}
+	if loaded.Browser.ExecutablePath != "/Applications/Chrome" {
+		t.Fatalf("expected trimmed executable path, got %q", loaded.Browser.ExecutablePath)
+	}
+	if loaded.Browser.ProfileDir != "/tmp/profile" {
+		t.Fatalf("expected trimmed profile dir, got %q", loaded.Browser.ProfileDir)
+	}
+	if loaded.Browser.ConnectTimeoutSeconds != MaxBrowserConnectTimeout {
+		t.Fatalf("expected normalized browser timeout %d, got %d", MaxBrowserConnectTimeout, loaded.Browser.ConnectTimeoutSeconds)
+	}
+	if loaded.Browser.ExtensionSetup != BrowserExtensionSetupManual {
+		t.Fatalf("expected normalized browser extension setup %q, got %q", BrowserExtensionSetupManual, loaded.Browser.ExtensionSetup)
+	}
+	if loaded.Browser.SocketDir != "/tmp/socket" {
+		t.Fatalf("expected trimmed socket dir, got %q", loaded.Browser.SocketDir)
+	}
+	if loaded.Browser.RemoteDebuggingURL != "http://127.0.0.1:9222" {
+		t.Fatalf("expected trimmed remote debugging url, got %q", loaded.Browser.RemoteDebuggingURL)
 	}
 }
 

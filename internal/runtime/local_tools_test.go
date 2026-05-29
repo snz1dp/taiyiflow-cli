@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -56,6 +57,41 @@ func (s *documentToolProviderStub) RunDocumentUnstructured(_ context.Context, re
 func (s *documentToolProviderStub) SubmitClientCallResult(_ context.Context, result provider.ClientCallResult) error {
 	s.callback = result
 	return nil
+}
+
+type browserToolCall struct {
+	ToolName      string
+	Arguments     map[string]any
+	ApprovalMode  string
+	BrowserMode   string
+	PermissionMode string
+}
+
+type browserToolExecutorStub struct {
+	result map[string]any
+	err    error
+	calls  []browserToolCall
+}
+
+func (s *browserToolExecutorStub) ExecuteBrowserTool(_ context.Context, config internalconfig.Config, toolName string, arguments map[string]any) (map[string]any, error) {
+	clonedArgs := map[string]any{}
+	for key, value := range arguments {
+		clonedArgs[key] = value
+	}
+	s.calls = append(s.calls, browserToolCall{
+		ToolName:       toolName,
+		Arguments:      clonedArgs,
+		ApprovalMode:   config.ApprovalMode,
+		BrowserMode:    config.Browser.Mode,
+		PermissionMode: config.Browser.PermissionMode,
+	})
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.result != nil {
+		return s.result, nil
+	}
+	return map[string]any{"tool": toolName}, nil
 }
 
 func TestWriteAndReadFile(t *testing.T) {
@@ -263,6 +299,20 @@ func TestAskUserToolDefinitionAvailableForAskMode(t *testing.T) {
 		return
 	}
 	t.Fatal("expected ask_user tool definition in ask mode")
+}
+
+func TestAskUserToolDefinitionHiddenWhenInteractivePromptsDisabled(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	runtimeClient.SetInteractivePromptsEnabled(false)
+	for _, mode := range []string{provider.RequestTypeAgent, provider.RequestTypeAsk, provider.RequestTypePlan} {
+		definitions := runtimeClient.clientToolDefinitionsForMode(mode)
+		for _, item := range definitions {
+			name, _ := item["name"].(string)
+			if name == "ask_user" {
+				t.Fatalf("expected ask_user to be hidden when prompts disabled, mode=%s definitions=%#v", mode, definitions)
+			}
+		}
+	}
 }
 
 func TestSandboxEscapeAlwaysApproveSkipsSubsequentConfirmations(t *testing.T) {
@@ -874,6 +924,51 @@ func TestRunCommandUsesPromptedStdinToChildProcess(t *testing.T) {
 	}
 }
 
+func TestRunCommandRejectsPromptedStdinWhenInteractivePromptsDisabled(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader("host stdin should not be used\n"), io.Discard, io.Discard)
+	runtimeClient.SetInteractivePromptsEnabled(false)
+	config := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
+
+	_, err := runtimeClient.runCommand(context.Background(), config, map[string]any{
+		"command":      "echo",
+		"args":         []string{"hello"},
+		"stdin_prompt": "请输入命令所需输入",
+	})
+	if err == nil || !strings.Contains(err.Error(), "task 模式不支持 stdin_prompt") {
+		t.Fatalf("expected stdin_prompt rejection when prompts disabled, got %v", err)
+	}
+}
+
+func TestRunCommandDoesNotForwardHostStdinWhenInteractivePromptsDisabled(t *testing.T) {
+	if os.Getenv("TAIYIFLOW_HELPER_PROCESS") == "stdin-echo" {
+		content, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			_, _ = os.Stderr.WriteString(err.Error())
+			os.Exit(1)
+		}
+		_, _ = os.Stdout.Write(content)
+		os.Exit(0)
+	}
+
+	runtimeClient := NewClientRuntime(strings.NewReader("host stdin should not be forwarded\n"), io.Discard, io.Discard)
+	runtimeClient.SetInteractivePromptsEnabled(false)
+	config := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
+
+	result, err := runtimeClient.runCommand(context.Background(), config, map[string]any{
+		"command": os.Args[0],
+		"args":    []string{"-test.run=TestRunCommandDoesNotForwardHostStdinWhenInteractivePromptsDisabled$"},
+		"env": map[string]string{
+			"TAIYIFLOW_HELPER_PROCESS": "stdin-echo",
+		},
+	})
+	if err != nil {
+		t.Fatalf("run command failed: %v", err)
+	}
+	if got := stringValue(result["stdout"]); got != "" {
+		t.Fatalf("expected child process not to receive host stdin, got %q", got)
+	}
+}
+
 func TestPermissionRuleDeniesMutatingClientTool(t *testing.T) {
 	tempDir := t.TempDir()
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
@@ -898,6 +993,56 @@ func TestPermissionRuleDeniesMutatingClientTool(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "命中权限规则") {
 		t.Fatalf("expected permission rule denial, got %v", err)
+	}
+}
+
+func TestExecuteClientToolPayloadRejectsConfirmationWhenInteractivePromptsDisabled(t *testing.T) {
+	tempDir := t.TempDir()
+	stdout := &bytes.Buffer{}
+	runtimeClient := NewClientRuntime(strings.NewReader("y\n"), stdout, io.Discard)
+	runtimeClient.SetInteractivePromptsEnabled(false)
+	config := internalconfig.Config{Workdir: tempDir, ApprovalMode: "confirm"}
+
+	_, _, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": "write_file",
+			"arguments": map[string]any{
+				"path":    "notes.txt",
+				"content": "blocked",
+				"mode":    "create",
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "task 模式不支持交互式工具确认") {
+		t.Fatalf("expected non-interactive confirmation rejection, got %v", err)
+	}
+	if strings.Contains(stdout.String(), "[客户端工具]") || strings.Contains(stdout.String(), "是否执行？") {
+		t.Fatalf("expected no tool confirmation prompt output, got %q", stdout.String())
+	}
+	if _, statErr := os.Stat(filepath.Join(tempDir, "notes.txt")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected file not to be created, got %v", statErr)
+	}
+	}
+
+func TestSandboxEscapeConfirmSkipsPromptWhenInteractivePromptsDisabled(t *testing.T) {
+	tempDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "outside.txt")
+	stdout := &bytes.Buffer{}
+	runtimeClient := NewClientRuntime(strings.NewReader("y\n"), stdout, io.Discard)
+	runtimeClient.SetInteractivePromptsEnabled(false)
+	config := internalconfig.Config{
+		Workdir:             tempDir,
+		ApprovalMode:        "auto",
+		SandboxEscapePolicy: internalconfig.SandboxEscapePolicyConfirm,
+	}
+
+	if _, err := runtimeClient.resolveAllowedPathWithPolicy(config, outsidePath, true); err == nil || !strings.Contains(err.Error(), "--allow参数允许访问") {
+		t.Fatalf("expected non-interactive sandbox escape denial with guidance, got %v", err)
+	}
+	if strings.Contains(stdout.String(), "[路径越界确认]") || strings.Contains(stdout.String(), "是否允许本次访问") {
+		t.Fatalf("expected no sandbox confirmation prompt output, got %q", stdout.String())
 	}
 }
 
@@ -1043,5 +1188,191 @@ func TestRequiresClientToolConfirmationSkipsReadonlyMutatingTools(t *testing.T) 
 	}
 	if RequiresClientToolConfirmation(config, writePayload) {
 		t.Fatal("expected readonly mutating tool to be denied directly without extra confirmation")
+	}
+}
+
+func TestExecuteClientToolPayloadDispatchesBrowserTool(t *testing.T) {
+	tempDir := t.TempDir()
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	browserStub := &browserToolExecutorStub{result: map[string]any{"tab_id": "tab-1", "url": "https://example.com"}}
+	runtimeClient.SetBrowserToolExecutor(browserStub)
+	config := internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		Browser: internalconfig.BrowserConfig{
+			Mode:           internalconfig.BrowserModeIsolated,
+			PermissionMode: internalconfig.BrowserPermissionModeSkipAll,
+		},
+	}
+	toolName, resultAny, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": browserToolNavigate,
+			"arguments": map[string]any{
+				"url": "https://example.com",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected browser tool execution to succeed, got %v", err)
+	}
+	if toolName != browserToolNavigate {
+		t.Fatalf("unexpected tool name: %s", toolName)
+	}
+	if len(browserStub.calls) != 1 || browserStub.calls[0].ToolName != browserToolNavigate {
+		t.Fatalf("expected browser executor to receive navigate call, got %#v", browserStub.calls)
+	}
+	resultMap, ok := resultAny.(map[string]any)
+	if !ok || strings.TrimSpace(stringValue(resultMap["tab_id"])) != "tab-1" {
+		t.Fatalf("unexpected browser tool result: %#v", resultAny)
+	}
+}
+
+func TestBrowserPermissionModeAskOverridesAuto(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader("n\n"), io.Discard, io.Discard)
+	runtimeClient.SetBrowserToolExecutor(&browserToolExecutorStub{})
+	config := internalconfig.Config{
+		Workdir:      t.TempDir(),
+		ApprovalMode: "auto",
+		Browser: internalconfig.BrowserConfig{
+			Mode:           internalconfig.BrowserModeIsolated,
+			PermissionMode: internalconfig.BrowserPermissionModeAsk,
+		},
+	}
+	_, _, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": browserToolClick,
+			"arguments": map[string]any{
+				"selector": "button.submit",
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "用户拒绝执行") {
+		t.Fatalf("expected browser ask mode to require confirmation, got %v", err)
+	}
+}
+
+func TestBrowserPermissionModeSkipAllBypassesConfirm(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader("n\n"), io.Discard, io.Discard)
+	browserStub := &browserToolExecutorStub{result: map[string]any{"tab_id": "tab-2"}}
+	runtimeClient.SetBrowserToolExecutor(browserStub)
+	config := internalconfig.Config{
+		Workdir:      t.TempDir(),
+		ApprovalMode: "confirm",
+		Browser: internalconfig.BrowserConfig{
+			Mode:           internalconfig.BrowserModeIsolated,
+			PermissionMode: internalconfig.BrowserPermissionModeSkipAll,
+		},
+	}
+	_, _, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": browserToolType,
+			"arguments": map[string]any{
+				"selector": "input[name=q]",
+				"text":     "taiyiflow",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected skip_all_permission_checks to bypass confirm, got %v", err)
+	}
+	if len(browserStub.calls) != 1 || browserStub.calls[0].ToolName != browserToolType {
+		t.Fatalf("expected browser executor call, got %#v", browserStub.calls)
+	}
+}
+
+func TestBrowserPermissionModeSkipAllBypassesReadonly(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader("n\n"), io.Discard, io.Discard)
+	browserStub := &browserToolExecutorStub{result: map[string]any{"tab_id": "tab-readonly"}}
+	runtimeClient.SetBrowserToolExecutor(browserStub)
+	config := internalconfig.Config{
+		Workdir:      t.TempDir(),
+		ApprovalMode: "readonly",
+		Browser: internalconfig.BrowserConfig{
+			Mode:           internalconfig.BrowserModeChromeSession,
+			PermissionMode: internalconfig.BrowserPermissionModeSkipAll,
+		},
+	}
+	toolName, _, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": browserToolNavigate,
+			"arguments": map[string]any{
+				"url": "https://example.com/read-only-browser",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected browser permission mode to bypass readonly for browser tool, got %v", err)
+	}
+	if toolName != browserToolNavigate {
+		t.Fatalf("unexpected tool name: %s", toolName)
+	}
+	if len(browserStub.calls) != 1 || browserStub.calls[0].ToolName != browserToolNavigate {
+		t.Fatalf("expected browser executor call, got %#v", browserStub.calls)
+	}
+}
+
+func TestRequiresClientToolConfirmationUsesBrowserPermissionModeInReadonly(t *testing.T) {
+	payload := map[string]any{
+		"function": map[string]any{
+			"name": browserToolClick,
+			"arguments": map[string]any{
+				"selector": "button.submit",
+			},
+		},
+	}
+	config := internalconfig.Config{
+		ApprovalMode: "readonly",
+		Browser: internalconfig.BrowserConfig{
+			PermissionMode: internalconfig.BrowserPermissionModeAsk,
+		},
+	}
+	if !RequiresClientToolConfirmation(config, payload) {
+		t.Fatal("expected readonly browser tool to keep browser-specific confirmation behavior")
+	}
+}
+
+func TestBrowserScreenshotAutoPathUsesWorkspaceScopedFile(t *testing.T) {
+	tempDir := t.TempDir()
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	browserStub := &browserToolExecutorStub{result: map[string]any{"tab_id": "tab-3"}}
+	runtimeClient.SetBrowserToolExecutor(browserStub)
+	config := internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		Browser: internalconfig.BrowserConfig{
+			Mode:           internalconfig.BrowserModeIsolated,
+			PermissionMode: internalconfig.BrowserPermissionModeSkipAll,
+		},
+	}
+	_, _, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name":      browserToolScreenshot,
+			"arguments": map[string]any{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected screenshot path auto generation to succeed, got %v", err)
+	}
+	if len(browserStub.calls) != 1 {
+		t.Fatalf("expected one browser executor call, got %#v", browserStub.calls)
+	}
+	pathValue := strings.TrimSpace(stringValue(browserStub.calls[0].Arguments["path"]))
+	if pathValue == "" {
+		t.Fatal("expected screenshot tool to receive auto-generated path")
+	}
+	resolvedTempDir, err := resolveWithExistingParent(tempDir)
+	if err != nil {
+		t.Fatalf("resolve temp dir failed: %v", err)
+	}
+	if !strings.HasPrefix(pathValue, resolvedTempDir) {
+		t.Fatalf("expected screenshot path under resolved workdir %s, got %s", resolvedTempDir, pathValue)
+	}
+	if !strings.HasSuffix(pathValue, ".png") {
+		t.Fatalf("expected png screenshot path, got %s", pathValue)
 	}
 }

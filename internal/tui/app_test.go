@@ -834,21 +834,86 @@ func TestRenderConfigFormIncludesCrossSessionMemoryToggle(t *testing.T) {
 	}
 }
 
+func TestRenderConfigFormUsesChoiceFieldsForBrowserOptions(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{
+		Title: "配置设置",
+		Values: ConfigFormValues{
+			BrowserMode:           internalconfig.BrowserModeChromeSession,
+			BrowserPermissionMode: internalconfig.BrowserPermissionModeSkipAll,
+			BrowserChannel:        internalconfig.BrowserChannelEdge,
+			BrowserExtensionSetup: internalconfig.BrowserExtensionSetupNative,
+		},
+	})
+	state.cursor = configFieldBrowserMode
+
+	rendered := sanitizeTerminalText(model{contentWidth: 88, configForm: state}.renderConfigForm())
+	if !strings.Contains(rendered, "浏览器模式") || !strings.Contains(rendered, "(*) 当前会话") {
+		t.Fatalf("expected browser mode choice field rendered, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "浏览器权限模式") || !strings.Contains(rendered, "直接允许") {
+		t.Fatalf("expected browser permission choice field rendered, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "浏览器通道") || !strings.Contains(rendered, "Edge") {
+		t.Fatalf("expected browser channel choice field rendered, got %q", rendered)
+	}
+	if isConfigTextField(configFieldBrowserMode) || isConfigTextField(configFieldBrowserPermissionMode) || isConfigTextField(configFieldBrowserChannel) || isConfigTextField(configFieldBrowserExtensionSetup) || isConfigTextField(configFieldBrowserHeadless) {
+		t.Fatal("expected browser enum and boolean fields to use choice rendering")
+	}
+}
+
+func TestRenderConfigFormHidesChromeSessionIncompatibleBrowserFields(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{
+		Title: "配置设置",
+		Values: ConfigFormValues{
+			BrowserMode:           internalconfig.BrowserModeChromeSession,
+			BrowserExtensionSetup: internalconfig.BrowserExtensionSetupNative,
+		},
+	})
+
+	rendered := sanitizeTerminalText(model{contentWidth: 88, configForm: state}.renderConfigForm())
+	if strings.Contains(rendered, "浏览器数据目录") || strings.Contains(rendered, "隔离浏览器无头模式") || strings.Contains(rendered, "远程调试地址") {
+		t.Fatalf("expected isolated-only browser fields hidden in chrome_session mode, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "扩展安装方式") || !strings.Contains(rendered, "浏览器桥接 socket 目录") {
+		t.Fatalf("expected chrome_session fields rendered, got %q", rendered)
+	}
+}
+
+func TestRenderConfigFormHidesNativeMessagingFieldsForIsolatedBrowser(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{
+		Title: "配置设置",
+		Values: ConfigFormValues{
+			BrowserMode:           internalconfig.BrowserModeIsolated,
+			BrowserExtensionSetup: internalconfig.BrowserExtensionSetupNative,
+			BrowserHeadless:       "true",
+		},
+	})
+	state.cursor = configFieldBrowserHeadless
+
+	rendered := sanitizeTerminalText(model{contentWidth: 88, configForm: state}.renderConfigForm())
+	if strings.Contains(rendered, "扩展安装方式") || strings.Contains(rendered, "浏览器桥接 socket 目录") {
+		t.Fatalf("expected chrome_session-only browser fields hidden in isolated mode, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "浏览器数据目录") || !strings.Contains(rendered, "隔离浏览器无头模式") || !strings.Contains(rendered, "(*) 开启") {
+		t.Fatalf("expected isolated browser fields rendered, got %q", rendered)
+	}
+}
+
 func TestConfigFormValuesFromInputsReadsAgentAutoLoopMaxRoundsAtShiftedIndex(t *testing.T) {
 	state := newConfigFormState(ConfigFormState{})
-	state.inputs[16].SetValue("0")
-	state.inputs[17].SetValue("zh-CN")
-	state.inputs[21].SetValue("https://mirror-cn.clawhub.com")
+	state.inputs[configFieldAgentAutoLoopMaxRounds].SetValue("0")
+	state.inputs[configFieldOutputLanguage].SetValue("zh-CN")
+	state.inputs[configFieldSkillsRegistryURL].SetValue("https://mirror-cn.clawhub.com")
 
 	values := configFormValuesFromInputs(state.inputs)
 	if values.AgentAutoLoopMaxRounds != "0" {
-		t.Fatalf("expected max rounds from input index 16, got %q", values.AgentAutoLoopMaxRounds)
+		t.Fatalf("expected max rounds from %d, got %q", configFieldAgentAutoLoopMaxRounds, values.AgentAutoLoopMaxRounds)
 	}
 	if values.OutputLanguage != "zh-CN" {
-		t.Fatalf("expected output language from input index 17, got %q", values.OutputLanguage)
+		t.Fatalf("expected output language from %d, got %q", configFieldOutputLanguage, values.OutputLanguage)
 	}
 	if values.SkillsRegistryURL != "https://mirror-cn.clawhub.com" {
-		t.Fatalf("expected registry url from input index 21, got %q", values.SkillsRegistryURL)
+		t.Fatalf("expected registry url from %d, got %q", configFieldSkillsRegistryURL, values.SkillsRegistryURL)
 	}
 }
 

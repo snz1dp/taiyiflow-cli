@@ -446,6 +446,18 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 			},
 		},
 	}
+	definitions = append(definitions, browserClientToolDefinitions()...)
+	if !r.interactivePromptsEnabled {
+		filtered := definitions[:0]
+		for _, definition := range definitions {
+			name := strings.TrimSpace(stringValue(definition["name"]))
+			if name == "ask_user" {
+				continue
+			}
+			filtered = append(filtered, definition)
+		}
+		definitions = filtered
+	}
 	if provider.NormalizeRequestType(mode) == provider.RequestTypeAgent {
 		return definitions
 	}
@@ -465,21 +477,27 @@ func allowedClientToolSetForMode(mode string) map[string]bool {
 		return map[string]bool{}
 	}
 	return map[string]bool{
-		"ask_user":         true,
-		"lsp_query":        true,
-		"glob_files":       true,
-		"task_output":      true,
-		"task_list":        true,
-		"terminal_capture": true,
-		"search_files":     true,
-		"read_file":        true,
-		"skill":            true,
+		"ask_user":             true,
+		"lsp_query":            true,
+		"glob_files":           true,
+		"task_output":          true,
+		"task_list":            true,
+		"terminal_capture":     true,
+		"search_files":         true,
+		"read_file":            true,
+		"skill":                true,
+		browserToolTabsContext: true,
+		browserToolReadText:    true,
+		browserToolReadConsole: true,
 	}
 }
 
 func RequiresClientToolConfirmation(config internalconfig.Config, payload map[string]any) bool {
 	toolName := canonicalClientToolName(nestedString(payload, "function", "name"))
 	arguments := nestedMap(payload, "function", "arguments")
+	if isBrowserTool(toolName) {
+		return browserToolRequiresConfirmation(config, toolName, arguments)
+	}
 	if strings.TrimSpace(config.ApprovalMode) == "readonly" && mutatingClientTool(toolName) {
 		return false
 	}
@@ -503,6 +521,9 @@ func PreviewClientToolCall(payload map[string]any) string {
 
 func (r *ClientRuntime) authorizeClientTool(toolName string, arguments map[string]any, config internalconfig.Config) error {
 	mode := strings.TrimSpace(config.ApprovalMode)
+	if isBrowserTool(toolName) {
+		return r.authorizeBrowserTool(toolName, arguments, config)
+	}
 	if isWriteConfirmationTool(toolName) {
 		if mode == "readonly" {
 			return newToolError("PERMISSION_DENIED", "当前审批模式为只读，拒绝执行 %s", canonicalClientToolName(toolName))
@@ -583,6 +604,9 @@ func (r *ClientRuntime) authorizeClientTool(toolName string, arguments map[strin
 }
 
 func (r *ClientRuntime) confirmClientTool(toolName string, arguments map[string]any) (bool, error) {
+	if !r.interactivePromptsEnabled {
+		return false, newToolError("PERMISSION_DENIED", "当前 task 模式不支持交互式工具确认，请预先放行所需工具")
+	}
 	preview := previewClientTool(toolName, arguments)
 	fmt.Fprintf(r.stdout, "\n[客户端工具]\n%s\n是否执行？[y/N]: ", preview)
 	reader := bufio.NewReader(r.stdin)
@@ -606,6 +630,9 @@ func shouldConfirmMutatingTool(config internalconfig.Config, toolName string) bo
 }
 
 func mutatingClientTool(toolName string) bool {
+	if isBrowserTool(toolName) {
+		return !browserReadOnlyTool(toolName)
+	}
 	switch canonicalClientToolName(toolName) {
 	case "shell_exec", "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit", "document_unstructured", "write_file":
 		return true
@@ -626,6 +653,9 @@ func isWriteConfirmationTool(toolName string) bool {
 func previewClientTool(toolName string, arguments map[string]any) string {
 	path := argumentString(arguments, "path", "filePath")
 	name := argumentString(arguments, "name")
+	if isBrowserTool(toolName) {
+		return previewBrowserTool(toolName, arguments)
+	}
 	switch canonicalClientToolName(toolName) {
 	case "ask_user":
 		questions := 0

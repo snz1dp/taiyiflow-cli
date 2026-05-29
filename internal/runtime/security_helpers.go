@@ -143,6 +143,9 @@ func (r *ClientRuntime) resolveAllowedPathWithPolicy(config internalconfig.Confi
 }
 
 func (r *ClientRuntime) confirmSandboxEscapePath(path string) (bool, bool, error) {
+	if !r.interactivePromptsEnabled {
+		return false, false, nil
+	}
 	if r.sandboxEscapeConfirmer != nil {
 		approved, err := r.sandboxEscapeConfirmer(path)
 		if err != nil {

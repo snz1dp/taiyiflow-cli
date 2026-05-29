@@ -1487,6 +1487,70 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	}
 }
 
+func TestApplyConfigFormSubmissionIncludesBrowserFields(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	app := &App{configManager: manager}
+	if err := manager.Save(internalconfig.Default()); err != nil {
+		t.Fatalf("save default config failed: %v", err)
+	}
+
+	updated, err := app.applyConfigFormSubmission(internaltui.ConfigFormSubmission{
+		Values: internaltui.ConfigFormValues{
+			BackendBaseURL:            "http://localhost:7860",
+			ApprovalMode:              "auto",
+			SkillsInstallScope:        "user",
+			SkillsFreeTextSearch:      false,
+			BrowserMode:               "isolated",
+			BrowserPermissionMode:     "skip_all_permission_checks",
+			BrowserChannel:            "edge",
+			BrowserExecutablePath:     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+			BrowserProfileDir:         "/tmp/taiyiflow-browser-profile",
+			BrowserConnectTimeout:     "30",
+			BrowserExtensionSetup:     "manual",
+			BrowserSocketDir:          "/tmp/taiyiflow-browser-socket",
+			BrowserRemoteDebuggingURL: "http://127.0.0.1:9333",
+			BrowserHeadless:           "true",
+		},
+	})
+	if err != nil {
+		t.Fatalf("applyConfigFormSubmission failed: %v", err)
+	}
+	if updated.Browser.Mode != internalconfig.BrowserModeIsolated {
+		t.Fatalf("expected isolated browser mode, got %#v", updated.Browser)
+	}
+	if updated.Browser.PermissionMode != internalconfig.BrowserPermissionModeSkipAll {
+		t.Fatalf("expected skip_all browser permission mode, got %#v", updated.Browser)
+	}
+	if updated.Browser.Channel != internalconfig.BrowserChannelEdge {
+		t.Fatalf("expected edge browser channel, got %#v", updated.Browser)
+	}
+	if updated.Browser.ExecutablePath != "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" {
+		t.Fatalf("unexpected browser executable path: %#v", updated.Browser)
+	}
+	if updated.Browser.ProfileDir != "/tmp/taiyiflow-browser-profile" {
+		t.Fatalf("unexpected browser profile dir: %#v", updated.Browser)
+	}
+	if updated.Browser.ConnectTimeoutSeconds != 30 {
+		t.Fatalf("expected browser connect timeout 30, got %#v", updated.Browser)
+	}
+	if updated.Browser.ExtensionSetup != internalconfig.BrowserExtensionSetupManual {
+		t.Fatalf("expected browser extension setup manual, got %#v", updated.Browser)
+	}
+	if updated.Browser.SocketDir != "/tmp/taiyiflow-browser-socket" {
+		t.Fatalf("unexpected browser socket dir: %#v", updated.Browser)
+	}
+	if updated.Browser.RemoteDebuggingURL != "http://127.0.0.1:9333" {
+		t.Fatalf("unexpected browser remote debugging url: %#v", updated.Browser)
+	}
+	if !updated.Browser.Headless {
+		t.Fatalf("expected browser headless true, got %#v", updated.Browser)
+	}
+}
+
 func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T) {
 	workspaceDir := t.TempDir()
 	skillDir := filepath.Join(workspaceDir, ".snz1dp", "skills", "context-review")

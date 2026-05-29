@@ -48,6 +48,12 @@
 - 文件写入审查由 `write_confirmation_policy` 单独控制；设置为 `direct` 时，`write_file` 与 `file_edit` 会直接执行，不再弹出写入审查窗口。
 - `agent_auto_loop_max_rounds` 支持 `0-100`；其中 `0` 表示禁用智能体自动续跑。
 
+## 浏览器扩展与内置资源
+
+- `chrome_session` 模式依赖 `taiyiflow-cli browser install` 安装 Native Messaging host，并在浏览器中加载扩展构建产物。
+- 对最终用户与发布产物，仓库内的 `browser-extension/chrome` 不是运行时必需项；若当前工作区缺少该目录，`browser install` 会自动抽取 CLI 内置的扩展源码到本地目录，再继续构建与加载。
+- 仓库内的 `browser-extension/chrome` 目前仍是扩展开发、调试与手工构建入口，主要服务于仓库维护；不要把“内置资源可运行”误解成“仓库源码目录可以直接删除”。
+
 ## 配置示例
 
 命令行（CLI）支持通过启动参数临时覆盖当前任务的外部资源访问策略，也支持通过配置文件持久化默认策略。

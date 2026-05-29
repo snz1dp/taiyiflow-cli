@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/browserbridge"
+	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
 )
 
@@ -47,6 +50,8 @@ func (a *App) runDoctor(args []string) error {
 	fmt.Fprintln(a.stdout, "- 流异常自动重试: 1 次（仅连接中断/超时）")
 	fmt.Fprintf(a.stdout, "- 默认智能体: %s\n", flowDisplay)
 	fmt.Fprintf(a.stdout, "- 文件工具链: %s\n", detectLocalFileToolStatus())
+	fmt.Fprintf(a.stdout, "- 浏览器自动化: %s\n", detectBrowserAutomationStatus(config))
+	fmt.Fprintf(a.stdout, "- 浏览器扩展链路: %s\n", detectBrowserNativeMessagingStatus(config, cwd))
 	if skillItems, directory, skillErr := skills.Discover(config); skillErr == nil {
 		enabledCount := 0
 		for _, item := range skillItems {
@@ -64,4 +69,103 @@ func (a *App) runDoctor(args []string) error {
 
 func detectLocalFileToolStatus() string {
 	return "read_file/glob_files/write_file/file_edit/search_files（内置可用）"
+}
+
+func detectBrowserAutomationStatus(config internalconfig.Config) string {
+	status := browserbridge.NewManager().Diagnose(config.Browser)
+	parts := []string{
+		fmt.Sprintf("浏览器模式: %s", browserModeDisplay(config.Browser.Mode)),
+		fmt.Sprintf("权限模式: %s", browserPermissionModeDisplay(config.Browser.PermissionMode)),
+		fmt.Sprintf("浏览器通道: %s", browserChannelDisplay(config.Browser.Channel)),
+		fmt.Sprintf("扩展接入: %s", browserExtensionSetupDisplay(config.Browser.ExtensionSetup)),
+	}
+	if status.Available && status.Reachable {
+		parts = append(parts, "状态: 可用")
+	} else {
+		parts = append(parts, "状态: 不可用")
+	}
+	if executablePath := strings.TrimSpace(status.ExecutablePath); executablePath != "" {
+		parts = append(parts, fmt.Sprintf("浏览器程序: %s", executablePath))
+	}
+	if endpoint := strings.TrimSpace(status.RemoteDebuggingURL); endpoint != "" {
+		parts = append(parts, fmt.Sprintf("调试地址: %s", endpoint))
+	}
+	if message := strings.TrimSpace(status.Message); message != "" {
+		parts = append(parts, message)
+	}
+	return strings.Join(parts, " | ")
+}
+
+func browserModeDisplay(value string) string {
+	switch strings.TrimSpace(value) {
+	case internalconfig.BrowserModeChromeSession:
+		return "当前会话"
+	case internalconfig.BrowserModeIsolated:
+		return "隔离实例"
+	default:
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return "未设置"
+		}
+		return trimmed
+	}
+}
+
+func browserPermissionModeDisplay(value string) string {
+	switch strings.TrimSpace(value) {
+	case internalconfig.BrowserPermissionModeAsk:
+		return "逐次确认"
+	case internalconfig.BrowserPermissionModeFollowPlan:
+		return "跟随计划"
+	case internalconfig.BrowserPermissionModeSkipAll:
+		return "直接允许"
+	default:
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return "未设置"
+		}
+		return trimmed
+	}
+}
+
+func browserChannelDisplay(value string) string {
+	switch strings.TrimSpace(value) {
+	case internalconfig.BrowserChannelChrome:
+		return "Chrome"
+	case internalconfig.BrowserChannelChromium:
+		return "Chromium"
+	case internalconfig.BrowserChannelEdge:
+		return "Edge"
+	case internalconfig.BrowserChannelBrave:
+		return "Brave"
+	default:
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return "未设置"
+		}
+		return trimmed
+	}
+}
+
+func browserExtensionSetupDisplay(value string) string {
+	switch strings.TrimSpace(value) {
+	case internalconfig.BrowserExtensionSetupNative:
+		return "本地消息"
+	case internalconfig.BrowserExtensionSetupManual:
+		return "手动管理"
+	case internalconfig.BrowserExtensionSetupNone:
+		return "不接扩展"
+	default:
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return "未设置"
+		}
+		return trimmed
+	}
+}
+
+func detectBrowserNativeMessagingStatus(config internalconfig.Config, cwd string) string {
+	extensionDir := detectChromeExtensionProjectDir(cwd)
+	status := browserbridge.DiagnoseNativeMessaging(config.Browser, extensionDir)
+	return status.Message
 }

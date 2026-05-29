@@ -272,7 +272,7 @@ func modeAllowsClientTool(mode string, toolName string) bool {
 		return true
 	}
 	switch strings.TrimSpace(toolName) {
-	case "ask_user", "lsp_query", "glob_files", "task_output", "task_list", "search_files", "read_file", "skill":
+	case "ask_user", "lsp_query", "glob_files", "task_output", "task_list", "search_files", "read_file", "skill", "taiyiflow-in-chrome__tabs_context", "taiyiflow-in-chrome__read_text", "taiyiflow-in-chrome__read_console":
 		return true
 	default:
 		return false
