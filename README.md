@@ -28,8 +28,11 @@
 
 - VS Code 默认构建任务：build taiyiflow-cli
 - `make build`：默认先更新 `browser-extension/chrome/dist`，再编译当前平台产物 `./taiyiflow-cli`
-- `make build-all`：默认先更新 `browser-extension/chrome/dist`，再输出多平台产物到 `build/release/`
+- `make build-all`：使用本地 Go/Node 工具链，默认先更新 `browser-extension/chrome/dist`，再输出多平台产物到 `build/release/`
+- `make build-release`：仅执行多平台 Go 交叉编译；要求 `browser-extension/chrome/dist/manifest.json` 已存在，主要供容器内复用
+- `make release`：使用 Docker/Podman 构建发布产物；先通过 `snz1.cn/base/node:20-alpine` 刷新浏览器扩展 dist，再通过 `snz1.cn/dp/golang:1.25.0` 生成 `build/release/`
 - `make browser-extension-dist`：仅刷新浏览器扩展构建产物
+- `make browser-extension-dist-docker`：使用 `snz1.cn/base/node:20-alpine` 刷新浏览器扩展构建产物
 - 直接命令行构建：`go build -o taiyiflow-cli .`
 - 运行：`./taiyiflow-cli`
 
