@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>太乙智启命令行（CLI）客户端发行下载</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3efe6;
+      --panel: rgba(255, 252, 246, 0.92);
+      --border: rgba(47, 44, 38, 0.12);
+      --text: #1e1b16;
+      --muted: #6b6458;
+      --accent: #146356;
+      --accent-strong: #0f4a40;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "PingFang SC", "Noto Sans SC", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(20, 99, 86, 0.16), transparent 28%),
+        radial-gradient(circle at right center, rgba(168, 98, 45, 0.18), transparent 24%),
+        linear-gradient(180deg, #f7f3eb 0%, var(--bg) 100%);
+    }
+
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 48px 20px 64px;
+    }
+
+    .hero,
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      backdrop-filter: blur(14px);
+      box-shadow: 0 20px 60px rgba(52, 44, 28, 0.08);
+    }
+
+    .hero {
+      padding: 28px;
+      margin-bottom: 20px;
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--accent);
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(32px, 5vw, 52px);
+      line-height: 1.06;
+    }
+
+    .summary {
+      margin: 16px 0 0;
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.7;
+    }
+
+    .panel {
+      padding: 24px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 20px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .meta span {
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(20, 99, 86, 0.08);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th,
+    td {
+      padding: 14px 10px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    td {
+      font-size: 15px;
+    }
+
+    a {
+      color: var(--accent-strong);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    code {
+      font-family: "SFMono-Regular", "SF Mono", Monaco, Consolas, monospace;
+      font-size: 13px;
+      word-break: break-all;
+    }
+
+    .footer {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .empty,
+    .error {
+      padding: 20px;
+      border-radius: 18px;
+      background: rgba(20, 99, 86, 0.06);
+      color: var(--muted);
+    }
+
+    .error {
+      background: rgba(168, 98, 45, 0.08);
+      color: #7a3f18;
+    }
+
+    @media (max-width: 720px) {
+      main {
+        padding: 24px 14px 40px;
+      }
+
+      .hero,
+      .panel {
+        padding: 18px;
+        border-radius: 20px;
+      }
+
+      th:nth-child(3),
+      td:nth-child(3) {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <p class="eyebrow">TaiyiFlow CLI Download</p>
+      <h1>太乙智启命令行（CLI）客户端发行下载</h1>
+      <p class="summary">本页直接提供当前发行构建产物下载，包含各平台可执行文件与校验摘要。镜像启动后会基于构建时的 build/release 目录自动生成清单与 SHA256 校验文件。</p>
+    </section>
+
+    <section class="panel">
+      <div class="meta" id="meta">
+        <span>正在加载发行清单…</span>
+      </div>
+      <div id="content" class="empty">正在读取 manifest.json。</div>
+      <div class="footer">
+        校验文件：<a href="downloads/SHA256SUMS">downloads/SHA256SUMS</a>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    function formatBytes(bytes) {
+      if (!Number.isFinite(bytes) || bytes < 0) {
+        return "-";
+      }
+      const units = ["B", "KB", "MB", "GB"];
+      let value = bytes;
+      let unitIndex = 0;
+      while (value >= 1024 && unitIndex < units.length - 1) {
+        value /= 1024;
+        unitIndex += 1;
+      }
+      return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+    }
+
+    function renderTable(artifacts) {
+      if (!Array.isArray(artifacts) || artifacts.length === 0) {
+        return '<div class="empty">当前镜像未包含任何发行产物，请先执行 make release。</div>';
+      }
+
+      const rows = artifacts.map((artifact) => `
+        <tr>
+          <td><a href="${artifact.path}">${artifact.name}</a></td>
+          <td>${formatBytes(artifact.size_bytes)}</td>
+          <td><code>${artifact.sha256}</code></td>
+        </tr>`).join("");
+
+      return `
+        <table>
+          <thead>
+            <tr>
+              <th>文件</th>
+              <th>大小</th>
+              <th>SHA256</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+
+    async function bootstrap() {
+      const meta = document.getElementById("meta");
+      const content = document.getElementById("content");
+      try {
+        const response = await fetch("./manifest.json", { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`manifest request failed: ${response.status}`);
+        }
+
+        const manifest = await response.json();
+        meta.innerHTML = [
+          `<span>项目：${manifest.project || "taiyiflow-cli"}</span>`,
+          `<span>生成时间：${manifest.generated_at || "未知"}</span>`,
+          `<span>发行数量：${Array.isArray(manifest.artifacts) ? manifest.artifacts.length : 0}</span>`
+        ].join("");
+        content.innerHTML = renderTable(manifest.artifacts);
+      } catch (error) {
+        meta.innerHTML = '<span>清单读取失败</span>';
+        content.innerHTML = `<div class="error">无法读取发行清单：${error.message}</div>`;
+      }
+    }
+
+    bootstrap();
+  </script>
+</body>
+</html>

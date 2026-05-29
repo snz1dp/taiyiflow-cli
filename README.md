@@ -31,10 +31,13 @@
 - `make build-all`：使用本地 Go/Node 工具链，默认先更新 `browser-extension/chrome/dist`，再输出多平台产物到 `build/release/`
 - `make build-release`：仅执行多平台 Go 交叉编译；要求 `browser-extension/chrome/dist/manifest.json` 已存在，主要供容器内复用
 - `make release`：使用 Docker/Podman 构建发布产物；先通过 `snz1.cn/base/node:20-alpine` 刷新浏览器扩展 dist，再通过 `snz1.cn/dp/golang:1.25.0` 生成 `build/release/`
+- `make release-download-image`：基于 `build/release/` 构建发行下载镜像，镜像内会生成下载首页、`manifest.json` 与 `downloads/SHA256SUMS`
 - `make browser-extension-dist`：仅刷新浏览器扩展构建产物
 - `make browser-extension-dist-docker`：使用 `snz1.cn/base/node:20-alpine` 刷新浏览器扩展构建产物
 - 直接命令行构建：`go build -o taiyiflow-cli .`
 - 运行：`./taiyiflow-cli`
+
+发行下载镜像说明：根目录 [BUILD.yaml](BUILD.yaml) 与 [Dockerfile](Dockerfile) 参考 ctl 仓库的下载镜像结构，镜像默认发布名为 `snz1.cn/dp/ai/taiyi/taiyiflow-cli-download`，运行后通过静态页面暴露 `build/release/` 中的各平台产物。
 
 ## 登录
 

@@ -1,0 +1,26 @@
+name: taiyiflow-cli-download
+description: 太乙智启命令行（CLI）客户端发行下载镜像
+
+docker:
+  image: snz1.cn/taiyiflow/cli-download
+  file: Dockerfile
+  platform:
+    - linux/amd64
+    - linux/arm64
+
+service:
+  ports:
+    - 4004:80
+  envs:
+    - TZ=Asia/Shanghai
+  healthcheck:
+    url: /health
+    interval: 10s
+    timeout: 10s
+    period: 30s
+    retries: 30
+  ingress:
+    - backend-port: 80
+      strip-path: true
+      anonymous:
+        - /taiyi/download

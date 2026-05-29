@@ -11,6 +11,7 @@ BUILD_DIR := build
 RELEASE_DIR := $(BUILD_DIR)/release
 ROOT_DIR := $(CURDIR)
 DOCKER_WORKDIR := /tayiflow-cli
+CTL_CMD := snz1dpctl
 
 BROWSER_EXTENSION_DIR := browser-extension/chrome
 BROWSER_EXTENSION_DIST_MANIFEST := $(BROWSER_EXTENSION_DIR)/dist/manifest.json
@@ -21,7 +22,7 @@ NODE_IMAGE ?= snz1.cn/base/node:20-alpine
 
 PLATFORMS ?= darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64
 
-.PHONY: help build build-all build-release release browser-extension-dist browser-extension-dist-docker test clean check-go check-npm check-docker check-browser-extension-dist
+.PHONY: help build build-all build-release release release-download-image browser-extension-dist browser-extension-dist-docker test clean check-go check-npm check-docker check-browser-extension-dist
 
 help:
 	@printf '%s\n' \
@@ -29,6 +30,7 @@ help:
 	  'make build-all             Build multi-platform binaries into build/release/ with local toolchains' \
 	  'make build-release         Build multi-platform binaries into build/release/ (requires browser extension dist)' \
 	  'make release               Build browser extension and release binaries via Docker/Podman' \
+	  'make release-download-image Build the release download image from build/release/' \
 	  'make browser-extension-dist Refresh browser extension dist only' \
 	  'make browser-extension-dist-docker Refresh browser extension dist via Docker/Podman' \
 	  'make test                  Run all Go tests' \
@@ -83,6 +85,12 @@ release: check-docker browser-extension-dist-docker
 		-e GODEBUG="invalidcpu=ignore" \
 		$(GO_IMAGE) \
 		bash -lc "cd $(DOCKER_WORKDIR) && make build-release"
+
+release-download-image: check-docker release
+	@$(CTL_CMD) make docker --push
+
+publish:
+	@$(CTL_CMD) make publish
 
 test: check-go
 	@$(GO) test ./...
