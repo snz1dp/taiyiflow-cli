@@ -349,6 +349,51 @@ func TestAskUserToolDefinitionHiddenWhenInteractivePromptsDisabled(t *testing.T)
 	}
 }
 
+func TestClientMCPServersForModeHidesComputerToolsWhenDisabled(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	enabled := false
+	servers := runtimeClient.ClientMCPServersForMode(provider.RequestTypeAgent, internalconfig.Config{
+		Computer: internalconfig.ComputerConfig{Enabled: &enabled},
+	})
+	definitions, ok := servers[localToolServerName].([]map[string]any)
+	if !ok {
+		t.Fatalf("expected local tool definitions, got %#v", servers)
+	}
+	for _, item := range definitions {
+		if isComputerTool(strings.TrimSpace(stringValue(item["name"]))) {
+			t.Fatalf("expected computer tool to be hidden when disabled, got %#v", item)
+		}
+	}
+}
+
+func TestExecuteClientToolPayloadRejectsComputerToolWhenDisabled(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	computerStub := &computerToolExecutorStub{}
+	runtimeClient.SetComputerToolExecutor(computerStub)
+	enabled := false
+	config := internalconfig.Config{
+		Workdir:      t.TempDir(),
+		ApprovalMode: "auto",
+		Computer: internalconfig.ComputerConfig{
+			Enabled:        &enabled,
+			PermissionMode: internalconfig.ComputerPermissionModeAsk,
+		},
+	}
+	_, _, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name":      computerToolDisplaysContext,
+			"arguments": map[string]any{},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "已在配置中禁用") {
+		t.Fatalf("expected disabled computer tool execution to fail, got %v", err)
+	}
+	if len(computerStub.calls) != 0 {
+		t.Fatalf("expected disabled computer tool not to reach executor, got %#v", computerStub.calls)
+	}
+}
+
 func TestSandboxEscapeAlwaysApproveSkipsSubsequentConfirmations(t *testing.T) {
 	tempDir := t.TempDir()
 	outsideDir := t.TempDir()

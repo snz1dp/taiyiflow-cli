@@ -28,6 +28,10 @@ type stubProvider struct {
 	messages           *provider.SessionMessageList
 	runStats           *provider.RunStats
 	sessionContext     *provider.SessionContextPreview
+	memoryTasks        *provider.MemoryConsolidationPage
+	memoryTasksErr     error
+	memoryTrigger      *provider.MemoryConsolidationTriggerResult
+	memoryTriggerErr   error
 	updateSessionTitle func(context.Context, string, string, string) (string, error)
 	skillPreview       *provider.SkillResolvePreview
 	skillPreviewErr    error
@@ -149,6 +153,14 @@ func (s stubProvider) GetRunStats(context.Context, string, string, string) (*pro
 
 func (s stubProvider) GetSessionContextWindow(context.Context, string, string) (*provider.SessionContextPreview, error) {
 	return s.sessionContext, nil
+}
+
+func (s stubProvider) ListMemoryConsolidations(context.Context, provider.MemoryConsolidationQuery) (*provider.MemoryConsolidationPage, error) {
+	return s.memoryTasks, s.memoryTasksErr
+}
+
+func (s stubProvider) TriggerMemoryConsolidation(context.Context, provider.MemoryConsolidationTriggerRequest) (*provider.MemoryConsolidationTriggerResult, error) {
+	return s.memoryTrigger, s.memoryTriggerErr
 }
 
 

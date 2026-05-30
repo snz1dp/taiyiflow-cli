@@ -287,8 +287,59 @@ type SessionContextPreview struct {
 	SessionID         string
 	ContextWindow     *ContextWindowUsage
 	LatestCompression *CompressionRecord
+	MemoryTiers       []string
 	SourceUpdatedAt   time.Time
 	Source            string
+}
+
+type MemoryConsolidationQuery struct {
+	FlowID string
+	Status string
+	Offset int
+	Limit  int
+}
+
+type MemoryConsolidationTask struct {
+	ID               string
+	ScopeKey         string
+	FlowID           string
+	OwnerAppID       string
+	OwnerUserID      string
+	WindowStart      time.Time
+	WindowEnd        time.Time
+	TriggerReason    string
+	Status           string
+	AttemptCount     int
+	LastError        string
+	LastSourceCount  int
+	LastSessionCount int
+	LastTaskID       string
+	ResultSegmentKey string
+	LastRunAt        time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type MemoryConsolidationPage struct {
+	Total  int
+	Offset int
+	Items  []MemoryConsolidationTask
+}
+
+type MemoryConsolidationTriggerRequest struct {
+	FlowID         string
+	OwnerAppID     string
+	MinHours       int
+	MinSessions    int
+	ExecuteEnabled bool
+}
+
+type MemoryConsolidationTriggerResult struct {
+	TaskID        string
+	BackendTaskID string
+	Status        string
+	Scheduled     bool
+	Reason        string
 }
 
 type FlowSummary struct {
@@ -406,5 +457,7 @@ type Provider interface {
 	Stream(ctx context.Context, request StreamRequest) (<-chan StreamEvent, *StreamSession, error)
 	GetRunStats(ctx context.Context, flowID string, sessionID string, runID string) (*RunStats, error)
 	GetSessionContextWindow(ctx context.Context, flowID string, sessionID string) (*SessionContextPreview, error)
+	ListMemoryConsolidations(ctx context.Context, query MemoryConsolidationQuery) (*MemoryConsolidationPage, error)
+	TriggerMemoryConsolidation(ctx context.Context, request MemoryConsolidationTriggerRequest) (*MemoryConsolidationTriggerResult, error)
 	SubmitClientCallResult(ctx context.Context, result ClientCallResult) error
 }

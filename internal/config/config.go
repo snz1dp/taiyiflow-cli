@@ -141,6 +141,7 @@ type BrowserConfig struct {
 }
 
 type ComputerConfig struct {
+	Enabled        *bool  `yaml:"enabled"`
 	PermissionMode string `yaml:"permission_mode,omitempty"`
 }
 
@@ -201,6 +202,7 @@ func Default() Config {
 			ExtensionSetup:        BrowserExtensionSetupNative,
 		},
 		Computer: ComputerConfig{
+			Enabled:        configBoolPtr(true),
 			PermissionMode: ComputerPermissionModeAsk,
 		},
 		Skills: SkillConfig{
@@ -334,6 +336,13 @@ func NormalizeComputerPermissionMode(value string) string {
 	}
 }
 
+func ComputerEnabled(value ComputerConfig) bool {
+	if value.Enabled == nil {
+		return true
+	}
+	return *value.Enabled
+}
+
 func NormalizeBrowserChannel(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case BrowserChannelChromium:
@@ -382,8 +391,14 @@ func NormalizeBrowserConfig(value BrowserConfig) BrowserConfig {
 }
 
 func NormalizeComputerConfig(value ComputerConfig) ComputerConfig {
+	value.Enabled = configBoolPtr(ComputerEnabled(value))
 	value.PermissionMode = NormalizeComputerPermissionMode(value.PermissionMode)
 	return value
+}
+
+func configBoolPtr(value bool) *bool {
+	result := value
+	return &result
 }
 
 func NormalizeWriteConfirmationPolicy(value string) string {

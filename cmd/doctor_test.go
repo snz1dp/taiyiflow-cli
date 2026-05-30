@@ -46,6 +46,7 @@ func TestDetectComputerAutomationStatusUsesChineseLabels(t *testing.T) {
 
 	message := detectComputerAutomationStatus(config)
 	for _, expected := range []string{
+		"开关: 开启",
 		"权限模式: 逐次确认",
 		"状态:",
 		"平台:",

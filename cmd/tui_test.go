@@ -1291,12 +1291,39 @@ func TestBuildTUICompressionMetricsAcceptsCompressionEndPayload(t *testing.T) {
 		"remaining_tokens":  2192,
 		"compression_ratio": 0.65,
 		"target_type":       "history_messages",
+		"context_window": map[string]any{
+			"max_input_tokens":           10000,
+			"current_round_input_tokens": 6400,
+			"next_round_available_tokens": 3600,
+		},
 	})
 	if metrics == nil || metrics.Compression == nil {
 		t.Fatalf("expected compression metrics, got %#v", metrics)
 	}
 	if metrics.Compression.AfterTokens != 6000 || metrics.Compression.TargetType != "history_messages" {
 		t.Fatalf("unexpected compression metrics: %#v", metrics.Compression)
+	}
+	if metrics.TokenUsage == nil || metrics.TokenUsage.ContextWindow == nil {
+		t.Fatalf("expected context window metrics, got %#v", metrics)
+	}
+	if metrics.TokenUsage.ContextWindow.CurrentRoundInputTokens != 6400 {
+		t.Fatalf("unexpected context window metrics: %#v", metrics.TokenUsage.ContextWindow)
+	}
+}
+
+func TestBuildTUICompressionProgressTextAppendsContextUsageSummary(t *testing.T) {
+	text := buildTUICompressionProgressText(map[string]any{
+		"text":          "上下文压缩完成：320 -> 160",
+		"before_tokens": 320,
+		"after_tokens":  160,
+		"context_window": map[string]any{
+			"max_input_tokens":           10000,
+			"current_round_input_tokens": 6400,
+			"next_round_available_tokens": 3600,
+		},
+	})
+	if text != "上下文压缩完成：0.3K -> 0.2K（当前上下文 6.4K/10K，可用 3.6K）" {
+		t.Fatalf("unexpected compression progress text with context summary: %q", text)
 	}
 }
 
@@ -1393,6 +1420,7 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 			QRWaitTimeoutSeconds:      "90",
 			AgentAutoLoopMaxRounds:    "0",
 			OutputLanguage:            "zh-CN",
+			ComputerEnabled:           false,
 			SkillsInstallScope:        "workspace",
 			SkillsAutoInstallPolicy:   "allow",
 			SkillsFreeTextSearch:      false,
@@ -1450,6 +1478,9 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	if !updated.CrossSessionMemoryEnabled {
 		t.Fatalf("expected cross session memory saved, got %#v", updated.CrossSessionMemoryEnabled)
 	}
+	if internalconfig.ComputerEnabled(updated.Computer) {
+		t.Fatalf("expected desktop automation to be disabled, got %#v", updated.Computer)
+	}
 	if updated.AgentAutoLoopMaxRounds != 0 {
 		t.Fatalf("expected agent auto loop max rounds saved as 0, got %#v", updated.AgentAutoLoopMaxRounds)
 	}
@@ -1475,6 +1506,9 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	}
 	if !reloaded.CrossSessionMemoryEnabled {
 		t.Fatalf("expected persisted cross session memory, got %#v", reloaded.CrossSessionMemoryEnabled)
+	}
+	if internalconfig.ComputerEnabled(reloaded.Computer) {
+		t.Fatalf("expected persisted desktop automation disabled state, got %#v", reloaded.Computer)
 	}
 	if reloaded.AgentAutoLoopMaxRounds != 0 {
 		t.Fatalf("expected persisted auto loop max rounds 0, got %#v", reloaded.AgentAutoLoopMaxRounds)

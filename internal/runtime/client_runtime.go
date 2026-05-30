@@ -122,12 +122,24 @@ func (r *ClientRuntime) writeStreamEventf(writer io.Writer, format string, args 
 }
 
 func (r *ClientRuntime) ClientMCPServers() map[string]any {
-	return r.ClientMCPServersForMode(provider.RequestTypeAgent)
+	return r.ClientMCPServersForMode(provider.RequestTypeAgent, internalconfig.Default())
 }
 
-func (r *ClientRuntime) ClientMCPServersForMode(mode string) map[string]any {
+func (r *ClientRuntime) ClientMCPServersForMode(mode string, config internalconfig.Config) map[string]any {
+	definitions := r.clientToolDefinitionsForMode(mode)
+	if !internalconfig.ComputerEnabled(config.Computer) {
+		filtered := definitions[:0]
+		for _, definition := range definitions {
+			name := strings.TrimSpace(stringValue(definition["name"]))
+			if isComputerTool(name) {
+				continue
+			}
+			filtered = append(filtered, definition)
+		}
+		definitions = filtered
+	}
 	return map[string]any{
-		localToolServerName: r.clientToolDefinitionsForMode(mode),
+		localToolServerName: definitions,
 	}
 }
 

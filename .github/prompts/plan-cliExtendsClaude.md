@@ -1,6 +1,6 @@
 ## Plan: CLI 本地工具对标补齐
 
-基于对标仓库的 CLI 工具注册表与工具实现目录，以及当前 taiyiflow-cli 的本地工具实现，建议不要追求“全量工具数一致”，而是按代码任务闭环优先补齐 4 类核心能力：结构化命令外壳(shell)工具、任务态工具、代码语义导航工具、细粒度编辑工具。首轮推荐以 shell_exec + task_output/task_stop + file_edit + lsp_query + Todo/Task 为主线，glob_files/terminal_capture/notebook_edit 作为第二梯队，明确排除 Web、Computer Use、桌面端、IM、远程触发、多智能体(multi-agent)编排等非首版本地 CLI 范围。补充约束：凡是 CLI 对标补齐过程中发现现有太乙智启后台 stream 接口、请求 schema、事件模型或客户端回调协议不足以承载新能力的，必须同步把后台改造纳入同一实施批次，不能只在 CLI 侧做兼容性绕行。
+基于对标仓库的 CLI 工具注册表与工具实现目录，以及当前 taiyiflow-cli 的本地工具实现，建议不要追求“全量工具数一致”，而是按代码任务闭环优先补齐 4 类核心能力：结构化命令外壳(shell)工具、任务态工具、代码语义导航工具、细粒度编辑工具。首轮推荐以 shell_exec + task_output/task_stop + file_edit + lsp_query + Todo/Task 为主线，glob_files/terminal_capture/notebook_edit 作为第二梯队，明确排除 Web、本机操作、桌面端、IM、远程触发、多智能体(multi-agent)编排等非首版本地 CLI 范围。补充约束：凡是 CLI 对标补齐过程中发现现有太乙智启后台 stream 接口、请求 schema、事件模型或客户端回调协议不足以承载新能力的，必须同步把后台改造纳入同一实施批次，不能只在 CLI 侧做兼容性绕行。
 
 claude-code-haha的源码在「/Users/neeker/工作/技术开发平台/人工智能平台/开发平台/claude/claude-code-haha」目录。
 
@@ -31,7 +31,7 @@ claude-code-haha的源码在「/Users/neeker/工作/技术开发平台/人工智
 
 **Verification**
 
-1. 先做工具矩阵核对：列出“当前已有 / 对标必补 / 明确延后”的工具清单，确认没有把 Web、Computer Use、IM、桌面端等超范围能力混入首版。
+1. 先做工具矩阵核对：列出“当前已有 / 对标必补 / 明确延后”的工具清单，确认没有把 Web、本机操作、IM、桌面端等超范围能力混入首版。
 2. 先做 CLI 与后台协议核对：逐项确认新增工具是否需要扩展 SimplifiedAPIRequest、StreamData、client_mcp_servers、客户端回调载荷或 stream 事件；一旦需要，就在 CLI 和后台同时建变更清单。
 3. 对每类新增工具补最小可执行测试：文件编辑工具测试读后写保护与 replace_all；Shell 或 Task 工具测试超时、后台运行、结果读取与停止；lsp_query 工具至少验证 schema 与无服务时的错误返回。
 4. 对 CLI 与后台做一轮联调回归：确认 stream 事件、会话头 X-TaiyiFlow-Session-id、客户端工具回调与新增字段在真实后端上可闭环。
@@ -40,7 +40,7 @@ claude-code-haha的源码在「/Users/neeker/工作/技术开发平台/人工智
 
 **Decisions**
 
-- 包含范围：仅比较 CLI 本地工具层，重点看代码任务闭环，不把对标仓库的桌面端、Computer Use、Channel、远程触发、Web 搜索、远端 MCP 资源、多智能体团队协作纳入首轮对标要求。
+- 包含范围：仅比较 CLI 本地工具层，重点看代码任务闭环，不把对标仓库的桌面端、本机操作、Channel、远程触发、Web 搜索、远端 MCP 资源、多智能体团队协作纳入首轮对标要求。
 - 后台同步原则：如果 CLI 新工具落地依赖太乙智启后台扩展 stream 协议、请求 schema、事件模型、会话字段或客户端回调协议，则 CLI 与后台必须同批次设计、实现和联调，不接受单边兼容绕行。
 - 当前最核心的缺口已从基础本地工具补齐，转向命令工作流层、权限治理层和任务持久化层：优先看 /review 类工作流命令、/permissions 或等价权限管理入口、会话级任务治理与持久化能力。
 - 次优先缺口：terminal_capture、notebook_edit、结构化 ask_user_question，以及更完整的 Task CRUD 与任务面板联动。

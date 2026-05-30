@@ -148,7 +148,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				CommandExecutionTarget:    commandExecutionTarget,
 				UserAgent:                 buildCLIUserAgent(),
 				RequestedSkillNames:       requestedSkillNames,
-				ClientMCPServers:          quietRuntimeClient.ClientMCPServersForMode(request.RequestMode),
+				ClientMCPServers:          quietRuntimeClient.ClientMCPServersForMode(request.RequestMode, config),
 				ClientSkillPackages:       clientSkillPackages,
 			})
 			if streamErr != nil {
@@ -211,6 +211,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				case provider.EventCompressionStart:
 					if text := buildTUICompressionProgressText(event.Data); text != "" {
 						emit(tui.Event{Kind: tui.EventProgressNote, Text: text, EventType: "compression_progress"})
+					}
+					if metrics := buildTUICompressionMetrics(event.Data); metrics != nil {
+						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
 					}
 				case provider.EventCompressionEnd:
 					if text := buildTUICompressionProgressText(event.Data); text != "" {
@@ -627,6 +630,18 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				events = append(events, tui.Event{Kind: tui.EventSystemNote, Text: output})
 			}
 			return tui.LocalCommandResult{Handled: true, Events: events}, nil
+		case isMemorySlashCommand(trimmed):
+			output, panel, commandErr := a.executeMemorySlashCommand(commandCtx, commandProvider, trimmed, snapshot.DefaultFlow)
+			if commandErr != nil {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: commandErr.Error()}}}, nil
+			}
+			events := []tui.Event{}
+			if panel != nil {
+				events = append(events, tui.Event{Kind: tui.EventToolPanel, Panel: panel})
+			} else if strings.TrimSpace(output) != "" {
+				events = append(events, tui.Event{Kind: tui.EventSystemNote, Text: output})
+			}
+			return tui.LocalCommandResult{Handled: true, Events: events}, nil
 		case strings.EqualFold(trimmed, "/permissions") || strings.EqualFold(trimmed, "/permissions show") || strings.HasPrefix(strings.ToLower(trimmed), "/permissions "):
 			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "/permissions 已移除，请使用 /config 管理权限与执行配置。"}}}, nil
 		case strings.EqualFold(trimmed, "/review") || strings.HasPrefix(strings.ToLower(trimmed), "/review "):
@@ -839,6 +854,7 @@ func buildTUIHelpLines(snapshot tui.Snapshot) []string {
 			"/config 打开当前配置弹窗",
 			"/todo [show|hide|status] 查看或切换右侧待办栏",
 			"/tasks 查看本地后台任务",
+			"/memory [status|trigger] 查看或触发跨会话记忆整合",
 			"/skills 查看本地技能与远程仓库技能",
 			"/reasoning 查看思考模式",
 			"/help 查看当前提示",
@@ -868,6 +884,7 @@ func buildTUIHelpLines(snapshot tui.Snapshot) []string {
 		"!<shell 命令> 在当前目录执行本地命令",
 		"/agents 或 /agents <名称> 选择智能体",
 		"/tasks [list|output|capture|stop|remove] 管理本地后台任务",
+		"/memory [status|trigger] [flow=<智能体>] [key=value] 查看或触发跨会话记忆整合",
 		"/skills [list|view|search|view-remote|install|remove|update|source|enable|disable|help] 管理本地技能与远程仓库技能",
 		"/exit 退出",
 	}
@@ -2048,7 +2065,7 @@ func buildTUIComputerToolPanel(toolName string, resultMap map[string]any) *tui.T
 				Title:   "桌面显示器",
 				Summary: "当前没有可用显示器信息",
 				Body:    "当前平台没有返回显示器上下文。",
-				Hint:    "若需要截图，可先确认 doctor 中的桌面 ComputerUse 状态。",
+				Hint:    "若需要截图，可先确认 doctor 中的桌面操作状态。",
 			}
 		}
 		lines := make([]string, 0, len(displays))
@@ -2531,28 +2548,75 @@ func buildTUICompressionMetrics(payload map[string]any) *tui.RequestMetrics {
 	if len(payload) == 0 {
 		return nil
 	}
+	metrics := &tui.RequestMetrics{}
+	if contextWindow := buildTUICompressionContextWindow(payload); contextWindow != nil {
+		metrics.TokenUsage = &tui.TokenUsage{ContextWindow: contextWindow}
+	}
 	beforeTokens := payloadIntValue(payload, "before_tokens")
 	afterTokens := payloadIntValue(payload, "after_tokens")
 	remainingTokens := payloadIntValue(payload, "remaining_tokens")
 	compressionRatio := payloadFloatValue(payload, "compression_ratio")
 	targetType := strings.TrimSpace(stringMapValue(payload, "target_type"))
-	if beforeTokens == 0 && afterTokens == 0 && remainingTokens == 0 && compressionRatio == 0 && targetType == "" {
-		return nil
-	}
-	count := payloadIntValue(payload, "count")
-	if count <= 0 {
-		count = 1
-	}
-	return &tui.RequestMetrics{
-		Compression: &tui.CompressionStats{
+	if beforeTokens != 0 || afterTokens != 0 || remainingTokens != 0 || compressionRatio != 0 || targetType != "" {
+		count := payloadIntValue(payload, "count")
+		if count <= 0 {
+			count = 1
+		}
+		metrics.Compression = &tui.CompressionStats{
 			Count:            count,
 			BeforeTokens:     beforeTokens,
 			AfterTokens:      afterTokens,
 			RemainingTokens:  remainingTokens,
 			CompressionRatio: compressionRatio,
 			TargetType:       targetType,
-		},
+		}
 	}
+	if metrics.TokenUsage == nil && metrics.Compression == nil {
+		return nil
+	}
+	return metrics
+}
+
+func buildTUICompressionContextWindow(payload map[string]any) *tui.ContextWindow {
+	rawContextWindow, ok := payload["context_window"]
+	if !ok || rawContextWindow == nil {
+		return nil
+	}
+	contextWindow, ok := rawContextWindow.(map[string]any)
+	if !ok {
+		return nil
+	}
+	resolved := &tui.ContextWindow{
+		MaxInputTokens:              payloadIntValue(contextWindow, "max_input_tokens"),
+		ContextUsageTokens:          payloadIntValue(contextWindow, "context_usage_tokens"),
+		DirectMessageTokens:         payloadIntValue(contextWindow, "direct_message_tokens"),
+		CompressedHistoryTokens:     payloadIntValue(contextWindow, "compressed_history_tokens"),
+		CurrentRoundInputTokens:     payloadIntValue(contextWindow, "current_round_input_tokens"),
+		NextRoundAvailableTokens:    payloadIntValue(contextWindow, "next_round_available_tokens"),
+		CurrentRoundAvailableTokens: payloadIntValue(contextWindow, "current_round_available_tokens"),
+		HistoryMessageCount:         payloadIntValue(contextWindow, "history_message_count"),
+		PreparedMessageCount:        payloadIntValue(contextWindow, "prepared_message_count"),
+		HighWatermarkRatio:          payloadFloatValue(contextWindow, "high_watermark_ratio"),
+		CompressionTargetRatio:      payloadFloatValue(contextWindow, "compression_target_ratio"),
+		HighWatermarkTokens:         payloadIntValue(contextWindow, "high_watermark_tokens"),
+		CompressionTargetTokens:     payloadIntValue(contextWindow, "compression_target_tokens"),
+	}
+	if resolved.MaxInputTokens == 0 &&
+		resolved.ContextUsageTokens == 0 &&
+		resolved.DirectMessageTokens == 0 &&
+		resolved.CompressedHistoryTokens == 0 &&
+		resolved.CurrentRoundInputTokens == 0 &&
+		resolved.NextRoundAvailableTokens == 0 &&
+		resolved.CurrentRoundAvailableTokens == 0 &&
+		resolved.HistoryMessageCount == 0 &&
+		resolved.PreparedMessageCount == 0 &&
+		resolved.HighWatermarkRatio == 0 &&
+		resolved.CompressionTargetRatio == 0 &&
+		resolved.HighWatermarkTokens == 0 &&
+		resolved.CompressionTargetTokens == 0 {
+		return nil
+	}
+	return resolved
 }
 
 func buildTUICompressionProgressText(payload map[string]any) string {
@@ -2736,6 +2800,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			QRWaitTimeoutSeconds:      strconv.Itoa(config.QRWaitTimeoutSeconds),
 			AgentAutoLoopMaxRounds:    strconv.Itoa(config.AgentAutoLoopMaxRounds),
 			OutputLanguage:            strings.TrimSpace(config.OutputLanguage),
+			ComputerEnabled:           internalconfig.ComputerEnabled(config.Computer),
 			BrowserMode:               strings.TrimSpace(config.Browser.Mode),
 			BrowserPermissionMode:     strings.TrimSpace(config.Browser.PermissionMode),
 			BrowserChannel:            strings.TrimSpace(config.Browser.Channel),
@@ -2862,6 +2927,10 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		config.OutputLanguage = internalconfig.Default().OutputLanguage
 	} else if err := assignConfigValue(&config, "output_language", submission.Values.OutputLanguage); err != nil {
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "output_language", Message: err.Error()}
+	}
+
+	if err := assignConfigValue(&config, "computer_enabled", strconv.FormatBool(submission.Values.ComputerEnabled)); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "computer_enabled", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.BrowserMode) == "" {
@@ -3049,6 +3118,7 @@ func (a *App) executeTUISessionCommand(ctx context.Context, providerClient provi
 		}
 
 		sessionID := strings.TrimSpace(resolvedSnapshot.SessionID)
+		resolvedFlowID := a.resolveFlowIdentifier(ctx, providerClient, snapshot.DefaultFlow)
 		if providerClient != nil && sessionID != "" && (strings.TrimSpace(resolvedSnapshot.SessionTitle) == "" || strings.TrimSpace(resolvedSnapshot.SessionTitle) == sessionID) {
 			currentState := agent.SessionState{SessionID: sessionID, SessionTitle: strings.TrimSpace(resolvedSnapshot.SessionTitle)}
 			if flowID := strings.TrimSpace(snapshot.DefaultFlow); flowID != "" {
@@ -3058,7 +3128,7 @@ func (a *App) executeTUISessionCommand(ctx context.Context, providerClient provi
 					currentState.SessionID = sessionID
 				}
 			}
-			title, err := lookupSessionTitle(ctx, providerClient, snapshot.DefaultFlow, sessionID)
+			title, err := lookupSessionTitle(ctx, providerClient, resolvedFlowID, sessionID)
 			if err == nil && strings.TrimSpace(title) != "" {
 				currentState.SessionTitle = strings.TrimSpace(title)
 				resolvedSnapshot.SessionTitle = resolveSessionTitle(currentState)
@@ -3066,6 +3136,9 @@ func (a *App) executeTUISessionCommand(ctx context.Context, providerClient provi
 		}
 
 		text := tui.RenderSessionStatusText(resolvedSnapshot, "")
+		if line := buildSessionMemoryTierLine(loadSessionMemoryPreview(ctx, providerClient, resolvedFlowID, sessionID)); line != "" {
+			text = strings.TrimRight(text, "\n") + "\n" + line
+		}
 		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: text}}}, nil
 	case strings.EqualFold(trimmed, sessionTitleCommandPrefix), strings.HasPrefix(lowered, sessionTitleCommandPrefix+" "):
 		title := strings.TrimSpace(trimmed[len(sessionTitleCommandPrefix):])

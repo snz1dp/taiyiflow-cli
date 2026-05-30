@@ -59,6 +59,9 @@ func NewManager() *Manager {
 
 func (m *Manager) Diagnose(config internalconfig.ComputerConfig) Status {
 	_ = config
+	if !internalconfig.ComputerEnabled(config) {
+		return disabledStatus(runtime.GOOS)
+	}
 	if runtime.GOOS != "darwin" {
 		return unsupportedStatus()
 	}
@@ -67,10 +70,34 @@ func (m *Manager) Diagnose(config internalconfig.ComputerConfig) Status {
 
 func (m *Manager) Execute(ctx context.Context, config internalconfig.ComputerConfig, toolName string, arguments map[string]any) (map[string]any, error) {
 	_ = config
+	if !internalconfig.ComputerEnabled(config) {
+		return nil, fmt.Errorf("桌面操作已在配置中禁用")
+	}
 	if runtime.GOOS != "darwin" {
-		return nil, fmt.Errorf("当前平台 %s 尚未实现桌面 ComputerUse", runtime.GOOS)
+		return nil, fmt.Errorf("当前平台 %s 尚未实现桌面操作", runtime.GOOS)
 	}
 	return executeDarwinTool(ctx, toolName, arguments)
+}
+
+func disabledStatus(platform string) Status {
+	trimmedPlatform := strings.TrimSpace(platform)
+	if trimmedPlatform == "" {
+		trimmedPlatform = "unknown"
+	}
+	capabilities := []Capability{}
+	for _, item := range allCapabilities() {
+		item.Available = false
+		item.Reason = "已在配置中禁用"
+		capabilities = append(capabilities, item)
+	}
+	return Status{
+		Platform:       trimmedPlatform,
+		Available:      false,
+		ReadAvailable:  false,
+		InputAvailable: false,
+		Message:        fmt.Sprintf("平台: %s | 已在配置中禁用桌面操作", trimmedPlatform),
+		Capabilities:   capabilities,
+	}
 }
 
 func unsupportedStatus() Status {
@@ -89,7 +116,7 @@ func unsupportedStatus() Status {
 		Available:     false,
 		ReadAvailable: false,
 		InputAvailable: false,
-		Message:       fmt.Sprintf("平台: %s | 当前尚未实现桌面 ComputerUse 桥接", platform),
+		Message:       fmt.Sprintf("平台: %s | 当前尚未实现桌面操作桥接", platform),
 		Capabilities:  capabilities,
 	}
 }
@@ -235,7 +262,7 @@ func executeDarwinTool(ctx context.Context, toolName string, arguments map[strin
 		}
 		return darwinScroll(ctx, arguments)
 	default:
-		return nil, fmt.Errorf("不支持的桌面 ComputerUse 工具: %s", toolName)
+		return nil, fmt.Errorf("不支持的桌面操作工具: %s", toolName)
 	}
 }
 
@@ -386,7 +413,7 @@ func darwinScroll(ctx context.Context, arguments map[string]any) (map[string]any
 	if deltaX == 0 && deltaY == 0 {
 		return nil, fmt.Errorf("scroll 至少需要一个非零滚动量")
 	}
-	if err := darwinPostScrollEvent(deltaX, deltaY); err != nil {
+	if err := darwinPostScrollEvent(deltaX, -deltaY); err != nil {
 		return nil, err
 	}
 	return map[string]any{

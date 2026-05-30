@@ -89,7 +89,7 @@
 - `/Users/neeker/工作/技术开发平台/人工智能平台/太乙智启/taiyiflow-cli/.github/prompts/plan-cliExtendsClaude.md` — 对标计划文档，需要继续从“工具补齐计划”更新为“命令层与内置技能体系补齐计划”。
 
 **Verification**
-1. 命令层矩阵核对：列出 taiyiflow-cli 与 claude-code-haha 的代码任务相关命令对照表，确认首批仅纳入 /review、/permissions、/tasks，不把桌面端、remote、computer use 混入范围。
+1. 命令层矩阵核对：列出 taiyiflow-cli 与 claude-code-haha 的代码任务相关命令对照表，确认首批仅纳入 /review、/permissions、/tasks，不把桌面端、remote、本机操作混入范围。
 2. 任务持久化验证：补测试覆盖 CLI 重启后任务列表恢复、task_id 与 session/workdir 对应、输出文件读取、任务完成/取消后的状态一致性。
 3. terminal_capture 验证：确认与 task_output 的职责边界清晰，输出裁剪、刷新和错误态在 TUI 与 CLI 中一致。
 4. 权限规则验证：覆盖 allow/ask/deny 三态、命令前缀匹配、规则持久化读写、只读模式与会话覆盖关系。
@@ -98,7 +98,7 @@
 7. 端到端回归：至少回归 `go test ./internal/runtime ./internal/skills ./cmd`，并补一个 TUI/交互级最小人工检查清单。
 
 **Decisions**
-- 当前对标边界仍限定在本地 CLI 代码任务面，不纳入 claude-code-haha 的桌面端、remote、channel、computer use、多智能体编排。
+- 当前对标边界仍限定在本地 CLI 代码任务面，不纳入 claude-code-haha 的桌面端、remote、channel、本机操作、多智能体编排。
 - 命令层优先级仍然很高，但这次明确把“缺省内置技能随 CLI 打包”纳入同优先级主线，不再作为后置增强项。
 - 任务持久化默认按本地 store 方案推进，优先与 session/workdir 关联；除非发现必须依赖后台 stream 协议，否则不先改后端。
 - terminal_capture 首版可先做后台任务输出视角，不强求一开始就复刻 claude-code-haha 的完整终端/pty 语义。

@@ -59,7 +59,8 @@ func (a *App) showConfigHelp() error {
 		"  approval_mode                 命令执行模式；可选 confirm（每次确认）、auto（自动执行）、readonly（只读模式）。",
 		"  browser_mode                  浏览器自动化模式；可选 chrome_session（连接当前浏览器会话）、isolated（独立实例）。",
 		"  browser_permission_mode       浏览器变更工具审批；可选 ask、follow_a_plan、skip_all_permission_checks。",
-		"  computer_permission_mode      桌面 ComputerUse 变更工具审批；可选 ask、follow_a_plan。",
+		"  computer_enabled              桌面操作开关；可选 true、false。",
+		"  computer_permission_mode      桌面操作变更工具审批；可选 ask、follow_a_plan。",
 		"  doc_unstructured_exts         逗号分隔扩展名；未配置时使用内置默认值，可用自定义列表覆盖。",
 		"  skills_auto_install_policy    技能自动补装策略；可选 off、confirm、allow。",
 		"  cross_session_memory_enabled  跨会话记忆开关；可选 true、false。",
@@ -67,6 +68,7 @@ func (a *App) showConfigHelp() error {
 		"示例:",
 		"  taiyiflow-cli config set backend_base_url https://snz1.cn",
 		"  taiyiflow-cli config set browser_mode isolated",
+		"  taiyiflow-cli config set computer_enabled false",
 		"  taiyiflow-cli config set browser_remote_debugging_url http://127.0.0.1:9222",
 		"  taiyiflow-cli config set doc_unstructured_exts pdf,png",
 		"  taiyiflow-cli config unset doc_unstructured_exts",
@@ -195,6 +197,12 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("browser_permission_mode 仅支持 ask、follow_a_plan、skip_all_permission_checks")
 		}
 		config.Browser.PermissionMode = normalizedMode
+	case "computer_enabled":
+		normalized := strings.ToLower(trimmedValue)
+		if normalized != "true" && normalized != "false" {
+			return fmt.Errorf("computer_enabled 仅支持 true 或 false")
+		}
+		config.Computer.Enabled = boolPtr(normalized == "true")
 	case "computer_permission_mode":
 		normalizedMode := internalconfig.NormalizeComputerPermissionMode(trimmedValue)
 		if strings.ToLower(trimmedValue) != normalizedMode {
@@ -394,6 +402,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.Browser.Mode = defaults.Browser.Mode
 	case "browser_permission_mode":
 		config.Browser.PermissionMode = defaults.Browser.PermissionMode
+	case "computer_enabled":
+		config.Computer.Enabled = defaults.Computer.Enabled
 	case "computer_permission_mode":
 		config.Computer.PermissionMode = defaults.Computer.PermissionMode
 	case "browser_channel":
@@ -472,6 +482,8 @@ func normalizeConfigKey(key string) string {
 		return "browser_mode"
 	case "browser_permission", "browser_permissions", "browser_tool_permission_mode":
 		return "browser_permission_mode"
+	case "computer_enabled", "computer_enable", "computer_use_enabled", "desktop_computer_enabled", "desktop_computer_use_enabled":
+		return "computer_enabled"
 	case "computer_permission", "computer_permissions", "desktop_permission_mode", "desktop_computer_permission_mode":
 		return "computer_permission_mode"
 	case "browser_browser", "browser_channel_name":
@@ -552,7 +564,8 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("命令执行模式: %s", fallbackConfigValue(config.ApprovalMode, internalconfig.Default().ApprovalMode)),
 		fmt.Sprintf("浏览器自动化模式: %s", fallbackConfigValue(config.Browser.Mode, internalconfig.Default().Browser.Mode)),
 		fmt.Sprintf("浏览器权限模式: %s", fallbackConfigValue(config.Browser.PermissionMode, internalconfig.Default().Browser.PermissionMode)),
-		fmt.Sprintf("桌面 ComputerUse 权限模式: %s", fallbackConfigValue(config.Computer.PermissionMode, internalconfig.Default().Computer.PermissionMode)),
+		fmt.Sprintf("桌面操作: %s", enabledStateLabel(internalconfig.ComputerEnabled(config.Computer))),
+		fmt.Sprintf("桌面操作权限模式: %s", fallbackConfigValue(config.Computer.PermissionMode, internalconfig.Default().Computer.PermissionMode)),
 		fmt.Sprintf("浏览器通道: %s", fallbackConfigValue(config.Browser.Channel, internalconfig.Default().Browser.Channel)),
 		fmt.Sprintf("浏览器可执行文件: %s", fallbackConfigValue(config.Browser.ExecutablePath, "<自动探测>")),
 		fmt.Sprintf("浏览器 Profile 目录: %s", fallbackConfigValue(config.Browser.ProfileDir, "<自动管理>")),
@@ -593,6 +606,13 @@ func skillInstallScopeLabel(config internalconfig.Config) string {
 	default:
 		return "用户目录 (~/.snz1dp/skills)"
 	}
+}
+
+func enabledStateLabel(enabled bool) string {
+	if enabled {
+		return "开启"
+	}
+	return "关闭"
 }
 
 func normalizeRemoteRegistryURL(value string) (string, error) {

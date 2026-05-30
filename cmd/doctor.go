@@ -52,7 +52,7 @@ func (a *App) runDoctor(args []string) error {
 	fmt.Fprintf(a.stdout, "- 默认智能体: %s\n", flowDisplay)
 	fmt.Fprintf(a.stdout, "- 文件工具链: %s\n", detectLocalFileToolStatus())
 	fmt.Fprintf(a.stdout, "- 浏览器自动化: %s\n", detectBrowserAutomationStatus(config))
-	fmt.Fprintf(a.stdout, "- 桌面 ComputerUse: %s\n", detectComputerAutomationStatus(config))
+	fmt.Fprintf(a.stdout, "- 桌面操作: %s\n", detectComputerAutomationStatus(config))
 	fmt.Fprintf(a.stdout, "- 浏览器扩展链路: %s\n", detectBrowserNativeMessagingStatus(config, cwd))
 	if skillItems, directory, skillErr := skills.Discover(config); skillErr == nil {
 		enabledCount := 0
@@ -101,6 +101,7 @@ func detectBrowserAutomationStatus(config internalconfig.Config) string {
 func detectComputerAutomationStatus(config internalconfig.Config) string {
 	status := computerbridge.NewManager().Diagnose(config.Computer)
 	parts := []string{
+		fmt.Sprintf("开关: %s", enabledStateLabel(internalconfig.ComputerEnabled(config.Computer))),
 		fmt.Sprintf("权限模式: %s", computerPermissionModeDisplay(config.Computer.PermissionMode)),
 	}
 	if status.Available {

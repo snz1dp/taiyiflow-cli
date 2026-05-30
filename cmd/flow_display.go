@@ -40,3 +40,29 @@ func (a *App) resolveFlowDisplayName(ctx context.Context, client provider.Provid
 
 	return sanitizeFlowDisplay(trimmed)
 }
+
+func (a *App) resolveFlowIdentifier(ctx context.Context, client provider.Provider, flowIDOrName string) string {
+	trimmed := strings.TrimSpace(flowIDOrName)
+	if trimmed == "" || client == nil {
+		return trimmed
+	}
+
+	flows, err := client.ListFlows(ctx, "", "chat", 0, 100)
+	if err == nil {
+		for _, item := range flows.Items {
+			if item.ID == trimmed || item.Name == trimmed {
+				if strings.TrimSpace(item.ID) != "" {
+					return strings.TrimSpace(item.ID)
+				}
+				return trimmed
+			}
+		}
+	}
+
+	metadata, err := client.GetMetadata(ctx, trimmed)
+	if err == nil && strings.TrimSpace(metadata.ID) != "" {
+		return strings.TrimSpace(metadata.ID)
+	}
+
+	return trimmed
+}

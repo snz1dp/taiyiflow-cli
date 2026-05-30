@@ -316,8 +316,52 @@ type sessionContextPreviewResponse struct {
 	SessionID         string                        `json:"session_id"`
 	ContextWindow     *sessionContextWindowResponse `json:"context_window"`
 	LatestCompression *compressionRecordResponse    `json:"latest_compression"`
+	MemoryTiers       []string                      `json:"memory_tiers"`
 	SourceUpdatedAt   string                        `json:"source_updated_at"`
 	Source            string                        `json:"source"`
+}
+
+type memoryConsolidationTaskResponse struct {
+	ID               string `json:"id"`
+	ScopeKey         string `json:"scope_key"`
+	FlowID           string `json:"flow_id"`
+	OwnerAppID       string `json:"owner_appid"`
+	OwnerUserID      string `json:"owner_user_id"`
+	WindowStart      string `json:"window_start"`
+	WindowEnd        string `json:"window_end"`
+	TriggerReason    string `json:"trigger_reason"`
+	Status           string `json:"status"`
+	AttemptCount     int    `json:"attempt_count"`
+	LastError        string `json:"last_error"`
+	LastSourceCount  int    `json:"last_source_count"`
+	LastSessionCount int    `json:"last_session_count"`
+	LastTaskID       string `json:"last_task_id"`
+	ResultSegmentKey string `json:"result_segment_key"`
+	LastRunAt        string `json:"last_run_at"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
+}
+
+type memoryConsolidationTaskPageResponse struct {
+	Total  int                               `json:"total"`
+	Offset int                               `json:"offset"`
+	Data   []memoryConsolidationTaskResponse `json:"data"`
+}
+
+type memoryConsolidationTriggerRequestBody struct {
+	FlowID         string `json:"flow_id"`
+	OwnerAppID     string `json:"owner_appid,omitempty"`
+	MinHours       int    `json:"min_hours"`
+	MinSessions    int    `json:"min_sessions"`
+	ExecuteEnabled bool   `json:"execute_enabled"`
+}
+
+type memoryConsolidationTriggerResponse struct {
+	TaskID        string `json:"task_id"`
+	BackendTaskID string `json:"backend_task_id"`
+	Status        string `json:"status"`
+	Scheduled     bool   `json:"scheduled"`
+	Reason        string `json:"reason"`
 }
 
 type skillResolveRequestBody struct {
@@ -1384,7 +1428,155 @@ func (c *Client) GetSessionContextWindow(ctx context.Context, flowID string, ses
 	if parsed, err := parseTaiyiTime(payload.SourceUpdatedAt); err == nil {
 		preview.SourceUpdatedAt = parsed
 	}
+	preview.MemoryTiers = normalizeTrimmedStringSlice(payload.MemoryTiers)
 	return preview, nil
+}
+
+func (c *Client) ListMemoryConsolidations(ctx context.Context, query provider.MemoryConsolidationQuery) (*provider.MemoryConsolidationPage, error) {
+	endpointURL, err := url.Parse(c.apiURL("/agents/memory-consolidations"))
+	if err != nil {
+		return nil, fmt.Errorf("构造跨会话记忆整合账本请求地址失败: %w", err)
+	}
+	queryValues := endpointURL.Query()
+	if flowID := strings.TrimSpace(query.FlowID); flowID != "" {
+		queryValues.Set("flow_id", flowID)
+	}
+	if statusName := strings.TrimSpace(query.Status); statusName != "" {
+		queryValues.Set("status", statusName)
+	}
+	offset := query.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	queryValues.Set("offset", strconv.Itoa(offset))
+	queryValues.Set("limit", strconv.Itoa(limit))
+	endpointURL.RawQuery = queryValues.Encode()
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpointURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建跨会话记忆整合账本请求失败: %w", err)
+	}
+	c.applyAuth(request)
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("请求跨会话记忆整合账本失败: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("获取跨会话记忆整合账本失败", response)
+	}
+
+	var payload memoryConsolidationTaskPageResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析跨会话记忆整合账本响应失败: %w", err)
+	}
+
+	items := make([]provider.MemoryConsolidationTask, 0, len(payload.Data))
+	for _, item := range payload.Data {
+		task := provider.MemoryConsolidationTask{
+			ID:               strings.TrimSpace(item.ID),
+			ScopeKey:         strings.TrimSpace(item.ScopeKey),
+			FlowID:           strings.TrimSpace(item.FlowID),
+			OwnerAppID:       strings.TrimSpace(item.OwnerAppID),
+			OwnerUserID:      strings.TrimSpace(item.OwnerUserID),
+			TriggerReason:    strings.TrimSpace(item.TriggerReason),
+			Status:           strings.TrimSpace(item.Status),
+			AttemptCount:     item.AttemptCount,
+			LastError:        strings.TrimSpace(item.LastError),
+			LastSourceCount:  item.LastSourceCount,
+			LastSessionCount: item.LastSessionCount,
+			LastTaskID:       strings.TrimSpace(item.LastTaskID),
+			ResultSegmentKey: strings.TrimSpace(item.ResultSegmentKey),
+		}
+		if parsed, err := parseTaiyiTime(item.WindowStart); err == nil {
+			task.WindowStart = parsed
+		}
+		if parsed, err := parseTaiyiTime(item.WindowEnd); err == nil {
+			task.WindowEnd = parsed
+		}
+		if parsed, err := parseTaiyiTime(item.LastRunAt); err == nil {
+			task.LastRunAt = parsed
+		}
+		if parsed, err := parseTaiyiTime(item.CreatedAt); err == nil {
+			task.CreatedAt = parsed
+		}
+		if parsed, err := parseTaiyiTime(item.UpdatedAt); err == nil {
+			task.UpdatedAt = parsed
+		}
+		items = append(items, task)
+	}
+
+	return &provider.MemoryConsolidationPage{
+		Total:  payload.Total,
+		Offset: payload.Offset,
+		Items:  items,
+	}, nil
+}
+
+func (c *Client) TriggerMemoryConsolidation(ctx context.Context, request provider.MemoryConsolidationTriggerRequest) (*provider.MemoryConsolidationTriggerResult, error) {
+	flowID := strings.TrimSpace(request.FlowID)
+	if flowID == "" {
+		return nil, fmt.Errorf("触发跨会话记忆整合失败: 智能体不能为空")
+	}
+	minHours := request.MinHours
+	if minHours < 1 {
+		minHours = 1
+	}
+	minSessions := request.MinSessions
+	if minSessions < 1 {
+		minSessions = 1
+	}
+	body := memoryConsolidationTriggerRequestBody{
+		FlowID:         flowID,
+		OwnerAppID:     strings.TrimSpace(request.OwnerAppID),
+		MinHours:       minHours,
+		MinSessions:    minSessions,
+		ExecuteEnabled: request.ExecuteEnabled,
+	}
+	content, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("序列化跨会话记忆整合请求失败: %w", err)
+	}
+
+	endpoint := c.apiURL("/agents/memory-consolidations/trigger")
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(content))
+	if err != nil {
+		return nil, fmt.Errorf("创建跨会话记忆整合请求失败: %w", err)
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	c.applyAuth(httpRequest)
+
+	response, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("请求跨会话记忆整合失败: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("触发跨会话记忆整合失败", response)
+	}
+
+	var payload memoryConsolidationTriggerResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析跨会话记忆整合响应失败: %w", err)
+	}
+
+	return &provider.MemoryConsolidationTriggerResult{
+		TaskID:        strings.TrimSpace(payload.TaskID),
+		BackendTaskID: strings.TrimSpace(payload.BackendTaskID),
+		Status:        strings.TrimSpace(payload.Status),
+		Scheduled:     payload.Scheduled,
+		Reason:        strings.TrimSpace(payload.Reason),
+	}, nil
 }
 
 func (c *Client) fetchCompressionPayload(ctx context.Context, flowID string, sessionID string, runID string) ([]compressionRecordResponse, error) {
@@ -1563,6 +1755,29 @@ func mapSearchResults(items []searchResultResponse) []provider.SearchResult {
 		})
 	}
 	return results
+}
+
+func normalizeTrimmedStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	items := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		items = append(items, trimmed)
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	return items
 }
 
 func firstNonEmpty(value, fallback string) string {

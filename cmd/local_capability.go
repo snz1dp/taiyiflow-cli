@@ -236,6 +236,30 @@ func (p *callbackAuthRefreshProvider) GetSessionContextWindow(ctx context.Contex
 	return p.Provider.GetSessionContextWindow(ctx, flowID, sessionID)
 }
 
+func (p *callbackAuthRefreshProvider) ListMemoryConsolidations(ctx context.Context, query provider.MemoryConsolidationQuery) (*provider.MemoryConsolidationPage, error) {
+	page, err := p.Provider.ListMemoryConsolidations(ctx, query)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return page, err
+	}
+	return p.Provider.ListMemoryConsolidations(ctx, query)
+}
+
+func (p *callbackAuthRefreshProvider) TriggerMemoryConsolidation(ctx context.Context, request provider.MemoryConsolidationTriggerRequest) (*provider.MemoryConsolidationTriggerResult, error) {
+	result, err := p.Provider.TriggerMemoryConsolidation(ctx, request)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return result, err
+	}
+	return p.Provider.TriggerMemoryConsolidation(ctx, request)
+}
+
 func (p *callbackAuthRefreshProvider) SubmitClientCallResult(ctx context.Context, result provider.ClientCallResult) error {
 	err := p.Provider.SubmitClientCallResult(ctx, result)
 	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)

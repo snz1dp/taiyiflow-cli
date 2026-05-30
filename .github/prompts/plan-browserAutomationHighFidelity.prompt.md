@@ -1,7 +1,7 @@
 以“Go CLI + TypeScript Chrome 扩展”的双栈方案复刻参考仓库的浏览器自动化链路：默认接入 Chrome 当前用户会话，通过 Native Messaging 连接扩展；同时保留一个独立自动化浏览器实例模式，并通过统一工具协议与配置切换共享同一套技能与运行时入口。推荐首期先打通 Chrome 会话链路、7 项核心浏览器能力、配置/诊断/权限闭环，再补独立实例适配与更高阶任务循环。
 
 **Steps**
-1. Phase A: 范围与对标基线重置。把当前仓库里“taiyiflow-in-chrome 暂不复刻/裁剪实现”的历史判断改成正式实施项，冻结首批范围为：导航/打开页面、点击与输入、截图、读取页面文本或 DOM、读取控制台日志、多标签页管理、长任务或后台运行。明确不纳入首期的内容：参考仓库里的远程 bridge、analytics、ant-only browser_task/lightning agent loop、桌面级 computer use。这个步骤阻塞后续协议设计与文档更新。
+1. Phase A: 范围与对标基线重置。把当前仓库里“taiyiflow-in-chrome 暂不复刻/裁剪实现”的历史判断改成正式实施项，冻结首批范围为：导航/打开页面、点击与输入、截图、读取页面文本或 DOM、读取控制台日志、多标签页管理、长任务或后台运行。明确不纳入首期的内容：参考仓库里的远程 bridge、analytics、ant-only browser_task/lightning agent loop、桌面级操作。这个步骤阻塞后续协议设计与文档更新。
 2. Phase B: 配置模型与进程入口设计。扩展配置模型，新增 browser 自动化配置段，至少包含 mode（默认 chrome_session，可切到 isolated）、permission_mode、browser_path 或 channel、profile_dir、connect_timeout、extension_setup 或 manifest_install、socket_dir 等字段；同时在 CLI 主入口增加隐藏运行模式，用于启动 Native Messaging host 与本地 browser MCP/bridge 服务。该步骤依赖 1，阻塞后续 CLI 启动与诊断闭环。
 3. Phase C: 工具契约与命名冻结。基于当前内置技能文案，冻结本仓库的浏览器工具族命名，建议直接使用 taiyiflow-in-chrome__* 前缀以兼容现有技能提示；把每个工具明确分为读操作和变更操作，并给出统一的参数与返回约定。首批工具建议至少覆盖：tabs_context、tabs_create、navigate、click、type、screenshot、read_dom 或 read_text、read_console，以及一个面向长时流程的后台任务包装。该步骤依赖 1，可与 2 并行推进细节，但在 4 和 5 开始前必须冻结。
 4. Phase D: Go 侧浏览器桥接层。新增一个专门的桥接层目录承载 Native Messaging framing、Unix socket 或 Windows named pipe 生命周期、请求响应关联、超时控制、扩展断连重试、会话级客户端注册与资源清理。桥接层需要同时服务两种后端：Chrome 扩展会话模式，以及独立浏览器实例模式的适配接口。该步骤依赖 2 和 3，是整个高保真方案的主干。
@@ -46,7 +46,7 @@
 - 已确认默认目标是 Chrome 当前用户会话，同时要求通过配置支持独立自动化浏览器实例模式。
 - 已确认仓库内可以新增一个小型 Chrome 扩展子项目，但 Node/TS 仅限扩展端；CLI、桥接、运行时与隔离实例适配仍保持 Go 为主。
 - 推荐独立实例模式使用 Go 侧 CDP 适配，而不是再引入 Playwright sidecar，以避免 Node/TS 越界到 CLI 主体。
-- 首期纳入的能力范围包括导航、点击、输入、截图、DOM/文本读取、控制台日志、多标签页、长任务；不纳入参考仓库的远程 bridge、analytics、ant-only lightning browser_task、桌面级 computer use。
+- 首期纳入的能力范围包括导航、点击、输入、截图、DOM/文本读取、控制台日志、多标签页、长任务；不纳入参考仓库的远程 bridge、analytics、ant-only lightning browser_task、桌面级操作。
 - 浏览器工具族建议沿用 taiyiflow-in-chrome__* 命名，以兼容当前内置技能文案与后续权限分组。
 
 **Further Considerations**

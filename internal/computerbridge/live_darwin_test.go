@@ -147,7 +147,7 @@ func TestDarwinLivePointerVerification(t *testing.T) {
 	t.Logf("right click observed: %+v", state)
 
 	dragStartX, dragStartY := liveGlobalPoint(metrics, metrics.Handle, 0.5, 0.5)
-	dragEndX, dragEndY := liveGlobalPoint(metrics, metrics.Target, 0.82, 0.72)
+	dragEndX, dragEndY := liveGlobalPoint(metrics, metrics.Target, 0.82, 0.92)
 	if _, err := manager.Execute(actionCtx, internalconfig.ComputerConfig{}, toolMouseDrag, map[string]any{
 		"from_x":      dragStartX,
 		"from_y":      dragStartY,
@@ -166,8 +166,10 @@ func TestDarwinLivePointerVerification(t *testing.T) {
 	if state.Drag.End == nil || state.Drag.Start == nil {
 		t.Fatalf("drag did not capture start/end: %+v", state)
 	}
-	if math.Abs(state.Drag.End.X-state.Drag.Start.X) < 80 || math.Abs(state.Drag.End.Y-state.Drag.Start.Y) < 40 {
-		t.Fatalf("drag delta too small: %+v", state.Drag)
+	dragDeltaX := math.Abs(state.Drag.End.X - state.Drag.Start.X)
+	dragDeltaY := math.Abs(state.Drag.End.Y - state.Drag.Start.Y)
+	if dragDeltaX < 80 || dragDeltaY < 40 {
+		t.Fatalf("drag delta too small: dx=%.2f dy=%.2f start=%+v end=%+v", dragDeltaX, dragDeltaY, state.Drag.Start, state.Drag.End)
 	}
 	t.Logf("drag observed: %+v", state.Drag)
 
@@ -182,7 +184,9 @@ func TestDarwinLivePointerVerification(t *testing.T) {
 	if _, err := manager.Execute(actionCtx, internalconfig.ComputerConfig{}, toolScroll, map[string]any{"delta_x": 0, "delta_y": 6}); err != nil {
 		t.Fatalf("positive scroll failed: %v", err)
 	}
-	afterPositive, err := waitForLiveWheel(browserCtx, beforeScroll.WheelEventCount+1)
+	afterPositive, err := waitForLiveState(browserCtx, func(current livePageState) bool {
+		return current.WheelEventCount >= beforeScroll.WheelEventCount+1 && current.ScrollTop > beforeScroll.ScrollTop
+	})
 	if err != nil {
 		t.Fatalf("observe positive scroll: %v", err)
 	}
@@ -192,7 +196,9 @@ func TestDarwinLivePointerVerification(t *testing.T) {
 	if _, err := manager.Execute(actionCtx, internalconfig.ComputerConfig{}, toolScroll, map[string]any{"delta_x": 0, "delta_y": -6}); err != nil {
 		t.Fatalf("negative scroll failed: %v", err)
 	}
-	afterNegative, err := waitForLiveWheel(browserCtx, afterPositive.WheelEventCount+1)
+	afterNegative, err := waitForLiveState(browserCtx, func(current livePageState) bool {
+		return current.WheelEventCount >= afterPositive.WheelEventCount+1 && current.ScrollTop < afterPositive.ScrollTop
+	})
 	if err != nil {
 		t.Fatalf("observe negative scroll: %v", err)
 	}
@@ -231,14 +237,15 @@ func openLiveBrowser(t *testing.T, executablePath string) (context.Context, func
 	)
 	allocatorCtx, allocatorCancel := chromedp.NewExecAllocator(context.Background(), options...)
 	browserCtx, browserCancel := chromedp.NewContext(allocatorCtx)
-	connectCtx, cancel := context.WithTimeout(browserCtx, 30*time.Second)
-	defer cancel()
-	if err := chromedp.Run(connectCtx, chromedp.Navigate("about:blank")); err != nil {
+	sessionCtx, cancel := context.WithTimeout(browserCtx, 2*time.Minute)
+	if err := chromedp.Run(sessionCtx, chromedp.Navigate("about:blank")); err != nil {
+		cancel()
 		browserCancel()
 		allocatorCancel()
 		t.Fatalf("start isolated browser: %v", err)
 	}
-	return browserCtx, func() {
+	return sessionCtx, func() {
+		cancel()
 		browserCancel()
 		allocatorCancel()
 	}
@@ -459,6 +466,10 @@ const liveVerificationHTML = `<!doctype html>
   });
   scrollbox.scrollTop = 420;
   state.scrollTop = scrollbox.scrollTop;
+	scrollbox.addEventListener("scroll", () => {
+	  state.scrollTop = scrollbox.scrollTop;
+	  render();
+	}, { passive: true });
   scrollbox.addEventListener("wheel", (event) => {
     state.wheelEventCount += 1;
     state.lastWheelDeltaX = event.deltaX;

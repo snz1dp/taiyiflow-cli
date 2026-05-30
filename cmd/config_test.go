@@ -128,6 +128,28 @@ func TestAssignAndResetBrowserConfigValues(t *testing.T) {
 	}
 }
 
+func TestAssignAndResetComputerEnabledConfigValue(t *testing.T) {
+	config := internalconfig.Default()
+	if !internalconfig.ComputerEnabled(config.Computer) {
+		t.Fatal("expected desktop automation to be enabled by default")
+	}
+	if err := assignConfigValue(&config, "computer_enabled", "false"); err != nil {
+		t.Fatalf("assignConfigValue computer_enabled returned error: %v", err)
+	}
+	if internalconfig.ComputerEnabled(config.Computer) {
+		t.Fatal("expected desktop automation to be disabled")
+	}
+	if err := assignConfigValue(&config, "computer_enabled", "maybe"); err == nil {
+		t.Fatal("expected invalid computer_enabled value to fail")
+	}
+	if err := resetConfigValue(&config, "computer_enabled"); err != nil {
+		t.Fatalf("resetConfigValue computer_enabled returned error: %v", err)
+	}
+	if !internalconfig.ComputerEnabled(config.Computer) {
+		t.Fatal("expected desktop automation to be re-enabled after reset")
+	}
+}
+
 func TestAssignAndResetConfigValueAuthAPIPrefix(t *testing.T) {
 	config := internalconfig.Default()
 	if err := assignConfigValue(&config, "auth_prefix", "custom-auth/"); err != nil {
@@ -237,7 +259,7 @@ func TestRenderConfigSummaryUsesExternalResourceAccessPolicyLabel(t *testing.T) 
 	if !strings.Contains(summary, "技能自动补装策略:") || !strings.Contains(summary, "自由文本技能搜索:") {
 		t.Fatalf("expected skill auto install labels, got %q", summary)
 	}
-	if !strings.Contains(summary, "浏览器自动化模式:") || !strings.Contains(summary, "浏览器权限模式:") || !strings.Contains(summary, "桌面 ComputerUse 权限模式:") {
+	if !strings.Contains(summary, "浏览器自动化模式:") || !strings.Contains(summary, "浏览器权限模式:") || !strings.Contains(summary, "桌面操作:") || !strings.Contains(summary, "桌面操作权限模式:") {
 		t.Fatalf("expected browser/computer config labels, got %q", summary)
 	}
 	if !strings.Contains(summary, "跨会话记忆: false") {
@@ -299,6 +321,7 @@ func TestRunConfigHelpOutputsLocalizedUsage(t *testing.T) {
 		"配置命令用于查看、设置或清空命令行（CLI）全局配置。",
 		"taiyiflow-cli config set <配置项> <值>",
 		"browser_mode",
+		"computer_enabled",
 		"browser_permission_mode",
 		"doc_unstructured_exts",
 		"未配置时使用内置默认值",

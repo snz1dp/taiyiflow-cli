@@ -251,6 +251,7 @@ type ConfigFormValues struct {
 	QRWaitTimeoutSeconds      string
 	AgentAutoLoopMaxRounds    string
 	OutputLanguage            string
+	ComputerEnabled           bool
 	BrowserMode               string
 	BrowserPermissionMode     string
 	BrowserChannel            string
@@ -748,6 +749,7 @@ type configFormState struct {
 	writeConfirmationCursor  int
 	reasoningCursor          int
 	crossSessionMemoryCursor int
+	computerEnabledCursor    int
 	browserModeCursor        int
 	browserPermissionCursor  int
 	browserChannelCursor     int
@@ -828,6 +830,7 @@ const (
 	configFieldQRWaitTimeout
 	configFieldAgentAutoLoopMaxRounds
 	configFieldOutputLanguage
+	configFieldComputerEnabled
 	configFieldBrowserMode
 	configFieldBrowserPermissionMode
 	configFieldBrowserChannel
@@ -2204,6 +2207,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveConfigCrossSessionMemoryCursor(-1)
 			return m, nil
 		}
+		if m.configForm.cursor == configFieldComputerEnabled {
+			m.moveConfigComputerEnabledCursor(-1)
+			return m, nil
+		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
 			m.moveConfigSkillsCursor(-1)
 			return m, nil
@@ -2263,6 +2270,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldCrossSessionMemory {
 			m.moveConfigCrossSessionMemoryCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldComputerEnabled {
+			m.moveConfigComputerEnabledCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
@@ -2338,6 +2349,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldCrossSessionMemory {
 			m.moveConfigCrossSessionMemoryCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldComputerEnabled {
+			m.moveConfigComputerEnabledCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
@@ -4795,6 +4810,8 @@ func (m model) renderConfigForm() string {
 			lines = append(lines, m.renderConfigReasoningField())
 		case configFieldCrossSessionMemory:
 			lines = append(lines, m.renderConfigCrossSessionMemoryField())
+		case configFieldComputerEnabled:
+			lines = append(lines, m.renderConfigComputerEnabledField())
 		case configFieldBrowserMode:
 			lines = append(lines, m.renderConfigBrowserModeField())
 		case configFieldBrowserPermissionMode:
@@ -5005,6 +5022,13 @@ func (m model) renderConfigCrossSessionMemoryField() string {
 		}
 	}
 	return strings.Join(parts, "  ")
+}
+
+func (m model) renderConfigComputerEnabledField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	return m.renderConfigChoiceField(configFieldComputerEnabled, m.configForm.computerEnabledCursor, configComputerEnabledChoices())
 }
 
 func (m model) renderConfigBrowserModeField() string {
@@ -7036,6 +7060,10 @@ func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
 	if m.configForm.crossSessionMemoryCursor >= 0 && m.configForm.crossSessionMemoryCursor < len(crossSessionMemoryChoices) {
 		submission.Values.CrossSessionMemoryEnabled = strings.TrimSpace(crossSessionMemoryChoices[m.configForm.crossSessionMemoryCursor].Value) == "true"
 	}
+	computerEnabledChoices := configComputerEnabledChoices()
+	if m.configForm.computerEnabledCursor >= 0 && m.configForm.computerEnabledCursor < len(computerEnabledChoices) {
+		submission.Values.ComputerEnabled = strings.TrimSpace(computerEnabledChoices[m.configForm.computerEnabledCursor].Value) == "true"
+	}
 	browserModeChoices := configBrowserModeChoices()
 	if m.configForm.browserModeCursor >= 0 && m.configForm.browserModeCursor < len(browserModeChoices) {
 		submission.Values.BrowserMode = strings.TrimSpace(browserModeChoices[m.configForm.browserModeCursor].Value)
@@ -7153,6 +7181,7 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 		writeConfirmationCursor:  configChoiceIndex(configWriteConfirmationChoices(), values.WriteConfirmationPolicy),
 		reasoningCursor:          configChoiceIndex(configReasoningChoices(), reasoningChoiceValue(values.ReasoningEnabled)),
 		crossSessionMemoryCursor: configChoiceIndex(configCrossSessionMemoryChoices(), boolChoiceValue(values.CrossSessionMemoryEnabled)),
+		computerEnabledCursor:    configChoiceIndex(configComputerEnabledChoices(), boolChoiceValue(values.ComputerEnabled)),
 		browserModeCursor:        configChoiceIndex(configBrowserModeChoices(), values.BrowserMode),
 		browserPermissionCursor:  configChoiceIndex(configBrowserPermissionChoices(), values.BrowserPermissionMode),
 		browserChannelCursor:     configChoiceIndex(configBrowserChannelChoices(), values.BrowserChannel),
@@ -7620,6 +7649,7 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "扫码等待超时（秒）", placeholder: "30", description: "二维码登录在自动轮询时使用该默认值；大于等于 0 的整数秒，0 表示持续等待直到手动取消。"},
 		{label: "智能体自动续跑最大轮数", placeholder: "0", description: "仅对智能体模式生效；填写 0-10000 的整数，0 表示禁用。"},
 		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
+		{label: "桌面操作", placeholder: "", description: "左右键或空格切换开启或关闭。关闭后不再向后端暴露桌面操作工具，并拒绝执行已有桌面工具调用。"},
 		{label: "浏览器模式", placeholder: "", description: "左右键或空格切换当前会话与隔离实例。"},
 		{label: "浏览器权限模式", placeholder: "", description: "左右键或空格切换逐次确认、跟随计划、直接允许。该项优先控制浏览器变更操作。"},
 		{label: "浏览器通道", placeholder: "", description: "左右键或空格切换 chrome、chromium、edge、brave。"},
@@ -7648,6 +7678,8 @@ func configFormFieldGroup(index int) string {
 		return "运行与超时"
 	case configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage:
 		return "会话与输出"
+	case configFieldComputerEnabled:
+		return "桌面操作"
 	case configFieldBrowserMode, configFieldBrowserPermissionMode, configFieldBrowserChannel, configFieldBrowserExecutablePath, configFieldBrowserProfileDir, configFieldBrowserConnectTimeout, configFieldBrowserExtensionSetup, configFieldBrowserSocketDir, configFieldBrowserRemoteDebuggingURL, configFieldBrowserHeadless:
 		return "浏览器自动化"
 	case configFieldSkillsInstallScope, configFieldSkillsAutoInstallPolicy, configFieldSkillsFreeTextSearch, configFieldSkillsRegistryURL:
@@ -7697,6 +7729,8 @@ func configFormFieldValue(index int, values ConfigFormValues) string {
 		return strings.TrimSpace(values.AgentAutoLoopMaxRounds)
 	case configFieldOutputLanguage:
 		return strings.TrimSpace(values.OutputLanguage)
+	case configFieldComputerEnabled:
+		return ""
 	case configFieldBrowserMode:
 		return ""
 	case configFieldBrowserPermissionMode:
@@ -7856,6 +7890,8 @@ func configFieldKey(index int) string {
 		return "agent_auto_loop_max_rounds"
 	case configFieldOutputLanguage:
 		return "output_language"
+	case configFieldComputerEnabled:
+		return "computer_enabled"
 	case configFieldBrowserMode:
 		return "browser_mode"
 	case configFieldBrowserPermissionMode:
@@ -8006,6 +8042,20 @@ func (m *model) moveConfigCrossSessionMemoryCursor(delta int) {
 	m.syncLayout()
 }
 
+func (m *model) moveConfigComputerEnabledCursor(delta int) {
+	choices := configComputerEnabledChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.computerEnabledCursor += delta
+	if m.configForm.computerEnabledCursor < 0 {
+		m.configForm.computerEnabledCursor = len(choices) - 1
+	} else if m.configForm.computerEnabledCursor >= len(choices) {
+		m.configForm.computerEnabledCursor = 0
+	}
+	m.syncLayout()
+}
+
 func (m *model) moveConfigBrowserModeCursor(delta int) {
 	choices := configBrowserModeChoices()
 	if m.configForm == nil || len(choices) == 0 {
@@ -8124,6 +8174,13 @@ func configReasoningChoices() []ConfigChoice {
 
 func configCrossSessionMemoryChoices() []ConfigChoice {
 	return []ConfigChoice{{Value: "true", Label: "开启"}, {Value: "false", Label: "关闭"}}
+}
+
+func configComputerEnabledChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: "true", Label: "开启", Description: "允许后端调用本地桌面操作工具。"},
+		{Value: "false", Label: "关闭", Description: "不再暴露桌面操作工具，并拒绝执行相关调用。"},
+	}
 }
 
 func configBrowserModeChoices() []ConfigChoice {

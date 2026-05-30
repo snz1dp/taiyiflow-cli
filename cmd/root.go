@@ -120,6 +120,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	switch args[0] {
 	case "task":
 		return a.runTask(ctx, args[1:])
+	case "memory":
+		return a.runMemory(ctx, args[1:])
 	case "about":
 		return a.runAbout(args[1:])
 	case "login":
@@ -328,6 +330,16 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 				continue
 			}
 			fmt.Fprintln(a.stdout, output)
+			continue
+		case isMemorySlashCommand(line):
+			output, _, err := a.executeMemorySlashCommand(ctx, providerClient, line, flowID)
+			if err != nil {
+				fmt.Fprintf(a.stderr, "跨会话记忆命令执行失败: %v\n", err)
+				continue
+			}
+			if strings.TrimSpace(output) != "" {
+				fmt.Fprintln(a.stdout, output)
+			}
 			continue
 		case line == "/reasoning" || strings.HasPrefix(strings.ToLower(line), "/reasoning "):
 			output, updatedState, err := a.executeReasoningCommand(config, line, sessionState)
@@ -686,7 +698,7 @@ func (a *App) streamTaskWithSkillRetry(
 		CommandExecutionTarget:    commandExecutionTarget,
 		UserAgent:                 buildCLIUserAgent(),
 		RequestedSkillNames:       requestedSkillNames,
-		ClientMCPServers:          a.runtime.ClientMCPServersForMode(sessionState.RequestMode),
+		ClientMCPServers:          a.runtime.ClientMCPServersForMode(sessionState.RequestMode, runtimeConfig),
 		ClientSkillPackages:       clientSkillPackages,
 	})
 	if err != nil {
@@ -1260,6 +1272,7 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli config [show|init|path|set|unset]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli browser [install|help]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli agents [list|current|use] [参数]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli memory [status|trigger] [flow=<智能体>] [参数]")
 	fmt.Fprintf(a.stdout, "  %s\n", skillsCommandSynopsis())
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli about")
@@ -1276,6 +1289,7 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 	fmt.Fprintln(a.stdout, "  /about    显示当前客户端版本、组织与后端对接说明")
 	fmt.Fprintln(a.stdout, "  /review   发起代码审查，可写成 /review [路径或范围说明]")
 	fmt.Fprintln(a.stdout, "  /tasks    查看后台任务，可写成 /tasks [list|output|capture|stop|remove] <task_id> 或 /tasks cleanup")
+	fmt.Fprintln(a.stdout, "  /memory   查看或触发跨会话记忆整合，可写成 /memory [status|trigger] [flow=<智能体>] [参数]")
 	fmt.Fprintln(a.stdout, "  /skills   管理本地技能与远程仓库技能，可写成 /skills [list|view|search|view-remote|install|remove|update|source|enable|disable|help]")
 	fmt.Fprintln(a.stdout, "  /reasoning   切换思考模式，可写成 /reasoning [on|off|default|status]")
 	fmt.Fprintln(a.stdout, "  /ask      切换为问答模式，可写成 /ask <问题>")
@@ -1303,6 +1317,7 @@ func (a *App) printSessionStatus(ctx context.Context, providerClient provider.Pr
 	if resolvedFlowName == "" {
 		resolvedFlowName = sanitizeFlowDisplay(flowID)
 	}
+	resolvedFlowID := a.resolveFlowIdentifier(ctx, providerClient, flowID)
 	fmt.Fprintf(a.stdout, "当前智能体: %s\n", resolvedFlowName)
 	if strings.TrimSpace(sessionState.SessionID) == "" {
 		fmt.Fprintf(a.stdout, "当前模式: %s\n", requestModeLabel(sessionState.RequestMode))
@@ -1310,17 +1325,20 @@ func (a *App) printSessionStatus(ctx context.Context, providerClient provider.Pr
 		return
 	}
 	fmt.Fprintf(a.stdout, "当前模式: %s\n", requestModeLabel(sessionState.RequestMode))
-	if title, err := lookupSessionTitle(ctx, providerClient, flowID, sessionState.SessionID); err == nil && strings.TrimSpace(title) != "" {
+	resolvedSessionID := strings.TrimSpace(sessionState.SessionID)
+	if title, err := lookupSessionTitle(ctx, providerClient, resolvedFlowID, sessionState.SessionID); err == nil && strings.TrimSpace(title) != "" {
 		fmt.Fprintf(a.stdout, "当前会话: %s\n", strings.TrimSpace(title))
-		fmt.Fprintf(a.stdout, "会话ID: %s\n", sessionState.SessionID)
-		return
-	}
-	if strings.TrimSpace(sessionState.SessionTitle) != "" {
+		fmt.Fprintf(a.stdout, "会话ID: %s\n", resolvedSessionID)
+	} else if strings.TrimSpace(sessionState.SessionTitle) != "" {
 		fmt.Fprintf(a.stdout, "当前会话: %s\n", strings.TrimSpace(sessionState.SessionTitle))
-		fmt.Fprintf(a.stdout, "会话ID: %s\n", sessionState.SessionID)
-		return
+		fmt.Fprintf(a.stdout, "会话ID: %s\n", resolvedSessionID)
+	} else {
+		fmt.Fprintf(a.stdout, "当前会话: %s\n", resolvedSessionID)
 	}
-	fmt.Fprintf(a.stdout, "当前会话: %s\n", sessionState.SessionID)
+	preview := loadSessionMemoryPreview(ctx, providerClient, resolvedFlowID, resolvedSessionID)
+	if line := buildSessionMemoryTierLine(preview); line != "" {
+		fmt.Fprintln(a.stdout, line)
+	}
 }
 
 func (a *App) printSavedSessions(currentFlowID string, currentSessionID string, currentWorkdir string) error {

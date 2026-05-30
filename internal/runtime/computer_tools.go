@@ -54,6 +54,9 @@ func (r *ClientRuntime) computerTool(
 	toolName string,
 	arguments map[string]any,
 ) (map[string]any, error) {
+	if !internalconfig.ComputerEnabled(config.Computer) {
+		return nil, fmt.Errorf("桌面操作已在配置中禁用")
+	}
 	prepared := cloneArguments(arguments)
 	if toolName == computerToolScreenshot {
 		pathValue, err := r.resolveComputerScreenshotPath(config, prepared)
@@ -250,6 +253,9 @@ func computerReadOnlyTool(toolName string) bool {
 }
 
 func computerToolRequiresConfirmation(config internalconfig.Config, toolName string, arguments map[string]any) bool {
+	if !internalconfig.ComputerEnabled(config.Computer) {
+		return false
+	}
 	if !isComputerTool(toolName) {
 		return false
 	}
@@ -268,6 +274,9 @@ func computerToolRequiresConfirmation(config internalconfig.Config, toolName str
 }
 
 func (r *ClientRuntime) authorizeComputerTool(toolName string, arguments map[string]any, config internalconfig.Config) error {
+	if !internalconfig.ComputerEnabled(config.Computer) {
+		return newToolError("PERMISSION_DENIED", "桌面操作已在配置中禁用，拒绝执行 %s", canonicalClientToolName(toolName))
+	}
 	mode := strings.TrimSpace(config.ApprovalMode)
 	if action, matched := evaluatePermissionAction(config, toolName, commandPreview(arguments)); matched {
 		switch action {

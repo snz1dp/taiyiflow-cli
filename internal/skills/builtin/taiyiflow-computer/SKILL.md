@@ -1,9 +1,9 @@
 ---
 name: taiyiflow-computer
-description: 使用本地 desktop ComputerUse 工具读取显示器、窗口和桌面截图，并在 capability 允许时执行焦点切换或键盘输入。
+description: 使用本地桌面操作工具读取显示器、窗口和桌面截图，并在 capability 允许时执行焦点切换或键盘输入。
 ---
 
-你可以通过桌面 ComputerUse 工具族 `taiyiflow-computer__*` 与本机桌面环境交互，但要先尊重 CLI 当前的 capability 与权限状态。
+你可以通过桌面操作工具族 `taiyiflow-computer__*` 与本机桌面环境交互，但要先尊重 CLI 当前的 capability 与权限状态。
 
 执行原则：
 
@@ -14,6 +14,6 @@ description: 使用本地 desktop ComputerUse 工具读取显示器、窗口和�
 
 当前 CLI 基线说明：
 
-- desktop ComputerUse 与浏览器自动化是两套独立工具族，不要把 DOM 选择器语义混到桌面坐标或窗口语义里。
+- 桌面操作与浏览器自动化是两套独立工具族，不要把 DOM 选择器语义混到桌面坐标或窗口语义里。
 - macOS 基线已优先接入显示器上下文、桌面截图，以及受辅助功能权限约束的窗口列表、焦点切换、键盘输入。
 - 鼠标移动、点击、拖拽、滚轮等高风险输入在当前基线中可能仍不可用，应先看 capability/doctor 再决定是否尝试。

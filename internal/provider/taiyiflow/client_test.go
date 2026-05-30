@@ -277,7 +277,7 @@ func TestGetSessionContextWindowParsesResponse(t *testing.T) {
 			return
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(writer, `{"flow_id":"demo-flow","session_id":"session-123","context_window":{"max_input_tokens":8192,"context_usage_tokens":3072,"direct_message_tokens":2048,"compressed_history_tokens":1024,"current_round_input_tokens":3072,"next_round_available_tokens":5120,"current_round_available_tokens":5120,"history_message_count":14,"prepared_message_count":14,"high_watermark_ratio":0.85,"compression_target_ratio":0.6,"high_watermark_tokens":6963,"compression_target_tokens":4915},"latest_compression":{"trigger_reason":"input_max_tokens_exceeded","compression_strategy":"token_truncate","target_type":"history_messages","before_tokens":9200,"target_tokens":8192,"after_tokens":6000,"remaining_tokens":2192,"compression_ratio":0.65,"reserved_history_tokens":512},"source_updated_at":"2026-04-23T12:00:00Z","source":"history_rebuild"}`)
+		fmt.Fprint(writer, `{"flow_id":"demo-flow","session_id":"session-123","context_window":{"max_input_tokens":8192,"context_usage_tokens":3072,"direct_message_tokens":2048,"compressed_history_tokens":1024,"current_round_input_tokens":3072,"next_round_available_tokens":5120,"current_round_available_tokens":5120,"history_message_count":14,"prepared_message_count":14,"high_watermark_ratio":0.85,"compression_target_ratio":0.6,"high_watermark_tokens":6963,"compression_target_tokens":4915},"latest_compression":{"trigger_reason":"input_max_tokens_exceeded","compression_strategy":"token_truncate","target_type":"history_messages","before_tokens":9200,"target_tokens":8192,"after_tokens":6000,"remaining_tokens":2192,"compression_ratio":0.65,"reserved_history_tokens":512},"memory_tiers":["session","flow_user_day","dream"],"source_updated_at":"2026-04-23T12:00:00Z","source":"history_rebuild"}`)
 	}))
 	defer server.Close()
 
@@ -306,6 +306,89 @@ func TestGetSessionContextWindowParsesResponse(t *testing.T) {
 	}
 	if preview.Source != "history_rebuild" {
 		t.Fatalf("expected preview source to be preserved, got %#v", preview)
+	}
+	if len(preview.MemoryTiers) != 3 || preview.MemoryTiers[2] != "dream" {
+		t.Fatalf("expected memory tiers to be parsed, got %#v", preview.MemoryTiers)
+	}
+}
+
+func TestListMemoryConsolidationsParsesResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != backendAPIPath("/agents/memory-consolidations") {
+			http.NotFound(writer, request)
+			return
+		}
+		if got := request.URL.Query().Get("flow_id"); got != "flow-uuid-1" {
+			t.Fatalf("expected flow_id query, got %q", got)
+		}
+		if got := request.URL.Query().Get("status"); got != "succeeded" {
+			t.Fatalf("expected status query, got %q", got)
+		}
+		if got := request.URL.Query().Get("limit"); got != "3" {
+			t.Fatalf("expected limit query, got %q", got)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"total":1,"offset":0,"data":[{"id":"task-1","scope_key":"dreamtask::scope","flow_id":"flow-uuid-1","owner_appid":"app-1","owner_user_id":"user-1","window_start":"2026-05-01T08:00:00Z","window_end":"2026-05-02T09:00:00Z","trigger_reason":"auto_dream","status":"succeeded","attempt_count":1,"last_error":"","last_source_count":8,"last_session_count":5,"last_task_id":"backend-1","result_segment_key":"dream-segment-1","last_run_at":"2026-05-02T09:05:00Z","created_at":"2026-05-02T09:00:00Z","updated_at":"2026-05-02T09:05:00Z"}]}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	page, err := client.ListMemoryConsolidations(context.Background(), provider.MemoryConsolidationQuery{
+		FlowID: "flow-uuid-1",
+		Status: "succeeded",
+		Limit:  3,
+	})
+	if err != nil {
+		t.Fatalf("expected ListMemoryConsolidations to succeed, got %v", err)
+	}
+	if page == nil || len(page.Items) != 1 {
+		t.Fatalf("expected one DreamTask item, got %#v", page)
+	}
+	if page.Items[0].ResultSegmentKey != "dream-segment-1" || page.Items[0].LastSessionCount != 5 {
+		t.Fatalf("expected DreamTask payload to be preserved, got %#v", page.Items[0])
+	}
+}
+
+func TestTriggerMemoryConsolidationPostsRequestAndParsesResponse(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != backendAPIPath("/agents/memory-consolidations/trigger") {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.Method != http.MethodPost {
+			t.Fatalf("expected POST request, got %s", request.Method)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request body failed: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusAccepted)
+		fmt.Fprint(writer, `{"task_id":"task-1","backend_task_id":"backend-1","status":"pending","scheduled":true,"reason":""}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	result, err := client.TriggerMemoryConsolidation(context.Background(), provider.MemoryConsolidationTriggerRequest{
+		FlowID:         "flow-uuid-1",
+		MinHours:       6,
+		MinSessions:    3,
+		ExecuteEnabled: false,
+	})
+	if err != nil {
+		t.Fatalf("expected TriggerMemoryConsolidation to succeed, got %v", err)
+	}
+	if captured["flow_id"] != "flow-uuid-1" {
+		t.Fatalf("expected flow_id in request body, got %#v", captured)
+	}
+	if captured["min_hours"] != float64(6) || captured["min_sessions"] != float64(3) {
+		t.Fatalf("expected min thresholds in request body, got %#v", captured)
+	}
+	if captured["execute_enabled"] != false {
+		t.Fatalf("expected execute_enabled=false, got %#v", captured)
+	}
+	if result == nil || result.TaskID != "task-1" || !result.Scheduled {
+		t.Fatalf("expected trigger response to be preserved, got %#v", result)
 	}
 }
 
