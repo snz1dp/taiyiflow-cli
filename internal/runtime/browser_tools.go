@@ -10,20 +10,21 @@ import (
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/browserbridge"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
 
 const (
-	browserToolPrefix             = "taiyiflow-in-chrome__"
-	browserToolTabsContext        = browserToolPrefix + "tabs_context"
-	browserToolTabsCreate         = browserToolPrefix + "tabs_create"
-	browserToolNavigate           = browserToolPrefix + "navigate"
-	browserToolClick              = browserToolPrefix + "click"
-	browserToolType               = browserToolPrefix + "type"
-	browserToolScreenshot         = browserToolPrefix + "screenshot"
-	browserToolReadText           = browserToolPrefix + "read_text"
-	browserToolReadConsole        = browserToolPrefix + "read_console"
-	defaultBrowserScreenshotDir   = ".snz1dp/browser"
-	defaultBrowserScreenshotExt   = ".png"
+	browserToolPrefix           = "taiyiflow-in-chrome__"
+	browserToolTabsContext      = browserToolPrefix + "tabs_context"
+	browserToolTabsCreate       = browserToolPrefix + "tabs_create"
+	browserToolNavigate         = browserToolPrefix + "navigate"
+	browserToolClick            = browserToolPrefix + "click"
+	browserToolType             = browserToolPrefix + "type"
+	browserToolScreenshot       = browserToolPrefix + "screenshot"
+	browserToolReadText         = browserToolPrefix + "read_text"
+	browserToolReadConsole      = browserToolPrefix + "read_console"
+	defaultBrowserScreenshotDir = ".snz1dp/browser"
+	defaultBrowserScreenshotExt = ".png"
 )
 
 var sharedBrowserToolManager = browserbridge.NewManager()
@@ -49,6 +50,7 @@ func (r *ClientRuntime) SetBrowserToolExecutor(executor BrowserToolExecutor) {
 
 func (r *ClientRuntime) browserTool(
 	ctx context.Context,
+	providerClient provider.Provider,
 	config internalconfig.Config,
 	toolName string,
 	arguments map[string]any,
@@ -74,6 +76,13 @@ func (r *ClientRuntime) browserTool(
 	if err != nil {
 		return nil, err
 	}
+	if toolName == browserToolScreenshot {
+		if imageUnderstanding, understandErr := r.understandImageWithProvider(ctx, providerClient, config, prepared, stringValue(result["path"])); understandErr != nil {
+			result["image_understanding_error"] = understandErr.Error()
+		} else if strings.TrimSpace(imageUnderstanding) != "" {
+			result["image_understanding"] = imageUnderstanding
+		}
+	}
 	r.writeStreamEventf(r.stdout, "[浏览器工具] %s\n", previewBrowserTool(toolName, prepared))
 	auditPayload := map[string]any{"tool": toolName}
 	if pathValue := strings.TrimSpace(stringValue(prepared["path"])); pathValue != "" {
@@ -89,8 +98,8 @@ func (r *ClientRuntime) browserTool(
 func browserClientToolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
-			"name":        browserToolTabsContext,
-			"description": "读取当前浏览器标签页上下文，返回标签页 ID、标题、URL 与当前活动标签页。",
+			"name":                 browserToolTabsContext,
+			"description":          "读取当前浏览器标签页上下文，返回标签页 ID、标题、URL 与当前活动标签页。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type":                 "object",
@@ -98,8 +107,8 @@ func browserClientToolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        browserToolTabsCreate,
-			"description": "创建新浏览器标签页，并在必要时切换为当前活动标签页。",
+			"name":                 browserToolTabsCreate,
+			"description":          "创建新浏览器标签页，并在必要时切换为当前活动标签页。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -111,8 +120,8 @@ func browserClientToolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        browserToolNavigate,
-			"description": "让指定标签页导航到 URL；未指定 tab_id 时默认使用当前活动标签页。",
+			"name":                 browserToolNavigate,
+			"description":          "让指定标签页导航到 URL；未指定 tab_id 时默认使用当前活动标签页。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -125,8 +134,8 @@ func browserClientToolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        browserToolClick,
-			"description": "点击页面中的 CSS 选择器元素。",
+			"name":                 browserToolClick,
+			"description":          "点击页面中的 CSS 选择器元素。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -139,8 +148,8 @@ func browserClientToolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        browserToolType,
-			"description": "向页面元素输入文本；支持覆盖写入、追加输入和输入后回车。",
+			"name":                 browserToolType,
+			"description":          "向页面元素输入文本；支持覆盖写入、追加输入和输入后回车。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -156,22 +165,24 @@ func browserClientToolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        browserToolScreenshot,
-			"description": "截取当前标签页截图并保存为 PNG；若未提供 path，会自动落到工作区内 .snz1dp/browser/。",
+			"name":                 browserToolScreenshot,
+			"description":          "截取当前标签页截图并保存为 PNG；若服务端配置了 image_flow_id，会额外返回 image_understanding 图像增强结果。未提供 path 时自动落到工作区内 .snz1dp/browser/。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"path":     map[string]any{"type": "string", "description": "可选输出路径。"},
-					"tab_id":   map[string]any{"type": "string", "description": "可选标签页 ID。"},
-					"full_page": map[string]any{"type": "boolean", "description": "保留字段；当前默认截全页。"},
+					"path":                       map[string]any{"type": "string", "description": "可选输出路径。"},
+					"tab_id":                     map[string]any{"type": "string", "description": "可选标签页 ID。"},
+					"full_page":                  map[string]any{"type": "boolean", "description": "保留字段；当前默认截全页。"},
+					"input_value":                map[string]any{"type": "string", "description": "可选图像理解提示词；留空时由服务端使用默认提示。"},
+					"image_compression_strategy": map[string]any{"type": "string", "description": "可选图像压缩策略；默认 passthrough。"},
 				},
 				"additionalProperties": false,
 			},
 		},
 		{
-			"name":        browserToolReadText,
-			"description": "读取页面文本；可选择全文或某个 CSS 选择器的文本内容。",
+			"name":                 browserToolReadText,
+			"description":          "读取页面文本；可选择全文或某个 CSS 选择器的文本内容。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -184,8 +195,8 @@ func browserClientToolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        browserToolReadConsole,
-			"description": "读取当前标签页最近的控制台输出与异常日志。",
+			"name":                 browserToolReadConsole,
+			"description":          "读取当前标签页最近的控制台输出与异常日志。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",

@@ -19,10 +19,6 @@ func (r *ClientRuntime) documentUnstructured(
 	if providerClient == nil {
 		return nil, newToolError("EXECUTION_FAILED", "document_unstructured 缺少 provider 上下文")
 	}
-	configuredExts := internalconfig.NormalizeDocUnstructuredExts(config.DocUnstructuredExts)
-	if len(configuredExts) == 0 {
-		return nil, newToolError("EXECUTION_FAILED", "当前未配置 doc_unstructured_exts，请先在全局配置中启用需要走服务端结构化解析的扩展名")
-	}
 	currentFlowID := argumentString(arguments, "flow_id")
 	if currentFlowID == "" {
 		return nil, newToolError("PARAM_ERROR", "document_unstructured 缺少 flow_id")
@@ -30,6 +26,34 @@ func (r *ClientRuntime) documentUnstructured(
 	paths, err := documentUnstructuredPaths(arguments)
 	if err != nil {
 		return nil, err
+	}
+	workingDirectory := argumentString(arguments, "working_directory", "workingDirectory")
+	if workingDirectory == "" {
+		workingDirectory = strings.TrimSpace(config.Workdir)
+	}
+	hasImageInput := false
+	hasNonImageInput := false
+	for _, rawPath := range paths {
+		resolvedPath, resolveErr := ResolveUploadFilePath(workingDirectory, rawPath)
+		if resolveErr != nil {
+			return nil, newToolError("PARAM_ERROR", "%v", resolveErr)
+		}
+		extension := normalizeDocumentExtension(filepath.Ext(resolvedPath))
+		if internalconfig.IsImageUnderstandingExtension(extension) {
+			hasImageInput = true
+		} else {
+			hasNonImageInput = true
+		}
+	}
+	if hasImageInput {
+		if hasNonImageInput {
+			return nil, newToolError("PARAM_ERROR", "document_unstructured 不支持图片与文档混合输入；图片请改用 image_understanding")
+		}
+		return r.runImageUnderstanding(ctx, providerClient, config, arguments, paths, buildDefaultImageUnderstandingTweaks())
+	}
+	configuredExts := internalconfig.NormalizeDocUnstructuredExts(config.DocUnstructuredExts)
+	if len(configuredExts) == 0 {
+		return nil, newToolError("EXECUTION_FAILED", "当前未配置 doc_unstructured_exts，请先在全局配置中启用需要走服务端结构化解析的扩展名")
 	}
 	serviceConfig, err := providerClient.GetServiceConfig(ctx)
 	if err != nil {
@@ -46,10 +70,6 @@ func (r *ClientRuntime) documentUnstructured(
 	configuredExtSet := make(map[string]struct{}, len(configuredExts))
 	for _, extension := range configuredExts {
 		configuredExtSet[extension] = struct{}{}
-	}
-	workingDirectory := argumentString(arguments, "working_directory", "workingDirectory")
-	if workingDirectory == "" {
-		workingDirectory = strings.TrimSpace(config.Workdir)
 	}
 	currentSessionID := argumentString(arguments, "session_id")
 	currentSessionID, err = EnsureUploadSessionID(ctx, providerClient, currentSessionID)

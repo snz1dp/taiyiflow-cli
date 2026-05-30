@@ -67,11 +67,6 @@ const (
 )
 
 var defaultDocUnstructuredExts = []string{
-	"jpg",
-	"jpeg",
-	"png",
-	"gif",
-	"svg",
 	"mp3",
 	"wav",
 	"ogg",
@@ -94,6 +89,18 @@ var defaultDocUnstructuredExts = []string{
 	"xlsx",
 	"ppt",
 	"pptx",
+}
+
+var imageUnderstandingExtSet = map[string]struct{}{
+	"jpg":  {},
+	"jpeg": {},
+	"png":  {},
+	"gif":  {},
+	"svg":  {},
+	"webp": {},
+	"bmp":  {},
+	"tif":  {},
+	"tiff": {},
 }
 
 type Config struct {
@@ -428,6 +435,9 @@ func NormalizeDocUnstructuredExts(values []string) []string {
 		if trimmed == "" {
 			continue
 		}
+		if IsImageUnderstandingExtension(trimmed) {
+			continue
+		}
 		if _, exists := seen[trimmed]; exists {
 			continue
 		}
@@ -435,6 +445,15 @@ func NormalizeDocUnstructuredExts(values []string) []string {
 		result = append(result, trimmed)
 	}
 	return result
+}
+
+func IsImageUnderstandingExtension(value string) bool {
+	trimmed := strings.Trim(strings.ToLower(strings.TrimSpace(value)), ".")
+	if trimmed == "" {
+		return false
+	}
+	_, ok := imageUnderstandingExtSet[trimmed]
+	return ok
 }
 
 func NormalizePermissionAction(value string) string {

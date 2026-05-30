@@ -834,29 +834,31 @@ func (c *Client) UploadFile(ctx context.Context, flowID string, sessionID string
 	}, nil
 }
 
-func (c *Client) RunDocumentUnstructured(ctx context.Context, request provider.DocumentUnstructuredRequest) (*provider.DocumentUnstructuredResult, error) {
-	trimmedFlowID := strings.TrimSpace(request.FlowID)
+func (c *Client) runSimpleFlowRequest(
+	ctx context.Context,
+	flowID string,
+	sessionID string,
+	body streamRequestBody,
+	serviceName string,
+) ([]byte, string, string, error) {
+	trimmedServiceName := strings.TrimSpace(serviceName)
+	if trimmedServiceName == "" {
+		trimmedServiceName = "服务"
+	}
+	trimmedFlowID := strings.TrimSpace(flowID)
 	if trimmedFlowID == "" {
-		return nil, fmt.Errorf("调用文档结构化服务失败: 文档结构化流程不能为空")
+		return nil, "", "", fmt.Errorf("调用%s服务失败: %s流程不能为空", trimmedServiceName, trimmedServiceName)
 	}
-	trimmedSessionID := strings.TrimSpace(request.SessionID)
-
-	body := streamRequestBody{
-		InputValue: request.Input,
-		InputType:  firstNonEmpty(strings.TrimSpace(request.InputType), "any"),
-		Files:      append([]string(nil), request.InputFiles...),
-		OutputType: firstNonEmpty(strings.TrimSpace(request.OutputType), "any"),
-		SessionID:  trimmedSessionID,
-	}
+	trimmedSessionID := strings.TrimSpace(sessionID)
 
 	content, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("序列化文档结构化请求失败: %w", err)
+		return nil, "", "", fmt.Errorf("序列化%s请求失败: %w", trimmedServiceName, err)
 	}
 
 	endpointURL, err := url.Parse(c.apiURL(fmt.Sprintf("/run/%s", url.PathEscape(trimmedFlowID))))
 	if err != nil {
-		return nil, fmt.Errorf("构造文档结构化请求地址失败: %w", err)
+		return nil, "", "", fmt.Errorf("构造%s请求地址失败: %w", trimmedServiceName, err)
 	}
 	if trimmedSessionID != "" {
 		query := endpointURL.Query()
@@ -865,24 +867,24 @@ func (c *Client) RunDocumentUnstructured(ctx context.Context, request provider.D
 	}
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL.String(), bytes.NewReader(content))
 	if err != nil {
-		return nil, fmt.Errorf("创建文档结构化请求失败: %w", err)
+		return nil, "", "", fmt.Errorf("创建%s请求失败: %w", trimmedServiceName, err)
 	}
 	httpRequest.Header.Set("Content-Type", "application/json")
 	c.applyAuth(httpRequest)
 
 	resp, err := c.httpClient.Do(httpRequest)
 	if err != nil {
-		return nil, fmt.Errorf("调用文档结构化服务失败: %w", err)
+		return nil, "", "", fmt.Errorf("调用%s服务失败: %w", trimmedServiceName, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, readHTTPError("调用文档结构化服务失败", resp)
+		return nil, "", "", readHTTPError(fmt.Sprintf("调用%s服务失败", trimmedServiceName), resp)
 	}
 
 	output, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("读取文档结构化响应失败: %w", err)
+		return nil, "", "", fmt.Errorf("读取%s响应失败: %w", trimmedServiceName, err)
 	}
 
 	mediaType := strings.TrimSpace(resp.Header.Get("Content-Type"))
@@ -893,11 +895,70 @@ func (c *Client) RunDocumentUnstructured(ctx context.Context, request provider.D
 		mediaType = "text/plain"
 	}
 
+	return output, mediaType, firstNonEmpty(strings.TrimSpace(resp.Header.Get(SessionHeader)), trimmedSessionID), nil
+}
+
+func (c *Client) RunDocumentUnstructured(ctx context.Context, request provider.DocumentUnstructuredRequest) (*provider.DocumentUnstructuredResult, error) {
+	body := streamRequestBody{
+		InputValue: request.Input,
+		InputType:  firstNonEmpty(strings.TrimSpace(request.InputType), "any"),
+		Files:      append([]string(nil), request.InputFiles...),
+		OutputType: firstNonEmpty(strings.TrimSpace(request.OutputType), "any"),
+		SessionID:  strings.TrimSpace(request.SessionID),
+	}
+
+	output, mediaType, sessionID, err := c.runSimpleFlowRequest(ctx, request.FlowID, request.SessionID, body, "文档结构化")
+	if err != nil {
+		return nil, err
+	}
+
 	return &provider.DocumentUnstructuredResult{
-		SessionID: firstNonEmpty(strings.TrimSpace(resp.Header.Get(SessionHeader)), trimmedSessionID),
+		SessionID: sessionID,
 		Output:    string(output),
 		MediaType: mediaType,
 	}, nil
+}
+
+func (c *Client) RunImageUnderstanding(ctx context.Context, request provider.ImageUnderstandingRequest) (*provider.ImageUnderstandingResult, error) {
+	tweaks := mergeImageUnderstandingTweaks(request)
+	body := streamRequestBody{
+		InputValue: request.Input,
+		InputType:  firstNonEmpty(strings.TrimSpace(request.InputType), "any"),
+		Tweaks:     tweaks,
+		Files:      append([]string(nil), request.InputFiles...),
+		OutputType: firstNonEmpty(strings.TrimSpace(request.OutputType), "any"),
+		SessionID:  strings.TrimSpace(request.SessionID),
+	}
+
+	output, mediaType, sessionID, err := c.runSimpleFlowRequest(ctx, request.FlowID, request.SessionID, body, "图像理解")
+	if err != nil {
+		return nil, err
+	}
+	textOutput := strings.TrimSpace(string(output))
+
+	return &provider.ImageUnderstandingResult{
+		SessionID: sessionID,
+		Output:    string(output),
+		MediaType: mediaType,
+		Text:      textOutput,
+	}, nil
+}
+
+func mergeImageUnderstandingTweaks(request provider.ImageUnderstandingRequest) map[string]any {
+	var tweaks map[string]any
+	if len(request.Tweaks) > 0 {
+		tweaks = make(map[string]any, len(request.Tweaks)+1)
+		for key, value := range request.Tweaks {
+			tweaks[key] = value
+		}
+	}
+	if compressionStrategy := strings.TrimSpace(request.ImageCompressionStrategy); compressionStrategy != "" {
+		if tweaks == nil {
+			tweaks = make(map[string]any, 1)
+		}
+		tweaks["image_compression_strategy"] = compressionStrategy
+	}
+	return tweaks
 }
 
 func (c *Client) ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*provider.SessionMessageList, error) {
@@ -1084,6 +1145,7 @@ func (c *Client) GetServiceConfig(ctx context.Context) (*provider.ServiceConfig,
 		DocExts:               docExts,
 		MilvusEnabled:         payload.MilvusEnabled,
 		DefaultFlowID:         strings.TrimSpace(payload.DefaultFlowID),
+		ImageFlowID:           strings.TrimSpace(payload.ImageFlowID),
 		DocUnstructuredFlowID: strings.TrimSpace(payload.DocUnstructuredFlowID),
 	}, nil
 }

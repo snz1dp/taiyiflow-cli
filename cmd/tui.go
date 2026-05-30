@@ -2115,7 +2115,7 @@ func buildTUIComputerToolPanel(toolName string, resultMap map[string]any) *tui.T
 			if boolMapValueAny(item, "primary") {
 				prefix = "*"
 			}
-			lines = append(lines, fmt.Sprintf("%s %d. [%s] %s\n   %dx%d px · scale %.2f", prefix, index+1, fallbackString(stringMapValue(item, "display_id"), "<unknown>"), fallbackString(stringMapValue(item, "name"), "<unnamed>"), intMapValue(item, "width_px"), intMapValue(item, "height_px"), floatMapValue(item, "scale_factor")))
+			lines = append(lines, fmt.Sprintf("%s %d. [%s] %s\n   origin (%d,%d) · %dx%d px · scale %.2f", prefix, index+1, fallbackString(stringMapValue(item, "display_id"), "<unknown>"), fallbackString(stringMapValue(item, "name"), "<unnamed>"), intMapValue(item, "origin_x"), intMapValue(item, "origin_y"), intMapValue(item, "width_px"), intMapValue(item, "height_px"), floatMapValue(item, "scale_factor")))
 		}
 		return &tui.ToolPanel{
 			Title:   "桌面显示器",
@@ -2148,15 +2148,19 @@ func buildTUIComputerToolPanel(toolName string, resultMap map[string]any) *tui.T
 			Hint:    "带 * 的窗口属于当前前台进程；后续可继续 focus_window、type_text 或截图。",
 		}
 	case "taiyiflow-computer__screenshot":
-		body := fmt.Sprintf("path: %s\nsize: %d bytes", fallbackString(stringMapValue(resultMap, "path"), "<missing>"), intMapValue(resultMap, "size"))
+		lines := []string{}
 		if displayID := strings.TrimSpace(stringMapValue(resultMap, "display_id")); displayID != "" {
-			body = "display_id: " + displayID + "\n" + body
+			lines = append(lines, "display_id: "+displayID)
 		}
+		lines = appendDisplayScopeLines(lines, resultMap)
+		lines = append(lines, fmt.Sprintf("path: %s", fallbackString(stringMapValue(resultMap, "path"), "<missing>")))
+		lines = append(lines, fmt.Sprintf("size: %d bytes", intMapValue(resultMap, "size")))
+		lines = appendImageUnderstandingLines(lines, resultMap)
 		return &tui.ToolPanel{
 			Title:   "桌面截图",
 			Summary: fallbackString(stringMapValue(resultMap, "path"), "screenshot"),
-			Body:    body,
-			Hint:    "截图已保存到本地文件；后续可结合 document_unstructured 或人工核对继续处理。",
+			Body:    strings.Join(lines, "\n"),
+			Hint:    "截图已保存到本地文件；若结果已返回 image_understanding，优先直接使用该图像理解结果继续处理。",
 		}
 	default:
 		lines := []string{}
@@ -2271,15 +2275,20 @@ func buildTUIBrowserToolPanel(toolName string, resultMap map[string]any) *tui.To
 			Hint:    "包含 console 输出与未捕获异常；需要定位 DOM 变化时，建议配合 read_text 或 screenshot。",
 		}
 	case "taiyiflow-in-chrome__screenshot":
-		body := fmt.Sprintf("tab_id: %s\npath: %s\nsize: %d bytes", fallbackString(stringMapValue(resultMap, "tab_id"), "<active>"), fallbackString(stringMapValue(resultMap, "path"), "<missing>"), intMapValue(resultMap, "size"))
+		lines := []string{}
 		if title := strings.TrimSpace(stringMapValue(resultMap, "title")); title != "" {
-			body = "title: " + title + "\nurl: " + fallbackString(stringMapValue(resultMap, "url"), "<empty>") + "\n" + body
+			lines = append(lines, "title: "+title)
+			lines = append(lines, "url: "+fallbackString(stringMapValue(resultMap, "url"), "<empty>"))
 		}
+		lines = append(lines, fmt.Sprintf("tab_id: %s", fallbackString(stringMapValue(resultMap, "tab_id"), "<active>")))
+		lines = append(lines, fmt.Sprintf("path: %s", fallbackString(stringMapValue(resultMap, "path"), "<missing>")))
+		lines = append(lines, fmt.Sprintf("size: %d bytes", intMapValue(resultMap, "size")))
+		lines = appendImageUnderstandingLines(lines, resultMap)
 		return &tui.ToolPanel{
 			Title:   "浏览器截图",
 			Summary: fallbackString(stringMapValue(resultMap, "path"), "screenshot"),
-			Body:    body,
-			Hint:    "截图已保存到本地文件；后续可配合 read_text 或 document_unstructured 继续处理图像内容。",
+			Body:    strings.Join(lines, "\n"),
+			Hint:    "截图已保存到本地文件；若结果已返回 image_understanding，优先直接使用该图像理解结果继续处理页面内容。",
 		}
 	default:
 		lines := []string{}
@@ -2305,6 +2314,40 @@ func buildTUIBrowserToolPanel(toolName string, resultMap map[string]any) *tui.To
 			Hint:    "若需要确认页面状态，可继续读取 tabs_context、read_text 或截图。",
 		}
 	}
+}
+
+func appendDisplayScopeLines(lines []string, payload map[string]any) []string {
+	if displayIndex := intMapValue(payload, "display_index"); displayIndex > 0 {
+		lines = append(lines, fmt.Sprintf("display_index: %d", displayIndex))
+	}
+	if _, hasOriginX := payload["display_origin_x"]; hasOriginX {
+		lines = append(lines, fmt.Sprintf("origin: (%d,%d)", intMapValue(payload, "display_origin_x"), intMapValue(payload, "display_origin_y")))
+	}
+	if width := intMapValue(payload, "display_width_px"); width > 0 {
+		lines = append(lines, fmt.Sprintf("display_size: %dx%d px", width, intMapValue(payload, "display_height_px")))
+	}
+	return lines
+}
+
+func appendImageUnderstandingLines(lines []string, payload map[string]any) []string {
+	if imageUnderstanding := strings.TrimSpace(stringMapValue(payload, "image_understanding")); imageUnderstanding != "" {
+		lines = append(lines, "image_understanding: "+imageUnderstanding)
+	}
+	if imageUnderstanding, ok := nestedMapValue(payload, "image_understanding"); ok {
+		if summary := strings.TrimSpace(firstNonEmptyTrimmedStringMapValue(imageUnderstanding, "summary")); summary != "" {
+			lines = append(lines, "image_understanding.summary: "+summary)
+		}
+		if scene := strings.TrimSpace(firstNonEmptyTrimmedStringMapValue(imageUnderstanding, "scene")); scene != "" {
+			lines = append(lines, "image_understanding.scene: "+scene)
+		}
+		if text := strings.TrimSpace(firstNonEmptyTrimmedStringMapValue(imageUnderstanding, "text")); text != "" {
+			lines = append(lines, "image_understanding.text: "+text)
+		}
+	}
+	if errText := strings.TrimSpace(stringMapValue(payload, "image_understanding_error")); errText != "" {
+		lines = append(lines, "image_understanding_error: "+errText)
+	}
+	return lines
 }
 
 func boolMapValueAny(payload map[string]any, key string) bool {

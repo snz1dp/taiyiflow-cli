@@ -32,3 +32,17 @@ func darwinPostScrollEvent(deltaX int, deltaY int) error {
 	_ = deltaY
 	return fmt.Errorf("当前构建未启用 CGO，无法执行滚轮滚动")
 }
+
+func darwinUnicodeTextInputAvailable() bool {
+	return false
+}
+
+func darwinPostKeyCode(keyCode int) error {
+	_ = keyCode
+	return fmt.Errorf("当前构建未启用 CGO，无法执行键盘按键注入")
+}
+
+func darwinPostUnicodeText(text string) error {
+	_ = text
+	return fmt.Errorf("当前构建未启用 CGO，无法执行 Unicode 文本输入")
+}

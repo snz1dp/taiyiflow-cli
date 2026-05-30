@@ -28,6 +28,9 @@ type documentToolProviderStub struct {
 	uploadCalls      []documentToolUploadCall
 	runRequest       provider.DocumentUnstructuredRequest
 	runResult        *provider.DocumentUnstructuredResult
+	imageRunRequest  provider.ImageUnderstandingRequest
+	imageRunResult   *provider.ImageUnderstandingResult
+	imageRunErr      error
 	callback         provider.ClientCallResult
 }
 
@@ -55,9 +58,79 @@ func (s *documentToolProviderStub) RunDocumentUnstructured(_ context.Context, re
 	return s.runResult, nil
 }
 
+func (s *documentToolProviderStub) RunImageUnderstanding(_ context.Context, request provider.ImageUnderstandingRequest) (*provider.ImageUnderstandingResult, error) {
+	s.imageRunRequest = request
+	if s.imageRunErr != nil {
+		return nil, s.imageRunErr
+	}
+	return s.imageRunResult, nil
+}
+
 func (s *documentToolProviderStub) SubmitClientCallResult(_ context.Context, result provider.ClientCallResult) error {
 	s.callback = result
 	return nil
+}
+
+func assertScreenshotImageUnderstandingTweaks(t *testing.T, request provider.ImageUnderstandingRequest) {
+	t.Helper()
+	if len(request.Tweaks) == 0 {
+		t.Fatalf("expected screenshot image understanding tweaks, got %#v", request)
+	}
+	systemPrompt, ok := request.Tweaks[imageUnderstandingSystemPromptComponent].(map[string]any)
+	if !ok || strings.TrimSpace(stringValue(systemPrompt["template"])) != screenshotImageUnderstandingSystemTemplate {
+		t.Fatalf("expected screenshot system prompt tweak, got %#v", request.Tweaks)
+	}
+	userPrompt, ok := request.Tweaks[imageUnderstandingUserPromptComponent].(map[string]any)
+	if !ok || strings.TrimSpace(stringValue(userPrompt["template"])) != screenshotImageUnderstandingUserTemplate {
+		t.Fatalf("expected screenshot user prompt tweak, got %#v", request.Tweaks)
+	}
+	if !strings.Contains(stringValue(userPrompt["template"]), "{question}") {
+		t.Fatalf("expected screenshot user prompt template to preserve {question}, got %#v", userPrompt)
+	}
+	textOutput, ok := request.Tweaks[imageUnderstandingTextOutputComponent].(map[string]any)
+	if !ok || strings.TrimSpace(stringValue(textOutput["output_format"])) != "text" {
+		t.Fatalf("expected screenshot text output tweak, got %#v", request.Tweaks)
+	}
+}
+
+func TestSelectImageUnderstandingTextOnlyUsesTextOutputContract(t *testing.T) {
+	testCases := []struct {
+		name   string
+		result *provider.ImageUnderstandingResult
+		want   string
+	}{
+		{
+			name: "prefer result text",
+			result: &provider.ImageUnderstandingResult{
+				Output: "原始文本",
+				Text:   "提取后的纯文本",
+			},
+			want: "提取后的纯文本",
+		},
+		{
+			name: "fallback raw output",
+			result: &provider.ImageUnderstandingResult{
+				Output: "直接文本输出",
+				Text:   "",
+			},
+			want: "直接文本输出",
+		},
+		{
+			name: "empty text returns empty string",
+			result: &provider.ImageUnderstandingResult{
+				Text: "",
+			},
+			want: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := selectImageUnderstandingText(tc.result); got != tc.want {
+				t.Fatalf("expected %q, got %q", tc.want, got)
+			}
+		})
+	}
 }
 
 type browserToolCall struct {
@@ -670,6 +743,101 @@ func TestDocumentUnstructuredToolDefinitionAvailableInAgentMode(t *testing.T) {
 	t.Fatal("expected document_unstructured tool definition in agent mode")
 }
 
+func TestImageUnderstandingToolDefinitionAvailableInAgentMode(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	definitions := runtimeClient.clientToolDefinitionsForMode("agent")
+	for _, item := range definitions {
+		name, _ := item["name"].(string)
+		if name != "image_understanding" {
+			continue
+		}
+		description, _ := item["description"].(string)
+		if !strings.Contains(description, "image_flow_id") {
+			t.Fatalf("expected image_understanding description to mention flow id, got %q", description)
+		}
+		if !strings.Contains(description, "Browser 自动化") || !strings.Contains(description, "ComputerUse") {
+			t.Fatalf("expected image_understanding description to mention screenshot reuse, got %q", description)
+		}
+		return
+	}
+	t.Fatal("expected image_understanding tool definition in agent mode")
+}
+
+func TestExecuteClientToolPayloadWithProviderImageUnderstanding(t *testing.T) {
+	tempDir := t.TempDir()
+	localPath := filepath.Join(tempDir, "shot.png")
+	if err := os.WriteFile(localPath, []byte("fake-png"), 0o644); err != nil {
+		t.Fatalf("write test image failed: %v", err)
+	}
+	providerStub := &documentToolProviderStub{
+		serviceConfig: &provider.ServiceConfig{ImageFlowID: "image-flow"},
+		imageRunResult: &provider.ImageUnderstandingResult{
+			SessionID: "session-image-2",
+			MediaType: "text/plain",
+			Output:    "截图中央是登录表单",
+			Text:      "截图中央是登录表单",
+		},
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	toolName, resultAny, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+	}, map[string]any{
+		"server":             map[string]any{"name": "local"},
+		"flow_id":            "chat-flow",
+		"client_context_dir": tempDir,
+		"context":            map[string]any{"session_id": "session-1"},
+		"function": map[string]any{
+			"name": "image_understanding",
+			"arguments": map[string]any{
+				"path":  "shot.png",
+				"input": "请概述截图内容",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected image_understanding to succeed, got %v", err)
+	}
+	if toolName != "image_understanding" {
+		t.Fatalf("unexpected tool name: %s", toolName)
+	}
+	if len(providerStub.uploadCalls) != 1 {
+		t.Fatalf("expected one upload call, got %#v", providerStub.uploadCalls)
+	}
+	if providerStub.uploadCalls[0].FlowID != "chat-flow" || providerStub.uploadCalls[0].SessionID != "session-1" {
+		t.Fatalf("unexpected upload call context: %#v", providerStub.uploadCalls[0])
+	}
+	if providerStub.imageRunRequest.FlowID != "image-flow" {
+		t.Fatalf("expected image flow id, got %#v", providerStub.imageRunRequest)
+	}
+	if len(providerStub.imageRunRequest.InputFiles) != 1 || providerStub.imageRunRequest.InputFiles[0] != "/remote/shot.png" {
+		t.Fatalf("unexpected uploaded remote files: %#v", providerStub.imageRunRequest.InputFiles)
+	}
+	if strings.TrimSpace(providerStub.imageRunRequest.Input) != "请概述截图内容" {
+		t.Fatalf("expected image prompt to be forwarded, got %#v", providerStub.imageRunRequest)
+	}
+	result, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected image_understanding result map, got %#v", resultAny)
+	}
+	if result["text"] != "截图中央是登录表单" {
+		t.Fatalf("unexpected image text: %#v", result)
+	}
+	if result["session_id"] != "session-image-2" {
+		t.Fatalf("expected returned session id, got %#v", result["session_id"])
+	}
+	if strings.TrimSpace(stringValue(result["raw_output"])) != "截图中央是登录表单" {
+		t.Fatalf("expected raw output to be preserved, got %#v", result)
+	}
+	textOutput, ok := providerStub.imageRunRequest.Tweaks[imageUnderstandingTextOutputComponent].(map[string]any)
+	if !ok || strings.TrimSpace(stringValue(textOutput["output_format"])) != "text" {
+		t.Fatalf("expected text output tweak for image_understanding, got %#v", providerStub.imageRunRequest.Tweaks)
+	}
+	if _, exists := providerStub.imageRunRequest.Tweaks[imageUnderstandingSystemPromptComponent]; exists {
+		t.Fatalf("expected generic image_understanding not to force screenshot system prompt, got %#v", providerStub.imageRunRequest.Tweaks)
+	}
+}
+
 func TestExecuteClientToolPayloadWithProviderDocumentUnstructured(t *testing.T) {
 	tempDir := t.TempDir()
 	localPath := filepath.Join(tempDir, "report.pdf")
@@ -803,6 +971,60 @@ func TestExecuteClientToolPayloadWithProviderDocumentUnstructuredRejectsDisabled
 	})
 	if err == nil || !strings.Contains(err.Error(), "doc_unstructured_exts") {
 		t.Fatalf("expected disabled extension error, got %v", err)
+	}
+}
+
+func TestExecuteClientToolPayloadWithProviderDocumentUnstructuredRedirectsImageToImageUnderstanding(t *testing.T) {
+	tempDir := t.TempDir()
+	localPath := filepath.Join(tempDir, "shot.png")
+	if err := os.WriteFile(localPath, []byte("fake-png"), 0o644); err != nil {
+		t.Fatalf("write test image failed: %v", err)
+	}
+	providerStub := &documentToolProviderStub{
+		serviceConfig: &provider.ServiceConfig{DocUnstructuredFlowID: "doc-flow", DocExts: []string{"pdf"}, ImageFlowID: "image-flow"},
+		imageRunResult: &provider.ImageUnderstandingResult{
+			SessionID: "session-image-redirect",
+			MediaType: "text/plain",
+			Output:    "图片里是流程图",
+			Text:      "图片里是流程图",
+		},
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	toolName, resultAny, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, internalconfig.Config{
+		Workdir:             tempDir,
+		ApprovalMode:        "auto",
+		DocUnstructuredExts: []string{"pdf"},
+	}, map[string]any{
+		"server":             map[string]any{"name": "local"},
+		"flow_id":            "chat-flow",
+		"client_context_dir": tempDir,
+		"context":            map[string]any{"session_id": "session-1"},
+		"function": map[string]any{
+			"name": "document_unstructured",
+			"arguments": map[string]any{
+				"path":  "shot.png",
+				"input": "请描述图片",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected image redirect to succeed, got %v", err)
+	}
+	if toolName != "document_unstructured" {
+		t.Fatalf("unexpected tool name after redirect: %s", toolName)
+	}
+	if providerStub.runRequest.FlowID != "" {
+		t.Fatalf("expected document flow not to run for image redirect, got %#v", providerStub.runRequest)
+	}
+	if providerStub.imageRunRequest.FlowID != "image-flow" {
+		t.Fatalf("expected image flow to run after redirect, got %#v", providerStub.imageRunRequest)
+	}
+	result, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected redirect result map, got %#v", resultAny)
+	}
+	if result["text"] != "图片里是流程图" {
+		t.Fatalf("unexpected redirect text: %#v", result)
 	}
 }
 
@@ -1651,6 +1873,83 @@ func TestBrowserScreenshotDecodesExtensionResultToPath(t *testing.T) {
 	}
 }
 
+func TestBrowserScreenshotAddsImageUnderstandingWhenConfigured(t *testing.T) {
+	tempDir := t.TempDir()
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	expectedBytes := []byte("fake-browser-png")
+	browserStub := &browserToolExecutorStub{result: map[string]any{
+		"tab_id":       "tab-shot",
+		"image_base64": base64.StdEncoding.EncodeToString(expectedBytes),
+		"format":       "png",
+	}}
+	runtimeClient.SetBrowserToolExecutor(browserStub)
+	providerStub := &documentToolProviderStub{
+		serviceConfig: &provider.ServiceConfig{ImageFlowID: "image-flow"},
+		imageRunResult: &provider.ImageUnderstandingResult{
+			SessionID: "session-image-2",
+			Output:    `{"catalog":"网页截图","scene":"控制台界面","human":"否","face":"否","summary":"包含浏览器截图","text_as_html":"<p>Hello</p>","text":"Hello"}`,
+			MediaType: "application/json",
+			Text:      "Hello",
+		},
+	}
+	config := internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		Browser: internalconfig.BrowserConfig{
+			Mode:           internalconfig.BrowserModeChromeSession,
+			PermissionMode: internalconfig.BrowserPermissionModeSkipAll,
+		},
+	}
+	_, resultAny, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, config, map[string]any{
+		"flow_id": "chat-flow-1",
+		"context": map[string]any{"session_id": "session-browser-1"},
+		"server":  map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": browserToolScreenshot,
+			"arguments": map[string]any{
+				"input_value": "请提取图像内容",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected screenshot with image understanding to succeed, got %v", err)
+	}
+	if len(providerStub.uploadCalls) != 1 {
+		t.Fatalf("expected one uploaded screenshot, got %#v", providerStub.uploadCalls)
+	}
+	resultMap, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %#v", resultAny)
+	}
+	pathValue := strings.TrimSpace(stringValue(resultMap["path"]))
+	if pathValue == "" || providerStub.uploadCalls[0].LocalPath != pathValue {
+		t.Fatalf("expected uploaded local screenshot path %q, got %#v", pathValue, providerStub.uploadCalls)
+	}
+	if providerStub.uploadCalls[0].FlowID != "chat-flow-1" || providerStub.uploadCalls[0].SessionID != "session-browser-1" {
+		t.Fatalf("expected upload context to reuse current flow/session, got %#v", providerStub.uploadCalls[0])
+	}
+	if providerStub.imageRunRequest.FlowID != "image-flow" || providerStub.imageRunRequest.SessionID != "session-browser-1" {
+		t.Fatalf("unexpected image flow request metadata: %#v", providerStub.imageRunRequest)
+	}
+	if providerStub.imageRunRequest.Input != "请提取图像内容" {
+		t.Fatalf("expected input_value to reach image flow, got %#v", providerStub.imageRunRequest)
+	}
+	assertScreenshotImageUnderstandingTweaks(t, providerStub.imageRunRequest)
+	if providerStub.imageRunRequest.ImageCompressionStrategy != provider.ImageCompressionStrategyPassthrough {
+		t.Fatalf("expected default image compression strategy passthrough, got %#v", providerStub.imageRunRequest)
+	}
+	imageUnderstanding := strings.TrimSpace(stringValue(resultMap["image_understanding"]))
+	if imageUnderstanding == "" {
+		t.Fatalf("expected image_understanding result, got %#v", resultMap)
+	}
+	if imageUnderstanding != "Hello" {
+		t.Fatalf("unexpected image understanding payload: %#v", resultMap)
+	}
+	if strings.TrimSpace(stringValue(resultMap["image_understanding_error"])) != "" {
+		t.Fatalf("expected no image understanding error, got %#v", resultMap)
+	}
+}
+
 func TestExecuteClientToolPayloadDispatchesComputerTool(t *testing.T) {
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	computerStub := &computerToolExecutorStub{result: map[string]any{"count": 2, "displays": []any{map[string]any{"display_id": "1"}, map[string]any{"display_id": "2"}}}}
@@ -1815,5 +2114,75 @@ func TestComputerScreenshotAutoPathUsesWorkspaceScopedFile(t *testing.T) {
 	}
 	if got := strings.TrimSpace(stringValue(resultMap["path"])); got != pathValue {
 		t.Fatalf("expected normalized screenshot path %s, got %#v", pathValue, resultMap)
+	}
+}
+
+func TestComputerScreenshotAddsImageUnderstandingWhenConfigured(t *testing.T) {
+	tempDir := t.TempDir()
+	explicitPath := filepath.Join(tempDir, "computer-shot.png")
+	if err := os.WriteFile(explicitPath, []byte("fake-computer-png"), 0o644); err != nil {
+		t.Fatalf("write screenshot fixture failed: %v", err)
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	computerStub := &computerToolExecutorStub{result: map[string]any{"path": "", "content_type": "image/png"}}
+	runtimeClient.SetComputerToolExecutor(computerStub)
+	providerStub := &documentToolProviderStub{
+		serviceConfig: &provider.ServiceConfig{ImageFlowID: "image-flow"},
+		imageRunResult: &provider.ImageUnderstandingResult{
+			SessionID: "session-image-3",
+			Output:    `{"catalog":"桌面截图","scene":"桌面应用","human":"否","face":"否","summary":"包含桌面截图","text_as_html":"<p>Status</p>","text":"Status"}`,
+			MediaType: "application/json",
+			Text:      "Status",
+		},
+	}
+	config := internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		Computer: internalconfig.ComputerConfig{
+			PermissionMode: internalconfig.ComputerPermissionModeSkipAll,
+		},
+	}
+	_, resultAny, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, config, map[string]any{
+		"flow_id": "chat-flow-2",
+		"context": map[string]any{"session_id": "session-computer-1"},
+		"server":  map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": computerToolScreenshot,
+			"arguments": map[string]any{
+				"path":        explicitPath,
+				"input_value": "请提取状态栏内容",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected desktop screenshot with image understanding to succeed, got %v", err)
+	}
+	resolvedExplicitPath, err := resolveWithExistingParent(explicitPath)
+	if err != nil {
+		t.Fatalf("resolve explicit screenshot path failed: %v", err)
+	}
+	if len(providerStub.uploadCalls) != 1 || providerStub.uploadCalls[0].LocalPath != resolvedExplicitPath {
+		t.Fatalf("expected uploaded explicit screenshot path, got %#v", providerStub.uploadCalls)
+	}
+	if providerStub.imageRunRequest.FlowID != "image-flow" || providerStub.imageRunRequest.Input != "请提取状态栏内容" {
+		t.Fatalf("unexpected image flow request: %#v", providerStub.imageRunRequest)
+	}
+	assertScreenshotImageUnderstandingTweaks(t, providerStub.imageRunRequest)
+	if providerStub.imageRunRequest.ImageCompressionStrategy != provider.ImageCompressionStrategyPassthrough {
+		t.Fatalf("expected passthrough compression strategy, got %#v", providerStub.imageRunRequest)
+	}
+	resultMap, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %#v", resultAny)
+	}
+	if got := strings.TrimSpace(stringValue(resultMap["path"])); got != resolvedExplicitPath {
+		t.Fatalf("expected normalized screenshot path %s, got %#v", resolvedExplicitPath, resultMap)
+	}
+	imageUnderstanding := strings.TrimSpace(stringValue(resultMap["image_understanding"]))
+	if imageUnderstanding == "" {
+		t.Fatalf("expected image_understanding result, got %#v", resultMap)
+	}
+	if imageUnderstanding != "Status" {
+		t.Fatalf("unexpected desktop image understanding payload: %#v", resultMap)
 	}
 }

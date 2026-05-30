@@ -5,6 +5,7 @@ package computerbridge
 /*
 #cgo LDFLAGS: -framework ApplicationServices
 #include <ApplicationServices/ApplicationServices.h>
+#include <stdint.h>
 
 static int currentMouseLocation(double* x, double* y) {
 	CGEventRef event = CGEventCreate(NULL);
@@ -70,10 +71,48 @@ static int postScrollEvent(int deltaX, int deltaY) {
 	CFRelease(event);
 	return 0;
 }
+
+static int postKeyCodeEvent(int keyCode) {
+	CGEventRef down = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)keyCode, true);
+	if (down == NULL) {
+		return 1;
+	}
+	CGEventPost(kCGHIDEventTap, down);
+	CFRelease(down);
+	CGEventRef up = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)keyCode, false);
+	if (up == NULL) {
+		return 1;
+	}
+	CGEventPost(kCGHIDEventTap, up);
+	CFRelease(up);
+	return 0;
+}
+
+static int postUnicodeTextEvent(const uint16_t* chars, long length) {
+	CGEventRef down = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)0, true);
+	if (down == NULL) {
+		return 1;
+	}
+	CGEventKeyboardSetUnicodeString(down, (UniCharCount)length, (const UniChar*)chars);
+	CGEventPost(kCGHIDEventTap, down);
+	CFRelease(down);
+	CGEventRef up = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)0, false);
+	if (up == NULL) {
+		return 1;
+	}
+	CGEventKeyboardSetUnicodeString(up, (UniCharCount)length, (const UniChar*)chars);
+	CGEventPost(kCGHIDEventTap, up);
+	CFRelease(up);
+	return 0;
+}
 */
 import "C"
 
-import "fmt"
+import (
+	"fmt"
+	"unicode/utf16"
+	"unsafe"
+)
 
 func darwinPointerInputAvailability() (bool, string) {
 	return true, ""
@@ -105,6 +144,28 @@ func darwinPostMouseButtonEvent(kind int, button int, x int, y int, clickState i
 func darwinPostScrollEvent(deltaX int, deltaY int) error {
 	if code := int(C.postScrollEvent(C.int(deltaX), C.int(deltaY))); code != 0 {
 		return fmt.Errorf("发布滚轮事件失败")
+	}
+	return nil
+}
+
+func darwinUnicodeTextInputAvailable() bool {
+	return true
+}
+
+func darwinPostKeyCode(keyCode int) error {
+	if code := int(C.postKeyCodeEvent(C.int(keyCode))); code != 0 {
+		return fmt.Errorf("发布按键事件失败")
+	}
+	return nil
+}
+
+func darwinPostUnicodeText(text string) error {
+	units := utf16.Encode([]rune(text))
+	if len(units) == 0 {
+		return nil
+	}
+	if code := int(C.postUnicodeTextEvent((*C.uint16_t)(unsafe.Pointer(&units[0])), C.long(len(units)))); code != 0 {
+		return fmt.Errorf("发布 Unicode 文本事件失败")
 	}
 	return nil
 }

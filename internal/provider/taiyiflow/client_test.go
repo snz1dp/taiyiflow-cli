@@ -463,7 +463,7 @@ func TestGetServiceConfigParsesResponse(t *testing.T) {
 			return
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(writer, `{"feature_flags":{"text_to_speech":true,"speech_to_text":true,"human_ai_dialogue":true},"max_file_size_upload":100,"doc_exts":[".pdf","PDF","docx",""],"milvus_enabled":true,"default_flow_id":" flow-1 ","doc_unstructured_flow_id":" doc-unstructured-flow "}`)
+		fmt.Fprint(writer, `{"feature_flags":{"text_to_speech":true,"speech_to_text":true,"human_ai_dialogue":true},"max_file_size_upload":100,"doc_exts":[".pdf","PDF","docx",""],"milvus_enabled":true,"default_flow_id":" flow-1 ","image_flow_id":" image-flow ","doc_unstructured_flow_id":" doc-unstructured-flow "}`)
 	}))
 	defer server.Close()
 
@@ -483,6 +483,9 @@ func TestGetServiceConfigParsesResponse(t *testing.T) {
 	}
 	if len(config.DocExts) != 2 || config.DocExts[0] != "pdf" || config.DocExts[1] != "docx" {
 		t.Fatalf("expected normalized doc extensions, got %#v", config.DocExts)
+	}
+	if config.ImageFlowID != "image-flow" {
+		t.Fatalf("expected image flow id to be preserved, got %#v", config)
 	}
 	if config.DocUnstructuredFlowID != "doc-unstructured-flow" {
 		t.Fatalf("expected doc unstructured flow id to be preserved, got %#v", config)
@@ -689,6 +692,125 @@ func TestRunDocumentUnstructuredReturnsHTTPError(t *testing.T) {
 	_, err := client.RunDocumentUnstructured(context.Background(), provider.DocumentUnstructuredRequest{FlowID: "doc-flow"})
 	if err == nil || !strings.Contains(err.Error(), "调用文档结构化服务失败") {
 		t.Fatalf("expected http error to surface, got %v", err)
+	}
+}
+
+func TestRunImageUnderstandingPostsSimplifiedRequestAndPreservesTextResponse(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != backendAPIPath("/run/image-flow") {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.Method != http.MethodPost {
+			t.Fatalf("expected POST request, got %s", request.Method)
+		}
+		if got := request.URL.Query().Get("session_id"); got != "session-image-1" {
+			t.Fatalf("expected session_id query to be forwarded, got %q", got)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request body failed: %v", err)
+		}
+		writer.Header().Set(SessionHeader, "session-image-2")
+		writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		fmt.Fprint(writer, "Hello")
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	result, err := client.RunImageUnderstanding(context.Background(), provider.ImageUnderstandingRequest{
+		FlowID:                   "image-flow",
+		Input:                    "请提取图像内容",
+		InputType:                "any",
+		Tweaks: map[string]any{
+			"Prompt-G6Qwq":   map[string]any{"template": "系统提示词模板"},
+			"Prompt-e2cjZ":   map[string]any{"template": "问题：{question}"},
+			"TextOutput-sMWXv": map[string]any{"output_format": "text"},
+		},
+		InputFiles:               []string{"flow/session/screenshot.png"},
+		OutputType:               "any",
+		SessionID:                "session-image-1",
+		ImageCompressionStrategy: provider.ImageCompressionStrategyPassthrough,
+	})
+	if err != nil {
+		t.Fatalf("expected RunImageUnderstanding to succeed, got %v", err)
+	}
+	if result == nil {
+		t.Fatalf("expected image understanding result, got %#v", result)
+	}
+	if result.SessionID != "session-image-2" || result.MediaType != "text/plain" {
+		t.Fatalf("unexpected image understanding metadata: %#v", result)
+	}
+	if result.Text != "Hello" {
+		t.Fatalf("expected plain text image understanding result, got %#v", result)
+	}
+	if result.Output != "Hello" {
+		t.Fatalf("expected raw text output to be preserved, got %#v", result)
+	}
+	if captured["input_value"] != "请提取图像内容" {
+		t.Fatalf("expected input_value to be forwarded, got %#v", captured)
+	}
+	tweaks, ok := captured["tweaks"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected image compression strategy to be nested under tweaks, got %#v", captured)
+	}
+	if tweaks["image_compression_strategy"] != provider.ImageCompressionStrategyPassthrough {
+		t.Fatalf("expected image_compression_strategy to be forwarded under tweaks, got %#v", captured)
+	}
+	if systemPrompt, ok := tweaks["Prompt-G6Qwq"].(map[string]any); !ok || systemPrompt["template"] != "系统提示词模板" {
+		t.Fatalf("expected screenshot system prompt tweak to be preserved, got %#v", tweaks)
+	}
+	if userPrompt, ok := tweaks["Prompt-e2cjZ"].(map[string]any); !ok || userPrompt["template"] != "问题：{question}" {
+		t.Fatalf("expected screenshot user prompt tweak to be preserved, got %#v", tweaks)
+	}
+	if textOutput, ok := tweaks["TextOutput-sMWXv"].(map[string]any); !ok || textOutput["output_format"] != "text" {
+		t.Fatalf("expected screenshot output format tweak to be preserved, got %#v", tweaks)
+	}
+	if _, exists := captured["image_compression_strategy"]; exists {
+		t.Fatalf("expected no top-level image_compression_strategy field, got %#v", captured)
+	}
+	files, ok := captured["files"].([]any)
+	if !ok || len(files) != 1 || files[0] != "flow/session/screenshot.png" {
+		t.Fatalf("expected files payload, got %#v", captured)
+	}
+}
+
+func TestRunImageUnderstandingAcceptsTextOutputFromTweaksFlow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != backendAPIPath("/run/image-flow") {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set(SessionHeader, "session-image-text")
+		writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		fmt.Fprint(writer, "页面中央是登录表单，顶部显示错误提示：验证码已过期。")
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	result, err := client.RunImageUnderstanding(context.Background(), provider.ImageUnderstandingRequest{
+		FlowID:    "image-flow",
+		Input:     "请说明当前页面状态",
+		InputType: "any",
+		Tweaks: map[string]any{
+			"TextOutput-sMWXv": map[string]any{"output_format": "text"},
+		},
+		SessionID: "session-image-source",
+	})
+	if err != nil {
+		t.Fatalf("expected text output image understanding to succeed, got %v", err)
+	}
+	if result == nil {
+		t.Fatalf("expected text output result, got %#v", result)
+	}
+	if result.SessionID != "session-image-text" || result.MediaType != "text/plain" {
+		t.Fatalf("unexpected text output metadata: %#v", result)
+	}
+	if result.Text != "页面中央是登录表单，顶部显示错误提示：验证码已过期。" {
+		t.Fatalf("expected plain text output to be exposed via Text, got %#v", result)
+	}
+	if result.Output != "页面中央是登录表单，顶部显示错误提示：验证码已过期。" {
+		t.Fatalf("expected raw output to be preserved, got %#v", result)
 	}
 }
 

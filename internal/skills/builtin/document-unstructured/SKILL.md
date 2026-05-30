@@ -1,13 +1,12 @@
 ---
 name: document-unstructured
-description: 在图片 OCR、音频、视频、PDF 等需要服务端结构化解析的场景下，指导优先使用 local.document_unstructured。
+description: 在独立本地音频、视频、PDF 等非图片文件需要服务端结构化解析的场景下，指导优先使用 local.document_unstructured。
 category: tools
 ---
 
 当任务目标是从本地文件中提取正文、字幕、转写或结构化结果时，优先考虑 `local.document_unstructured`，而不是把文件当作普通附件直接上传。
 
 适用线索：
-- 图片 OCR、扫描件、截图文字提取
 - 音频转写、会议录音整理
 - 视频字幕、语音内容提取
 - PDF 或其他需要结构化抽取正文的文档
@@ -21,6 +20,8 @@ category: tools
 不适用场景：
 - 纯文本、源码、Markdown 这类可直接 `read_file` 的内容
 - 只想把文件作为普通上下文附件上传，而不需要结构化 JSON 结果
+- 独立本地图片 OCR、扫描件、静态截图文件文字提取；这类输入默认应改用 `local.image_understanding`
+- 图片来自 `taiyiflow-in-chrome__screenshot` 或 `taiyiflow-computer__screenshot` 的返回结果；这两类截图应优先使用其自带的 `image_understanding`
 
 失败回退：
 - 如果扩展名未启用，先提示需要调整 `doc_unstructured_exts`

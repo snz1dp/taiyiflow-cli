@@ -398,8 +398,27 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 			},
 		},
 		{
+			"name":                 "image_understanding",
+			"description":          "上传本地图像文件到服务端图像理解流程(image_flow_id)并返回纯文本结果；Browser 自动化与 ComputerUse 的截图增强默认复用同一能力。",
+			"waiting_for_response": true,
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path":                       map[string]any{"type": "string", "description": "单个本地图像路径；相对路径基于 working_directory。"},
+					"paths":                      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "多个本地图像路径；与 path 可同时使用。"},
+					"input":                      map[string]any{"type": "string", "description": "可选图像理解问题或补充说明。"},
+					"input_type":                 map[string]any{"type": "string", "description": "可选输入类型；默认 any。"},
+					"working_directory":          map[string]any{"type": "string", "description": "解析相对路径的基准目录。"},
+					"flow_id":                    map[string]any{"type": "string", "description": "当前会话所属智能体 ID；通常由上下文自动注入。"},
+					"session_id":                 map[string]any{"type": "string", "description": "当前会话 ID；通常由上下文自动注入。"},
+					"image_compression_strategy": map[string]any{"type": "string", "description": "可选图像压缩策略；默认 passthrough。"},
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
 			"name":                 "document_unstructured",
-			"description":          "上传本地文件到服务端文档结构化流程(doc_unstructured_flow_id)并返回稳定 JSON 结果；具体适用场景由当前技能提示、配置和服务端能力共同决定。",
+			"description":          "上传本地非图片文件到服务端文档结构化流程(doc_unstructured_flow_id)并返回稳定 JSON 结果；图片理解默认由 image_understanding 承载，具体适用场景由当前技能提示、配置和服务端能力共同决定。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -478,18 +497,18 @@ func allowedClientToolSetForMode(mode string) map[string]bool {
 		return map[string]bool{}
 	}
 	return map[string]bool{
-		"ask_user":             true,
-		"lsp_query":            true,
-		"glob_files":           true,
-		"task_output":          true,
-		"task_list":            true,
-		"terminal_capture":     true,
-		"search_files":         true,
-		"read_file":            true,
-		"skill":                true,
-		browserToolTabsContext: true,
-		browserToolReadText:    true,
-		browserToolReadConsole: true,
+		"ask_user":                  true,
+		"lsp_query":                 true,
+		"glob_files":                true,
+		"task_output":               true,
+		"task_list":                 true,
+		"terminal_capture":          true,
+		"search_files":              true,
+		"read_file":                 true,
+		"skill":                     true,
+		browserToolTabsContext:      true,
+		browserToolReadText:         true,
+		browserToolReadConsole:      true,
 		computerToolDisplaysContext: true,
 		computerToolWindowsContext:  true,
 		computerToolScreenshot:      true,
@@ -710,6 +729,18 @@ func previewClientTool(toolName string, arguments map[string]any) string {
 		return fmt.Sprintf("write_file %s (%s)", path, fallbackString(stringValue(arguments["mode"]), "overwrite"))
 	case "read_file", "search_files":
 		return fmt.Sprintf("%s %s", toolName, fallbackString(path, "."))
+	case "image_understanding":
+		paths := argumentStringSlice(arguments, "paths")
+		if singlePath := argumentString(arguments, "path", "file_path"); singlePath != "" {
+			paths = append([]string{singlePath}, paths...)
+		}
+		if len(paths) == 0 {
+			return "image_understanding <missing>"
+		}
+		if len(paths) == 1 {
+			return fmt.Sprintf("image_understanding %s", paths[0])
+		}
+		return fmt.Sprintf("image_understanding %d 图片", len(paths))
 	case "document_unstructured":
 		paths := argumentStringSlice(arguments, "paths")
 		if singlePath := argumentString(arguments, "path", "file_path"); singlePath != "" {

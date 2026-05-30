@@ -150,6 +150,52 @@ func TestApprovedClientToolExecutionConfigKeepsReadonly(t *testing.T) {
 	}
 }
 
+func TestBuildTUIComputerDisplaysPanelShowsOrigin(t *testing.T) {
+	panel := buildTUIComputerToolPanel("taiyiflow-computer__displays_context", map[string]any{
+		"displays": []any{
+			map[string]any{"display_id": "2", "name": "HDMI-1", "primary": true, "origin_x": 1920, "origin_y": -120, "width_px": 2560, "height_px": 1440, "scale_factor": 1.0},
+		},
+	})
+	if panel == nil || !strings.Contains(panel.Body, "origin (1920,-120)") {
+		t.Fatalf("expected displays_context panel to show origin, got %#v", panel)
+	}
+}
+
+func TestBuildTUIComputerScreenshotPanelShowsOriginAndImageUnderstanding(t *testing.T) {
+	panel := buildTUIComputerToolPanel("taiyiflow-computer__screenshot", map[string]any{
+		"display_id":        "2",
+		"display_index":     2,
+		"display_origin_x":  1920,
+		"display_origin_y":  -120,
+		"display_width_px":  2560,
+		"display_height_px": 1440,
+		"path":              "/tmp/shot.png",
+		"size":              123,
+		"image_understanding": "Status",
+	})
+	if panel == nil || !strings.Contains(panel.Body, "origin: (1920,-120)") || !strings.Contains(panel.Body, "image_understanding: Status") {
+		t.Fatalf("expected computer screenshot panel to show origin and image understanding, got %#v", panel)
+	}
+	if !strings.Contains(panel.Hint, "image_understanding") {
+		t.Fatalf("expected computer screenshot hint to direct users to image_understanding, got %#v", panel)
+	}
+}
+
+func TestBuildTUIBrowserScreenshotPanelShowsImageUnderstanding(t *testing.T) {
+	panel := buildTUIBrowserToolPanel("taiyiflow-in-chrome__screenshot", map[string]any{
+		"tab_id": "tab-1",
+		"path":   "/tmp/browser.png",
+		"size":   64,
+		"image_understanding": "页面中央是控制台界面",
+	})
+	if panel == nil || !strings.Contains(panel.Body, "image_understanding: 页面中央是控制台界面") {
+		t.Fatalf("expected browser screenshot panel to show image understanding, got %#v", panel)
+	}
+	if !strings.Contains(panel.Hint, "image_understanding") {
+		t.Fatalf("expected browser screenshot hint to direct users to image_understanding, got %#v", panel)
+	}
+}
+
 func TestTUIAssistantRenderStateDropsTrailingFinalizeControlResidue(t *testing.T) {
 	state := tuiAssistantRenderState{}
 

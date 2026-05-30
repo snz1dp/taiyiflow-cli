@@ -18,6 +18,7 @@ import (
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
+	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
 )
 
@@ -162,7 +163,6 @@ func (s stubProvider) ListMemoryConsolidations(context.Context, provider.MemoryC
 func (s stubProvider) TriggerMemoryConsolidation(context.Context, provider.MemoryConsolidationTriggerRequest) (*provider.MemoryConsolidationTriggerResult, error) {
 	return s.memoryTrigger, s.memoryTriggerErr
 }
-
 
 func (s stubProvider) SubmitClientCallResult(_ context.Context, result provider.ClientCallResult) error {
 	if s.submitHook != nil {
@@ -1162,6 +1162,88 @@ func TestCallbackAuthRefreshProviderRetriesSubmitAfterUnauthorized(t *testing.T)
 	}
 	if callbackCalls != 2 {
 		t.Fatalf("expected one failed callback and one retry, got %d calls", callbackCalls)
+	}
+	if config.AccessToken != "access-1" || config.PersistentToken != "persist-2" {
+		t.Fatalf("expected in-memory config refreshed, got %#v", config)
+	}
+	reloaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("reload config failed: %v", err)
+	}
+	if reloaded.AccessToken != "access-1" || reloaded.PersistentToken != "persist-2" {
+		t.Fatalf("expected refreshed auth state to persist, got %#v", reloaded)
+	}
+}
+
+func TestCallbackAuthRefreshProviderRetriesImageUnderstandingAfterUnauthorized(t *testing.T) {
+	imageCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case backendAPIPath("/run/image-flow"):
+			imageCalls++
+			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusUnauthorized)
+				fmt.Fprint(writer, `{"message":"未登录或会话令牌已失效","code":401}`)
+				return
+			}
+			writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			writer.Header().Set(providerclient.SessionHeader, "session-image-2")
+			fmt.Fprint(writer, "图片中央显示登录框")
+		case authAPIPath("/sso/salt"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"salt-ticket","value":"salt-value"}}`)
+		case authAPIPath("/sso"):
+			if got := request.URL.Query().Get("persistent_token"); got != "persist-1" {
+				t.Fatalf("unexpected persistent token: %q", got)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"u-1","access_token":"access-1","persistent_token":"persist-2","idle_duration":3600,"scope":"employee"}}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.AccessToken = "expired-access"
+	config.PersistentToken = "persist-1"
+	config.DeviceID = "device-1"
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+	app := &App{configManager: manager}
+	client := buildProviderClient(config)
+	callbackProvider := app.providerWithCallbackAuthRefresh(client, &config)
+	runner, ok := callbackProvider.(provider.ImageUnderstandingRunner)
+	if !ok {
+		t.Fatalf("expected callback provider to expose image understanding runner, got %T", callbackProvider)
+	}
+
+	result, err := runner.RunImageUnderstanding(context.Background(), provider.ImageUnderstandingRequest{
+		FlowID:     "image-flow",
+		Input:      "请描述当前截图",
+		InputType:  "any",
+		OutputType: "any",
+		SessionID:  "session-image-1",
+		Tweaks: map[string]any{
+			"TextOutput-sMWXv": map[string]any{"output_format": "text"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunImageUnderstanding failed: %v", err)
+	}
+	if imageCalls != 2 {
+		t.Fatalf("expected one failed image request and one retry, got %d calls", imageCalls)
+	}
+	if result == nil || result.Text != "图片中央显示登录框" || result.SessionID != "session-image-2" {
+		t.Fatalf("unexpected image understanding result: %#v", result)
 	}
 	if config.AccessToken != "access-1" || config.PersistentToken != "persist-2" {
 		t.Fatalf("expected in-memory config refreshed, got %#v", config)

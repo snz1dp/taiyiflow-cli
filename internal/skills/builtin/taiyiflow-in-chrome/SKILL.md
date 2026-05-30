@@ -13,7 +13,7 @@ category: browser
 - 若需要稳定、可控的独立自动化环境，请将浏览器模式设为 `isolated`；必要时可通过 `browser_executable_path` 指定浏览器可执行文件。
 - 导航或新建标签页优先使用 c/local/taiyiflow-in-chrome__tabs_create 和 c/local/taiyiflow-in-chrome__navigate。
 - 页面交互优先使用 c/local/taiyiflow-in-chrome__click 和 c/local/taiyiflow-in-chrome__type，读取结果优先使用 c/local/taiyiflow-in-chrome__read_text 和 c/local/taiyiflow-in-chrome__read_console。
-- 截图使用 c/local/taiyiflow-in-chrome__screenshot；若未提供 path，客户端会自动把 PNG 保存到工作区内的 .snz1dp/browser/ 目录。
+- 截图使用 c/local/taiyiflow-in-chrome__screenshot；若服务端已配置 `image_flow_id`，结果会直接附带 `image_understanding`，应优先使用该结果理解页面内容，而不是再把截图交给 `document_unstructured`。未提供 path 时，客户端会自动把 PNG 保存到工作区内的 .snz1dp/browser/ 目录。
 
 当前可用工具族：
 - c/local/taiyiflow-in-chrome__tabs_context

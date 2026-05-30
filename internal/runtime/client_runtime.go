@@ -257,6 +257,8 @@ func (r *ClientRuntime) executeClientToolPayload(
 		result, err = r.searchFiles(ctx, config, arguments)
 	case "read_file":
 		result, err = r.readFile(config, arguments)
+	case "image_understanding":
+		result, err = r.imageUnderstanding(ctx, providerClient, config, arguments)
 	case "document_unstructured":
 		result, err = r.documentUnstructured(ctx, providerClient, config, arguments)
 	case "write_file":
@@ -265,9 +267,9 @@ func (r *ClientRuntime) executeClientToolPayload(
 		result, err = r.skill(config, arguments)
 	default:
 		if isBrowserTool(toolName) {
-			result, err = r.browserTool(ctx, config, toolName, arguments)
+			result, err = r.browserTool(ctx, providerClient, config, toolName, arguments)
 		} else if isComputerTool(toolName) {
-			result, err = r.computerTool(ctx, config, toolName, arguments)
+			result, err = r.computerTool(ctx, providerClient, config, toolName, arguments)
 		} else {
 			err = fmt.Errorf("不支持的客户端工具: %s", toolName)
 		}

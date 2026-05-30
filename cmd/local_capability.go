@@ -130,6 +130,22 @@ func (p *callbackAuthRefreshProvider) RunDocumentUnstructured(ctx context.Contex
 	return p.Provider.RunDocumentUnstructured(ctx, request)
 }
 
+func (p *callbackAuthRefreshProvider) RunImageUnderstanding(ctx context.Context, request provider.ImageUnderstandingRequest) (*provider.ImageUnderstandingResult, error) {
+	runner, ok := p.Provider.(provider.ImageUnderstandingRunner)
+	if !ok {
+		return nil, fmt.Errorf("当前 provider 不支持 image_understanding")
+	}
+	result, err := runner.RunImageUnderstanding(ctx, request)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return result, err
+	}
+	return runner.RunImageUnderstanding(ctx, request)
+}
+
 func (p *callbackAuthRefreshProvider) GetVersionInfo(ctx context.Context) (*provider.ServiceVersion, error) {
 	versionInfo, err := p.Provider.GetVersionInfo(ctx)
 	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)

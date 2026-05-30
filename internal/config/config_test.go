@@ -63,7 +63,7 @@ func TestNormalizeWriteConfirmationPolicy(t *testing.T) {
 }
 
 func TestNormalizeDocUnstructuredExts(t *testing.T) {
-	values := NormalizeDocUnstructuredExts([]string{".PDF", " pdf ", "docx", ".docx", "", " .Md "})
+	values := NormalizeDocUnstructuredExts([]string{".PDF", " pdf ", "docx", ".docx", "", " .Md ", "png", ".jpeg"})
 	if len(values) != 3 {
 		t.Fatalf("expected 3 normalized extensions, got %#v", values)
 	}

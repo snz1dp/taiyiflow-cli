@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 )
@@ -33,6 +36,71 @@ const (
 	mouseEventDragged     = 2
 )
 
+type displayLayout struct {
+	DisplayID    string
+	DisplayIndex int
+	OriginX      int
+	OriginY      int
+	Width        int
+	Height       int
+	PixelWidth   int
+	PixelHeight  int
+	ScaleFactor  float64
+	Primary      bool
+}
+
+func displayLogicalWidth(layout displayLayout) int {
+	if layout.Width > 0 {
+		return layout.Width
+	}
+	return layout.PixelWidth
+}
+
+func displayLogicalHeight(layout displayLayout) int {
+	if layout.Height > 0 {
+		return layout.Height
+	}
+	return layout.PixelHeight
+}
+
+func displayPixelWidth(layout displayLayout) int {
+	if layout.PixelWidth > 0 {
+		return layout.PixelWidth
+	}
+	return layout.Width
+}
+
+func displayPixelHeight(layout displayLayout) int {
+	if layout.PixelHeight > 0 {
+		return layout.PixelHeight
+	}
+	return layout.Height
+}
+
+func displayScaleFactor(layout displayLayout) float64 {
+	if layout.ScaleFactor > 0 {
+		return layout.ScaleFactor
+	}
+	if logicalWidth, pixelWidth := displayLogicalWidth(layout), displayPixelWidth(layout); logicalWidth > 0 && pixelWidth > 0 {
+		return float64(pixelWidth) / float64(logicalWidth)
+	}
+	if logicalHeight, pixelHeight := displayLogicalHeight(layout), displayPixelHeight(layout); logicalHeight > 0 && pixelHeight > 0 {
+		return float64(pixelHeight) / float64(logicalHeight)
+	}
+	return 1.0
+}
+
+func translateDisplayLocalCoordinate(value int, logicalSize int, pixelSize int) int {
+	if logicalSize <= 0 || pixelSize <= 0 || logicalSize == pixelSize {
+		return value
+	}
+	translated := int(math.Round(float64(value) * float64(logicalSize) / float64(pixelSize)))
+	if value >= 0 && value < pixelSize && translated >= logicalSize {
+		return logicalSize - 1
+	}
+	return translated
+}
+
 type Capability struct {
 	ToolName   string `json:"tool_name"`
 	Available  bool   `json:"available"`
@@ -43,12 +111,12 @@ type Capability struct {
 }
 
 type Status struct {
-	Platform      string       `json:"platform"`
-	Available     bool         `json:"available"`
-	ReadAvailable bool         `json:"read_available"`
-	InputAvailable bool        `json:"input_available"`
-	Message       string       `json:"message"`
-	Capabilities  []Capability `json:"capabilities,omitempty"`
+	Platform       string       `json:"platform"`
+	Available      bool         `json:"available"`
+	ReadAvailable  bool         `json:"read_available"`
+	InputAvailable bool         `json:"input_available"`
+	Message        string       `json:"message"`
+	Capabilities   []Capability `json:"capabilities,omitempty"`
 }
 
 type Manager struct{}
@@ -62,10 +130,14 @@ func (m *Manager) Diagnose(config internalconfig.ComputerConfig) Status {
 	if !internalconfig.ComputerEnabled(config) {
 		return disabledStatus(runtime.GOOS)
 	}
-	if runtime.GOOS != "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
+		return diagnoseDarwin()
+	case "windows", "linux":
+		return diagnoseDisplayOnlyPlatform(runtime.GOOS)
+	default:
 		return unsupportedStatus()
 	}
-	return diagnoseDarwin()
 }
 
 func (m *Manager) Execute(ctx context.Context, config internalconfig.ComputerConfig, toolName string, arguments map[string]any) (map[string]any, error) {
@@ -73,10 +145,14 @@ func (m *Manager) Execute(ctx context.Context, config internalconfig.ComputerCon
 	if !internalconfig.ComputerEnabled(config) {
 		return nil, fmt.Errorf("桌面操作已在配置中禁用")
 	}
-	if runtime.GOOS != "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
+		return executeDarwinTool(ctx, toolName, arguments)
+	case "windows", "linux":
+		return executeDisplayOnlyTool(ctx, runtime.GOOS, toolName)
+	default:
 		return nil, fmt.Errorf("当前平台 %s 尚未实现桌面操作", runtime.GOOS)
 	}
-	return executeDarwinTool(ctx, toolName, arguments)
 }
 
 func disabledStatus(platform string) Status {
@@ -112,12 +188,12 @@ func unsupportedStatus() Status {
 		capabilities = append(capabilities, item)
 	}
 	return Status{
-		Platform:      platform,
-		Available:     false,
-		ReadAvailable: false,
+		Platform:       platform,
+		Available:      false,
+		ReadAvailable:  false,
 		InputAvailable: false,
-		Message:       fmt.Sprintf("平台: %s | 当前尚未实现桌面操作桥接", platform),
-		Capabilities:  capabilities,
+		Message:        fmt.Sprintf("平台: %s | 当前尚未实现桌面操作桥接", platform),
+		Capabilities:   capabilities,
 	}
 }
 
@@ -133,6 +209,115 @@ func allCapabilities() []Capability {
 		{ToolName: toolMouseClick, Category: "input", RiskTier: "mutating", Permission: "input"},
 		{ToolName: toolMouseDrag, Category: "input", RiskTier: "mutating", Permission: "input"},
 		{ToolName: toolScroll, Category: "input", RiskTier: "mutating", Permission: "input"},
+	}
+}
+
+func diagnoseDisplayOnlyPlatform(platform string) Status {
+	capabilities := allCapabilities()
+	lookup := map[string]*Capability{}
+	for index := range capabilities {
+		lookup[capabilities[index].ToolName] = &capabilities[index]
+		lookup[capabilities[index].ToolName].Reason = fmt.Sprintf("当前平台 %s 尚未实现", platformLabel(platform))
+	}
+	layouts, err := platformDisplayLayouts()
+	if err == nil && len(layouts) > 0 {
+		lookup[toolDisplaysContext].Available = true
+		lookup[toolDisplaysContext].Reason = ""
+	} else if err != nil {
+		lookup[toolDisplaysContext].Reason = err.Error()
+	} else {
+		lookup[toolDisplaysContext].Reason = "未发现在线显示器"
+	}
+	readable := []string{}
+	for _, item := range capabilities {
+		if item.Available && item.Category == "read" {
+			readable = append(readable, strings.TrimPrefix(item.ToolName, "taiyiflow-computer__"))
+		}
+	}
+	parts := []string{fmt.Sprintf("平台: %s", platformLabel(platform))}
+	if len(readable) > 0 {
+		parts = append(parts, fmt.Sprintf("可用读取: %s", strings.Join(readable, ",")))
+	} else {
+		parts = append(parts, "可用读取: <none>")
+	}
+	parts = append(parts, "可用输入: <none>")
+	return Status{
+		Platform:       platform,
+		Available:      len(readable) > 0,
+		ReadAvailable:  len(readable) > 0,
+		InputAvailable: false,
+		Message:        strings.Join(parts, " | "),
+		Capabilities:   capabilities,
+	}
+}
+
+func executeDisplayOnlyTool(ctx context.Context, platform string, toolName string) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	switch strings.TrimSpace(toolName) {
+	case toolDisplaysContext:
+		layouts, err := platformDisplayLayouts()
+		if err != nil {
+			return nil, fmt.Errorf("读取显示器信息失败: %w", err)
+		}
+		return buildDisplaysContext(platform, layouts), nil
+	default:
+		return nil, fmt.Errorf("当前平台 %s 仅实现 displays_context，暂不支持 %s", platformLabel(platform), toolName)
+	}
+}
+
+func buildDisplaysContext(platform string, layouts []displayLayout) map[string]any {
+	items := make([]map[string]any, 0, len(layouts))
+	for index, layout := range layouts {
+		item := map[string]any{
+			"display_id":       fallbackString(strings.TrimSpace(layout.DisplayID), strconv.Itoa(index+1)),
+			"display_index":    fallbackInt(layout.DisplayIndex, index+1),
+			"name":             fallbackString(strings.TrimSpace(layout.DisplayID), fmt.Sprintf("Display %d", index+1)),
+			"width_px":         displayPixelWidth(layout),
+			"height_px":        displayPixelHeight(layout),
+			"logical_width":    displayLogicalWidth(layout),
+			"logical_height":   displayLogicalHeight(layout),
+			"refresh_hz":       0.0,
+			"scale_factor":     displayScaleFactor(layout),
+			"primary":          layout.Primary,
+			"online":           true,
+			"mirrored":         false,
+			"connection_type":  "",
+			"display_type":     "",
+			"rotation_degrees": 0,
+		}
+		applyDisplayLayout(item, layout)
+		items = append(items, item)
+	}
+	return map[string]any{
+		"platform":         platform,
+		"displays":         items,
+		"count":            len(items),
+		"coordinate_space": "global_screen",
+	}
+}
+
+func fallbackInt(value int, fallback int) int {
+	if value == 0 {
+		return fallback
+	}
+	return value
+}
+
+func platformLabel(platform string) string {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "darwin":
+		return "macOS"
+	case "windows":
+		return "Windows"
+	case "linux":
+		return "Linux"
+	default:
+		if strings.TrimSpace(platform) == "" {
+			return "unknown"
+		}
+		return strings.TrimSpace(platform)
 	}
 }
 
@@ -206,12 +391,12 @@ func diagnoseDarwin() Status {
 		parts = append(parts, "辅助功能: 未授权")
 	}
 	return Status{
-		Platform:      "darwin",
-		Available:     len(readable) > 0 || len(inputable) > 0,
-		ReadAvailable: len(readable) > 0,
+		Platform:       "darwin",
+		Available:      len(readable) > 0 || len(inputable) > 0,
+		ReadAvailable:  len(readable) > 0,
 		InputAvailable: len(inputable) > 0,
-		Message:       strings.Join(parts, " | "),
-		Capabilities:  capabilities,
+		Message:        strings.Join(parts, " | "),
+		Capabilities:   capabilities,
 	}
 }
 
@@ -288,15 +473,25 @@ func darwinMouseMove(ctx context.Context, arguments map[string]any) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	if err := darwinPostMouseMove(x, y); err != nil {
+	layouts, err := displayLayoutsIfNeeded(arguments)
+	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	point, err := translateScreenPoint(arguments, x, y, layouts)
+	if err != nil {
+		return nil, err
+	}
+	if err := darwinPostMouseMove(point.X, point.Y); err != nil {
+		return nil, err
+	}
+	result := map[string]any{
 		"platform":         "darwin",
-		"x":                x,
-		"y":                y,
+		"x":                point.X,
+		"y":                point.Y,
 		"coordinate_space": "global_screen",
-	}, nil
+	}
+	applyResolvedScreenPoint(result, arguments, point)
+	return result, nil
 }
 
 func darwinMouseClick(ctx context.Context, arguments map[string]any) (map[string]any, error) {
@@ -307,11 +502,25 @@ func darwinMouseClick(ctx context.Context, arguments map[string]any) (map[string
 	if err != nil {
 		return nil, err
 	}
+	point := resolvedScreenPoint{X: x, Y: y, InputCoordinateSpace: "global_screen"}
 	if !hasPosition {
 		x, y, err = darwinCurrentMousePosition()
 		if err != nil {
 			return nil, err
 		}
+		point.X = x
+		point.Y = y
+	} else {
+		layouts, layoutErr := displayLayoutsIfNeeded(arguments)
+		if layoutErr != nil {
+			return nil, layoutErr
+		}
+		point, err = translateScreenPoint(arguments, x, y, layouts)
+		if err != nil {
+			return nil, err
+		}
+		x = point.X
+		y = point.Y
 	}
 	buttonCode, buttonLabel, err := resolveMouseButton(arguments)
 	if err != nil {
@@ -329,14 +538,16 @@ func darwinMouseClick(ctx context.Context, arguments map[string]any) (map[string
 			return nil, err
 		}
 	}
-	return map[string]any{
+	result := map[string]any{
 		"platform":         "darwin",
 		"x":                x,
 		"y":                y,
 		"button":           buttonLabel,
 		"click_count":      clickCount,
 		"coordinate_space": "global_screen",
-	}, nil
+	}
+	applyResolvedScreenPoint(result, arguments, point)
+	return result, nil
 }
 
 func darwinMouseDrag(ctx context.Context, arguments map[string]any) (map[string]any, error) {
@@ -351,6 +562,22 @@ func darwinMouseDrag(ctx context.Context, arguments map[string]any) (map[string]
 	if err != nil {
 		return nil, err
 	}
+	layouts, err := displayLayoutsIfNeeded(arguments)
+	if err != nil {
+		return nil, err
+	}
+	fromPoint, err := translateScreenPoint(arguments, fromX, fromY, layouts)
+	if err != nil {
+		return nil, err
+	}
+	toPoint, err := translateScreenPoint(arguments, toX, toY, layouts)
+	if err != nil {
+		return nil, err
+	}
+	fromX = fromPoint.X
+	fromY = fromPoint.Y
+	toX = toPoint.X
+	toY = toPoint.Y
 	buttonCode, buttonLabel, err := resolveMouseButton(arguments)
 	if err != nil {
 		return nil, err
@@ -386,7 +613,7 @@ func darwinMouseDrag(ctx context.Context, arguments map[string]any) (map[string]
 	if err := darwinPostMouseButtonEvent(mouseEventUp, buttonCode, toX, toY, 1); err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	result := map[string]any{
 		"platform":         "darwin",
 		"from_x":           fromX,
 		"from_y":           fromY,
@@ -395,7 +622,9 @@ func darwinMouseDrag(ctx context.Context, arguments map[string]any) (map[string]
 		"button":           buttonLabel,
 		"duration_ms":      durationMS,
 		"coordinate_space": "global_screen",
-	}, nil
+	}
+	applyResolvedScreenPoint(result, arguments, fromPoint)
+	return result, nil
 }
 
 func darwinScroll(ctx context.Context, arguments map[string]any) (map[string]any, error) {
@@ -434,17 +663,17 @@ type darwinDisplayGPU struct {
 }
 
 type darwinDisplay struct {
-	Name             string `json:"_name"`
-	DisplayID        string `json:"_spdisplays_displayID"`
-	Pixels           string `json:"_spdisplays_pixels"`
-	Resolution       string `json:"_spdisplays_resolution"`
-	PixelResolution  string `json:"spdisplays_pixelresolution"`
-	Main             string `json:"spdisplays_main"`
-	Online           string `json:"spdisplays_online"`
-	Mirror           string `json:"spdisplays_mirror"`
-	ConnectionType   string `json:"spdisplays_connection_type"`
-	DisplayType      string `json:"spdisplays_display_type"`
-	Rotation         any    `json:"spdisplays_rotation"`
+	Name            string `json:"_name"`
+	DisplayID       string `json:"_spdisplays_displayID"`
+	Pixels          string `json:"_spdisplays_pixels"`
+	Resolution      string `json:"_spdisplays_resolution"`
+	PixelResolution string `json:"spdisplays_pixelresolution"`
+	Main            string `json:"spdisplays_main"`
+	Online          string `json:"spdisplays_online"`
+	Mirror          string `json:"spdisplays_mirror"`
+	ConnectionType  string `json:"spdisplays_connection_type"`
+	DisplayType     string `json:"spdisplays_display_type"`
+	Rotation        any    `json:"spdisplays_rotation"`
 }
 
 type darwinWindowResult struct {
@@ -462,6 +691,7 @@ func darwinDisplaysContext(ctx context.Context) (map[string]any, error) {
 	if err := json.Unmarshal(output, &payload); err != nil {
 		return nil, fmt.Errorf("解析显示器信息失败: %w", err)
 	}
+	layouts, layoutErr := platformDisplayLayouts()
 	items := []map[string]any{}
 	index := 0
 	for _, gpu := range payload.DisplaysData {
@@ -477,29 +707,40 @@ func darwinDisplaysContext(ctx context.Context) (map[string]any, error) {
 				scaleFactor = float64(physicalWidth) / float64(logicalWidth)
 			}
 			item := map[string]any{
-				"display_id":      fallbackString(strings.TrimSpace(display.DisplayID), strconv.Itoa(index)),
-				"display_index":   index,
-				"name":            strings.TrimSpace(display.Name),
-				"width_px":        physicalWidth,
-				"height_px":       physicalHeight,
-				"logical_width":   logicalWidth,
-				"logical_height":  logicalHeight,
-				"refresh_hz":      refreshHz,
-				"scale_factor":    scaleFactor,
-				"primary":         strings.TrimSpace(display.Main) == "spdisplays_yes",
-				"online":          strings.TrimSpace(display.Online) == "spdisplays_yes",
-				"mirrored":        strings.TrimSpace(display.Mirror) == "spdisplays_on",
-				"connection_type": strings.TrimSpace(display.ConnectionType),
-				"display_type":    strings.TrimSpace(display.DisplayType),
+				"display_id":       fallbackString(strings.TrimSpace(display.DisplayID), strconv.Itoa(index)),
+				"display_index":    index,
+				"name":             strings.TrimSpace(display.Name),
+				"width_px":         physicalWidth,
+				"height_px":        physicalHeight,
+				"logical_width":    logicalWidth,
+				"logical_height":   logicalHeight,
+				"refresh_hz":       refreshHz,
+				"scale_factor":     scaleFactor,
+				"primary":          strings.TrimSpace(display.Main) == "spdisplays_yes",
+				"online":           strings.TrimSpace(display.Online) == "spdisplays_yes",
+				"mirrored":         strings.TrimSpace(display.Mirror) == "spdisplays_on",
+				"connection_type":  strings.TrimSpace(display.ConnectionType),
+				"display_type":     strings.TrimSpace(display.DisplayType),
 				"rotation_degrees": parseRotation(display.Rotation),
+			}
+			if layoutErr == nil {
+				if layout, ok := findDisplayLayout(layouts, strings.TrimSpace(display.DisplayID), index); ok {
+					applyDisplayLayout(item, layout)
+				}
 			}
 			items = append(items, item)
 		}
 	}
+	if len(items) > 1 {
+		sort.SliceStable(items, func(left int, right int) bool {
+			return intValue(items[left]["display_index"], left+1) < intValue(items[right]["display_index"], right+1)
+		})
+	}
 	return map[string]any{
-		"platform": "darwin",
-		"displays": items,
-		"count":    len(items),
+		"platform":         "darwin",
+		"displays":         items,
+		"count":            len(items),
+		"coordinate_space": "global_screen",
 	}, nil
 }
 
@@ -552,15 +793,17 @@ func darwinScreenshot(ctx context.Context, arguments map[string]any) (map[string
 	if path == "" {
 		return nil, fmt.Errorf("screenshot 缺少 path")
 	}
+	displaySelector := strings.TrimSpace(firstString(arguments, "display_index", "display_id"))
+	displayID := strings.TrimSpace(firstString(arguments, "display_id"))
+	displayIndex := intValue(arguments["display_index"], 0)
 	commandCtx, cancel := context.WithTimeout(ctx, defaultCommandTimeout)
 	defer cancel()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("创建截图目录失败: %w", err)
 	}
 	args := []string{"-x"}
-	if displayID := strings.TrimSpace(firstString(arguments, "display_index", "display_id")); displayID != "" {
-		args = append(args, "-D", displayID)
-		arguments["display_id"] = displayID
+	if displaySelector != "" {
+		args = append(args, "-D", displaySelector)
 	}
 	args = append(args, path)
 	output, err := exec.CommandContext(commandCtx, "screencapture", args...).CombinedOutput()
@@ -577,8 +820,19 @@ func darwinScreenshot(ctx context.Context, arguments map[string]any) (map[string
 		"size":         int(info.Size()),
 		"content_type": "image/png",
 	}
-	if displayID := strings.TrimSpace(firstString(arguments, "display_index", "display_id")); displayID != "" {
+	if displaySelector != "" {
+		if displayID == "" {
+			displayID = displaySelector
+		}
 		result["display_id"] = displayID
+		if displayIndex > 0 {
+			result["display_index"] = displayIndex
+		}
+		if layouts, layoutErr := platformDisplayLayouts(); layoutErr == nil {
+			if layout, ok := findDisplayLayout(layouts, displayID, displayIndex); ok {
+				applyDisplayScope(result, layout)
+			}
+		}
 	}
 	return result, nil
 }
@@ -605,6 +859,43 @@ func darwinTypeText(ctx context.Context, arguments map[string]any) (map[string]a
 		return nil, fmt.Errorf("type_text 缺少 text")
 	}
 	lines := splitTypedText(text)
+	pressEnter := boolValue(arguments["press_enter"])
+	if darwinUnicodeTextInputAvailable() {
+		for index, line := range lines {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if line != "" {
+				if err := darwinPostUnicodeText(line); err != nil {
+					return nil, err
+				}
+			}
+			if index < len(lines)-1 {
+				if err := darwinPostKeyCode(36); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if pressEnter {
+			if err := darwinPostKeyCode(36); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		if _, err := runOSAScript(ctx, buildDarwinTypeTextScript(text, pressEnter)); err != nil {
+			return nil, err
+		}
+	}
+	return map[string]any{
+		"platform":    "darwin",
+		"text_length": utf8.RuneCountInString(text),
+		"line_count":  len(lines),
+		"press_enter": pressEnter,
+	}, nil
+}
+
+func buildDarwinTypeTextScript(text string, pressEnter bool) string {
+	lines := splitTypedText(text)
 	scriptLines := []string{"tell application \"System Events\""}
 	for index, line := range lines {
 		if line != "" {
@@ -614,19 +905,11 @@ func darwinTypeText(ctx context.Context, arguments map[string]any) (map[string]a
 			scriptLines = append(scriptLines, "  key code 36")
 		}
 	}
-	if boolValue(arguments["press_enter"]) {
+	if pressEnter {
 		scriptLines = append(scriptLines, "  key code 36")
 	}
 	scriptLines = append(scriptLines, "end tell")
-	if _, err := runOSAScript(ctx, strings.Join(scriptLines, "\n")); err != nil {
-		return nil, err
-	}
-	return map[string]any{
-		"platform":     "darwin",
-		"text_length":  len(text),
-		"line_count":   len(lines),
-		"press_enter":  boolValue(arguments["press_enter"]),
-	}, nil
+	return strings.Join(scriptLines, "\n")
 }
 
 func darwinKeyPress(ctx context.Context, arguments map[string]any) (map[string]any, error) {
@@ -651,10 +934,10 @@ func darwinKeyPress(ctx context.Context, arguments map[string]any) (map[string]a
 		return nil, err
 	}
 	return map[string]any{
-		"platform":    "darwin",
-		"key":         key,
-		"repeat":      repeatCount,
-		"modifiers":   stringSlice(arguments["modifiers"]),
+		"platform":  "darwin",
+		"key":       key,
+		"repeat":    repeatCount,
+		"modifiers": stringSlice(arguments["modifiers"]),
 	}, nil
 }
 
@@ -749,18 +1032,18 @@ func appleScriptKeyCommand(key string, modifierClause string) (string, error) {
 		return "", fmt.Errorf("key_press 缺少 key")
 	}
 	keyCodes := map[string]int{
-		"enter": 36,
-		"return": 36,
-		"tab": 48,
-		"escape": 53,
-		"esc": 53,
-		"space": 49,
+		"enter":     36,
+		"return":    36,
+		"tab":       48,
+		"escape":    53,
+		"esc":       53,
+		"space":     49,
 		"backspace": 51,
-		"delete": 51,
-		"left": 123,
-		"right": 124,
-		"down": 125,
-		"up": 126,
+		"delete":    51,
+		"left":      123,
+		"right":     124,
+		"down":      125,
+		"up":        126,
 	}
 	if code, ok := keyCodes[normalized]; ok {
 		if modifierClause != "" {
@@ -801,7 +1084,7 @@ func appleScriptModifiers(value any) (string, error) {
 }
 
 func appleScriptString(value string) string {
-	replacer := strings.NewReplacer(`\\`, `\\\\`, `"`, `\\"`)
+	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 	return `"` + replacer.Replace(value) + `"`
 }
 
@@ -853,6 +1136,133 @@ func parseRotation(value any) int {
 		}
 	}
 	return 0
+}
+
+type resolvedScreenPoint struct {
+	X                    int
+	Y                    int
+	InputCoordinateSpace string
+	Display              displayLayout
+	HasDisplay           bool
+}
+
+func displayLayoutsIfNeeded(arguments map[string]any) ([]displayLayout, error) {
+	if !usesDisplayLocalCoordinates(arguments) {
+		return nil, nil
+	}
+	return platformDisplayLayouts()
+}
+
+func usesDisplayLocalCoordinates(arguments map[string]any) bool {
+	coordinateSpace := strings.ToLower(strings.TrimSpace(firstString(arguments, "coordinate_space")))
+	switch coordinateSpace {
+	case "display_local":
+		return true
+	case "", "global_screen":
+		return coordinateSpace == "" && strings.TrimSpace(firstString(arguments, "display_id", "display_index")) != ""
+	default:
+		return false
+	}
+}
+
+func translateScreenPoint(arguments map[string]any, x int, y int, layouts []displayLayout) (resolvedScreenPoint, error) {
+	coordinateSpace, err := resolveRequestedCoordinateSpace(arguments)
+	if err != nil {
+		return resolvedScreenPoint{}, err
+	}
+	point := resolvedScreenPoint{
+		X:                    x,
+		Y:                    y,
+		InputCoordinateSpace: coordinateSpace,
+	}
+	if coordinateSpace != "display_local" {
+		return point, nil
+	}
+	displaySpecifier := strings.TrimSpace(firstString(arguments, "display_id", "display_index"))
+	if displaySpecifier == "" {
+		return resolvedScreenPoint{}, fmt.Errorf("display_local 坐标需要 display_id 或 display_index")
+	}
+	layout, ok := findDisplayLayout(layouts, strings.TrimSpace(firstString(arguments, "display_id")), intValue(arguments["display_index"], 0))
+	if !ok {
+		return resolvedScreenPoint{}, fmt.Errorf("未找到显示器 %s", displaySpecifier)
+	}
+	point.X = layout.OriginX + translateDisplayLocalCoordinate(x, displayLogicalWidth(layout), displayPixelWidth(layout))
+	point.Y = layout.OriginY + translateDisplayLocalCoordinate(y, displayLogicalHeight(layout), displayPixelHeight(layout))
+	point.Display = layout
+	point.HasDisplay = true
+	return point, nil
+}
+
+func resolveRequestedCoordinateSpace(arguments map[string]any) (string, error) {
+	coordinateSpace := strings.ToLower(strings.TrimSpace(firstString(arguments, "coordinate_space")))
+	switch coordinateSpace {
+	case "":
+		if strings.TrimSpace(firstString(arguments, "display_id", "display_index")) != "" {
+			return "display_local", nil
+		}
+		return "global_screen", nil
+	case "global_screen", "display_local":
+		return coordinateSpace, nil
+	default:
+		return "", fmt.Errorf("coordinate_space 仅支持 global_screen 或 display_local")
+	}
+}
+
+func findDisplayLayout(layouts []displayLayout, displayID string, displayIndex int) (displayLayout, bool) {
+	trimmedID := strings.TrimSpace(displayID)
+	if trimmedID != "" {
+		for _, layout := range layouts {
+			if strings.EqualFold(strings.TrimSpace(layout.DisplayID), trimmedID) {
+				return layout, true
+			}
+		}
+	}
+	if displayIndex > 0 {
+		for _, layout := range layouts {
+			if layout.DisplayIndex == displayIndex {
+				return layout, true
+			}
+		}
+	}
+	if trimmedID != "" {
+		if parsedIndex, err := strconv.Atoi(trimmedID); err == nil && parsedIndex > 0 {
+			for _, layout := range layouts {
+				if layout.DisplayIndex == parsedIndex {
+					return layout, true
+				}
+			}
+		}
+	}
+	return displayLayout{}, false
+}
+
+func applyDisplayLayout(target map[string]any, layout displayLayout) {
+	target["display_index"] = layout.DisplayIndex
+	target["origin_x"] = layout.OriginX
+	target["origin_y"] = layout.OriginY
+	target["primary"] = layout.Primary
+	target["coordinate_space"] = "global_screen"
+}
+
+func applyDisplayScope(target map[string]any, layout displayLayout) {
+	target["display_index"] = layout.DisplayIndex
+	target["display_origin_x"] = layout.OriginX
+	target["display_origin_y"] = layout.OriginY
+	target["display_width_px"] = displayPixelWidth(layout)
+	target["display_height_px"] = displayPixelHeight(layout)
+	target["display_logical_width"] = displayLogicalWidth(layout)
+	target["display_logical_height"] = displayLogicalHeight(layout)
+	target["display_scale_factor"] = displayScaleFactor(layout)
+}
+
+func applyResolvedScreenPoint(target map[string]any, arguments map[string]any, point resolvedScreenPoint) {
+	target["input_coordinate_space"] = point.InputCoordinateSpace
+	if displayID := strings.TrimSpace(stringValue(arguments["display_id"])); displayID != "" {
+		target["display_id"] = displayID
+	}
+	if point.HasDisplay {
+		applyDisplayScope(target, point.Display)
+	}
 }
 
 func strictIntArgument(arguments map[string]any, key string) (int, bool, error) {

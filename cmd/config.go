@@ -71,7 +71,7 @@ func (a *App) showConfigHelp() error {
 		"  taiyiflow-cli config set browser_mode isolated",
 		"  taiyiflow-cli config set computer_enabled false",
 		"  taiyiflow-cli config set browser_remote_debugging_url http://127.0.0.1:9222",
-		"  taiyiflow-cli config set doc_unstructured_exts pdf,png",
+		"  taiyiflow-cli config set doc_unstructured_exts pdf,docx",
 		"  taiyiflow-cli config unset doc_unstructured_exts",
 		"",
 		"提示: 可先执行 taiyiflow-cli config show 查看当前 YAML 配置。",

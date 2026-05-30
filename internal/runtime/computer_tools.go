@@ -6,9 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/computerbridge"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
 
 const (
@@ -50,6 +52,7 @@ func (r *ClientRuntime) SetComputerToolExecutor(executor ComputerToolExecutor) {
 
 func (r *ClientRuntime) computerTool(
 	ctx context.Context,
+	providerClient provider.Provider,
 	config internalconfig.Config,
 	toolName string,
 	arguments map[string]any,
@@ -81,6 +84,11 @@ func (r *ClientRuntime) computerTool(
 		if strings.TrimSpace(stringValue(normalized["content_type"])) == "" {
 			normalized["content_type"] = "image/png"
 		}
+		if imageUnderstanding, understandErr := r.understandImageWithProvider(ctx, providerClient, config, prepared, stringValue(normalized["path"])); understandErr != nil {
+			normalized["image_understanding_error"] = understandErr.Error()
+		} else if strings.TrimSpace(imageUnderstanding) != "" {
+			normalized["image_understanding"] = imageUnderstanding
+		}
 		result = normalized
 	}
 	r.writeStreamEventf(r.stdout, "[桌面工具] %s\n", previewComputerTool(toolName, prepared))
@@ -99,7 +107,7 @@ func computerClientToolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":                 computerToolDisplaysContext,
-			"description":          "读取本机显示器上下文，返回显示器尺寸、缩放、主屏和旋转信息。",
+			"description":          "读取本机显示器上下文，返回显示器物理像素尺寸(width_px/height_px)、逻辑桌面尺寸(logical_width/logical_height)、缩放比(scale_factor)、主屏和旋转信息。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type":                 "object",
@@ -131,27 +139,32 @@ func computerClientToolDefinitions() []map[string]any {
 		},
 		{
 			"name":                 computerToolScreenshot,
-			"description":          "截取当前桌面屏幕并保存为 PNG；未提供 path 时自动落到工作区内 .snz1dp/computer/。",
+			"description":          "截取当前桌面屏幕并保存为 PNG；若指定 display_index 或 display_id，结果会附带该显示器在全局桌面中的 origin、物理像素尺寸、逻辑桌面尺寸与 scale_factor，便于把截图像素坐标换算为桌面坐标。若服务端配置了 image_flow_id，会额外返回 image_understanding 图像增强结果。未提供 path 时自动落到工作区内 .snz1dp/computer/。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"path":          map[string]any{"type": "string"},
-					"display_id":    map[string]any{"type": "string"},
-					"display_index": map[string]any{"type": "integer", "minimum": 1},
+					"path":                       map[string]any{"type": "string"},
+					"display_id":                 map[string]any{"type": "string"},
+					"display_index":              map[string]any{"type": "integer", "minimum": 1},
+					"input_value":                map[string]any{"type": "string", "description": "可选图像理解提示词；留空时由服务端使用默认提示。"},
+					"image_compression_strategy": map[string]any{"type": "string", "description": "可选图像压缩策略；默认 passthrough。"},
 				},
 				"additionalProperties": false,
 			},
 		},
 		{
 			"name":                 computerToolMouseMove,
-			"description":          "移动鼠标到指定屏幕坐标。",
+			"description":          "移动鼠标到指定坐标。默认使用全局桌面坐标；若同时传入 display_index 或 display_id，则默认将 x/y 视为该显示器截图内的局部像素坐标，并按对应显示器 scale_factor 自动换算到全局桌面坐标；若你已持有全局桌面坐标，可用 coordinate_space=global_screen 显式覆盖。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"x": map[string]any{"type": "integer"},
-					"y": map[string]any{"type": "integer"},
+					"x":                map[string]any{"type": "integer"},
+					"y":                map[string]any{"type": "integer"},
+					"display_id":       map[string]any{"type": "string"},
+					"display_index":    map[string]any{"type": "integer", "minimum": 1},
+					"coordinate_space": map[string]any{"type": "string", "enum": []string{"global_screen", "display_local"}},
 				},
 				"required":             []string{"x", "y"},
 				"additionalProperties": false,
@@ -159,31 +172,37 @@ func computerClientToolDefinitions() []map[string]any {
 		},
 		{
 			"name":                 computerToolMouseClick,
-			"description":          "在当前位置或指定坐标执行鼠标点击。",
+			"description":          "在当前位置或指定坐标执行鼠标点击。默认使用全局桌面坐标；若同时传入 display_index 或 display_id，则默认将 x/y 视为该显示器截图内的局部像素坐标，并按对应显示器 scale_factor 自动换算到全局桌面坐标；若你已持有全局桌面坐标，可用 coordinate_space=global_screen 显式覆盖。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"x":           map[string]any{"type": "integer"},
-					"y":           map[string]any{"type": "integer"},
-					"button":      map[string]any{"type": "string", "enum": []string{"left", "right", "middle"}},
-					"click_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 3},
+					"x":                map[string]any{"type": "integer"},
+					"y":                map[string]any{"type": "integer"},
+					"display_id":       map[string]any{"type": "string"},
+					"display_index":    map[string]any{"type": "integer", "minimum": 1},
+					"coordinate_space": map[string]any{"type": "string", "enum": []string{"global_screen", "display_local"}},
+					"button":           map[string]any{"type": "string", "enum": []string{"left", "right", "middle"}},
+					"click_count":      map[string]any{"type": "integer", "minimum": 1, "maximum": 3},
 				},
 				"additionalProperties": false,
 			},
 		},
 		{
 			"name":                 computerToolMouseDrag,
-			"description":          "从起点拖拽到终点坐标。",
+			"description":          "从起点拖拽到终点坐标。默认使用全局桌面坐标；若同时传入 display_index 或 display_id，则默认将 from/to 坐标视为该显示器截图内的局部像素坐标，并按对应显示器 scale_factor 自动换算到全局桌面坐标；若你已持有全局桌面坐标，可用 coordinate_space=global_screen 显式覆盖。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"from_x":      map[string]any{"type": "integer"},
-					"from_y":      map[string]any{"type": "integer"},
-					"to_x":        map[string]any{"type": "integer"},
-					"to_y":        map[string]any{"type": "integer"},
-					"duration_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 10000},
+					"from_x":           map[string]any{"type": "integer"},
+					"from_y":           map[string]any{"type": "integer"},
+					"to_x":             map[string]any{"type": "integer"},
+					"to_y":             map[string]any{"type": "integer"},
+					"display_id":       map[string]any{"type": "string"},
+					"display_index":    map[string]any{"type": "integer", "minimum": 1},
+					"coordinate_space": map[string]any{"type": "string", "enum": []string{"global_screen", "display_local"}},
+					"duration_ms":      map[string]any{"type": "integer", "minimum": 0, "maximum": 10000},
 				},
 				"required":             []string{"from_x", "from_y", "to_x", "to_y"},
 				"additionalProperties": false,
@@ -348,7 +367,7 @@ func previewComputerTool(toolName string, arguments map[string]any) string {
 	case computerToolKeyPress:
 		return fmt.Sprintf("%s %s", computerToolKeyPress, fallbackString(argumentString(arguments, "key"), "<missing>"))
 	case computerToolTypeText:
-		return fmt.Sprintf("%s %d chars", computerToolTypeText, len(argumentString(arguments, "text")))
+		return fmt.Sprintf("%s %d chars", computerToolTypeText, utf8.RuneCountInString(argumentString(arguments, "text")))
 	default:
 		return toolName
 	}

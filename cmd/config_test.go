@@ -298,10 +298,13 @@ func TestRenderConfigSummaryUsesExternalResourceAccessPolicyLabel(t *testing.T) 
 func TestRenderConfigSummaryUsesDefaultDocUnstructuredExts(t *testing.T) {
 	config := internalconfig.Default()
 	summary := renderConfigSummary("/tmp/taiyiflow.yaml", config)
-	for _, expected := range []string{"文档服务端解析类型:", ".jpg", ".mp3", ".mp4", ".pdf"} {
+	for _, expected := range []string{"文档服务端解析类型:", ".mp3", ".mp4", ".pdf"} {
 		if !strings.Contains(summary, expected) {
 			t.Fatalf("expected doc unstructured summary to contain %q, got %q", expected, summary)
 		}
+	}
+	if strings.Contains(summary, ".jpg") {
+		t.Fatalf("expected default doc unstructured summary to exclude image extensions, got %q", summary)
 	}
 }
 
