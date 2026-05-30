@@ -127,11 +127,16 @@ func (r *ClientRuntime) ClientMCPServers() map[string]any {
 
 func (r *ClientRuntime) ClientMCPServersForMode(mode string, config internalconfig.Config) map[string]any {
 	definitions := r.clientToolDefinitionsForMode(mode)
-	if !internalconfig.ComputerEnabled(config.Computer) {
+	hideBrowserTools := !internalconfig.BrowserEnabled(config.Browser)
+	hideComputerTools := !internalconfig.ComputerEnabled(config.Computer)
+	if hideBrowserTools || hideComputerTools {
 		filtered := definitions[:0]
 		for _, definition := range definitions {
 			name := strings.TrimSpace(stringValue(definition["name"]))
-			if isComputerTool(name) {
+			if hideBrowserTools && isBrowserTool(name) {
+				continue
+			}
+			if hideComputerTools && isComputerTool(name) {
 				continue
 			}
 			filtered = append(filtered, definition)

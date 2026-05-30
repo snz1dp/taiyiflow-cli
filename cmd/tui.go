@@ -103,6 +103,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			sessionState.SkillReviewPolicyOverride = internalconfig.SkillReviewPolicyIgnore
 			return a.sessionStore.Save(sessionState)
 		}
+		persistBrowserToolAlwaysAllow := a.persistConfigValue("browser_permission_mode", internalconfig.BrowserPermissionModeSkipAll)
+		persistComputerToolAlwaysAllow := a.persistConfigValue("computer_permission_mode", internalconfig.ComputerPermissionModeSkipAll)
 		sandboxEscapeConfirmer := func(path string) (bool, error) {
 			return confirm(buildTUISandboxEscapeConfirmRequest(path, persistSandboxEscapeAlwaysAllow)), nil
 		}
@@ -285,7 +287,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 							appendApprovedSkillName(&sessionState, skillName)
 							return a.sessionStore.Save(sessionState)
 						}
-						approved := confirm(buildTUIClientToolConfirmRequest(localConfig, sessionState.ContextDir, event.Data, persistApprovedSkillReview, persistSkillReviewAllowAll))
+						approved := confirm(buildTUIClientToolConfirmRequest(localConfig, sessionState.ContextDir, event.Data, persistApprovedSkillReview, persistSkillReviewAllowAll, persistBrowserToolAlwaysAllow, persistComputerToolAlwaysAllow))
 						if !approved {
 							emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端工具执行。"})
 							if err := submitClientCallFailure(runCtx, callbackProvider, event.Data, "用户拒绝执行客户端工具"); err != nil {
@@ -293,10 +295,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 							}
 							continue
 						}
-						execConfig := localConfig
-						if strings.TrimSpace(execConfig.ApprovalMode) != "readonly" {
-							execConfig.ApprovalMode = "auto"
-						}
+						execConfig := approvedClientToolExecutionConfig(localConfig, toolName)
 						toolName, result, toolErr := runtimeClient.ExecuteClientToolPayloadWithProvider(runCtx, callbackProvider, execConfig, event.Data)
 						emitTUIClientToolResultEvents(emit, execConfig, toolName, result, toolErr)
 						if err := runtimeClient.SubmitClientToolCallback(runCtx, callbackProvider, event.Data, result, toolErr); err != nil {
@@ -1532,7 +1531,7 @@ func buildTUIConfirmRequest(payload map[string]any) tui.ConfirmRequest {
 		Title:        "客户端命令(client command)待确认",
 		Command:      previewBuiltInCommand(payload),
 		Detail:       "该命令由服务端下发，是否允许在本地执行？",
-		Hint:         "Y 执行本次命令，N 取消本次命令；方向键或 Tab 选择，Enter 确认。",
+		Hint:         "Y 执行本次命令，N 取消本次命令，A 切换为自动执行；方向键或 Tab 选择，Enter 确认。",
 		ApproveLabel: "执行本次命令",
 		RejectLabel:  "取消本次命令",
 	}
@@ -1545,6 +1544,8 @@ func buildTUIClientToolConfirmRequest(
 	payload map[string]any,
 	approveSkill func(context.Context) error,
 	allowAllSkills func(context.Context) error,
+	allowBrowserTools func(context.Context) error,
+	allowComputerTools func(context.Context) error,
 ) tui.ConfirmRequest {
 	toolName := nestedStringValue(payload, "function", "name")
 	arguments, _ := nestedMapValue(payload, "function", "arguments")
@@ -1552,7 +1553,7 @@ func buildTUIClientToolConfirmRequest(
 		Title:        "客户端工具(client tool)待确认",
 		Command:      clientruntime.PreviewClientToolCall(payload),
 		Detail:       "该工具会修改本地工作区或本地运行状态，是否允许执行？",
-		Hint:         "Y 允许本次执行，N 本次拒绝；方向键或 Tab 选择，Enter 确认。",
+		Hint:         "Y 允许本次执行，N 本次拒绝，A 切换为自动执行；方向键或 Tab 选择，Enter 确认。",
 		ApproveLabel: "允许本次执行",
 		RejectLabel:  "本次拒绝",
 	}
@@ -1580,8 +1581,46 @@ func buildTUIClientToolConfirmRequest(
 		request.RejectLabel = "取消本次写入"
 		request.Hint = "Y 确认本次写入，N 取消本次写入；方向键或 Tab 选择，Enter 确认。"
 		request.DisableDefaultAlwaysApprove = true
+	default:
+		switch {
+		case isBrowserToolName(toolName) && allowBrowserTools != nil:
+			request.Title = "浏览器操作(browser automation)待确认"
+			request.Detail = "该工具会操作浏览器页面、标签页或当前浏览器会话，是否允许执行？"
+			request.AlwaysApproveLabel = "始终允许浏览器操作"
+			request.AlwaysApprove = allowBrowserTools
+			request.Hint = "Y 允许本次执行，N 本次拒绝，A 始终允许浏览器操作；方向键或 Tab 选择，Enter 确认。"
+			request.DisableDefaultAlwaysApprove = true
+		case isComputerToolName(toolName) && allowComputerTools != nil:
+			request.Title = "桌面操作(desktop automation)待确认"
+			request.Detail = "该工具会操作当前桌面、窗口、键盘或鼠标，是否允许执行？"
+			request.AlwaysApproveLabel = "始终允许桌面操作"
+			request.AlwaysApprove = allowComputerTools
+			request.Hint = "Y 允许本次执行，N 本次拒绝，A 始终允许桌面操作；方向键或 Tab 选择，Enter 确认。"
+			request.DisableDefaultAlwaysApprove = true
+		}
 	}
 	return request
+}
+
+func isBrowserToolName(toolName string) bool {
+	return strings.HasPrefix(strings.TrimSpace(toolName), "taiyiflow-in-chrome__")
+}
+
+func isComputerToolName(toolName string) bool {
+	return strings.HasPrefix(strings.TrimSpace(toolName), "taiyiflow-computer__")
+}
+
+func (a *App) persistConfigValue(key string, value string) func(context.Context) error {
+	return func(context.Context) error {
+		updatedConfig, err := a.configManager.Load()
+		if err != nil {
+			return err
+		}
+		if err := assignConfigValue(&updatedConfig, key, value); err != nil {
+			return err
+		}
+		return a.configManager.Save(updatedConfig)
+	}
 }
 
 func buildSkillReviewPreview(config internalconfig.Config, contextDir string, name string) string {
@@ -1791,8 +1830,10 @@ func shouldOpenTUIClientToolPanel(config internalconfig.Config, toolName string,
 	switch strings.TrimSpace(toolName) {
 	case "file_edit", "write_file":
 		return internalconfig.NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy) != internalconfig.WriteConfirmationPolicyDirect
+	case "task_output", "terminal_capture", "task_list", "task_delete", "task_cleanup":
+		return false
 	default:
-		return true
+		return !isBrowserToolName(toolName) && !isComputerToolName(toolName)
 	}
 }
 
@@ -2801,6 +2842,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			AgentAutoLoopMaxRounds:    strconv.Itoa(config.AgentAutoLoopMaxRounds),
 			OutputLanguage:            strings.TrimSpace(config.OutputLanguage),
 			ComputerEnabled:           internalconfig.ComputerEnabled(config.Computer),
+			ComputerPermissionMode:    strings.TrimSpace(config.Computer.PermissionMode),
 			BrowserMode:               strings.TrimSpace(config.Browser.Mode),
 			BrowserPermissionMode:     strings.TrimSpace(config.Browser.PermissionMode),
 			BrowserChannel:            strings.TrimSpace(config.Browser.Channel),
@@ -2933,6 +2975,12 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "computer_enabled", Message: err.Error()}
 	}
 
+	if strings.TrimSpace(submission.Values.ComputerPermissionMode) == "" {
+		config.Computer.PermissionMode = internalconfig.Default().Computer.PermissionMode
+	} else if err := assignConfigValue(&config, "computer_permission_mode", submission.Values.ComputerPermissionMode); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "computer_permission_mode", Message: err.Error()}
+	}
+
 	if strings.TrimSpace(submission.Values.BrowserMode) == "" {
 		config.Browser.Mode = internalconfig.Default().Browser.Mode
 	} else if err := assignConfigValue(&config, "browser_mode", submission.Values.BrowserMode); err != nil {
@@ -3038,6 +3086,22 @@ func resolveAgentAutoLoopEnabled(config internalconfig.Config, state agent.Sessi
 	}
 	value := resolveAgentAutoLoopMaxRounds(config, state, requestMode) > 0
 	return &value
+}
+
+func approvedClientToolExecutionConfig(config internalconfig.Config, toolName string) internalconfig.Config {
+	execConfig := config
+	if strings.TrimSpace(execConfig.ApprovalMode) != "readonly" {
+		execConfig.ApprovalMode = "auto"
+	}
+	trimmedToolName := strings.TrimSpace(toolName)
+	if trimmedToolName == "" {
+		return execConfig
+	}
+	execConfig.PermissionRules = append(
+		[]internalconfig.PermissionRule{{Action: "allow", ToolName: trimmedToolName}},
+		execConfig.PermissionRules...,
+	)
+	return execConfig
 }
 
 func resolveAgentAutoLoopMaxRounds(config internalconfig.Config, state agent.SessionState, requestMode string) int {

@@ -12,17 +12,17 @@ import (
 )
 
 const (
-	computerToolPrefix          = "taiyiflow-computer__"
-	computerToolDisplaysContext = computerToolPrefix + "displays_context"
-	computerToolWindowsContext  = computerToolPrefix + "windows_context"
-	computerToolFocusWindow     = computerToolPrefix + "focus_window"
-	computerToolScreenshot      = computerToolPrefix + "screenshot"
-	computerToolMouseMove       = computerToolPrefix + "mouse_move"
-	computerToolMouseClick      = computerToolPrefix + "mouse_click"
-	computerToolMouseDrag       = computerToolPrefix + "mouse_drag"
-	computerToolScroll          = computerToolPrefix + "scroll"
-	computerToolKeyPress        = computerToolPrefix + "key_press"
-	computerToolTypeText        = computerToolPrefix + "type_text"
+	computerToolPrefix           = "taiyiflow-computer__"
+	computerToolDisplaysContext  = computerToolPrefix + "displays_context"
+	computerToolWindowsContext   = computerToolPrefix + "windows_context"
+	computerToolFocusWindow      = computerToolPrefix + "focus_window"
+	computerToolScreenshot       = computerToolPrefix + "screenshot"
+	computerToolMouseMove        = computerToolPrefix + "mouse_move"
+	computerToolMouseClick       = computerToolPrefix + "mouse_click"
+	computerToolMouseDrag        = computerToolPrefix + "mouse_drag"
+	computerToolScroll           = computerToolPrefix + "scroll"
+	computerToolKeyPress         = computerToolPrefix + "key_press"
+	computerToolTypeText         = computerToolPrefix + "type_text"
 	defaultComputerScreenshotDir = ".snz1dp/computer"
 	defaultComputerScreenshotExt = ".png"
 )
@@ -98,8 +98,8 @@ func (r *ClientRuntime) computerTool(
 func computerClientToolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
-			"name":        computerToolDisplaysContext,
-			"description": "读取本机显示器上下文，返回显示器尺寸、缩放、主屏和旋转信息。",
+			"name":                 computerToolDisplaysContext,
+			"description":          "读取本机显示器上下文，返回显示器尺寸、缩放、主屏和旋转信息。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type":                 "object",
@@ -107,8 +107,8 @@ func computerClientToolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        computerToolWindowsContext,
-			"description": "读取当前桌面窗口上下文，返回窗口标题、边界、进程与前台状态。",
+			"name":                 computerToolWindowsContext,
+			"description":          "读取当前桌面窗口上下文，返回窗口标题、边界、进程与前台状态。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type":                 "object",
@@ -116,8 +116,8 @@ func computerClientToolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        computerToolFocusWindow,
-			"description": "将指定窗口或进程切到前台焦点。",
+			"name":                 computerToolFocusWindow,
+			"description":          "将指定窗口或进程切到前台焦点。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -130,22 +130,22 @@ func computerClientToolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        computerToolScreenshot,
-			"description": "截取当前桌面屏幕并保存为 PNG；未提供 path 时自动落到工作区内 .snz1dp/computer/。",
+			"name":                 computerToolScreenshot,
+			"description":          "截取当前桌面屏幕并保存为 PNG；未提供 path 时自动落到工作区内 .snz1dp/computer/。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"path":         map[string]any{"type": "string"},
-					"display_id":   map[string]any{"type": "string"},
+					"path":          map[string]any{"type": "string"},
+					"display_id":    map[string]any{"type": "string"},
 					"display_index": map[string]any{"type": "integer", "minimum": 1},
 				},
 				"additionalProperties": false,
 			},
 		},
 		{
-			"name":        computerToolMouseMove,
-			"description": "移动鼠标到指定屏幕坐标。",
+			"name":                 computerToolMouseMove,
+			"description":          "移动鼠标到指定屏幕坐标。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -158,8 +158,8 @@ func computerClientToolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        computerToolMouseClick,
-			"description": "在当前位置或指定坐标执行鼠标点击。",
+			"name":                 computerToolMouseClick,
+			"description":          "在当前位置或指定坐标执行鼠标点击。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -173,8 +173,8 @@ func computerClientToolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        computerToolMouseDrag,
-			"description": "从起点拖拽到终点坐标。",
+			"name":                 computerToolMouseDrag,
+			"description":          "从起点拖拽到终点坐标。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -190,8 +190,8 @@ func computerClientToolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        computerToolScroll,
-			"description": "执行垂直或水平滚动。",
+			"name":                 computerToolScroll,
+			"description":          "执行垂直或水平滚动。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -203,8 +203,8 @@ func computerClientToolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        computerToolKeyPress,
-			"description": "发送单个按键或常见特殊键，可附加修饰键和重复次数。",
+			"name":                 computerToolKeyPress,
+			"description":          "发送单个按键或常见特殊键，可附加修饰键和重复次数。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -218,8 +218,8 @@ func computerClientToolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        computerToolTypeText,
-			"description": "向当前焦点输入文本，可选输入后回车。",
+			"name":                 computerToolTypeText,
+			"description":          "向当前焦点输入文本，可选输入后回车。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -266,6 +266,8 @@ func computerToolRequiresConfirmation(config internalconfig.Config, toolName str
 		return false
 	}
 	switch internalconfig.NormalizeComputerPermissionMode(config.Computer.PermissionMode) {
+	case internalconfig.ComputerPermissionModeSkipAll:
+		return false
 	case internalconfig.ComputerPermissionModeFollowPlan:
 		return strings.TrimSpace(config.ApprovalMode) == "confirm"
 	default:
@@ -304,14 +306,16 @@ func (r *ClientRuntime) authorizeComputerTool(toolName string, arguments map[str
 	if computerReadOnlyTool(toolName) {
 		return nil
 	}
-	if mode == "readonly" {
-		return newToolError("PERMISSION_DENIED", "当前审批模式为只读，拒绝执行 %s", canonicalClientToolName(toolName))
-	}
 	switch internalconfig.NormalizeComputerPermissionMode(config.Computer.PermissionMode) {
+	case internalconfig.ComputerPermissionModeSkipAll:
+		return nil
 	case internalconfig.ComputerPermissionModeFollowPlan:
 		if mode != "confirm" {
 			return nil
 		}
+	}
+	if mode == "readonly" {
+		return newToolError("PERMISSION_DENIED", "当前审批模式为只读，拒绝执行 %s", canonicalClientToolName(toolName))
 	}
 	approved, err := r.confirmClientTool(toolName, arguments)
 	if err != nil {

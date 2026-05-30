@@ -23,12 +23,12 @@ type documentToolUploadCall struct {
 
 type documentToolProviderStub struct {
 	provider.Provider
-	serviceConfig *provider.ServiceConfig
+	serviceConfig    *provider.ServiceConfig
 	createdSessionID string
-	uploadCalls   []documentToolUploadCall
-	runRequest    provider.DocumentUnstructuredRequest
-	runResult     *provider.DocumentUnstructuredResult
-	callback      provider.ClientCallResult
+	uploadCalls      []documentToolUploadCall
+	runRequest       provider.DocumentUnstructuredRequest
+	runResult        *provider.DocumentUnstructuredResult
+	callback         provider.ClientCallResult
 }
 
 func (s *documentToolProviderStub) GetServiceConfig(context.Context) (*provider.ServiceConfig, error) {
@@ -61,10 +61,10 @@ func (s *documentToolProviderStub) SubmitClientCallResult(_ context.Context, res
 }
 
 type browserToolCall struct {
-	ToolName      string
-	Arguments     map[string]any
-	ApprovalMode  string
-	BrowserMode   string
+	ToolName       string
+	Arguments      map[string]any
+	ApprovalMode   string
+	BrowserMode    string
 	PermissionMode string
 }
 
@@ -366,6 +366,22 @@ func TestClientMCPServersForModeHidesComputerToolsWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestClientMCPServersForModeHidesBrowserToolsWhenDisabled(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	servers := runtimeClient.ClientMCPServersForMode(provider.RequestTypeAgent, internalconfig.Config{
+		Browser: internalconfig.BrowserConfig{Mode: internalconfig.BrowserModeDisabled},
+	})
+	definitions, ok := servers[localToolServerName].([]map[string]any)
+	if !ok {
+		t.Fatalf("expected local tool definitions, got %#v", servers)
+	}
+	for _, item := range definitions {
+		if isBrowserTool(strings.TrimSpace(stringValue(item["name"]))) {
+			t.Fatalf("expected browser tool to be hidden when disabled, got %#v", item)
+		}
+	}
+}
+
 func TestExecuteClientToolPayloadRejectsComputerToolWhenDisabled(t *testing.T) {
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	computerStub := &computerToolExecutorStub{}
@@ -391,6 +407,33 @@ func TestExecuteClientToolPayloadRejectsComputerToolWhenDisabled(t *testing.T) {
 	}
 	if len(computerStub.calls) != 0 {
 		t.Fatalf("expected disabled computer tool not to reach executor, got %#v", computerStub.calls)
+	}
+}
+
+func TestExecuteClientToolPayloadRejectsBrowserToolWhenDisabled(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	browserStub := &browserToolExecutorStub{}
+	runtimeClient.SetBrowserToolExecutor(browserStub)
+	config := internalconfig.Config{
+		Workdir:      t.TempDir(),
+		ApprovalMode: "auto",
+		Browser: internalconfig.BrowserConfig{
+			Mode:           internalconfig.BrowserModeDisabled,
+			PermissionMode: internalconfig.BrowserPermissionModeSkipAll,
+		},
+	}
+	_, _, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name":      browserToolNavigate,
+			"arguments": map[string]any{"url": "https://example.com"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "已在配置中禁用") {
+		t.Fatalf("expected disabled browser tool execution to fail, got %v", err)
+	}
+	if len(browserStub.calls) != 0 {
+		t.Fatalf("expected disabled browser tool not to reach executor, got %#v", browserStub.calls)
 	}
 }
 
@@ -1102,7 +1145,7 @@ func TestExecuteClientToolPayloadRejectsConfirmationWhenInteractivePromptsDisabl
 	if _, statErr := os.Stat(filepath.Join(tempDir, "notes.txt")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("expected file not to be created, got %v", statErr)
 	}
-	}
+}
 
 func TestSandboxEscapeConfirmSkipsPromptWhenInteractivePromptsDisabled(t *testing.T) {
 	tempDir := t.TempDir()
@@ -1575,7 +1618,7 @@ func TestBrowserScreenshotDecodesExtensionResultToPath(t *testing.T) {
 	_, resultAny, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
 		"server": map[string]any{"name": "local"},
 		"function": map[string]any{
-			"name": browserToolScreenshot,
+			"name":      browserToolScreenshot,
 			"arguments": map[string]any{},
 		},
 	})
@@ -1662,6 +1705,68 @@ func TestComputerPermissionModeAskOverridesAuto(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "用户拒绝执行") {
 		t.Fatalf("expected computer ask mode to require confirmation, got %v", err)
+	}
+}
+
+func TestComputerPermissionModeSkipAllBypassesConfirm(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader("n\n"), io.Discard, io.Discard)
+	computerStub := &computerToolExecutorStub{result: map[string]any{"ok": true}}
+	runtimeClient.SetComputerToolExecutor(computerStub)
+	config := internalconfig.Config{
+		Workdir:      t.TempDir(),
+		ApprovalMode: "confirm",
+		Computer: internalconfig.ComputerConfig{
+			PermissionMode: internalconfig.ComputerPermissionModeSkipAll,
+		},
+	}
+	toolName, _, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": computerToolTypeText,
+			"arguments": map[string]any{
+				"text": "taiyiflow",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected computer skip_all_permission_checks to bypass confirm, got %v", err)
+	}
+	if toolName != computerToolTypeText {
+		t.Fatalf("unexpected tool name: %s", toolName)
+	}
+	if len(computerStub.calls) != 1 || computerStub.calls[0].ToolName != computerToolTypeText {
+		t.Fatalf("expected computer executor call, got %#v", computerStub.calls)
+	}
+}
+
+func TestComputerPermissionModeSkipAllBypassesReadonly(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader("n\n"), io.Discard, io.Discard)
+	computerStub := &computerToolExecutorStub{result: map[string]any{"window_id": "win-1"}}
+	runtimeClient.SetComputerToolExecutor(computerStub)
+	config := internalconfig.Config{
+		Workdir:      t.TempDir(),
+		ApprovalMode: "readonly",
+		Computer: internalconfig.ComputerConfig{
+			PermissionMode: internalconfig.ComputerPermissionModeSkipAll,
+		},
+	}
+	toolName, _, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
+		"server": map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": computerToolFocusWindow,
+			"arguments": map[string]any{
+				"window_id": "win-1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected computer permission mode to bypass readonly for desktop tool, got %v", err)
+	}
+	if toolName != computerToolFocusWindow {
+		t.Fatalf("unexpected tool name: %s", toolName)
+	}
+	if len(computerStub.calls) != 1 || computerStub.calls[0].ToolName != computerToolFocusWindow {
+		t.Fatalf("expected computer executor call, got %#v", computerStub.calls)
 	}
 }
 

@@ -90,6 +90,10 @@ func (m *Manager) Diagnose(config internalconfig.BrowserConfig) Status {
 		Mode:    normalized.Mode,
 		Channel: normalized.Channel,
 	}
+	if !internalconfig.BrowserEnabled(normalized) {
+		status.Message = "浏览器自动化已在配置中禁用"
+		return status
+	}
 	if normalized.Mode == internalconfig.BrowserModeChromeSession {
 		nativeStatus := DiagnoseNativeMessaging(normalized, "")
 		status.Available = nativeStatus.ManifestInstalled || nativeStatus.LauncherInstalled || nativeStatus.ExtensionBuildFound
@@ -116,6 +120,9 @@ func (m *Manager) Execute(
 	arguments map[string]any,
 ) (map[string]any, error) {
 	normalized := internalconfig.NormalizeBrowserConfig(config)
+	if !internalconfig.BrowserEnabled(normalized) {
+		return nil, fmt.Errorf("浏览器自动化已在配置中禁用")
+	}
 	if normalized.Mode == internalconfig.BrowserModeChromeSession {
 		return ExecuteNativeMessagingTool(ctx, normalized, toolName, arguments)
 	}

@@ -116,6 +116,40 @@ func TestApplyConfigFormSubmissionReturnsFieldError(t *testing.T) {
 	}
 }
 
+func TestApprovedClientToolExecutionConfigAddsEphemeralAllowRule(t *testing.T) {
+	config := internalconfig.Config{
+		ApprovalMode: "confirm",
+		PermissionRules: []internalconfig.PermissionRule{
+			{Action: "deny", ToolName: "write_file"},
+		},
+	}
+
+	updated := approvedClientToolExecutionConfig(config, "taiyiflow-computer__focus_window")
+
+	if updated.ApprovalMode != "auto" {
+		t.Fatalf("expected approval mode auto, got %#v", updated.ApprovalMode)
+	}
+	if len(updated.PermissionRules) != 2 {
+		t.Fatalf("expected ephemeral allow rule prepended, got %#v", updated.PermissionRules)
+	}
+	if updated.PermissionRules[0].Action != "allow" || updated.PermissionRules[0].ToolName != "taiyiflow-computer__focus_window" {
+		t.Fatalf("unexpected ephemeral allow rule: %#v", updated.PermissionRules[0])
+	}
+	if updated.PermissionRules[1].Action != "deny" || updated.PermissionRules[1].ToolName != "write_file" {
+		t.Fatalf("expected existing permission rules preserved, got %#v", updated.PermissionRules)
+	}
+}
+
+func TestApprovedClientToolExecutionConfigKeepsReadonly(t *testing.T) {
+	updated := approvedClientToolExecutionConfig(internalconfig.Config{ApprovalMode: "readonly"}, "taiyiflow-computer__focus_window")
+	if updated.ApprovalMode != "readonly" {
+		t.Fatalf("expected readonly approval mode preserved, got %#v", updated.ApprovalMode)
+	}
+	if len(updated.PermissionRules) != 1 || updated.PermissionRules[0].Action != "allow" {
+		t.Fatalf("expected allow rule even in readonly mode, got %#v", updated.PermissionRules)
+	}
+}
+
 func TestTUIAssistantRenderStateDropsTrailingFinalizeControlResidue(t *testing.T) {
 	state := tuiAssistantRenderState{}
 
@@ -1292,8 +1326,8 @@ func TestBuildTUICompressionMetricsAcceptsCompressionEndPayload(t *testing.T) {
 		"compression_ratio": 0.65,
 		"target_type":       "history_messages",
 		"context_window": map[string]any{
-			"max_input_tokens":           10000,
-			"current_round_input_tokens": 6400,
+			"max_input_tokens":            10000,
+			"current_round_input_tokens":  6400,
 			"next_round_available_tokens": 3600,
 		},
 	})
@@ -1317,8 +1351,8 @@ func TestBuildTUICompressionProgressTextAppendsContextUsageSummary(t *testing.T)
 		"before_tokens": 320,
 		"after_tokens":  160,
 		"context_window": map[string]any{
-			"max_input_tokens":           10000,
-			"current_round_input_tokens": 6400,
+			"max_input_tokens":            10000,
+			"current_round_input_tokens":  6400,
 			"next_round_available_tokens": 3600,
 		},
 	})
@@ -1362,6 +1396,39 @@ func TestEmitTUIClientToolResultEventsSkipsSuccessfulFileEditPanelInDirectMode(t
 	}
 	if events[0].Kind != internaltui.EventSystemNote || !strings.Contains(events[0].Text, "结果已生成：file_edit notes.txt 替换 1 处") {
 		t.Fatalf("expected status note without tool panel, got %#v", events)
+	}
+}
+
+func TestEmitTUIClientToolResultEventsSkipsSuccessfulComputerPanel(t *testing.T) {
+	events := []internaltui.Event{}
+	emitTUIClientToolResultEvents(func(event internaltui.Event) {
+		events = append(events, event)
+	}, internalconfig.Default(), "taiyiflow-computer__focus_window", map[string]any{
+		"window_id":    "win-1",
+		"process_name": "Finder",
+	}, nil)
+	if len(events) != 1 {
+		t.Fatalf("expected only status note for successful computer tool, got %#v", events)
+	}
+	if events[0].Kind != internaltui.EventSystemNote || !strings.Contains(events[0].Text, "结果已生成：focus_window") {
+		t.Fatalf("expected computer status note without tool panel, got %#v", events)
+	}
+}
+
+func TestEmitTUIClientToolResultEventsSkipsTaskInfoPanel(t *testing.T) {
+	events := []internaltui.Event{}
+	emitTUIClientToolResultEvents(func(event internaltui.Event) {
+		events = append(events, event)
+	}, internalconfig.Default(), "task_output", map[string]any{
+		"task_id": "task-1",
+		"status":  "running",
+		"stdout":  "hello",
+	}, nil)
+	if len(events) != 1 {
+		t.Fatalf("expected only status note for task output, got %#v", events)
+	}
+	if events[0].Kind != internaltui.EventSystemNote || !strings.Contains(events[0].Text, "结果已生成：task-1") {
+		t.Fatalf("expected task output status note without tool panel, got %#v", events)
 	}
 }
 
@@ -1421,6 +1488,7 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 			AgentAutoLoopMaxRounds:    "0",
 			OutputLanguage:            "zh-CN",
 			ComputerEnabled:           false,
+			ComputerPermissionMode:    internalconfig.ComputerPermissionModeFollowPlan,
 			SkillsInstallScope:        "workspace",
 			SkillsAutoInstallPolicy:   "allow",
 			SkillsFreeTextSearch:      false,
@@ -1481,6 +1549,9 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	if internalconfig.ComputerEnabled(updated.Computer) {
 		t.Fatalf("expected desktop automation to be disabled, got %#v", updated.Computer)
 	}
+	if updated.Computer.PermissionMode != internalconfig.ComputerPermissionModeFollowPlan {
+		t.Fatalf("expected desktop permission mode saved, got %#v", updated.Computer)
+	}
 	if updated.AgentAutoLoopMaxRounds != 0 {
 		t.Fatalf("expected agent auto loop max rounds saved as 0, got %#v", updated.AgentAutoLoopMaxRounds)
 	}
@@ -1509,6 +1580,9 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	}
 	if internalconfig.ComputerEnabled(reloaded.Computer) {
 		t.Fatalf("expected persisted desktop automation disabled state, got %#v", reloaded.Computer)
+	}
+	if reloaded.Computer.PermissionMode != internalconfig.ComputerPermissionModeFollowPlan {
+		t.Fatalf("expected persisted desktop permission mode, got %#v", reloaded.Computer)
 	}
 	if reloaded.AgentAutoLoopMaxRounds != 0 {
 		t.Fatalf("expected persisted auto loop max rounds 0, got %#v", reloaded.AgentAutoLoopMaxRounds)
@@ -1602,7 +1676,7 @@ func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T)
 			"name":      "skill",
 			"arguments": map[string]any{"name": "Context Review"},
 		},
-	}, func(context.Context) error { return nil }, func(context.Context) error { return nil })
+	}, func(context.Context) error { return nil }, func(context.Context) error { return nil }, nil, nil)
 	if skillRequest.Title != "技能包审查(skill package review)" {
 		t.Fatalf("unexpected skill request title: %#v", skillRequest)
 	}
@@ -1621,7 +1695,7 @@ func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T)
 			"name":      "write_file",
 			"arguments": map[string]any{"path": "notes.txt", "mode": "overwrite", "content": "hello world"},
 		},
-	}, nil, nil)
+	}, nil, nil, nil, nil)
 	if writeRequest.Title != "写入比较摘要(write summary)待确认" {
 		t.Fatalf("unexpected write request title: %#v", writeRequest)
 	}
@@ -1651,12 +1725,47 @@ func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T)
 				"expected_sha256_before": "abc123",
 			},
 		},
-	}, nil, nil)
+	}, nil, nil, nil, nil)
 	if !strings.Contains(editRequest.PreviewBody, "@@ expected_sha256_before=abc123 @@") || !strings.Contains(editRequest.PreviewBody, "-before line") || !strings.Contains(editRequest.PreviewBody, "+after line") {
 		t.Fatalf("expected file_edit preview to render diff body, got %#v", editRequest.PreviewBody)
 	}
 	if !editRequest.Expanded {
 		t.Fatalf("expected file_edit request to use expanded review overlay, got %#v", editRequest)
+	}
+}
+
+func TestBuildTUIClientToolConfirmRequestUsesBrowserAndComputerAlwaysApprovePolicies(t *testing.T) {
+	config := internalconfig.Default()
+	browserRequest := buildTUIClientToolConfirmRequest(config, t.TempDir(), map[string]any{
+		"function": map[string]any{
+			"name":      "taiyiflow-in-chrome__click",
+			"arguments": map[string]any{"selector": "button.submit"},
+		},
+	}, nil, nil, func(context.Context) error { return nil }, nil)
+	if browserRequest.Title != "浏览器操作(browser automation)待确认" {
+		t.Fatalf("unexpected browser request title: %#v", browserRequest)
+	}
+	if browserRequest.AlwaysApproveLabel != "始终允许浏览器操作" || !browserRequest.DisableDefaultAlwaysApprove {
+		t.Fatalf("unexpected browser request policy labels: %#v", browserRequest)
+	}
+	if !strings.Contains(browserRequest.Hint, "A 始终允许浏览器操作") {
+		t.Fatalf("expected browser request hint to mention always approve, got %#v", browserRequest)
+	}
+
+	computerRequest := buildTUIClientToolConfirmRequest(config, t.TempDir(), map[string]any{
+		"function": map[string]any{
+			"name":      "taiyiflow-computer__focus_window",
+			"arguments": map[string]any{"window_id": "win-1"},
+		},
+	}, nil, nil, nil, func(context.Context) error { return nil })
+	if computerRequest.Title != "桌面操作(desktop automation)待确认" {
+		t.Fatalf("unexpected computer request title: %#v", computerRequest)
+	}
+	if computerRequest.AlwaysApproveLabel != "始终允许桌面操作" || !computerRequest.DisableDefaultAlwaysApprove {
+		t.Fatalf("unexpected computer request policy labels: %#v", computerRequest)
+	}
+	if !strings.Contains(computerRequest.Hint, "A 始终允许桌面操作") {
+		t.Fatalf("expected computer request hint to mention always approve, got %#v", computerRequest)
 	}
 }
 

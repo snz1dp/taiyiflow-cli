@@ -97,6 +97,7 @@ func TestNormalizeBrowserMode(t *testing.T) {
 		expected string
 	}{
 		{input: "", expected: BrowserModeChromeSession},
+		{input: "disabled", expected: BrowserModeDisabled},
 		{input: "chrome_session", expected: BrowserModeChromeSession},
 		{input: "isolated", expected: BrowserModeIsolated},
 		{input: "ISOLATED", expected: BrowserModeIsolated},
@@ -106,6 +107,15 @@ func TestNormalizeBrowserMode(t *testing.T) {
 		if got := NormalizeBrowserMode(item.input); got != item.expected {
 			t.Fatalf("NormalizeBrowserMode(%q) = %q, want %q", item.input, got, item.expected)
 		}
+	}
+}
+
+func TestBrowserEnabled(t *testing.T) {
+	if !BrowserEnabled(BrowserConfig{}) {
+		t.Fatal("expected zero-value browser config to remain enabled")
+	}
+	if BrowserEnabled(BrowserConfig{Mode: BrowserModeDisabled}) {
+		t.Fatal("expected disabled browser mode to report disabled")
 	}
 }
 
@@ -123,6 +133,24 @@ func TestNormalizeBrowserPermissionMode(t *testing.T) {
 	for _, item := range cases {
 		if got := NormalizeBrowserPermissionMode(item.input); got != item.expected {
 			t.Fatalf("NormalizeBrowserPermissionMode(%q) = %q, want %q", item.input, got, item.expected)
+		}
+	}
+}
+
+func TestNormalizeComputerPermissionMode(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{input: "", expected: ComputerPermissionModeAsk},
+		{input: "ask", expected: ComputerPermissionModeAsk},
+		{input: "follow_a_plan", expected: ComputerPermissionModeFollowPlan},
+		{input: "skip_all_permission_checks", expected: ComputerPermissionModeSkipAll},
+		{input: "unexpected", expected: ComputerPermissionModeAsk},
+	}
+	for _, item := range cases {
+		if got := NormalizeComputerPermissionMode(item.input); got != item.expected {
+			t.Fatalf("NormalizeComputerPermissionMode(%q) = %q, want %q", item.input, got, item.expected)
 		}
 	}
 }

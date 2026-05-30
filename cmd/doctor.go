@@ -75,12 +75,19 @@ func detectLocalFileToolStatus() string {
 
 func detectBrowserAutomationStatus(config internalconfig.Config) string {
 	status := browserbridge.NewManager().Diagnose(config.Browser)
-	parts := []string{
-		fmt.Sprintf("浏览器模式: %s", browserModeDisplay(config.Browser.Mode)),
+	parts := []string{fmt.Sprintf("浏览器模式: %s", browserModeDisplay(config.Browser.Mode))}
+	if !internalconfig.BrowserEnabled(config.Browser) {
+		parts = append(parts, "状态: 不可用")
+		if message := strings.TrimSpace(status.Message); message != "" {
+			parts = append(parts, message)
+		}
+		return strings.Join(parts, " | ")
+	}
+	parts = append(parts,
 		fmt.Sprintf("权限模式: %s", browserPermissionModeDisplay(config.Browser.PermissionMode)),
 		fmt.Sprintf("浏览器通道: %s", browserChannelDisplay(config.Browser.Channel)),
 		fmt.Sprintf("扩展接入: %s", browserExtensionSetupDisplay(config.Browser.ExtensionSetup)),
-	}
+	)
 	if status.Available && status.Reachable {
 		parts = append(parts, "状态: 可用")
 	} else {
@@ -117,6 +124,8 @@ func detectComputerAutomationStatus(config internalconfig.Config) string {
 
 func browserModeDisplay(value string) string {
 	switch strings.TrimSpace(value) {
+	case internalconfig.BrowserModeDisabled:
+		return "已禁用"
 	case internalconfig.BrowserModeChromeSession:
 		return "当前会话"
 	case internalconfig.BrowserModeIsolated:
@@ -135,9 +144,9 @@ func browserPermissionModeDisplay(value string) string {
 	case internalconfig.BrowserPermissionModeAsk:
 		return "逐次确认"
 	case internalconfig.BrowserPermissionModeFollowPlan:
-		return "跟随计划"
+		return "跟随全局审批"
 	case internalconfig.BrowserPermissionModeSkipAll:
-		return "直接允许"
+		return "始终允许"
 	default:
 		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {
@@ -152,7 +161,9 @@ func computerPermissionModeDisplay(value string) string {
 	case internalconfig.ComputerPermissionModeAsk:
 		return "逐次确认"
 	case internalconfig.ComputerPermissionModeFollowPlan:
-		return "跟随计划"
+		return "跟随全局审批"
+	case internalconfig.ComputerPermissionModeSkipAll:
+		return "始终允许"
 	default:
 		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {

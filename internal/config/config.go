@@ -17,51 +17,53 @@ import (
 )
 
 const (
-	defaultRootDirName              = ".snz1dp"
-	defaultConfigRel                = "config/taiyiflow.yaml"
-	rootDirEnvName                  = "SNZ1DP_HOME"
-	DefaultBackendAPIPrefix         = "/taiyi/composer/api/v1"
-	DefaultAuthAPIPrefix            = "/xeai"
-	SkillInstallScopeUser           = "user"
-	SkillInstallScopeWorkspace      = "workspace"
-	DefaultHTTPTimeoutSeconds       = 600
-	DefaultCommandTimeoutSeconds    = 3000
-	MaxHTTPTimeoutSeconds           = 2000
-	MaxCommandTimeoutSeconds        = 6000
-	DefaultStreamIdleTimeoutSeconds = 1200
-	DefaultStreamRetryAttempts      = 0
-	MaxStreamRetryAttempts          = 3
-	DefaultQRWaitTimeoutSeconds     = 120
-	DefaultAgentAutoLoopMaxRounds   = 0
-	MaxAgentAutoLoopMaxRounds       = 10000
-	encryptedConfigValuePrefix      = "enc:v1:"
-	SandboxEscapePolicyConfirm      = "confirm"
-	SandboxEscapePolicyDeny         = "deny"
-	SandboxEscapePolicyAllow        = "allow"
-	SkillReviewPolicyConfirm        = "confirm"
-	SkillReviewPolicyIgnore         = "ignore"
-	WriteConfirmationPolicyConfirm  = "confirm"
-	WriteConfirmationPolicyDirect   = "direct"
-	SkillAutoInstallPolicyOff       = "off"
-	SkillAutoInstallPolicyConfirm   = "confirm"
-	SkillAutoInstallPolicyAllow     = "allow"
-	DefaultClawHubRegistryURL       = "https://mirror-cn.clawhub.com"
-	BrowserModeChromeSession        = "chrome_session"
-	BrowserModeIsolated             = "isolated"
-	BrowserPermissionModeAsk        = "ask"
-	BrowserPermissionModeFollowPlan = "follow_a_plan"
-	BrowserPermissionModeSkipAll    = "skip_all_permission_checks"
-	ComputerPermissionModeAsk       = "ask"
+	defaultRootDirName               = ".snz1dp"
+	defaultConfigRel                 = "config/taiyiflow.yaml"
+	rootDirEnvName                   = "SNZ1DP_HOME"
+	DefaultBackendAPIPrefix          = "/taiyi/composer/api/v1"
+	DefaultAuthAPIPrefix             = "/xeai"
+	SkillInstallScopeUser            = "user"
+	SkillInstallScopeWorkspace       = "workspace"
+	DefaultHTTPTimeoutSeconds        = 600
+	DefaultCommandTimeoutSeconds     = 3000
+	MaxHTTPTimeoutSeconds            = 2000
+	MaxCommandTimeoutSeconds         = 6000
+	DefaultStreamIdleTimeoutSeconds  = 1200
+	DefaultStreamRetryAttempts       = 0
+	MaxStreamRetryAttempts           = 3
+	DefaultQRWaitTimeoutSeconds      = 120
+	DefaultAgentAutoLoopMaxRounds    = 0
+	MaxAgentAutoLoopMaxRounds        = 10000
+	encryptedConfigValuePrefix       = "enc:v1:"
+	SandboxEscapePolicyConfirm       = "confirm"
+	SandboxEscapePolicyDeny          = "deny"
+	SandboxEscapePolicyAllow         = "allow"
+	SkillReviewPolicyConfirm         = "confirm"
+	SkillReviewPolicyIgnore          = "ignore"
+	WriteConfirmationPolicyConfirm   = "confirm"
+	WriteConfirmationPolicyDirect    = "direct"
+	SkillAutoInstallPolicyOff        = "off"
+	SkillAutoInstallPolicyConfirm    = "confirm"
+	SkillAutoInstallPolicyAllow      = "allow"
+	DefaultClawHubRegistryURL        = "https://mirror-cn.clawhub.com"
+	BrowserModeDisabled              = "disabled"
+	BrowserModeChromeSession         = "chrome_session"
+	BrowserModeIsolated              = "isolated"
+	BrowserPermissionModeAsk         = "ask"
+	BrowserPermissionModeFollowPlan  = "follow_a_plan"
+	BrowserPermissionModeSkipAll     = "skip_all_permission_checks"
+	ComputerPermissionModeAsk        = "ask"
 	ComputerPermissionModeFollowPlan = "follow_a_plan"
-	BrowserChannelChrome            = "chrome"
-	BrowserChannelChromium          = "chromium"
-	BrowserChannelEdge              = "edge"
-	BrowserChannelBrave             = "brave"
-	BrowserExtensionSetupNative     = "native_messaging"
-	BrowserExtensionSetupManual     = "manual"
-	BrowserExtensionSetupNone       = "none"
-	DefaultBrowserConnectTimeout    = 15
-	MaxBrowserConnectTimeout        = 120
+	ComputerPermissionModeSkipAll    = "skip_all_permission_checks"
+	BrowserChannelChrome             = "chrome"
+	BrowserChannelChromium           = "chromium"
+	BrowserChannelEdge               = "edge"
+	BrowserChannelBrave              = "brave"
+	BrowserExtensionSetupNative      = "native_messaging"
+	BrowserExtensionSetupManual      = "manual"
+	BrowserExtensionSetupNone        = "none"
+	DefaultBrowserConnectTimeout     = 15
+	MaxBrowserConnectTimeout         = 120
 )
 
 var defaultDocUnstructuredExts = []string{
@@ -309,11 +311,17 @@ func NormalizeSkillAutoInstallPolicy(value string) string {
 
 func NormalizeBrowserMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case BrowserModeDisabled:
+		return BrowserModeDisabled
 	case BrowserModeIsolated:
 		return BrowserModeIsolated
 	default:
 		return BrowserModeChromeSession
 	}
+}
+
+func BrowserEnabled(value BrowserConfig) bool {
+	return NormalizeBrowserMode(value.Mode) != BrowserModeDisabled
 }
 
 func NormalizeBrowserPermissionMode(value string) string {
@@ -331,6 +339,8 @@ func NormalizeComputerPermissionMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case ComputerPermissionModeFollowPlan:
 		return ComputerPermissionModeFollowPlan
+	case ComputerPermissionModeSkipAll:
+		return ComputerPermissionModeSkipAll
 	default:
 		return ComputerPermissionModeAsk
 	}

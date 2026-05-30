@@ -218,6 +218,9 @@ func browserReadOnlyTool(toolName string) bool {
 }
 
 func browserToolRequiresConfirmation(config internalconfig.Config, toolName string, arguments map[string]any) bool {
+	if !internalconfig.BrowserEnabled(config.Browser) {
+		return false
+	}
 	if !isBrowserTool(toolName) {
 		return false
 	}
@@ -238,6 +241,9 @@ func browserToolRequiresConfirmation(config internalconfig.Config, toolName stri
 }
 
 func (r *ClientRuntime) authorizeBrowserTool(toolName string, arguments map[string]any, config internalconfig.Config) error {
+	if !internalconfig.BrowserEnabled(config.Browser) {
+		return newToolError("PERMISSION_DENIED", "浏览器自动化已在配置中禁用，拒绝执行 %s", canonicalClientToolName(toolName))
+	}
 	mode := strings.TrimSpace(config.ApprovalMode)
 	if action, matched := evaluatePermissionAction(config, toolName, commandPreview(arguments)); matched {
 		switch action {

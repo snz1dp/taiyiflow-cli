@@ -252,6 +252,7 @@ type ConfigFormValues struct {
 	AgentAutoLoopMaxRounds    string
 	OutputLanguage            string
 	ComputerEnabled           bool
+	ComputerPermissionMode    string
 	BrowserMode               string
 	BrowserPermissionMode     string
 	BrowserChannel            string
@@ -750,6 +751,7 @@ type configFormState struct {
 	reasoningCursor          int
 	crossSessionMemoryCursor int
 	computerEnabledCursor    int
+	computerPermissionCursor int
 	browserModeCursor        int
 	browserPermissionCursor  int
 	browserChannelCursor     int
@@ -831,6 +833,7 @@ const (
 	configFieldAgentAutoLoopMaxRounds
 	configFieldOutputLanguage
 	configFieldComputerEnabled
+	configFieldComputerPermissionMode
 	configFieldBrowserMode
 	configFieldBrowserPermissionMode
 	configFieldBrowserChannel
@@ -1987,7 +1990,7 @@ func (m *model) confirmOptions() []confirmOption {
 	}
 	if request.AlwaysApprove != nil || !request.DisableDefaultAlwaysApprove {
 		options = append(options, confirmOption{
-			label:    fallback(strings.TrimSpace(request.AlwaysApproveLabel), "以后自动同意"),
+			label:    fallback(strings.TrimSpace(request.AlwaysApproveLabel), "切换为自动执行"),
 			approved: true,
 			onSelect: func() tea.Cmd { return m.applyConfirmAlwaysApprove(request) },
 		})
@@ -2211,6 +2214,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveConfigComputerEnabledCursor(-1)
 			return m, nil
 		}
+		if m.configForm.cursor == configFieldComputerPermissionMode {
+			m.moveConfigComputerPermissionCursor(-1)
+			return m, nil
+		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
 			m.moveConfigSkillsCursor(-1)
 			return m, nil
@@ -2274,6 +2281,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldComputerEnabled {
 			m.moveConfigComputerEnabledCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldComputerPermissionMode {
+			m.moveConfigComputerPermissionCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
@@ -2353,6 +2364,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldComputerEnabled {
 			m.moveConfigComputerEnabledCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldComputerPermissionMode {
+			m.moveConfigComputerPermissionCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldSkillsInstallScope {
@@ -4812,6 +4827,8 @@ func (m model) renderConfigForm() string {
 			lines = append(lines, m.renderConfigCrossSessionMemoryField())
 		case configFieldComputerEnabled:
 			lines = append(lines, m.renderConfigComputerEnabledField())
+		case configFieldComputerPermissionMode:
+			lines = append(lines, m.renderConfigComputerPermissionField())
 		case configFieldBrowserMode:
 			lines = append(lines, m.renderConfigBrowserModeField())
 		case configFieldBrowserPermissionMode:
@@ -5029,6 +5046,13 @@ func (m model) renderConfigComputerEnabledField() string {
 		return ""
 	}
 	return m.renderConfigChoiceField(configFieldComputerEnabled, m.configForm.computerEnabledCursor, configComputerEnabledChoices())
+}
+
+func (m model) renderConfigComputerPermissionField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	return m.renderConfigChoiceField(configFieldComputerPermissionMode, m.configForm.computerPermissionCursor, configComputerPermissionChoices())
 }
 
 func (m model) renderConfigBrowserModeField() string {
@@ -7064,6 +7088,10 @@ func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
 	if m.configForm.computerEnabledCursor >= 0 && m.configForm.computerEnabledCursor < len(computerEnabledChoices) {
 		submission.Values.ComputerEnabled = strings.TrimSpace(computerEnabledChoices[m.configForm.computerEnabledCursor].Value) == "true"
 	}
+	computerPermissionChoices := configComputerPermissionChoices()
+	if m.configForm.computerPermissionCursor >= 0 && m.configForm.computerPermissionCursor < len(computerPermissionChoices) {
+		submission.Values.ComputerPermissionMode = strings.TrimSpace(computerPermissionChoices[m.configForm.computerPermissionCursor].Value)
+	}
 	browserModeChoices := configBrowserModeChoices()
 	if m.configForm.browserModeCursor >= 0 && m.configForm.browserModeCursor < len(browserModeChoices) {
 		submission.Values.BrowserMode = strings.TrimSpace(browserModeChoices[m.configForm.browserModeCursor].Value)
@@ -7182,6 +7210,7 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 		reasoningCursor:          configChoiceIndex(configReasoningChoices(), reasoningChoiceValue(values.ReasoningEnabled)),
 		crossSessionMemoryCursor: configChoiceIndex(configCrossSessionMemoryChoices(), boolChoiceValue(values.CrossSessionMemoryEnabled)),
 		computerEnabledCursor:    configChoiceIndex(configComputerEnabledChoices(), boolChoiceValue(values.ComputerEnabled)),
+		computerPermissionCursor: configChoiceIndex(configComputerPermissionChoices(), values.ComputerPermissionMode),
 		browserModeCursor:        configChoiceIndex(configBrowserModeChoices(), values.BrowserMode),
 		browserPermissionCursor:  configChoiceIndex(configBrowserPermissionChoices(), values.BrowserPermissionMode),
 		browserChannelCursor:     configChoiceIndex(configBrowserChannelChoices(), values.BrowserChannel),
@@ -7650,8 +7679,9 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "智能体自动续跑最大轮数", placeholder: "0", description: "仅对智能体模式生效；填写 0-10000 的整数，0 表示禁用。"},
 		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
 		{label: "桌面操作", placeholder: "", description: "左右键或空格切换开启或关闭。关闭后不再向后端暴露桌面操作工具，并拒绝执行已有桌面工具调用。"},
-		{label: "浏览器模式", placeholder: "", description: "左右键或空格切换当前会话与隔离实例。"},
-		{label: "浏览器权限模式", placeholder: "", description: "左右键或空格切换逐次确认、跟随计划、直接允许。该项优先控制浏览器变更操作。"},
+		{label: "桌面操作权限模式", placeholder: "", description: "左右键或空格切换逐次确认、跟随全局审批、始终允许；仅在桌面操作开启时显示。"},
+		{label: "浏览器模式", placeholder: "", description: "左右键或空格切换禁用、当前会话与隔离实例。禁用后隐藏其余浏览器配置。"},
+		{label: "浏览器权限模式", placeholder: "", description: "左右键或空格切换逐次确认、跟随全局审批、始终允许。该项优先控制浏览器变更操作。"},
 		{label: "浏览器通道", placeholder: "", description: "左右键或空格切换 chrome、chromium、edge、brave。"},
 		{label: "浏览器可执行文件路径", placeholder: "/Applications/Google Chrome.app/...", description: "可选；留空表示按浏览器通道自动探测。"},
 		{label: "浏览器数据目录", placeholder: "/path/to/profile", description: "可选；isolated 模式下可指定用户数据目录。"},
@@ -7678,7 +7708,7 @@ func configFormFieldGroup(index int) string {
 		return "运行与超时"
 	case configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage:
 		return "会话与输出"
-	case configFieldComputerEnabled:
+	case configFieldComputerEnabled, configFieldComputerPermissionMode:
 		return "桌面操作"
 	case configFieldBrowserMode, configFieldBrowserPermissionMode, configFieldBrowserChannel, configFieldBrowserExecutablePath, configFieldBrowserProfileDir, configFieldBrowserConnectTimeout, configFieldBrowserExtensionSetup, configFieldBrowserSocketDir, configFieldBrowserRemoteDebuggingURL, configFieldBrowserHeadless:
 		return "浏览器自动化"
@@ -7730,6 +7760,8 @@ func configFormFieldValue(index int, values ConfigFormValues) string {
 	case configFieldOutputLanguage:
 		return strings.TrimSpace(values.OutputLanguage)
 	case configFieldComputerEnabled:
+		return ""
+	case configFieldComputerPermissionMode:
 		return ""
 	case configFieldBrowserMode:
 		return ""
@@ -7892,6 +7924,8 @@ func configFieldKey(index int) string {
 		return "output_language"
 	case configFieldComputerEnabled:
 		return "computer_enabled"
+	case configFieldComputerPermissionMode:
+		return "computer_permission_mode"
 	case configFieldBrowserMode:
 		return "browser_mode"
 	case configFieldBrowserPermissionMode:
@@ -8056,6 +8090,20 @@ func (m *model) moveConfigComputerEnabledCursor(delta int) {
 	m.syncLayout()
 }
 
+func (m *model) moveConfigComputerPermissionCursor(delta int) {
+	choices := configComputerPermissionChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.computerPermissionCursor += delta
+	if m.configForm.computerPermissionCursor < 0 {
+		m.configForm.computerPermissionCursor = len(choices) - 1
+	} else if m.configForm.computerPermissionCursor >= len(choices) {
+		m.configForm.computerPermissionCursor = 0
+	}
+	m.syncLayout()
+}
+
 func (m *model) moveConfigBrowserModeCursor(delta int) {
 	choices := configBrowserModeChoices()
 	if m.configForm == nil || len(choices) == 0 {
@@ -8183,8 +8231,17 @@ func configComputerEnabledChoices() []ConfigChoice {
 	}
 }
 
+func configComputerPermissionChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: internalconfig.ComputerPermissionModeAsk, Label: "每次确认", Description: "桌面变更操作逐次确认。"},
+		{Value: internalconfig.ComputerPermissionModeFollowPlan, Label: "跟随全局审批", Description: "仅在全局命令执行模式为每次确认时弹出桌面工具确认。"},
+		{Value: internalconfig.ComputerPermissionModeSkipAll, Label: "始终允许", Description: "桌面变更操作直接放行，不再弹出桌面工具确认。"},
+	}
+}
+
 func configBrowserModeChoices() []ConfigChoice {
 	return []ConfigChoice{
+		{Value: internalconfig.BrowserModeDisabled, Label: "关闭", Description: "禁用浏览器自动化，并隐藏其他浏览器配置。"},
 		{Value: internalconfig.BrowserModeChromeSession, Label: "当前会话", Description: "通过浏览器扩展与本地消息链路接入当前浏览器会话。"},
 		{Value: internalconfig.BrowserModeIsolated, Label: "隔离实例", Description: "启动一个独立浏览器实例执行自动化操作。"},
 	}
@@ -8193,8 +8250,8 @@ func configBrowserModeChoices() []ConfigChoice {
 func configBrowserPermissionChoices() []ConfigChoice {
 	return []ConfigChoice{
 		{Value: internalconfig.BrowserPermissionModeAsk, Label: "每次确认", Description: "浏览器变更操作逐次确认。"},
-		{Value: internalconfig.BrowserPermissionModeFollowPlan, Label: "跟随计划", Description: "仅在全局命令执行模式为每次确认时弹出浏览器确认。"},
-		{Value: internalconfig.BrowserPermissionModeSkipAll, Label: "直接允许", Description: "浏览器变更操作直接放行，不再弹出浏览器确认。"},
+		{Value: internalconfig.BrowserPermissionModeFollowPlan, Label: "跟随全局审批", Description: "仅在全局命令执行模式为每次确认时弹出浏览器确认。"},
+		{Value: internalconfig.BrowserPermissionModeSkipAll, Label: "始终允许", Description: "浏览器变更操作直接放行，不再弹出浏览器确认。"},
 	}
 }
 
@@ -8274,9 +8331,14 @@ func configFieldVisible(form *configFormState, index int) bool {
 	if form == nil {
 		return true
 	}
+	computerEnabled := configChoiceValue(configComputerEnabledChoices(), form.computerEnabledCursor, "true") == "true"
 	browserMode := configChoiceValue(configBrowserModeChoices(), form.browserModeCursor, internalconfig.BrowserModeChromeSession)
 	browserExtensionSetup := configChoiceValue(configBrowserExtensionSetupChoices(), form.browserExtensionCursor, internalconfig.BrowserExtensionSetupNative)
 	switch index {
+	case configFieldComputerPermissionMode:
+		return computerEnabled
+	case configFieldBrowserPermissionMode, configFieldBrowserChannel, configFieldBrowserConnectTimeout:
+		return browserMode != internalconfig.BrowserModeDisabled
 	case configFieldBrowserExecutablePath, configFieldBrowserProfileDir, configFieldBrowserHeadless:
 		return browserMode == internalconfig.BrowserModeIsolated
 	case configFieldBrowserExtensionSetup:

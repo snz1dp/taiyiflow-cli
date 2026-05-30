@@ -57,16 +57,17 @@ func (a *App) showConfigHelp() error {
 		"  backend_base_url              服务端地址，需填写完整的 HTTP 或 HTTPS 地址。",
 		"  default_flow                  默认智能体 ID；留空时启动后自动选择。",
 		"  approval_mode                 命令执行模式；可选 confirm（每次确认）、auto（自动执行）、readonly（只读模式）。",
-		"  browser_mode                  浏览器自动化模式；可选 chrome_session（连接当前浏览器会话）、isolated（独立实例）。",
+		"  browser_mode                  浏览器自动化模式；可选 disabled（禁用）、chrome_session（连接当前浏览器会话）、isolated（独立实例）。",
 		"  browser_permission_mode       浏览器变更工具审批；可选 ask、follow_a_plan、skip_all_permission_checks。",
 		"  computer_enabled              桌面操作开关；可选 true、false。",
-		"  computer_permission_mode      桌面操作变更工具审批；可选 ask、follow_a_plan。",
+		"  computer_permission_mode      桌面操作变更工具审批；可选 ask、follow_a_plan、skip_all_permission_checks。",
 		"  doc_unstructured_exts         逗号分隔扩展名；未配置时使用内置默认值，可用自定义列表覆盖。",
 		"  skills_auto_install_policy    技能自动补装策略；可选 off、confirm、allow。",
 		"  cross_session_memory_enabled  跨会话记忆开关；可选 true、false。",
 		"",
 		"示例:",
 		"  taiyiflow-cli config set backend_base_url https://snz1.cn",
+		"  taiyiflow-cli config set browser_mode disabled",
 		"  taiyiflow-cli config set browser_mode isolated",
 		"  taiyiflow-cli config set computer_enabled false",
 		"  taiyiflow-cli config set browser_remote_debugging_url http://127.0.0.1:9222",
@@ -188,7 +189,7 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 	case "browser_mode":
 		normalizedMode := internalconfig.NormalizeBrowserMode(trimmedValue)
 		if strings.ToLower(trimmedValue) != normalizedMode {
-			return fmt.Errorf("browser_mode 仅支持 chrome_session、isolated")
+			return fmt.Errorf("browser_mode 仅支持 disabled、chrome_session、isolated")
 		}
 		config.Browser.Mode = normalizedMode
 	case "browser_permission_mode":
@@ -206,7 +207,7 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 	case "computer_permission_mode":
 		normalizedMode := internalconfig.NormalizeComputerPermissionMode(trimmedValue)
 		if strings.ToLower(trimmedValue) != normalizedMode {
-			return fmt.Errorf("computer_permission_mode 仅支持 ask、follow_a_plan")
+			return fmt.Errorf("computer_permission_mode 仅支持 ask、follow_a_plan、skip_all_permission_checks")
 		}
 		config.Computer.PermissionMode = normalizedMode
 	case "browser_channel":
@@ -562,17 +563,9 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("认证端前缀: %s", fallbackConfigValue(config.AuthAPIPrefix, internalconfig.Default().AuthAPIPrefix)),
 		fmt.Sprintf("默认智能体: %s", fallbackConfigValue(config.DefaultFlow, "<未配置>")),
 		fmt.Sprintf("命令执行模式: %s", fallbackConfigValue(config.ApprovalMode, internalconfig.Default().ApprovalMode)),
-		fmt.Sprintf("浏览器自动化模式: %s", fallbackConfigValue(config.Browser.Mode, internalconfig.Default().Browser.Mode)),
-		fmt.Sprintf("浏览器权限模式: %s", fallbackConfigValue(config.Browser.PermissionMode, internalconfig.Default().Browser.PermissionMode)),
+		fmt.Sprintf("浏览器自动化模式: %s", browserModeDisplay(config.Browser.Mode)),
 		fmt.Sprintf("桌面操作: %s", enabledStateLabel(internalconfig.ComputerEnabled(config.Computer))),
-		fmt.Sprintf("桌面操作权限模式: %s", fallbackConfigValue(config.Computer.PermissionMode, internalconfig.Default().Computer.PermissionMode)),
-		fmt.Sprintf("浏览器通道: %s", fallbackConfigValue(config.Browser.Channel, internalconfig.Default().Browser.Channel)),
-		fmt.Sprintf("浏览器可执行文件: %s", fallbackConfigValue(config.Browser.ExecutablePath, "<自动探测>")),
-		fmt.Sprintf("浏览器 Profile 目录: %s", fallbackConfigValue(config.Browser.ProfileDir, "<自动管理>")),
-		fmt.Sprintf("浏览器连接超时: %d 秒", config.Browser.ConnectTimeoutSeconds),
-		fmt.Sprintf("浏览器扩展接入: %s", fallbackConfigValue(config.Browser.ExtensionSetup, internalconfig.Default().Browser.ExtensionSetup)),
-		fmt.Sprintf("浏览器调试端点: %s", fallbackConfigValue(config.Browser.RemoteDebuggingURL, "<默认 127.0.0.1:9222>")),
-		fmt.Sprintf("浏览器 Headless: %t", config.Browser.Headless),
+		fmt.Sprintf("桌面操作权限模式: %s", computerPermissionModeDisplay(config.Computer.PermissionMode)),
 		fmt.Sprintf("默认思考模式: %t", config.ReasoningEnabled),
 		fmt.Sprintf("工作目录: %s", fallbackConfigValue(config.Workdir, "<当前目录>")),
 		fmt.Sprintf("外部资源访问策略: %s", fallbackConfigValue(config.SandboxEscapePolicy, internalconfig.Default().SandboxEscapePolicy)),
@@ -592,6 +585,19 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("技能仓库: %s", fallbackConfigValue(config.Skills.RegistryURL, internalconfig.Default().Skills.RegistryURL)),
 		fmt.Sprintf("文档服务端解析类型: %s", fallbackConfigValue(strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "), strings.Join(prefixDocumentExts(internalconfig.Default().DocUnstructuredExts), ", "))),
 		fmt.Sprintf("可访问外部资源目录: %s", fallbackConfigValue(strings.Join(config.SandboxRoots, ", "), "<仅当前工作目录>")),
+	}
+	if internalconfig.BrowserEnabled(config.Browser) {
+		browserLines := []string{
+			fmt.Sprintf("浏览器权限模式: %s", browserPermissionModeDisplay(config.Browser.PermissionMode)),
+			fmt.Sprintf("浏览器通道: %s", browserChannelDisplay(config.Browser.Channel)),
+			fmt.Sprintf("浏览器可执行文件: %s", fallbackConfigValue(config.Browser.ExecutablePath, "<自动探测>")),
+			fmt.Sprintf("浏览器 Profile 目录: %s", fallbackConfigValue(config.Browser.ProfileDir, "<自动管理>")),
+			fmt.Sprintf("浏览器连接超时: %d 秒", config.Browser.ConnectTimeoutSeconds),
+			fmt.Sprintf("浏览器扩展接入: %s", browserExtensionSetupDisplay(config.Browser.ExtensionSetup)),
+			fmt.Sprintf("浏览器调试端点: %s", fallbackConfigValue(config.Browser.RemoteDebuggingURL, "<默认 127.0.0.1:9222>")),
+			fmt.Sprintf("浏览器 Headless: %t", config.Browser.Headless),
+		}
+		lines = append(lines[:7], append(browserLines, lines[7:]...)...)
 	}
 	return strings.Join(lines, "\n")
 }

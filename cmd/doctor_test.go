@@ -61,3 +61,38 @@ func TestDetectComputerAutomationStatusUsesChineseLabels(t *testing.T) {
 		}
 	}
 }
+
+func TestDetectComputerAutomationStatusUsesSkipAllLabel(t *testing.T) {
+	config := internalconfig.Config{
+		Computer: internalconfig.ComputerConfig{
+			PermissionMode: internalconfig.ComputerPermissionModeSkipAll,
+		},
+	}
+
+	message := detectComputerAutomationStatus(config)
+	if !strings.Contains(message, "权限模式: 始终允许") {
+		t.Fatalf("expected skip all label in %q", message)
+	}
+}
+
+func TestDetectBrowserAutomationStatusWhenDisabled(t *testing.T) {
+	config := internalconfig.Config{
+		Browser: internalconfig.BrowserConfig{Mode: internalconfig.BrowserModeDisabled},
+	}
+
+	message := detectBrowserAutomationStatus(config)
+	for _, expected := range []string{
+		"浏览器模式: 已禁用",
+		"状态: 不可用",
+		"浏览器自动化已在配置中禁用",
+	} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("expected %q in %q", expected, message)
+		}
+	}
+	for _, unexpected := range []string{"权限模式:", "浏览器通道:", "扩展接入:"} {
+		if strings.Contains(message, unexpected) {
+			t.Fatalf("did not expect %q in %q", unexpected, message)
+		}
+	}
+}

@@ -169,6 +169,7 @@ type serviceConfigResponse struct {
 	DocExts               []string                    `json:"doc_exts"`
 	MilvusEnabled         bool                        `json:"milvus_enabled"`
 	DefaultFlowID         string                      `json:"default_flow_id"`
+	ImageFlowID           string                      `json:"image_flow_id"`
 	DocUnstructuredFlowID string                      `json:"doc_unstructured_flow_id"`
 }
 

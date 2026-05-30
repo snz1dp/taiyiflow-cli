@@ -84,6 +84,12 @@ func TestAssignConfigValueCommandTimeoutSeconds(t *testing.T) {
 
 func TestAssignAndResetBrowserConfigValues(t *testing.T) {
 	config := internalconfig.Default()
+	if err := assignConfigValue(&config, "browser_mode", "disabled"); err != nil {
+		t.Fatalf("assignConfigValue browser_mode disabled returned error: %v", err)
+	}
+	if config.Browser.Mode != internalconfig.BrowserModeDisabled {
+		t.Fatalf("expected browser mode %q, got %q", internalconfig.BrowserModeDisabled, config.Browser.Mode)
+	}
 	if err := assignConfigValue(&config, "browser_mode", "isolated"); err != nil {
 		t.Fatalf("assignConfigValue browser_mode returned error: %v", err)
 	}
@@ -147,6 +153,25 @@ func TestAssignAndResetComputerEnabledConfigValue(t *testing.T) {
 	}
 	if !internalconfig.ComputerEnabled(config.Computer) {
 		t.Fatal("expected desktop automation to be re-enabled after reset")
+	}
+}
+
+func TestAssignAndResetComputerPermissionModeConfigValue(t *testing.T) {
+	config := internalconfig.Default()
+	if err := assignConfigValue(&config, "computer_permission_mode", "skip_all_permission_checks"); err != nil {
+		t.Fatalf("assignConfigValue computer_permission_mode returned error: %v", err)
+	}
+	if config.Computer.PermissionMode != internalconfig.ComputerPermissionModeSkipAll {
+		t.Fatalf("expected desktop permission mode %q, got %#v", internalconfig.ComputerPermissionModeSkipAll, config.Computer)
+	}
+	if err := assignConfigValue(&config, "computer_permission_mode", "maybe"); err == nil {
+		t.Fatal("expected invalid computer_permission_mode value to fail")
+	}
+	if err := resetConfigValue(&config, "computer_permission_mode"); err != nil {
+		t.Fatalf("resetConfigValue computer_permission_mode returned error: %v", err)
+	}
+	if config.Computer.PermissionMode != internalconfig.Default().Computer.PermissionMode {
+		t.Fatalf("expected default desktop permission mode %q, got %#v", internalconfig.Default().Computer.PermissionMode, config.Computer)
 	}
 }
 
@@ -280,6 +305,34 @@ func TestRenderConfigSummaryUsesDefaultDocUnstructuredExts(t *testing.T) {
 	}
 }
 
+func TestRenderConfigSummaryHidesBrowserDetailsWhenDisabled(t *testing.T) {
+	config := internalconfig.Default()
+	config.Browser.Mode = internalconfig.BrowserModeDisabled
+	summary := renderConfigSummary("/tmp/taiyiflow.yaml", config)
+	for _, expected := range []string{"浏览器自动化模式:", "桌面操作:", "桌面操作权限模式:"} {
+		if !strings.Contains(summary, expected) {
+			t.Fatalf("expected %q in %q", expected, summary)
+		}
+	}
+	for _, hidden := range []string{"浏览器权限模式:", "浏览器通道:", "浏览器可执行文件:", "浏览器 Profile 目录:", "浏览器连接超时:", "浏览器扩展接入:", "浏览器调试端点:", "浏览器 Headless:"} {
+		if strings.Contains(summary, hidden) {
+			t.Fatalf("expected %q hidden in %q", hidden, summary)
+		}
+	}
+}
+
+func TestRenderConfigSummaryUsesPermissionDisplayLabels(t *testing.T) {
+	config := internalconfig.Default()
+	config.Browser.PermissionMode = internalconfig.BrowserPermissionModeFollowPlan
+	config.Computer.PermissionMode = internalconfig.ComputerPermissionModeSkipAll
+	summary := renderConfigSummary("/tmp/taiyiflow.yaml", config)
+	for _, expected := range []string{"浏览器权限模式: 跟随全局审批", "桌面操作权限模式: 始终允许", "浏览器自动化模式: 当前会话"} {
+		if !strings.Contains(summary, expected) {
+			t.Fatalf("expected %q in %q", expected, summary)
+		}
+	}
+}
+
 func TestAssignConfigValueRejectsUnsupportedAccessTokenConfig(t *testing.T) {
 	config := internalconfig.Default()
 	err := assignConfigValue(&config, "access_token", "token-1")
@@ -321,6 +374,7 @@ func TestRunConfigHelpOutputsLocalizedUsage(t *testing.T) {
 		"配置命令用于查看、设置或清空命令行（CLI）全局配置。",
 		"taiyiflow-cli config set <配置项> <值>",
 		"browser_mode",
+		"disabled",
 		"computer_enabled",
 		"browser_permission_mode",
 		"doc_unstructured_exts",

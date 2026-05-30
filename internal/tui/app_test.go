@@ -861,6 +861,40 @@ func TestRenderConfigFormUsesChoiceFieldsForBrowserOptions(t *testing.T) {
 	}
 }
 
+func TestRenderConfigFormUsesChoiceFieldsForComputerOptions(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{
+		Title: "配置设置",
+		Values: ConfigFormValues{
+			ComputerEnabled:        true,
+			ComputerPermissionMode: internalconfig.ComputerPermissionModeFollowPlan,
+		},
+	})
+	state.cursor = configFieldComputerPermissionMode
+
+	rendered := sanitizeTerminalText(model{contentWidth: 88, configForm: state}.renderConfigForm())
+	if !strings.Contains(rendered, "桌面操作") || !strings.Contains(rendered, "桌面操作权限模式") || !strings.Contains(rendered, "跟随全局审批") || !strings.Contains(rendered, "始终允许") {
+		t.Fatalf("expected computer option fields rendered, got %q", rendered)
+	}
+	if isConfigTextField(configFieldComputerEnabled) || isConfigTextField(configFieldComputerPermissionMode) {
+		t.Fatal("expected desktop automation toggles to use choice rendering")
+	}
+}
+
+func TestRenderConfigFormHidesComputerPermissionWhenDisabled(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{
+		Title: "配置设置",
+		Values: ConfigFormValues{
+			ComputerEnabled:        false,
+			ComputerPermissionMode: internalconfig.ComputerPermissionModeFollowPlan,
+		},
+	})
+
+	rendered := sanitizeTerminalText(model{contentWidth: 88, configForm: state}.renderConfigForm())
+	if strings.Contains(rendered, "桌面操作权限模式") {
+		t.Fatalf("expected desktop permission field hidden when disabled, got %q", rendered)
+	}
+}
+
 func TestRenderConfigFormHidesChromeSessionIncompatibleBrowserFields(t *testing.T) {
 	state := newConfigFormState(ConfigFormState{
 		Title: "配置设置",
@@ -896,6 +930,28 @@ func TestRenderConfigFormHidesNativeMessagingFieldsForIsolatedBrowser(t *testing
 	}
 	if !strings.Contains(rendered, "浏览器数据目录") || !strings.Contains(rendered, "隔离浏览器无头模式") || !strings.Contains(rendered, "(*) 开启") {
 		t.Fatalf("expected isolated browser fields rendered, got %q", rendered)
+	}
+}
+
+func TestRenderConfigFormHidesBrowserFieldsWhenDisabled(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{
+		Title: "配置设置",
+		Values: ConfigFormValues{
+			BrowserMode:           internalconfig.BrowserModeDisabled,
+			BrowserPermissionMode: internalconfig.BrowserPermissionModeSkipAll,
+			BrowserChannel:        internalconfig.BrowserChannelEdge,
+			BrowserExtensionSetup: internalconfig.BrowserExtensionSetupNative,
+		},
+	})
+
+	rendered := sanitizeTerminalText(model{contentWidth: 88, configForm: state}.renderConfigForm())
+	if !strings.Contains(rendered, "浏览器模式") {
+		t.Fatalf("expected browser mode field to remain visible, got %q", rendered)
+	}
+	for _, hidden := range []string{"浏览器权限模式", "浏览器通道", "浏览器可执行文件路径", "浏览器数据目录", "浏览器连接超时（秒）", "扩展安装方式", "浏览器桥接 socket 目录"} {
+		if strings.Contains(rendered, hidden) {
+			t.Fatalf("expected browser field %q hidden when disabled, got %q", hidden, rendered)
+		}
 	}
 }
 
