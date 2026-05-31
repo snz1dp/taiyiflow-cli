@@ -77,6 +77,7 @@ func (r *ClientRuntime) computerTool(
 		return nil, err
 	}
 	if toolName == computerToolScreenshot {
+		inheritScreenshotImageUnderstandingArguments(prepared, result)
 		normalized := cloneArguments(result)
 		if strings.TrimSpace(stringValue(normalized["path"])) == "" {
 			normalized["path"] = strings.TrimSpace(argumentString(prepared, "path"))

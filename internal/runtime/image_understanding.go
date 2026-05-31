@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
@@ -15,9 +16,10 @@ const (
 	imageUnderstandingUserPromptComponent   = "Prompt-GRXIq"
 	imageUnderstandingTextOutputComponent   = "TextOutput-fXIUJ"
 
-	screenshotImageUnderstandingSystemTemplate = "你是截图理解助手。当前输入图像仅来自桌面 ComputerUse 或浏览器自动化截图，不是文档结构化解析任务。请只依据截图中可见的像素内容，优先识别界面结构、可交互元素、状态变化、错误提示、可见文本和与当前问题直接相关的线索；不要臆测不可见内容，不要补全被遮挡区域，也不要把截图按文档理解流程处理。"
+	screenshotImageUnderstandingSystemTemplate = "你是截图理解助手。当前输入图像仅来自桌面 ComputerUse 或浏览器自动化截图，不是文档结构化解析任务。请只依据截图中可见的像素内容，优先识别界面结构、可交互元素、状态变化、错误提示、可见文本和与当前问题直接相关的线索；不要臆测不可见内容，不要补全被遮挡区域，也不要把截图按文档理解流程处理。若问题涉及按钮、输入框、链接或其他目标的位置，请优先使用截图左上角为原点的截图本地像素坐标(x,y)描述，不要自行换算成全局桌面坐标；只有在问题明确要求且已提供显示器 origin 等元数据时，才说明如何换算。"
 	screenshotImageUnderstandingUserTemplate   = "请仅依据截图中可见内容回答问题，并且只返回纯文本结果；若截图中没有足够证据，请直接说明“截图中未见相关信息”。\n问题：{question}"
 	screenshotImageUnderstandingDefaultInput  = "请概述截图中的界面结构、可见文本、可交互元素和关键状态信息。"
+	screenshotImageUnderstandingContextPrefix = "截图坐标上下文："
 )
 
 func (r *ClientRuntime) understandImageWithProvider(
@@ -169,15 +171,109 @@ func ensureScreenshotImageUnderstandingInput(arguments map[string]any) {
 	if arguments == nil {
 		return
 	}
-	if strings.TrimSpace(argumentString(arguments, "input_value")) != "" {
+	inputValue := strings.TrimSpace(argumentString(arguments, "input_value"))
+	if inputValue == "" {
+		if input := strings.TrimSpace(argumentString(arguments, "input", "prompt")); input != "" {
+			inputValue = input
+		} else {
+			inputValue = screenshotImageUnderstandingDefaultInput
+		}
+	}
+	if contextNote := buildScreenshotImageUnderstandingContext(arguments); contextNote != "" && !strings.Contains(inputValue, screenshotImageUnderstandingContextPrefix) {
+		inputValue = strings.TrimSpace(inputValue + "\n\n" + contextNote)
+	}
+	arguments["input_value"] = inputValue
+}
+
+func inheritScreenshotImageUnderstandingArguments(arguments map[string]any, result map[string]any) {
+	if arguments == nil || result == nil {
 		return
 	}
-	if input := strings.TrimSpace(argumentString(arguments, "input", "prompt")); input != "" {
-		arguments["input_value"] = input
-		return
+	for _, key := range []string{
+		"screenshot_width_px",
+		"screenshot_height_px",
+		"display_id",
+		"display_index",
+		"display_origin_x",
+		"display_origin_y",
+		"display_scale_factor",
+		"display_logical_width",
+		"display_logical_height",
+		"display_width_px",
+		"display_height_px",
+	} {
+		if _, exists := arguments[key]; exists {
+			continue
+		}
+		if value, ok := result[key]; ok {
+			arguments[key] = value
+		}
 	}
-	arguments["input_value"] = screenshotImageUnderstandingDefaultInput
+}
+
+func buildScreenshotImageUnderstandingContext(arguments map[string]any) string {
+	if arguments == nil {
+		return ""
 	}
+	parts := []string{fmt.Sprintf("%s若需要描述目标位置，请使用截图本地像素坐标(x,y)，原点在截图左上角；除非问题明确要求，否则不要直接输出全局桌面坐标。", screenshotImageUnderstandingContextPrefix)}
+	width := intValue(arguments["screenshot_width_px"], 0)
+	height := intValue(arguments["screenshot_height_px"], 0)
+	if width > 0 && height > 0 {
+		parts = append(parts, fmt.Sprintf("当前截图尺寸为 %d x %d 像素。", width, height))
+	}
+	if displayID := strings.TrimSpace(stringValue(arguments["display_id"])); displayID != "" {
+		parts = append(parts, fmt.Sprintf("来源显示器 display_id=%s。", displayID))
+	}
+	if displayIndex := intValue(arguments["display_index"], 0); displayIndex > 0 {
+		parts = append(parts, fmt.Sprintf("来源显示器 display_index=%d。", displayIndex))
+	}
+	originX, hasOriginX := optionalIntArgument(arguments, "display_origin_x")
+	originY, hasOriginY := optionalIntArgument(arguments, "display_origin_y")
+	if hasOriginX || hasOriginY {
+		parts = append(parts, fmt.Sprintf("若后续必须换算为全局桌面坐标，再结合 display_origin_x=%d 和 display_origin_y=%d。", originX, originY))
+	}
+	if scaleFactor, ok := optionalFloatArgument(arguments, "display_scale_factor"); ok && scaleFactor > 0 {
+		parts = append(parts, fmt.Sprintf("显示器 scale_factor=%.3g。", scaleFactor))
+	}
+	return strings.Join(parts, " ")
+}
+
+func optionalIntArgument(arguments map[string]any, key string) (int, bool) {
+	value, ok := arguments[key]
+	if !ok {
+		return 0, false
+	}
+	return intValue(value, 0), true
+}
+
+func optionalFloatArgument(arguments map[string]any, key string) (float64, bool) {
+	value, ok := arguments[key]
+	if !ok {
+		return 0, false
+	}
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return 0, false
+		}
+		parsed, err := strconv.ParseFloat(trimmed, 64)
+		if err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
+}
 
 func buildDefaultImageUnderstandingTweaks() map[string]any {
 	return map[string]any{

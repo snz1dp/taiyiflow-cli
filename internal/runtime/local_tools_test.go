@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -89,10 +92,45 @@ func assertScreenshotImageUnderstandingTweaks(t *testing.T, request provider.Ima
 	if !strings.Contains(stringValue(userPrompt["template"]), "{question}") {
 		t.Fatalf("expected screenshot user prompt template to preserve {question}, got %#v", userPrompt)
 	}
+	if !strings.Contains(stringValue(systemPrompt["template"]), "截图本地像素坐标") {
+		t.Fatalf("expected screenshot system prompt to mention screenshot-local coordinates, got %#v", systemPrompt)
+	}
 	textOutput, ok := request.Tweaks[imageUnderstandingTextOutputComponent].(map[string]any)
 	if !ok || strings.TrimSpace(stringValue(textOutput["output_format"])) != "text" {
 		t.Fatalf("expected screenshot text output tweak, got %#v", request.Tweaks)
 	}
+}
+
+func assertScreenshotImageUnderstandingInput(t *testing.T, request provider.ImageUnderstandingRequest, baseInput string, expectsMetadata bool) {
+	t.Helper()
+	input := strings.TrimSpace(request.Input)
+	if !strings.Contains(input, strings.TrimSpace(baseInput)) {
+		t.Fatalf("expected screenshot image understanding input to preserve base input %q, got %#v", baseInput, request)
+	}
+	if !strings.Contains(input, screenshotImageUnderstandingContextPrefix) {
+		t.Fatalf("expected screenshot image understanding input to include coordinate context, got %#v", request)
+	}
+	if !strings.Contains(input, "截图本地像素坐标") {
+		t.Fatalf("expected screenshot image understanding input to mention screenshot-local coordinates, got %#v", request)
+	}
+	if expectsMetadata && !strings.Contains(input, "当前截图尺寸") {
+		t.Fatalf("expected screenshot image understanding input to include screenshot dimensions, got %#v", request)
+	}
+}
+
+func mustEncodeTestPNG(t *testing.T, width int, height int) []byte {
+	t.Helper()
+	imageBuffer := bytes.Buffer{}
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.Set(x, y, color.RGBA{R: uint8((x + 1) * 7), G: uint8((y + 1) * 11), B: 0x66, A: 0xFF})
+		}
+	}
+	if err := png.Encode(&imageBuffer, img); err != nil {
+		t.Fatalf("encode test png failed: %v", err)
+	}
+	return imageBuffer.Bytes()
 }
 
 func TestSelectImageUnderstandingTextOnlyUsesTextOutputContract(t *testing.T) {
@@ -1908,7 +1946,7 @@ func TestBrowserReadTextNormalizesArgumentAliasAndResultShape(t *testing.T) {
 func TestBrowserScreenshotDecodesExtensionResultToPath(t *testing.T) {
 	tempDir := t.TempDir()
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
-	expectedBytes := []byte("fake-png-bytes")
+	expectedBytes := mustEncodeTestPNG(t, 9, 5)
 	browserStub := &browserToolExecutorStub{result: map[string]any{
 		"tab_id":       "tab-shot",
 		"image_base64": base64.StdEncoding.EncodeToString(expectedBytes),
@@ -1951,6 +1989,12 @@ func TestBrowserScreenshotDecodesExtensionResultToPath(t *testing.T) {
 	if got := intValue(resultMap["size"], 0); got != len(expectedBytes) {
 		t.Fatalf("expected screenshot size %d, got %#v", len(expectedBytes), resultMap)
 	}
+	if got := intValue(resultMap["screenshot_width_px"], 0); got != 9 {
+		t.Fatalf("expected screenshot width 9, got %#v", resultMap)
+	}
+	if got := intValue(resultMap["screenshot_height_px"], 0); got != 5 {
+		t.Fatalf("expected screenshot height 5, got %#v", resultMap)
+	}
 	if got := strings.TrimSpace(stringValue(resultMap["content_type"])); got != "image/png" {
 		t.Fatalf("expected screenshot content_type image/png, got %#v", resultMap)
 	}
@@ -1962,7 +2006,7 @@ func TestBrowserScreenshotDecodesExtensionResultToPath(t *testing.T) {
 func TestBrowserScreenshotAddsImageUnderstandingWhenConfigured(t *testing.T) {
 	tempDir := t.TempDir()
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
-	expectedBytes := []byte("fake-browser-png")
+	expectedBytes := mustEncodeTestPNG(t, 13, 7)
 	browserStub := &browserToolExecutorStub{result: map[string]any{
 		"tab_id":       "tab-shot",
 		"image_base64": base64.StdEncoding.EncodeToString(expectedBytes),
@@ -2017,9 +2061,7 @@ func TestBrowserScreenshotAddsImageUnderstandingWhenConfigured(t *testing.T) {
 	if providerStub.imageRunRequest.FlowID != "image-flow" || providerStub.imageRunRequest.SessionID != "session-browser-1" {
 		t.Fatalf("unexpected image flow request metadata: %#v", providerStub.imageRunRequest)
 	}
-	if providerStub.imageRunRequest.Input != "请提取图像内容" {
-		t.Fatalf("expected input_value to reach image flow, got %#v", providerStub.imageRunRequest)
-	}
+	assertScreenshotImageUnderstandingInput(t, providerStub.imageRunRequest, "请提取图像内容", true)
 	assertScreenshotImageUnderstandingTweaks(t, providerStub.imageRunRequest)
 	if providerStub.imageRunRequest.ImageCompressionStrategy != provider.ImageCompressionStrategyPassthrough {
 		t.Fatalf("expected default image compression strategy passthrough, got %#v", providerStub.imageRunRequest)
@@ -2039,7 +2081,7 @@ func TestBrowserScreenshotAddsImageUnderstandingWhenConfigured(t *testing.T) {
 func TestBrowserScreenshotAddsDefaultImageUnderstandingInputWhenMissing(t *testing.T) {
 	tempDir := t.TempDir()
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
-	expectedBytes := []byte("fake-browser-png")
+	expectedBytes := mustEncodeTestPNG(t, 13, 7)
 	browserStub := &browserToolExecutorStub{result: map[string]any{
 		"tab_id":       "tab-shot",
 		"image_base64": base64.StdEncoding.EncodeToString(expectedBytes),
@@ -2075,9 +2117,7 @@ func TestBrowserScreenshotAddsDefaultImageUnderstandingInputWhenMissing(t *testi
 	if err != nil {
 		t.Fatalf("expected screenshot with default image understanding input to succeed, got %v", err)
 	}
-	if providerStub.imageRunRequest.Input != screenshotImageUnderstandingDefaultInput {
-		t.Fatalf("expected default input_value %q, got %#v", screenshotImageUnderstandingDefaultInput, providerStub.imageRunRequest)
-	}
+	assertScreenshotImageUnderstandingInput(t, providerStub.imageRunRequest, screenshotImageUnderstandingDefaultInput, true)
 	assertScreenshotImageUnderstandingTweaks(t, providerStub.imageRunRequest)
 	if providerStub.imageRunRequest.ImageCompressionStrategy != provider.ImageCompressionStrategyPassthrough {
 		t.Fatalf("expected default image compression strategy passthrough, got %#v", providerStub.imageRunRequest)
@@ -2258,7 +2298,7 @@ func TestComputerScreenshotAddsImageUnderstandingWhenConfigured(t *testing.T) {
 		t.Fatalf("write screenshot fixture failed: %v", err)
 	}
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
-	computerStub := &computerToolExecutorStub{result: map[string]any{"path": "", "content_type": "image/png"}}
+	computerStub := &computerToolExecutorStub{result: map[string]any{"path": "", "content_type": "image/png", "screenshot_width_px": 1440, "screenshot_height_px": 900, "display_index": 2, "display_origin_x": 2560, "display_origin_y": -180, "display_scale_factor": 2.0}}
 	runtimeClient.SetComputerToolExecutor(computerStub)
 	providerStub := &documentToolProviderStub{
 		serviceConfig: &provider.ServiceConfig{ImageFlowID: "image-flow"},
@@ -2298,9 +2338,10 @@ func TestComputerScreenshotAddsImageUnderstandingWhenConfigured(t *testing.T) {
 	if len(providerStub.uploadCalls) != 1 || providerStub.uploadCalls[0].LocalPath != resolvedExplicitPath {
 		t.Fatalf("expected uploaded explicit screenshot path, got %#v", providerStub.uploadCalls)
 	}
-	if providerStub.imageRunRequest.FlowID != "image-flow" || providerStub.imageRunRequest.Input != "请提取状态栏内容" {
-		t.Fatalf("unexpected image flow request: %#v", providerStub.imageRunRequest)
+	if providerStub.imageRunRequest.FlowID != "image-flow" {
+		t.Fatalf("unexpected image flow request metadata: %#v", providerStub.imageRunRequest)
 	}
+	assertScreenshotImageUnderstandingInput(t, providerStub.imageRunRequest, "请提取状态栏内容", true)
 	assertScreenshotImageUnderstandingTweaks(t, providerStub.imageRunRequest)
 	if providerStub.imageRunRequest.ImageCompressionStrategy != provider.ImageCompressionStrategyPassthrough {
 		t.Fatalf("expected passthrough compression strategy, got %#v", providerStub.imageRunRequest)
@@ -2328,7 +2369,7 @@ func TestComputerScreenshotAddsDefaultImageUnderstandingInputWhenMissing(t *test
 		t.Fatalf("write screenshot fixture failed: %v", err)
 	}
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
-	computerStub := &computerToolExecutorStub{result: map[string]any{"path": "", "content_type": "image/png"}}
+	computerStub := &computerToolExecutorStub{result: map[string]any{"path": "", "content_type": "image/png", "screenshot_width_px": 1440, "screenshot_height_px": 900, "display_index": 2, "display_origin_x": 2560, "display_origin_y": -180, "display_scale_factor": 2.0}}
 	runtimeClient.SetComputerToolExecutor(computerStub)
 	providerStub := &documentToolProviderStub{
 		serviceConfig: &provider.ServiceConfig{ImageFlowID: "image-flow"},
@@ -2360,9 +2401,7 @@ func TestComputerScreenshotAddsDefaultImageUnderstandingInputWhenMissing(t *test
 	if err != nil {
 		t.Fatalf("expected desktop screenshot with default image understanding input to succeed, got %v", err)
 	}
-	if providerStub.imageRunRequest.Input != screenshotImageUnderstandingDefaultInput {
-		t.Fatalf("expected default input_value %q, got %#v", screenshotImageUnderstandingDefaultInput, providerStub.imageRunRequest)
-	}
+	assertScreenshotImageUnderstandingInput(t, providerStub.imageRunRequest, screenshotImageUnderstandingDefaultInput, true)
 	assertScreenshotImageUnderstandingTweaks(t, providerStub.imageRunRequest)
 	if providerStub.imageRunRequest.ImageCompressionStrategy != provider.ImageCompressionStrategyPassthrough {
 		t.Fatalf("expected passthrough compression strategy, got %#v", providerStub.imageRunRequest)

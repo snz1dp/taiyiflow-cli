@@ -1,9 +1,12 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"image/png"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -77,6 +80,7 @@ func (r *ClientRuntime) browserTool(
 		return nil, err
 	}
 	if toolName == browserToolScreenshot {
+		inheritScreenshotImageUnderstandingArguments(prepared, result)
 		ensureScreenshotImageUnderstandingInput(prepared)
 		// 截图不要改变大小，直接传原图给图像理解服务
 		prepared["image_compression_strategy"] = provider.ImageCompressionStrategyPassthrough
@@ -422,6 +426,10 @@ func normalizeBrowserToolResult(toolName string, arguments map[string]any, resul
 			}
 			normalized["path"] = pathValue
 			normalized["size"] = len(imageBytes)
+			if width, height, err := decodePNGDimensions(imageBytes); err == nil && width > 0 && height > 0 {
+				normalized["screenshot_width_px"] = width
+				normalized["screenshot_height_px"] = height
+			}
 			if strings.TrimSpace(stringValue(normalized["content_type"])) == "" {
 				normalized["content_type"] = "image/png"
 			}
@@ -429,9 +437,41 @@ func normalizeBrowserToolResult(toolName string, arguments map[string]any, resul
 			delete(normalized, "format")
 		} else if pathValue != "" {
 			normalized["path"] = pathValue
+			if width, height, err := readRuntimePNGDimensions(pathValue); err == nil && width > 0 && height > 0 {
+				if _, ok := normalized["screenshot_width_px"]; !ok {
+					normalized["screenshot_width_px"] = width
+				}
+				if _, ok := normalized["screenshot_height_px"]; !ok {
+					normalized["screenshot_height_px"] = height
+				}
+			}
 		}
 	}
 	return normalized, nil
+}
+
+func decodePNGDimensions(imageBytes []byte) (int, int, error) {
+	if len(imageBytes) == 0 {
+		return 0, 0, fmt.Errorf("empty png bytes")
+	}
+	config, err := png.DecodeConfig(bytes.NewReader(imageBytes))
+	if err != nil {
+		return 0, 0, err
+	}
+	return config.Width, config.Height, nil
+}
+
+func readRuntimePNGDimensions(path string) (int, int, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer file.Close()
+	config, err := png.DecodeConfig(file)
+	if err != nil {
+		return 0, 0, err
+	}
+	return config.Width, config.Height, nil
 }
 
 func (r *ClientRuntime) resolveBrowserScreenshotPath(config internalconfig.Config, arguments map[string]any) (string, error) {

@@ -42,6 +42,16 @@ var (
 	darwinCurrentMousePositionFunc = darwinCurrentMousePosition
 	darwinPostMouseMoveFunc        = darwinPostMouseMove
 	darwinPostMouseButtonEventFunc = darwinPostMouseButtonEvent
+	darwinSettleMouseBeforeClick   = func(ctx context.Context) error {
+		timer := time.NewTimer(35 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		}
+	}
 	darwinTypeTextFunc             = darwinTypeText
 	displayScreenshotDimensionsMu  sync.RWMutex
 	displayScreenshotByID          = map[string]displayScreenshotDimensions{}
@@ -776,6 +786,9 @@ func darwinMouseClick(ctx context.Context, arguments map[string]any) (map[string
 		x = point.X
 		y = point.Y
 		if err := darwinPostMouseMoveFunc(x, y); err != nil {
+			return nil, err
+		}
+		if err := darwinSettleMouseBeforeClick(ctx); err != nil {
 			return nil, err
 		}
 	}

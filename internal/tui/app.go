@@ -3124,7 +3124,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 				m.requestStats.RunID = event.Stats.RunID
 			}
 			if event.Stats.TokenUsage != nil {
-				m.requestStats.TokenUsage = event.Stats.TokenUsage
+				m.requestStats.TokenUsage = mergeTokenUsagePreservingContextWindow(m.requestStats.TokenUsage, event.Stats.TokenUsage)
 			}
 			if event.Stats.Compression != nil {
 				m.requestStats.Compression = event.Stats.Compression
@@ -9035,6 +9035,31 @@ func cloneRequestMetrics(source *RequestMetrics) RequestMetrics {
 		cloned.Compression = &compression
 	}
 	return cloned
+}
+
+func mergeTokenUsagePreservingContextWindow(current *TokenUsage, incoming *TokenUsage) *TokenUsage {
+	if incoming == nil {
+		if current == nil {
+			return nil
+		}
+		cloned := *current
+		if current.ContextWindow != nil {
+			contextWindow := *current.ContextWindow
+			cloned.ContextWindow = &contextWindow
+		}
+		return &cloned
+	}
+	merged := *incoming
+	if incoming.ContextWindow != nil {
+		contextWindow := *incoming.ContextWindow
+		merged.ContextWindow = &contextWindow
+		return &merged
+	}
+	if current != nil && current.ContextWindow != nil {
+		contextWindow := *current.ContextWindow
+		merged.ContextWindow = &contextWindow
+	}
+	return &merged
 }
 
 func (m model) requestStatsSegment(compact bool) string {

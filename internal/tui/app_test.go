@@ -3974,6 +3974,50 @@ func TestApplyEventStatsUpdateStoresCompressionWithoutSummaryEntry(t *testing.T)
 	}
 }
 
+func TestApplyEventStatsUpdatePreservesExistingContextWindow(t *testing.T) {
+	model := model{
+		requestStats: RequestMetrics{
+			TokenUsage: &TokenUsage{
+				ContextWindow: &ContextWindow{
+					MaxInputTokens:           8192,
+					CurrentRoundInputTokens:  2048,
+					NextRoundAvailableTokens: 6144,
+					ContextUsageTokens:       3072,
+				},
+			},
+		},
+	}
+	stats := &RequestMetrics{
+		TokenUsage: &TokenUsage{
+			InputTokens:  256,
+			OutputTokens: 128,
+			TotalTokens:  384,
+			StopReason:   "user_interrupted",
+		},
+	}
+
+	model.applyEvent(Event{Kind: EventStatsUpdate, Stats: stats})
+
+	if model.requestStats.TokenUsage == nil || model.requestStats.TokenUsage.ContextWindow == nil {
+		t.Fatalf("expected existing context window to be preserved, got %#v", model.requestStats.TokenUsage)
+	}
+	if got := model.requestStats.TokenUsage.ContextWindow.CurrentRoundInputTokens; got != 2048 {
+		t.Fatalf("expected preserved current round input tokens, got %d", got)
+	}
+	if got := model.requestStats.TokenUsage.ContextWindow.NextRoundAvailableTokens; got != 6144 {
+		t.Fatalf("expected preserved next round availability, got %d", got)
+	}
+	if got := model.requestStats.TokenUsage.TotalTokens; got != 384 {
+		t.Fatalf("expected incoming token totals to still update, got %d", got)
+	}
+	if got := model.requestStats.TokenUsage.StopReason; got != "user_interrupted" {
+		t.Fatalf("expected incoming stop reason to still update, got %q", got)
+	}
+	if hint := model.inputContextUsageHint(); !strings.Contains(hint, "共8K剩6K可用") {
+		t.Fatalf("expected preserved footer context usage hint, got %q", hint)
+	}
+}
+
 func TestAssistantChunkWithoutSplitBoundaryKeepsSingleEntry(t *testing.T) {
 	model := model{}
 

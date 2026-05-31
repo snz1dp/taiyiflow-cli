@@ -193,10 +193,12 @@ func TestDarwinMouseClickMovesBeforeClickingSpecifiedCoordinates(t *testing.T) {
 	originalCurrentMousePositionFunc := darwinCurrentMousePositionFunc
 	originalPostMouseMoveFunc := darwinPostMouseMoveFunc
 	originalPostMouseButtonEventFunc := darwinPostMouseButtonEventFunc
+	originalSettleMouseBeforeClick := darwinSettleMouseBeforeClick
 	t.Cleanup(func() {
 		darwinCurrentMousePositionFunc = originalCurrentMousePositionFunc
 		darwinPostMouseMoveFunc = originalPostMouseMoveFunc
 		darwinPostMouseButtonEventFunc = originalPostMouseButtonEventFunc
+		darwinSettleMouseBeforeClick = originalSettleMouseBeforeClick
 	})
 
 	darwinCurrentMousePositionFunc = func() (int, int, error) {
@@ -208,7 +210,15 @@ func TestDarwinMouseClickMovesBeforeClickingSpecifiedCoordinates(t *testing.T) {
 		events = append(events, mouseEventCall{kind: "move", x: x, y: y})
 		return nil
 	}
+	settled := false
+	darwinSettleMouseBeforeClick = func(ctx context.Context) error {
+		settled = true
+		return nil
+	}
 	darwinPostMouseButtonEventFunc = func(eventKind int, button int, x int, y int, clickState int) error {
+		if !settled {
+			t.Fatal("expected click to wait for pointer settle after explicit move")
+		}
 		events = append(events, mouseEventCall{kind: "button", eventKind: eventKind, button: button, x: x, y: y, clickState: clickState})
 		return nil
 	}
@@ -244,10 +254,12 @@ func TestDarwinMouseClickUsesCurrentPointerWhenCoordinatesOmitted(t *testing.T) 
 	originalCurrentMousePositionFunc := darwinCurrentMousePositionFunc
 	originalPostMouseMoveFunc := darwinPostMouseMoveFunc
 	originalPostMouseButtonEventFunc := darwinPostMouseButtonEventFunc
+	originalSettleMouseBeforeClick := darwinSettleMouseBeforeClick
 	t.Cleanup(func() {
 		darwinCurrentMousePositionFunc = originalCurrentMousePositionFunc
 		darwinPostMouseMoveFunc = originalPostMouseMoveFunc
 		darwinPostMouseButtonEventFunc = originalPostMouseButtonEventFunc
+		darwinSettleMouseBeforeClick = originalSettleMouseBeforeClick
 	})
 
 	darwinCurrentMousePositionFunc = func() (int, int, error) {
@@ -255,6 +267,10 @@ func TestDarwinMouseClickUsesCurrentPointerWhenCoordinatesOmitted(t *testing.T) 
 	}
 	darwinPostMouseMoveFunc = func(x int, y int) error {
 		t.Fatalf("omitted-coordinate click should not post an extra move, got (%d,%d)", x, y)
+		return nil
+	}
+	darwinSettleMouseBeforeClick = func(ctx context.Context) error {
+		t.Fatal("omitted-coordinate click should not wait for settle without an explicit move")
 		return nil
 	}
 	events := []mouseEventCall{}
