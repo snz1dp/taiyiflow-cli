@@ -207,3 +207,22 @@ func TestBuildDarwinTypeTextScriptPreservesLineBreaksAndTrailingEnter(t *testing
 		t.Fatalf("expected three enter key codes for blank line + trailing enter, got %d in %q", got, script)
 	}
 }
+
+func TestRequiresDarwinClipboardTextInput(t *testing.T) {
+	if requiresDarwinClipboardTextInput("hello") {
+		t.Fatal("expected ASCII text to stay on direct input path")
+	}
+	if !requiresDarwinClipboardTextInput("老婆") {
+		t.Fatal("expected Chinese text to use clipboard paste fallback")
+	}
+}
+
+func TestBuildDarwinPasteShortcutScriptUsesCommandVWithDelay(t *testing.T) {
+	script := buildDarwinPasteShortcutScript()
+	if !strings.Contains(script, "key code 9 using command down") {
+		t.Fatalf("expected paste shortcut script to send Command+V, got %q", script)
+	}
+	if !strings.Contains(script, "delay 0.05") {
+		t.Fatalf("expected paste shortcut script to wait briefly before clipboard restore, got %q", script)
+	}
+}

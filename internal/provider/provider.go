@@ -25,7 +25,7 @@ const (
 	RequestTypePlan                                     = "plan"
 	RequestTypeAgent                                    = "agent"
 	DeviceTypeCLI                                       = "cli"
-	ImageCompressionStrategyPassthrough                 = "passthrough"
+	ImageCompressionStrategyPassthrough                 = "follow_system"
 	FeatureInternetSearch                               = "internet_search"
 	FeatureKnowledgeSearch                              = "knowledge_search"
 	FeatureImageUnderstanding                           = "image_understanding"

@@ -17,6 +17,7 @@ const (
 
 	screenshotImageUnderstandingSystemTemplate = "你是截图理解助手。当前输入图像仅来自桌面 ComputerUse 或浏览器自动化截图，不是文档结构化解析任务。请只依据截图中可见的像素内容，优先识别界面结构、可交互元素、状态变化、错误提示、可见文本和与当前问题直接相关的线索；不要臆测不可见内容，不要补全被遮挡区域，也不要把截图按文档理解流程处理。"
 	screenshotImageUnderstandingUserTemplate   = "请仅依据截图中可见内容回答问题，并且只返回纯文本结果；若截图中没有足够证据，请直接说明“截图中未见相关信息”。\n问题：{question}"
+	screenshotImageUnderstandingDefaultInput  = "请概述截图中的界面结构、可见文本、可交互元素和关键状态信息。"
 )
 
 func (r *ClientRuntime) understandImageWithProvider(
@@ -112,7 +113,7 @@ func (r *ClientRuntime) runImageUnderstanding(
 	}
 	result, err := imageRunner.RunImageUnderstanding(ctx, provider.ImageUnderstandingRequest{
 		FlowID:                   strings.TrimSpace(serviceConfig.ImageFlowID),
-		Input:                    argumentString(arguments, "input_value", "input", "prompt"),
+		Input:                    argumentString(arguments, "input_value"),
 		InputType:                fallbackString(argumentString(arguments, "input_type", "inputType"), "any"),
 		Tweaks:                   tweaks,
 		InputFiles:               remotePaths,
@@ -163,6 +164,16 @@ func imageUnderstandingPaths(arguments map[string]any) ([]string, error) {
 	}
 	return filtered, nil
 }
+
+func ensureScreenshotImageUnderstandingInput(arguments map[string]any) {
+	if arguments == nil {
+		return
+	}
+	if strings.TrimSpace(argumentString(arguments, "input_value")) != "" {
+		return
+	}
+	arguments["input_value"] = screenshotImageUnderstandingDefaultInput
+	}
 
 func buildDefaultImageUnderstandingTweaks() map[string]any {
 	return map[string]any{

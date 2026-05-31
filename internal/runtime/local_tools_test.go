@@ -1950,6 +1950,54 @@ func TestBrowserScreenshotAddsImageUnderstandingWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestBrowserScreenshotAddsDefaultImageUnderstandingInputWhenMissing(t *testing.T) {
+	tempDir := t.TempDir()
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	expectedBytes := []byte("fake-browser-png")
+	browserStub := &browserToolExecutorStub{result: map[string]any{
+		"tab_id":       "tab-shot",
+		"image_base64": base64.StdEncoding.EncodeToString(expectedBytes),
+		"format":       "png",
+	}}
+	runtimeClient.SetBrowserToolExecutor(browserStub)
+	providerStub := &documentToolProviderStub{
+		serviceConfig: &provider.ServiceConfig{ImageFlowID: "image-flow"},
+		imageRunResult: &provider.ImageUnderstandingResult{
+			SessionID: "session-image-2",
+			Output:    "Hello",
+			MediaType: "text/plain",
+			Text:      "Hello",
+		},
+	}
+	config := internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		Browser: internalconfig.BrowserConfig{
+			Mode:           internalconfig.BrowserModeChromeSession,
+			PermissionMode: internalconfig.BrowserPermissionModeSkipAll,
+		},
+	}
+	_, _, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, config, map[string]any{
+		"flow_id": "chat-flow-1",
+		"context": map[string]any{"session_id": "session-browser-1"},
+		"server":  map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name":      browserToolScreenshot,
+			"arguments": map[string]any{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected screenshot with default image understanding input to succeed, got %v", err)
+	}
+	if providerStub.imageRunRequest.Input != screenshotImageUnderstandingDefaultInput {
+		t.Fatalf("expected default input_value %q, got %#v", screenshotImageUnderstandingDefaultInput, providerStub.imageRunRequest)
+	}
+	assertScreenshotImageUnderstandingTweaks(t, providerStub.imageRunRequest)
+	if providerStub.imageRunRequest.ImageCompressionStrategy != provider.ImageCompressionStrategyPassthrough {
+		t.Fatalf("expected default image compression strategy passthrough, got %#v", providerStub.imageRunRequest)
+	}
+}
+
 func TestExecuteClientToolPayloadDispatchesComputerTool(t *testing.T) {
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	computerStub := &computerToolExecutorStub{result: map[string]any{"count": 2, "displays": []any{map[string]any{"display_id": "1"}, map[string]any{"display_id": "2"}}}}
@@ -2184,5 +2232,53 @@ func TestComputerScreenshotAddsImageUnderstandingWhenConfigured(t *testing.T) {
 	}
 	if imageUnderstanding != "Status" {
 		t.Fatalf("unexpected desktop image understanding payload: %#v", resultMap)
+	}
+}
+
+func TestComputerScreenshotAddsDefaultImageUnderstandingInputWhenMissing(t *testing.T) {
+	tempDir := t.TempDir()
+	explicitPath := filepath.Join(tempDir, "computer-shot.png")
+	if err := os.WriteFile(explicitPath, []byte("fake-computer-png"), 0o644); err != nil {
+		t.Fatalf("write screenshot fixture failed: %v", err)
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	computerStub := &computerToolExecutorStub{result: map[string]any{"path": "", "content_type": "image/png"}}
+	runtimeClient.SetComputerToolExecutor(computerStub)
+	providerStub := &documentToolProviderStub{
+		serviceConfig: &provider.ServiceConfig{ImageFlowID: "image-flow"},
+		imageRunResult: &provider.ImageUnderstandingResult{
+			SessionID: "session-image-3",
+			Output:    "Status",
+			MediaType: "text/plain",
+			Text:      "Status",
+		},
+	}
+	config := internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		Computer: internalconfig.ComputerConfig{
+			PermissionMode: internalconfig.ComputerPermissionModeSkipAll,
+		},
+	}
+	_, _, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, config, map[string]any{
+		"flow_id": "chat-flow-2",
+		"context": map[string]any{"session_id": "session-computer-1"},
+		"server":  map[string]any{"name": "local"},
+		"function": map[string]any{
+			"name": computerToolScreenshot,
+			"arguments": map[string]any{
+				"path": explicitPath,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected desktop screenshot with default image understanding input to succeed, got %v", err)
+	}
+	if providerStub.imageRunRequest.Input != screenshotImageUnderstandingDefaultInput {
+		t.Fatalf("expected default input_value %q, got %#v", screenshotImageUnderstandingDefaultInput, providerStub.imageRunRequest)
+	}
+	assertScreenshotImageUnderstandingTweaks(t, providerStub.imageRunRequest)
+	if providerStub.imageRunRequest.ImageCompressionStrategy != provider.ImageCompressionStrategyPassthrough {
+		t.Fatalf("expected passthrough compression strategy, got %#v", providerStub.imageRunRequest)
 	}
 }

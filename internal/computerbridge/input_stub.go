@@ -46,3 +46,17 @@ func darwinPostUnicodeText(text string) error {
 	_ = text
 	return fmt.Errorf("当前构建未启用 CGO，无法执行 Unicode 文本输入")
 }
+
+func darwinCaptureClipboard() ([]byte, error) {
+	return nil, fmt.Errorf("当前构建未启用 CGO，无法读取系统剪贴板快照")
+}
+
+func darwinRestoreClipboard(snapshot []byte) error {
+	_ = snapshot
+	return fmt.Errorf("当前构建未启用 CGO，无法恢复系统剪贴板快照")
+}
+
+func darwinSetClipboardText(text string) error {
+	_ = text
+	return fmt.Errorf("当前构建未启用 CGO，无法写入系统剪贴板")
+}

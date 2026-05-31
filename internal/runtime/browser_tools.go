@@ -77,7 +77,13 @@ func (r *ClientRuntime) browserTool(
 		return nil, err
 	}
 	if toolName == browserToolScreenshot {
-		if imageUnderstanding, understandErr := r.understandImageWithProvider(ctx, providerClient, config, prepared, stringValue(result["path"])); understandErr != nil {
+		ensureScreenshotImageUnderstandingInput(prepared)
+		// 截图不要改变大小，直接传原图给图像理解服务
+		prepared["image_compression_strategy"] = "passthrough"
+		imageUnderstanding, understandErr := r.understandImageWithProvider(
+			ctx, providerClient, config, prepared, stringValue(result["path"]),
+		)
+		if understandErr != nil {
 			result["image_understanding_error"] = understandErr.Error()
 		} else if strings.TrimSpace(imageUnderstanding) != "" {
 			result["image_understanding"] = imageUnderstanding
@@ -171,11 +177,10 @@ func browserClientToolDefinitions() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"path":                       map[string]any{"type": "string", "description": "可选输出路径。"},
-					"tab_id":                     map[string]any{"type": "string", "description": "可选标签页 ID。"},
-					"full_page":                  map[string]any{"type": "boolean", "description": "保留字段；当前默认截全页。"},
-					"input_value":                map[string]any{"type": "string", "description": "可选图像理解提示词；留空时由服务端使用默认提示。"},
-					"image_compression_strategy": map[string]any{"type": "string", "description": "可选图像压缩策略；默认 passthrough。"},
+					"path":        map[string]any{"type": "string", "description": "可选输出路径。"},
+					"tab_id":      map[string]any{"type": "string", "description": "可选标签页 ID。"},
+					"full_page":   map[string]any{"type": "boolean", "description": "保留字段；当前默认截全页。"},
+					"input_value": map[string]any{"type": "string", "description": "可选图像理解提示词"},
 				},
 				"additionalProperties": false,
 			},

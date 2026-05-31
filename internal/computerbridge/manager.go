@@ -133,8 +133,10 @@ func (m *Manager) Diagnose(config internalconfig.ComputerConfig) Status {
 	switch runtime.GOOS {
 	case "darwin":
 		return diagnoseDarwin()
-	case "windows", "linux":
-		return diagnoseDisplayOnlyPlatform(runtime.GOOS)
+	case "windows":
+		return diagnoseWindows()
+	case "linux":
+		return diagnoseLinux()
 	default:
 		return unsupportedStatus()
 	}
@@ -148,8 +150,10 @@ func (m *Manager) Execute(ctx context.Context, config internalconfig.ComputerCon
 	switch runtime.GOOS {
 	case "darwin":
 		return executeDarwinTool(ctx, toolName, arguments)
-	case "windows", "linux":
-		return executeDisplayOnlyTool(ctx, runtime.GOOS, toolName)
+	case "windows":
+		return executeWindowsTool(ctx, toolName, arguments)
+	case "linux":
+		return executeLinuxTool(ctx, toolName, arguments)
 	default:
 		return nil, fmt.Errorf("当前平台 %s 尚未实现桌面操作", runtime.GOOS)
 	}
@@ -251,6 +255,113 @@ func diagnoseDisplayOnlyPlatform(platform string) Status {
 	}
 }
 
+func diagnoseLinux() Status {
+	capabilities := allCapabilities()
+	lookup := map[string]*Capability{}
+	for index := range capabilities {
+		lookup[capabilities[index].ToolName] = &capabilities[index]
+		lookup[capabilities[index].ToolName].Reason = fmt.Sprintf("当前平台 %s 尚未实现", platformLabel("linux"))
+	}
+	layouts, err := platformDisplayLayouts()
+	if err == nil && len(layouts) > 0 {
+		lookup[toolDisplaysContext].Available = true
+		lookup[toolDisplaysContext].Reason = ""
+	} else if err != nil {
+		lookup[toolDisplaysContext].Reason = err.Error()
+	} else {
+		lookup[toolDisplaysContext].Reason = "未发现在线显示器"
+	}
+	if available, reason := linuxTypeTextAvailable(); available {
+		lookup[toolTypeText].Available = true
+		lookup[toolTypeText].Reason = linuxTypeTextCapabilityReason()
+	} else {
+		lookup[toolTypeText].Reason = reason
+	}
+	if available, reason := linuxKeyPressAvailable(); available {
+		lookup[toolKeyPress].Available = true
+		lookup[toolKeyPress].Reason = ""
+	} else {
+		lookup[toolKeyPress].Reason = reason
+	}
+	return buildPlatformStatus("linux", capabilities)
+}
+
+func diagnoseWindows() Status {
+	capabilities := allCapabilities()
+	lookup := map[string]*Capability{}
+	for index := range capabilities {
+		lookup[capabilities[index].ToolName] = &capabilities[index]
+		lookup[capabilities[index].ToolName].Reason = fmt.Sprintf("当前平台 %s 尚未实现", platformLabel("windows"))
+	}
+	layouts, err := platformDisplayLayouts()
+	if err == nil && len(layouts) > 0 {
+		lookup[toolDisplaysContext].Available = true
+		lookup[toolDisplaysContext].Reason = ""
+	} else if err != nil {
+		lookup[toolDisplaysContext].Reason = err.Error()
+	} else {
+		lookup[toolDisplaysContext].Reason = "未发现在线显示器"
+	}
+	if available, reason := windowsTypeTextAvailable(); available {
+		lookup[toolTypeText].Available = true
+		lookup[toolTypeText].Reason = windowsTypeTextCapabilityReason()
+	} else {
+		lookup[toolTypeText].Reason = reason
+	}
+	if available, reason := windowsKeyPressAvailable(); available {
+		lookup[toolKeyPress].Available = true
+		lookup[toolKeyPress].Reason = ""
+	} else {
+		lookup[toolKeyPress].Reason = reason
+	}
+	return buildPlatformStatus("windows", capabilities)
+}
+
+func buildPlatformStatus(platform string, capabilities []Capability) Status {
+	readable := []string{}
+	inputable := []string{}
+	for _, item := range capabilities {
+		if !item.Available {
+			continue
+		}
+		if item.Category == "read" {
+			readable = append(readable, strings.TrimPrefix(item.ToolName, "taiyiflow-computer__"))
+		} else {
+			inputable = append(inputable, strings.TrimPrefix(item.ToolName, "taiyiflow-computer__"))
+		}
+	}
+	parts := []string{fmt.Sprintf("平台: %s", platformLabel(platform))}
+	if len(readable) > 0 {
+		parts = append(parts, fmt.Sprintf("可用读取: %s", strings.Join(readable, ",")))
+	} else {
+		parts = append(parts, "可用读取: <none>")
+	}
+	if len(inputable) > 0 {
+		parts = append(parts, fmt.Sprintf("可用输入: %s", strings.Join(inputable, ",")))
+	} else {
+		parts = append(parts, "可用输入: <none>")
+	}
+	return Status{
+		Platform:       platform,
+		Available:      len(readable) > 0 || len(inputable) > 0,
+		ReadAvailable:  len(readable) > 0,
+		InputAvailable: len(inputable) > 0,
+		Message:        strings.Join(parts, " | "),
+		Capabilities:   capabilities,
+	}
+}
+
+func linuxTypeTextCapabilityReason() string {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("XDG_SESSION_TYPE")), "wayland") || strings.TrimSpace(os.Getenv("WAYLAND_DISPLAY")) != "" {
+		return "Wayland 通过 wtype 直接输入，不修改剪贴板"
+	}
+	return "X11 当前通过文本剪贴板粘贴输入，暂不支持完整多格式剪贴板恢复"
+}
+
+func windowsTypeTextCapabilityReason() string {
+	return "输入前会快照并恢复常见多格式剪贴板；遇到暂不支持恢复的格式时会拒绝覆盖剪贴板"
+}
+
 func executeDisplayOnlyTool(ctx context.Context, platform string, toolName string) (map[string]any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -264,6 +375,58 @@ func executeDisplayOnlyTool(ctx context.Context, platform string, toolName strin
 		return buildDisplaysContext(platform, layouts), nil
 	default:
 		return nil, fmt.Errorf("当前平台 %s 仅实现 displays_context，暂不支持 %s", platformLabel(platform), toolName)
+	}
+}
+
+func executeLinuxTool(ctx context.Context, toolName string, arguments map[string]any) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	switch strings.TrimSpace(toolName) {
+	case toolDisplaysContext:
+		layouts, err := platformDisplayLayouts()
+		if err != nil {
+			return nil, fmt.Errorf("读取显示器信息失败: %w", err)
+		}
+		return buildDisplaysContext("linux", layouts), nil
+	case toolTypeText:
+		if available, reason := linuxTypeTextAvailable(); !available {
+			return nil, fmt.Errorf("输入文本失败: %s", reason)
+		}
+		return linuxTypeText(ctx, arguments)
+	case toolKeyPress:
+		if available, reason := linuxKeyPressAvailable(); !available {
+			return nil, fmt.Errorf("发送按键失败: %s", reason)
+		}
+		return linuxKeyPress(ctx, arguments)
+	default:
+		return nil, fmt.Errorf("当前平台 %s 仅实现 displays_context、type_text 和 key_press，暂不支持 %s", platformLabel("linux"), toolName)
+	}
+}
+
+func executeWindowsTool(ctx context.Context, toolName string, arguments map[string]any) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	switch strings.TrimSpace(toolName) {
+	case toolDisplaysContext:
+		layouts, err := platformDisplayLayouts()
+		if err != nil {
+			return nil, fmt.Errorf("读取显示器信息失败: %w", err)
+		}
+		return buildDisplaysContext("windows", layouts), nil
+	case toolTypeText:
+		if available, reason := windowsTypeTextAvailable(); !available {
+			return nil, fmt.Errorf("输入文本失败: %s", reason)
+		}
+		return windowsTypeText(ctx, arguments)
+	case toolKeyPress:
+		if available, reason := windowsKeyPressAvailable(); !available {
+			return nil, fmt.Errorf("发送按键失败: %s", reason)
+		}
+		return windowsKeyPress(ctx, arguments)
+	default:
+		return nil, fmt.Errorf("当前平台 %s 仅实现 displays_context、type_text 和 key_press，暂不支持 %s", platformLabel("windows"), toolName)
 	}
 }
 
@@ -860,7 +1023,16 @@ func darwinTypeText(ctx context.Context, arguments map[string]any) (map[string]a
 	}
 	lines := splitTypedText(text)
 	pressEnter := boolValue(arguments["press_enter"])
-	if darwinUnicodeTextInputAvailable() {
+	if requiresDarwinClipboardTextInput(text) {
+		if err := darwinPasteText(ctx, text); err != nil {
+			return nil, err
+		}
+		if pressEnter {
+			if err := darwinPostKeyCode(36); err != nil {
+				return nil, err
+			}
+		}
+	} else if darwinUnicodeTextInputAvailable() {
 		for index, line := range lines {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -892,6 +1064,43 @@ func darwinTypeText(ctx context.Context, arguments map[string]any) (map[string]a
 		"line_count":  len(lines),
 		"press_enter": pressEnter,
 	}, nil
+}
+
+func requiresDarwinClipboardTextInput(text string) bool {
+	return len(text) != utf8.RuneCountInString(text)
+}
+
+func darwinPasteText(ctx context.Context, text string) error {
+	previous, err := darwinCaptureClipboard()
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := darwinSetClipboardText(text); err != nil {
+		return err
+	}
+	pasteErr := darwinTriggerPasteShortcut(ctx)
+	restoreErr := darwinRestoreClipboard(previous)
+	if pasteErr != nil {
+		return pasteErr
+	}
+	if restoreErr != nil {
+		return restoreErr
+	}
+	return nil
+}
+
+func darwinTriggerPasteShortcut(ctx context.Context) error {
+	if _, err := runOSAScript(ctx, buildDarwinPasteShortcutScript()); err != nil {
+		return fmt.Errorf("执行系统粘贴失败: %w", err)
+	}
+	return nil
+}
+
+func buildDarwinPasteShortcutScript() string {
+	return "tell application \"System Events\"\n  key code 9 using command down\n  delay 0.05\nend tell"
 }
 
 func buildDarwinTypeTextScript(text string, pressEnter bool) string {

@@ -3,9 +3,33 @@
 package computerbridge
 
 /*
-#cgo LDFLAGS: -framework ApplicationServices
+#cgo LDFLAGS: -framework ApplicationServices -framework AppKit -framework Foundation
 #include <ApplicationServices/ApplicationServices.h>
 #include <stdint.h>
+#include <stdlib.h>
+
+int clipboardSnapshotImpl(void** outBytes, long* outLen, void** outErrBytes, long* outErrLen);
+int clipboardRestoreImpl(const void* bytes, long length, void** outErrBytes, long* outErrLen);
+int clipboardSetTextImpl(const uint16_t* chars, long length, void** outErrBytes, long* outErrLen);
+
+static int clipboardSnapshot(void** outBytes, long* outLen, void** outErrBytes, long* outErrLen) {
+	return clipboardSnapshotImpl(outBytes, outLen, outErrBytes, outErrLen);
+}
+
+static int clipboardRestore(const void* bytes, long length, void** outErrBytes, long* outErrLen) {
+	return clipboardRestoreImpl(bytes, length, outErrBytes, outErrLen);
+}
+
+static int clipboardSetText(const uint16_t* chars, long length, void** outErrBytes, long* outErrLen) {
+	return clipboardSetTextImpl(chars, length, outErrBytes, outErrLen);
+}
+
+static void freeMemory(void* ptr) {
+	if (ptr != NULL) {
+		free(ptr);
+	}
+	return;
+}
 
 static int currentMouseLocation(double* x, double* y) {
 	CGEventRef event = CGEventCreate(NULL);
@@ -105,6 +129,7 @@ static int postUnicodeTextEvent(const uint16_t* chars, long length) {
 	CFRelease(up);
 	return 0;
 }
+
 */
 import "C"
 
@@ -168,4 +193,67 @@ func darwinPostUnicodeText(text string) error {
 		return fmt.Errorf("发布 Unicode 文本事件失败")
 	}
 	return nil
+}
+
+func darwinCaptureClipboard() ([]byte, error) {
+	var dataPtr unsafe.Pointer
+	var dataLen C.long
+	var errPtr unsafe.Pointer
+	var errLen C.long
+	if code := int(C.clipboardSnapshot(&dataPtr, &dataLen, &errPtr, &errLen)); code != 0 {
+		return nil, darwinClipboardError("读取系统剪贴板快照失败", errPtr, errLen)
+	}
+	defer C.freeMemory(dataPtr)
+	if dataLen == 0 || dataPtr == nil {
+		return nil, nil
+	}
+	return cloneForeignBytes(dataPtr, dataLen), nil
+}
+
+func darwinRestoreClipboard(snapshot []byte) error {
+	var dataPtr unsafe.Pointer
+	if len(snapshot) > 0 {
+		dataPtr = unsafe.Pointer(&snapshot[0])
+	}
+	var errPtr unsafe.Pointer
+	var errLen C.long
+	if code := int(C.clipboardRestore(dataPtr, C.long(len(snapshot)), &errPtr, &errLen)); code != 0 {
+		return darwinClipboardError("恢复系统剪贴板失败", errPtr, errLen)
+	}
+	return nil
+}
+
+func darwinSetClipboardText(text string) error {
+	units := utf16.Encode([]rune(text))
+	var unitPtr *C.uint16_t
+	if len(units) > 0 {
+		unitPtr = (*C.uint16_t)(unsafe.Pointer(&units[0]))
+	}
+	var errPtr unsafe.Pointer
+	var errLen C.long
+	if code := int(C.clipboardSetText(unitPtr, C.long(len(units)), &errPtr, &errLen)); code != 0 {
+		return darwinClipboardError("写入系统剪贴板失败", errPtr, errLen)
+	}
+	return nil
+}
+
+func cloneForeignBytes(ptr unsafe.Pointer, length C.long) []byte {
+	if ptr == nil || length <= 0 {
+		return nil
+	}
+	view := unsafe.Slice((*byte)(ptr), int(length))
+	cloned := make([]byte, len(view))
+	copy(cloned, view)
+	return cloned
+}
+
+func darwinClipboardError(prefix string, errPtr unsafe.Pointer, errLen C.long) error {
+	if errPtr != nil {
+		defer C.freeMemory(errPtr)
+		message := string(cloneForeignBytes(errPtr, errLen))
+		if message != "" {
+			return fmt.Errorf("%s: %s", prefix, message)
+		}
+	}
+	return fmt.Errorf("%s", prefix)
 }

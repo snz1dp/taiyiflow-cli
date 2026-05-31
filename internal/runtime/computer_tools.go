@@ -84,7 +84,13 @@ func (r *ClientRuntime) computerTool(
 		if strings.TrimSpace(stringValue(normalized["content_type"])) == "" {
 			normalized["content_type"] = "image/png"
 		}
-		if imageUnderstanding, understandErr := r.understandImageWithProvider(ctx, providerClient, config, prepared, stringValue(normalized["path"])); understandErr != nil {
+		ensureScreenshotImageUnderstandingInput(prepared)
+		// 截图不要改变大小，直接传原图给图像理解服务
+		prepared["image_compression_strategy"] = "passthrough"
+		imageUnderstanding, understandErr := r.understandImageWithProvider(
+			ctx, providerClient, config, prepared, stringValue(normalized["path"]),
+		)
+		if understandErr != nil {
 			normalized["image_understanding_error"] = understandErr.Error()
 		} else if strings.TrimSpace(imageUnderstanding) != "" {
 			normalized["image_understanding"] = imageUnderstanding
@@ -144,11 +150,10 @@ func computerClientToolDefinitions() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"path":                       map[string]any{"type": "string"},
-					"display_id":                 map[string]any{"type": "string"},
-					"display_index":              map[string]any{"type": "integer", "minimum": 1},
-					"input_value":                map[string]any{"type": "string", "description": "可选图像理解提示词；留空时由服务端使用默认提示。"},
-					"image_compression_strategy": map[string]any{"type": "string", "description": "可选图像压缩策略；默认 passthrough。"},
+					"path":          map[string]any{"type": "string"},
+					"display_id":    map[string]any{"type": "string"},
+					"display_index": map[string]any{"type": "integer", "minimum": 1},
+					"input_value":   map[string]any{"type": "string", "description": "可选图像理解提示词；"},
 				},
 				"additionalProperties": false,
 			},
