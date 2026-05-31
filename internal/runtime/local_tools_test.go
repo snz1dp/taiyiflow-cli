@@ -899,6 +899,9 @@ func TestExecuteClientToolPayloadWithProviderImageUnderstanding(t *testing.T) {
 	if strings.TrimSpace(providerStub.imageRunRequest.Input) != "请概述截图内容" {
 		t.Fatalf("expected image prompt to be forwarded, got %#v", providerStub.imageRunRequest)
 	}
+	if providerStub.imageRunRequest.ImageCompressionStrategy != provider.ImageCompressionStrategyFollowSystem {
+		t.Fatalf("expected generic image_understanding to default to follow_system, got %#v", providerStub.imageRunRequest)
+	}
 	result, ok := resultAny.(map[string]any)
 	if !ok {
 		t.Fatalf("expected image_understanding result map, got %#v", resultAny)

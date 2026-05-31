@@ -86,7 +86,7 @@ func (r *ClientRuntime) computerTool(
 		}
 		ensureScreenshotImageUnderstandingInput(prepared)
 		// 截图不要改变大小，直接传原图给图像理解服务
-		prepared["image_compression_strategy"] = "passthrough"
+		prepared["image_compression_strategy"] = provider.ImageCompressionStrategyPassthrough
 		imageUnderstanding, understandErr := r.understandImageWithProvider(
 			ctx, providerClient, config, prepared, stringValue(normalized["path"]),
 		)
@@ -165,13 +165,13 @@ func computerClientToolDefinitions() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"x":                map[string]any{"type": "integer"},
-					"y":                map[string]any{"type": "integer"},
-					"display_id":       map[string]any{"type": "string"},
-					"display_index":    map[string]any{"type": "integer", "minimum": 1},
+					"x":                    map[string]any{"type": "integer"},
+					"y":                    map[string]any{"type": "integer"},
+					"display_id":           map[string]any{"type": "string"},
+					"display_index":        map[string]any{"type": "integer", "minimum": 1},
 					"screenshot_width_px":  map[string]any{"type": "integer", "minimum": 1},
 					"screenshot_height_px": map[string]any{"type": "integer", "minimum": 1},
-					"coordinate_space": map[string]any{"type": "string", "enum": []string{"global_screen", "display_local"}},
+					"coordinate_space":     map[string]any{"type": "string", "enum": []string{"global_screen", "display_local"}},
 				},
 				"required":             []string{"x", "y"},
 				"additionalProperties": false,
@@ -184,15 +184,15 @@ func computerClientToolDefinitions() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"x":                map[string]any{"type": "integer"},
-					"y":                map[string]any{"type": "integer"},
-					"display_id":       map[string]any{"type": "string"},
-					"display_index":    map[string]any{"type": "integer", "minimum": 1},
+					"x":                    map[string]any{"type": "integer"},
+					"y":                    map[string]any{"type": "integer"},
+					"display_id":           map[string]any{"type": "string"},
+					"display_index":        map[string]any{"type": "integer", "minimum": 1},
 					"screenshot_width_px":  map[string]any{"type": "integer", "minimum": 1},
 					"screenshot_height_px": map[string]any{"type": "integer", "minimum": 1},
-					"coordinate_space": map[string]any{"type": "string", "enum": []string{"global_screen", "display_local"}},
-					"button":           map[string]any{"type": "string", "enum": []string{"left", "right", "middle"}},
-					"click_count":      map[string]any{"type": "integer", "minimum": 1, "maximum": 3},
+					"coordinate_space":     map[string]any{"type": "string", "enum": []string{"global_screen", "display_local"}},
+					"button":               map[string]any{"type": "string", "enum": []string{"left", "right", "middle"}},
+					"click_count":          map[string]any{"type": "integer", "minimum": 1, "maximum": 3},
 				},
 				"additionalProperties": false,
 			},
@@ -204,16 +204,16 @@ func computerClientToolDefinitions() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"from_x":           map[string]any{"type": "integer"},
-					"from_y":           map[string]any{"type": "integer"},
-					"to_x":             map[string]any{"type": "integer"},
-					"to_y":             map[string]any{"type": "integer"},
-					"display_id":       map[string]any{"type": "string"},
-					"display_index":    map[string]any{"type": "integer", "minimum": 1},
+					"from_x":               map[string]any{"type": "integer"},
+					"from_y":               map[string]any{"type": "integer"},
+					"to_x":                 map[string]any{"type": "integer"},
+					"to_y":                 map[string]any{"type": "integer"},
+					"display_id":           map[string]any{"type": "string"},
+					"display_index":        map[string]any{"type": "integer", "minimum": 1},
 					"screenshot_width_px":  map[string]any{"type": "integer", "minimum": 1},
 					"screenshot_height_px": map[string]any{"type": "integer", "minimum": 1},
-					"coordinate_space": map[string]any{"type": "string", "enum": []string{"global_screen", "display_local"}},
-					"duration_ms":      map[string]any{"type": "integer", "minimum": 0, "maximum": 10000},
+					"coordinate_space":     map[string]any{"type": "string", "enum": []string{"global_screen", "display_local"}},
+					"duration_ms":          map[string]any{"type": "integer", "minimum": 0, "maximum": 10000},
 				},
 				"required":             []string{"from_x", "from_y", "to_x", "to_y"},
 				"additionalProperties": false,

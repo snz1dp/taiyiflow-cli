@@ -109,11 +109,11 @@ func (r *ClientRuntime) runImageUnderstanding(
 	}
 	compressionStrategy := strings.TrimSpace(argumentString(arguments, "image_compression_strategy"))
 	if compressionStrategy == "" {
-		compressionStrategy = provider.ImageCompressionStrategyPassthrough
+		compressionStrategy = provider.ImageCompressionStrategyFollowSystem
 	}
 	result, err := imageRunner.RunImageUnderstanding(ctx, provider.ImageUnderstandingRequest{
 		FlowID:                   strings.TrimSpace(serviceConfig.ImageFlowID),
-		Input:                    argumentString(arguments, "input_value"),
+		Input:                    argumentString(arguments, "input_value", "input", "prompt"),
 		InputType:                fallbackString(argumentString(arguments, "input_type", "inputType"), "any"),
 		Tweaks:                   tweaks,
 		InputFiles:               remotePaths,
@@ -170,6 +170,10 @@ func ensureScreenshotImageUnderstandingInput(arguments map[string]any) {
 		return
 	}
 	if strings.TrimSpace(argumentString(arguments, "input_value")) != "" {
+		return
+	}
+	if input := strings.TrimSpace(argumentString(arguments, "input", "prompt")); input != "" {
+		arguments["input_value"] = input
 		return
 	}
 	arguments["input_value"] = screenshotImageUnderstandingDefaultInput

@@ -79,7 +79,7 @@ func (r *ClientRuntime) browserTool(
 	if toolName == browserToolScreenshot {
 		ensureScreenshotImageUnderstandingInput(prepared)
 		// 截图不要改变大小，直接传原图给图像理解服务
-		prepared["image_compression_strategy"] = "passthrough"
+		prepared["image_compression_strategy"] = provider.ImageCompressionStrategyPassthrough
 		imageUnderstanding, understandErr := r.understandImageWithProvider(
 			ctx, providerClient, config, prepared, stringValue(result["path"]),
 		)

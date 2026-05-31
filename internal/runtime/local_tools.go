@@ -399,7 +399,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "image_understanding",
-			"description":          "上传本地图像文件到服务端图像理解流程(image_flow_id)并返回纯文本结果",
+			"description":          "上传本地图像文件到服务端图像理解流程(image_flow_id)并返回纯文本结果；Browser 自动化与 ComputerUse 的截图增强也复用同一能力。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
