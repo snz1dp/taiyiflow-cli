@@ -3771,7 +3771,9 @@ func renderEntries(entries []entry, width int, height int, renderer *glamour.Ter
 
 func (m model) renderStatusBar() string {
 	stateLabel := m.state.label
-	if !m.snapshot.BackendAvailable && !m.isBusy() {
+	if m.interrupting {
+		stateLabel = "请求已中断"
+	} else if !m.snapshot.BackendAvailable && !m.isBusy() {
 		stateLabel = "只读模式"
 	}
 	renderWidth := m.width

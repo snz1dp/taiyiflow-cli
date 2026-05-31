@@ -2100,6 +2100,7 @@ func TestInterruptRequestRemovesStreamingIndicator(t *testing.T) {
 	canceled := false
 	appModel := model{
 		entries:                    []entry{{role: "user", content: "问题"}, {role: "assistant", content: "回答"}},
+		snapshot:                   Snapshot{BackendAvailable: true, RequestMode: "agent", ApprovalMode: "confirm"},
 		state:                      newProgressState(progressStreaming),
 		streamingIndicatorActive:   true,
 		streamingIndicatorFrame:    2,
@@ -2108,7 +2109,9 @@ func TestInterruptRequestRemovesStreamingIndicator(t *testing.T) {
 		requestCancel: func() {
 			canceled = true
 		},
-		viewport: viewport.Model{Width: 80, Height: 10},
+		viewport:     viewport.Model{Width: 80, Height: 10},
+		width:        120,
+		contentWidth: 120,
 	}
 	appModel.syncViewport()
 	if got := sanitizeTerminalText(appModel.viewport.View()); !strings.Contains(got, "回答...") {
@@ -2131,6 +2134,11 @@ func TestInterruptRequestRemovesStreamingIndicator(t *testing.T) {
 	}
 	if got := sanitizeTerminalText(updated.viewport.View()); strings.Contains(got, "回答.  ") || strings.Contains(got, "回答..  ") || strings.Contains(got, "回答...") || strings.Contains(got, "回答 ..") || strings.Contains(got, "回答  .") || strings.Contains(got, "请求已中断.  ") || strings.Contains(got, "请求已中断..  ") || strings.Contains(got, "请求已中断...") || strings.Contains(got, "请求已中断 ..") || strings.Contains(got, "请求已中断  .") {
 		t.Fatalf("expected interrupt to remove streaming ellipsis from viewport, got %q", got)
+	}
+	if status := sanitizeTerminalText(updated.renderStatusBar()); strings.Contains(status, "流式响应中") || strings.Contains(status, "请求已发出") {
+		t.Fatalf("expected interrupt to clear in-flight status bar label, got %q", status)
+	} else if !strings.Contains(status, "请求已中断") {
+		t.Fatalf("expected interrupt status bar label, got %q", status)
 	}
 }
 
