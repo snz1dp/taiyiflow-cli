@@ -266,24 +266,6 @@ func TestNormalizeStreamIdleTimeoutSeconds(t *testing.T) {
 	}
 }
 
-func TestNormalizeStreamRetryAttempts(t *testing.T) {
-	cases := []struct {
-		input    int
-		expected int
-	}{
-		{input: DefaultStreamRetryAttempts, expected: DefaultStreamRetryAttempts},
-		{input: 0, expected: 0},
-		{input: 2, expected: 2},
-		{input: MaxStreamRetryAttempts + 1, expected: MaxStreamRetryAttempts},
-		{input: -1, expected: DefaultStreamRetryAttempts},
-	}
-	for _, item := range cases {
-		if got := NormalizeStreamRetryAttempts(item.input); got != item.expected {
-			t.Fatalf("NormalizeStreamRetryAttempts(%d) = %d, want %d", item.input, got, item.expected)
-		}
-	}
-}
-
 func TestNormalizeCommandTimeoutSeconds(t *testing.T) {
 	cases := []struct {
 		input    int

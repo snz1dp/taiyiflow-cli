@@ -143,6 +143,10 @@ func (r *ClientRuntime) ClientMCPServersForMode(mode string, config internalconf
 		}
 		definitions = filtered
 	}
+	if !hideComputerTools {
+		status := sharedComputerToolManager.Diagnose(config.Computer)
+		definitions = filterComputerToolDefinitionsByCapabilities(definitions, status.Capabilities)
+	}
 	return map[string]any{
 		localToolServerName: definitions,
 	}

@@ -313,12 +313,6 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("stream_idle_timeout_seconds 仅支持大于等于 0 的整数秒，0 表示禁用")
 		}
 		config.StreamIdleTimeoutSeconds = seconds
-	case "stream_retry_attempts":
-		attempts, err := strconv.Atoi(trimmedValue)
-		if err != nil || attempts < 0 || attempts > internalconfig.MaxStreamRetryAttempts {
-			return fmt.Errorf("stream_retry_attempts 仅支持 0-%d 的整数，0 表示不重试", internalconfig.MaxStreamRetryAttempts)
-		}
-		config.StreamRetryAttempts = attempts
 	case "cross_session_memory_enabled":
 		normalized := strings.ToLower(trimmedValue)
 		if normalized != "true" && normalized != "false" {
@@ -441,8 +435,6 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.CommandTimeoutSeconds = defaults.CommandTimeoutSeconds
 	case "stream_idle_timeout_seconds":
 		config.StreamIdleTimeoutSeconds = defaults.StreamIdleTimeoutSeconds
-	case "stream_retry_attempts":
-		config.StreamRetryAttempts = defaults.StreamRetryAttempts
 	case "cross_session_memory_enabled":
 		config.CrossSessionMemoryEnabled = defaults.CrossSessionMemoryEnabled
 	case "qr_wait_timeout_seconds":
@@ -515,8 +507,6 @@ func normalizeConfigKey(key string) string {
 		return "http_timeout_seconds"
 	case "stream_idle_timeout":
 		return "stream_idle_timeout_seconds"
-	case "stream_retry", "stream_retry_count", "stream_retry_times", "stream_retry_attempt", "stream_retries":
-		return "stream_retry_attempts"
 	case "cross_session_memory", "cross_session_memory_enabled", "cross_session_memory_enable", "cross_session_mem", "memory_cross_session":
 		return "cross_session_memory_enabled"
 	case "qr_wait_timeout", "qrcode_wait_timeout", "qr_login_wait_timeout":
@@ -573,7 +563,6 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("写入确认策略: %s", fallbackConfigValue(config.WriteConfirmationPolicy, internalconfig.Default().WriteConfirmationPolicy)),
 		fmt.Sprintf("命令执行超时: %d 秒", config.CommandTimeoutSeconds),
 		fmt.Sprintf("流式空闲超时: %d 秒", config.StreamIdleTimeoutSeconds),
-		fmt.Sprintf("流失败自动重试次数: %d", config.StreamRetryAttempts),
 		fmt.Sprintf("跨会话记忆: %t", config.CrossSessionMemoryEnabled),
 		fmt.Sprintf("扫码等待超时: %d 秒", config.QRWaitTimeoutSeconds),
 		fmt.Sprintf("智能体自动续跑最大轮数: %d（0 表示禁用）", config.AgentAutoLoopMaxRounds),

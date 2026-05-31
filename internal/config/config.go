@@ -29,8 +29,6 @@ const (
 	MaxHTTPTimeoutSeconds            = 2000
 	MaxCommandTimeoutSeconds         = 6000
 	DefaultStreamIdleTimeoutSeconds  = 1200
-	DefaultStreamRetryAttempts       = 0
-	MaxStreamRetryAttempts           = 3
 	DefaultQRWaitTimeoutSeconds      = 120
 	DefaultAgentAutoLoopMaxRounds    = 0
 	MaxAgentAutoLoopMaxRounds        = 10000
@@ -120,7 +118,6 @@ type Config struct {
 	SandboxEscapePolicy       string           `yaml:"sandbox_escape_policy,omitempty"`
 	CommandTimeoutSeconds     int              `yaml:"command_timeout_seconds,omitempty"`
 	StreamIdleTimeoutSeconds  int              `yaml:"stream_idle_timeout_seconds,omitempty"`
-	StreamRetryAttempts       int              `yaml:"stream_retry_attempts,omitempty"`
 	QRWaitTimeoutSeconds      int              `yaml:"qr_wait_timeout_seconds,omitempty"`
 	AgentAutoLoopEnabled      bool             `yaml:"agent_auto_loop_enabled,omitempty"`
 	AgentAutoLoopMaxRounds    int              `yaml:"agent_auto_loop_max_rounds,omitempty"`
@@ -194,7 +191,6 @@ func Default() Config {
 		CommandTimeoutSeconds:     DefaultCommandTimeoutSeconds,
 		DocUnstructuredExts:       append([]string(nil), defaultDocUnstructuredExts...),
 		StreamIdleTimeoutSeconds:  DefaultStreamIdleTimeoutSeconds,
-		StreamRetryAttempts:       DefaultStreamRetryAttempts,
 		QRWaitTimeoutSeconds:      DefaultQRWaitTimeoutSeconds,
 		AgentAutoLoopEnabled:      false,
 		AgentAutoLoopMaxRounds:    DefaultAgentAutoLoopMaxRounds,
@@ -474,16 +470,6 @@ func NormalizeStreamIdleTimeoutSeconds(value int) int {
 	return value
 }
 
-func NormalizeStreamRetryAttempts(value int) int {
-	if value < 0 {
-		return DefaultStreamRetryAttempts
-	}
-	if value > MaxStreamRetryAttempts {
-		return MaxStreamRetryAttempts
-	}
-	return value
-}
-
 func NormalizeQRWaitTimeoutSeconds(value int) int {
 	if value < 0 {
 		return DefaultQRWaitTimeoutSeconds
@@ -618,7 +604,6 @@ func (m *Manager) Load() (Config, error) {
 	config.HTTPTimeoutSeconds = NormalizeHTTPTimeoutSeconds(config.HTTPTimeoutSeconds)
 	config.CommandTimeoutSeconds = NormalizeCommandTimeoutSeconds(config.CommandTimeoutSeconds)
 	config.StreamIdleTimeoutSeconds = NormalizeStreamIdleTimeoutSeconds(config.StreamIdleTimeoutSeconds)
-	config.StreamRetryAttempts = NormalizeStreamRetryAttempts(config.StreamRetryAttempts)
 	config.QRWaitTimeoutSeconds = NormalizeQRWaitTimeoutSeconds(config.QRWaitTimeoutSeconds)
 	config.AgentAutoLoopMaxRounds = NormalizeAgentAutoLoopMaxRounds(config.AgentAutoLoopMaxRounds)
 	if config.OutputLanguage == "" {

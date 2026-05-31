@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 
 	"golang.org/x/term"
 
@@ -61,8 +60,6 @@ type rootOptions struct {
 	ShowStreamEvents          bool
 	ShowThinking              bool
 	SandboxEscapePolicy       string
-	StreamRetryAttempts       int
-	StreamRetrySet            bool
 	CrossSessionMemoryEnabled bool
 	CrossSessionMemorySet     bool
 }
@@ -171,7 +168,6 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	flagSet.BoolVar(&options.ShowStreamEvents, "show-stream-events", false, "显示系统提示与工具调用等流式调试信息")
 	flagSet.BoolVar(&options.ShowThinking, "show-thinking", false, "显示思考内容（不输出 <think></think> 标签）")
 	flagSet.StringVar(&options.SandboxEscapePolicy, "external-resource-access-policy", "", "外部资源访问策略（confirm|deny|allow），仅影响当前命令")
-	flagSet.IntVar(&options.StreamRetryAttempts, "stream-retry-attempts", 0, "流失败后自动重试次数（0-3），默认使用系统配置")
 	flagSet.BoolVar(&options.CrossSessionMemoryEnabled, "cross-session-memory-enabled", false, "跨会话记忆（true|false），默认使用系统配置")
 
 	if err := flagSet.Parse(args); err != nil {
@@ -179,15 +175,10 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	}
 	flagSet.Visit(func(flag *flag.Flag) {
 		switch flag.Name {
-		case "stream-retry-attempts", "retry-attempts", "stream-retries":
-			options.StreamRetrySet = true
 		case "cross-session-memory-enabled":
 			options.CrossSessionMemorySet = true
 		}
 	})
-	if options.StreamRetrySet && (options.StreamRetryAttempts < 0 || options.StreamRetryAttempts > internalconfig.MaxStreamRetryAttempts) {
-		return fmt.Errorf("重试次数仅支持 0-%d 的整数，0 表示不重试", internalconfig.MaxStreamRetryAttempts)
-	}
 	if options.NewSession && strings.TrimSpace(options.SessionID) != "" {
 		return errors.New("--new 与 --session-id 不能同时使用")
 	}
@@ -223,9 +214,6 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	config, err := a.configManager.Load()
 	if err != nil {
 		return err
-	}
-	if options.StreamRetrySet {
-		config.StreamRetryAttempts = options.StreamRetryAttempts
 	}
 	if options.CrossSessionMemorySet {
 		config.CrossSessionMemoryEnabled = options.CrossSessionMemoryEnabled
@@ -493,9 +481,6 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	if err != nil {
 		return err
 	}
-	if options.StreamRetrySet {
-		config.StreamRetryAttempts = options.StreamRetryAttempts
-	}
 	if options.CrossSessionMemorySet {
 		config.CrossSessionMemoryEnabled = options.CrossSessionMemoryEnabled
 	}
@@ -702,30 +687,6 @@ func (a *App) streamTaskWithSkillRetry(
 		ClientSkillPackages:       clientSkillPackages,
 	})
 	if err != nil {
-		streamRetryLimit := internalconfig.NormalizeStreamRetryAttempts(config.StreamRetryAttempts)
-		if retryCount < streamRetryLimit && shouldRetryStreamRequestError(err) {
-			if showStreamEvents {
-				fmt.Fprintf(a.stdout, "[系统提示]: 检测到流式连接异常，正在自动重试（%d/%d）...\n", retryCount+1, streamRetryLimit)
-			}
-			select {
-			case <-ctx.Done():
-				return sessionState, ctx.Err()
-			case <-time.After(300 * time.Millisecond):
-			}
-			return a.streamTaskWithSkillRetry(
-				ctx,
-				providerClient,
-				config,
-				flowID,
-				task,
-				sessionState,
-				commandSandboxEscapePolicy,
-				showStreamEvents,
-				showThinking,
-				inputFiles,
-				retryCount+1,
-			)
-		}
 		return sessionState, err
 	}
 	hasVisibleOutput := false
@@ -883,31 +844,6 @@ func (a *App) streamTaskWithSkillRetry(
 						)
 					}
 				}
-			}
-			streamRetryLimit := internalconfig.NormalizeStreamRetryAttempts(config.StreamRetryAttempts)
-			if retryCount < streamRetryLimit && shouldRetryStreamError(normalizedErr) {
-				if clearIndicator := clearStreamingSuffixIfNeeded(renderStreamingSuffix, &renderState); clearIndicator != "" {
-					fmt.Fprint(a.stdout, clearIndicator)
-				}
-				if hasVisibleOutput {
-					writeVisibleOutput("\n")
-				}
-				if showStreamEvents {
-					writeVisibleOutput(fmt.Sprintf("[系统提示]: 检测到流式连接中断，正在自动重试（%d/%d）...\n", retryCount+1, streamRetryLimit))
-				}
-				return a.streamTaskWithSkillRetry(
-					ctx,
-					providerClient,
-					config,
-					flowID,
-					task,
-					sessionState,
-					commandSandboxEscapePolicy,
-					showStreamEvents,
-					showThinking,
-					inputFiles,
-					retryCount+1,
-				)
 			}
 			if clearIndicator := clearStreamingSuffixIfNeeded(renderStreamingSuffix, &renderState); clearIndicator != "" {
 				fmt.Fprint(a.stdout, clearIndicator)

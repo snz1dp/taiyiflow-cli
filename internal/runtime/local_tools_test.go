@@ -8,9 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/computerbridge"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
@@ -422,6 +424,59 @@ func TestAskUserToolDefinitionHiddenWhenInteractivePromptsDisabled(t *testing.T)
 	}
 }
 
+func TestComputerMouseToolDefinitionsAcceptScreenshotDimensions(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	definitions := runtimeClient.clientToolDefinitionsForMode(provider.RequestTypeAgent)
+	checked := map[string]bool{}
+	for _, item := range definitions {
+		name := strings.TrimSpace(stringValue(item["name"]))
+		switch name {
+		case computerToolMouseMove, computerToolMouseClick, computerToolMouseDrag:
+			description := stringValue(item["description"])
+			if !strings.Contains(description, "screenshot_width_px") || !strings.Contains(description, "screenshot_height_px") {
+				t.Fatalf("expected mouse tool description to mention screenshot dimensions, tool=%s description=%q", name, description)
+			}
+			inputSchema, _ := item["inputSchema"].(map[string]any)
+			properties, _ := inputSchema["properties"].(map[string]any)
+			if _, ok := properties["screenshot_width_px"]; !ok {
+				t.Fatalf("expected %s schema to accept screenshot_width_px, got %#v", name, properties)
+			}
+			if _, ok := properties["screenshot_height_px"]; !ok {
+				t.Fatalf("expected %s schema to accept screenshot_height_px, got %#v", name, properties)
+			}
+			checked[name] = true
+		}
+	}
+	for _, name := range []string{computerToolMouseMove, computerToolMouseClick, computerToolMouseDrag} {
+		if !checked[name] {
+			t.Fatalf("expected to inspect computer mouse tool definition %s", name)
+		}
+	}
+}
+
+func TestComputerKeyPressToolDefinitionRedirectsTextInputToTypeText(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	definitions := runtimeClient.clientToolDefinitionsForMode(provider.RequestTypeAgent)
+	for _, item := range definitions {
+		if strings.TrimSpace(stringValue(item["name"])) != computerToolKeyPress {
+			continue
+		}
+		description := stringValue(item["description"])
+		if !strings.Contains(description, "type_text") || !strings.Contains(description, "非 ASCII") || !strings.Contains(description, "多字符字符串") {
+			t.Fatalf("expected key_press description to redirect text input to type_text, got %q", description)
+		}
+		inputSchema, _ := item["inputSchema"].(map[string]any)
+		properties, _ := inputSchema["properties"].(map[string]any)
+		keySchema, _ := properties["key"].(map[string]any)
+		keyDescription := stringValue(keySchema["description"])
+		if !strings.Contains(keyDescription, "type_text") || !strings.Contains(keyDescription, "多字符字符串") {
+			t.Fatalf("expected key field description to redirect text input to type_text, got %#v", keySchema)
+		}
+		return
+	}
+	t.Fatal("expected key_press tool definition")
+}
+
 func TestClientMCPServersForModeHidesComputerToolsWhenDisabled(t *testing.T) {
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	enabled := false
@@ -436,6 +491,34 @@ func TestClientMCPServersForModeHidesComputerToolsWhenDisabled(t *testing.T) {
 		if isComputerTool(strings.TrimSpace(stringValue(item["name"]))) {
 			t.Fatalf("expected computer tool to be hidden when disabled, got %#v", item)
 		}
+	}
+}
+
+func TestFilterComputerToolDefinitionsByCapabilitiesHidesUnsupportedMouseTools(t *testing.T) {
+	definitions := []map[string]any{
+		{"name": computerToolDisplaysContext},
+		{"name": computerToolMouseMove},
+		{"name": computerToolMouseClick},
+		{"name": computerToolMouseDrag},
+		{"name": computerToolScroll},
+		{"name": computerToolKeyPress},
+		{"name": "read_file"},
+	}
+	filtered := filterComputerToolDefinitionsByCapabilities(definitions, []computerbridge.Capability{
+		{ToolName: computerToolDisplaysContext, Available: true},
+		{ToolName: computerToolKeyPress, Available: true},
+		{ToolName: computerToolMouseMove, Available: false},
+		{ToolName: computerToolMouseClick, Available: false},
+		{ToolName: computerToolMouseDrag, Available: false},
+		{ToolName: computerToolScroll, Available: false},
+	})
+	gotNames := make([]string, 0, len(filtered))
+	for _, item := range filtered {
+		gotNames = append(gotNames, stringValue(item["name"]))
+	}
+	wantNames := []string{computerToolDisplaysContext, computerToolKeyPress, "read_file"}
+	if !reflect.DeepEqual(gotNames, wantNames) {
+		t.Fatalf("unexpected filtered computer tool definitions: got %#v want %#v", gotNames, wantNames)
 	}
 }
 

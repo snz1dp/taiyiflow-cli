@@ -4068,21 +4068,17 @@ func TestConfigFormValuesFromInputsIncludesHTTPTimeout(t *testing.T) {
 	state.inputs[10].SetValue("75")
 	state.inputs[11].SetValue("45")
 	state.inputs[12].SetValue("300")
-	state.inputs[13].SetValue("2")
-	state.inputs[15].SetValue("90")
+	state.inputs[14].SetValue("90")
 
 	values := configFormValuesFromInputs(state.inputs)
 	if values.HTTPTimeoutSeconds != "75" {
 		t.Fatalf("expected http timeout from form inputs, got %#v", values)
 	}
-	if values.CommandTimeoutSeconds != "45" || values.StreamIdleTimeoutSeconds != "300" || values.StreamRetryAttempts != "2" || values.QRWaitTimeoutSeconds != "90" {
+	if values.CommandTimeoutSeconds != "45" || values.StreamIdleTimeoutSeconds != "300" || values.QRWaitTimeoutSeconds != "90" {
 		t.Fatalf("unexpected timeout values from form inputs: %#v", values)
 	}
 	if !isConfigTextField(configFieldHTTPTimeout) {
 		t.Fatal("expected http timeout field to be treated as text input")
-	}
-	if !isConfigTextField(configFieldStreamRetryAttempts) {
-		t.Fatal("expected stream retry attempts field to be treated as text input")
 	}
 }
 

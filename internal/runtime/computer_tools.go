@@ -160,7 +160,7 @@ func computerClientToolDefinitions() []map[string]any {
 		},
 		{
 			"name":                 computerToolMouseMove,
-			"description":          "移动鼠标到指定坐标。默认使用全局桌面坐标；若同时传入 display_index 或 display_id，则默认将 x/y 视为该显示器截图内的局部像素坐标，并按对应显示器 scale_factor 自动换算到全局桌面坐标；若你已持有全局桌面坐标，可用 coordinate_space=global_screen 显式覆盖。",
+			"description":          "移动鼠标到指定坐标。默认使用全局桌面坐标；若同时传入 display_index 或 display_id，则默认将 x/y 视为该显示器截图内的局部像素坐标，并优先按 screenshot_width_px/screenshot_height_px 或最近一次同显示器截图的实际 PNG 尺寸换算到全局桌面坐标；若缺失再回退到显示器物理像素尺寸。若你已持有全局桌面坐标，可用 coordinate_space=global_screen 显式覆盖。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -169,6 +169,8 @@ func computerClientToolDefinitions() []map[string]any {
 					"y":                map[string]any{"type": "integer"},
 					"display_id":       map[string]any{"type": "string"},
 					"display_index":    map[string]any{"type": "integer", "minimum": 1},
+					"screenshot_width_px":  map[string]any{"type": "integer", "minimum": 1},
+					"screenshot_height_px": map[string]any{"type": "integer", "minimum": 1},
 					"coordinate_space": map[string]any{"type": "string", "enum": []string{"global_screen", "display_local"}},
 				},
 				"required":             []string{"x", "y"},
@@ -177,7 +179,7 @@ func computerClientToolDefinitions() []map[string]any {
 		},
 		{
 			"name":                 computerToolMouseClick,
-			"description":          "在当前位置或指定坐标执行鼠标点击。默认使用全局桌面坐标；若同时传入 display_index 或 display_id，则默认将 x/y 视为该显示器截图内的局部像素坐标，并按对应显示器 scale_factor 自动换算到全局桌面坐标；若你已持有全局桌面坐标，可用 coordinate_space=global_screen 显式覆盖。",
+			"description":          "在当前位置或指定坐标执行鼠标点击。默认使用全局桌面坐标；若同时传入 display_index 或 display_id，则默认将 x/y 视为该显示器截图内的局部像素坐标，并优先按 screenshot_width_px/screenshot_height_px 或最近一次同显示器截图的实际 PNG 尺寸换算到全局桌面坐标；若缺失再回退到显示器物理像素尺寸。若你已持有全局桌面坐标，可用 coordinate_space=global_screen 显式覆盖。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -186,6 +188,8 @@ func computerClientToolDefinitions() []map[string]any {
 					"y":                map[string]any{"type": "integer"},
 					"display_id":       map[string]any{"type": "string"},
 					"display_index":    map[string]any{"type": "integer", "minimum": 1},
+					"screenshot_width_px":  map[string]any{"type": "integer", "minimum": 1},
+					"screenshot_height_px": map[string]any{"type": "integer", "minimum": 1},
 					"coordinate_space": map[string]any{"type": "string", "enum": []string{"global_screen", "display_local"}},
 					"button":           map[string]any{"type": "string", "enum": []string{"left", "right", "middle"}},
 					"click_count":      map[string]any{"type": "integer", "minimum": 1, "maximum": 3},
@@ -195,7 +199,7 @@ func computerClientToolDefinitions() []map[string]any {
 		},
 		{
 			"name":                 computerToolMouseDrag,
-			"description":          "从起点拖拽到终点坐标。默认使用全局桌面坐标；若同时传入 display_index 或 display_id，则默认将 from/to 坐标视为该显示器截图内的局部像素坐标，并按对应显示器 scale_factor 自动换算到全局桌面坐标；若你已持有全局桌面坐标，可用 coordinate_space=global_screen 显式覆盖。",
+			"description":          "从起点拖拽到终点坐标。默认使用全局桌面坐标；若同时传入 display_index 或 display_id，则默认将 from/to 坐标视为该显示器截图内的局部像素坐标，并优先按 screenshot_width_px/screenshot_height_px 或最近一次同显示器截图的实际 PNG 尺寸换算到全局桌面坐标；若缺失再回退到显示器物理像素尺寸。若你已持有全局桌面坐标，可用 coordinate_space=global_screen 显式覆盖。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -206,6 +210,8 @@ func computerClientToolDefinitions() []map[string]any {
 					"to_y":             map[string]any{"type": "integer"},
 					"display_id":       map[string]any{"type": "string"},
 					"display_index":    map[string]any{"type": "integer", "minimum": 1},
+					"screenshot_width_px":  map[string]any{"type": "integer", "minimum": 1},
+					"screenshot_height_px": map[string]any{"type": "integer", "minimum": 1},
 					"coordinate_space": map[string]any{"type": "string", "enum": []string{"global_screen", "display_local"}},
 					"duration_ms":      map[string]any{"type": "integer", "minimum": 0, "maximum": 10000},
 				},
@@ -228,12 +234,12 @@ func computerClientToolDefinitions() []map[string]any {
 		},
 		{
 			"name":                 computerToolKeyPress,
-			"description":          "发送单个按键或常见特殊键，可附加修饰键和重复次数。",
+			"description":          "发送单个按键或常见特殊键，可附加修饰键和重复次数。不要用 key_press 逐字输入文本；多字符字符串以及中文等非 ASCII 文本必须使用 type_text。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"key":       map[string]any{"type": "string"},
+					"key":       map[string]any{"type": "string", "description": "单个按键或常见特殊键；不要传整段文本，多字符字符串和中文等非 ASCII 文本请改用 type_text。"},
 					"modifiers": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 					"repeat":    map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
 				},
@@ -256,6 +262,26 @@ func computerClientToolDefinitions() []map[string]any {
 			},
 		},
 	}
+}
+
+func filterComputerToolDefinitionsByCapabilities(definitions []map[string]any, capabilities []computerbridge.Capability) []map[string]any {
+	if len(definitions) == 0 {
+		return definitions
+	}
+	available := map[string]bool{}
+	for _, capability := range capabilities {
+		if capability.Available {
+			available[strings.TrimSpace(capability.ToolName)] = true
+		}
+	}
+	filtered := definitions[:0]
+	for _, definition := range definitions {
+		name := strings.TrimSpace(stringValue(definition["name"]))
+		if !isComputerTool(name) || available[name] {
+			filtered = append(filtered, definition)
+		}
+	}
+	return filtered
 }
 
 func isComputerTool(toolName string) bool {

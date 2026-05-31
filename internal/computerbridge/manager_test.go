@@ -1,9 +1,20 @@
 package computerbridge
 
 import (
+	"context"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+type mouseEventCall struct {
+	kind       string
+	eventKind  int
+	button     int
+	x          int
+	y          int
+	clickState int
+}
 
 func TestResolveCoordinatePairRequiresCompletePair(t *testing.T) {
 	if _, _, _, err := resolveCoordinatePair(map[string]any{"x": 12}, "x", "y", true); err == nil {
@@ -110,6 +121,57 @@ func TestTranslateScreenPointScalesDisplayLocalScreenshotPixels(t *testing.T) {
 	}
 }
 
+func TestTranslateScreenPointUsesExplicitScreenshotDimensions(t *testing.T) {
+	layouts := []displayLayout{{
+		DisplayID:    "1",
+		DisplayIndex: 1,
+		OriginX:      320,
+		OriginY:      -832,
+		Width:        1280,
+		Height:       832,
+		PixelWidth:   2560,
+		PixelHeight:  1664,
+		ScaleFactor:  2.0,
+		Primary:      true,
+	}}
+	point, err := translateScreenPoint(map[string]any{
+		"display_id":          "1",
+		"screenshot_width_px": 3200,
+		"screenshot_height_px": 2080,
+	}, 1600, 260, layouts)
+	if err != nil {
+		t.Fatalf("expected translation with explicit screenshot dimensions to succeed, got %v", err)
+	}
+	if point.X != 960 || point.Y != -728 {
+		t.Fatalf("unexpected point with explicit screenshot dimensions: %+v", point)
+	}
+}
+
+func TestTranslateScreenPointUsesCachedScreenshotDimensions(t *testing.T) {
+	clearDisplayScreenshotDimensionsCache()
+	t.Cleanup(clearDisplayScreenshotDimensionsCache)
+	cacheDisplayScreenshotDimensions("1", 1, 3200, 2080)
+	layouts := []displayLayout{{
+		DisplayID:    "1",
+		DisplayIndex: 1,
+		OriginX:      320,
+		OriginY:      -832,
+		Width:        1280,
+		Height:       832,
+		PixelWidth:   2560,
+		PixelHeight:  1664,
+		ScaleFactor:  2.0,
+		Primary:      true,
+	}}
+	point, err := translateScreenPoint(map[string]any{"display_id": "1"}, 1600, 260, layouts)
+	if err != nil {
+		t.Fatalf("expected translation with cached screenshot dimensions to succeed, got %v", err)
+	}
+	if point.X != 960 || point.Y != -728 {
+		t.Fatalf("unexpected point with cached screenshot dimensions: %+v", point)
+	}
+}
+
 func TestTranslateScreenPointRespectsExplicitGlobalSpace(t *testing.T) {
 	layouts := []displayLayout{{DisplayID: "202", DisplayIndex: 2, OriginX: 1920, OriginY: -120, Width: 2560, Height: 1440}}
 	point, err := translateScreenPoint(map[string]any{"display_index": 2, "coordinate_space": "global_screen"}, 40, 60, layouts)
@@ -124,6 +186,179 @@ func TestTranslateScreenPointRespectsExplicitGlobalSpace(t *testing.T) {
 func TestTranslateScreenPointRejectsUnknownDisplay(t *testing.T) {
 	if _, err := translateScreenPoint(map[string]any{"display_index": 3}, 10, 20, []displayLayout{{DisplayID: "101", DisplayIndex: 1}}); err == nil {
 		t.Fatal("expected unknown display to fail")
+	}
+}
+
+func TestDarwinMouseClickMovesBeforeClickingSpecifiedCoordinates(t *testing.T) {
+	originalCurrentMousePositionFunc := darwinCurrentMousePositionFunc
+	originalPostMouseMoveFunc := darwinPostMouseMoveFunc
+	originalPostMouseButtonEventFunc := darwinPostMouseButtonEventFunc
+	t.Cleanup(func() {
+		darwinCurrentMousePositionFunc = originalCurrentMousePositionFunc
+		darwinPostMouseMoveFunc = originalPostMouseMoveFunc
+		darwinPostMouseButtonEventFunc = originalPostMouseButtonEventFunc
+	})
+
+	darwinCurrentMousePositionFunc = func() (int, int, error) {
+		t.Fatal("specified-coordinate click should not read current pointer position")
+		return 0, 0, nil
+	}
+	events := []mouseEventCall{}
+	darwinPostMouseMoveFunc = func(x int, y int) error {
+		events = append(events, mouseEventCall{kind: "move", x: x, y: y})
+		return nil
+	}
+	darwinPostMouseButtonEventFunc = func(eventKind int, button int, x int, y int, clickState int) error {
+		events = append(events, mouseEventCall{kind: "button", eventKind: eventKind, button: button, x: x, y: y, clickState: clickState})
+		return nil
+	}
+
+	result, err := darwinMouseClick(context.Background(), map[string]any{
+		"x":           321,
+		"y":           654,
+		"button":      "left",
+		"click_count": 2,
+	})
+	if err != nil {
+		t.Fatalf("expected click with explicit coordinates to succeed, got %v", err)
+	}
+	wantEvents := []mouseEventCall{
+		{kind: "move", x: 321, y: 654},
+		{kind: "button", eventKind: mouseEventDown, button: 0, x: 321, y: 654, clickState: 1},
+		{kind: "button", eventKind: mouseEventUp, button: 0, x: 321, y: 654, clickState: 1},
+		{kind: "button", eventKind: mouseEventDown, button: 0, x: 321, y: 654, clickState: 2},
+		{kind: "button", eventKind: mouseEventUp, button: 0, x: 321, y: 654, clickState: 2},
+	}
+	if !reflect.DeepEqual(events, wantEvents) {
+		t.Fatalf("unexpected darwin click event sequence: got %#v want %#v", events, wantEvents)
+	}
+	if intValue(result["x"], 0) != 321 || intValue(result["y"], 0) != 654 {
+		t.Fatalf("expected click result to report target point, got %#v", result)
+	}
+	if stringValue(result["coordinate_space"]) != "global_screen" || stringValue(result["input_coordinate_space"]) != "global_screen" {
+		t.Fatalf("expected click result to preserve global coordinate metadata, got %#v", result)
+	}
+}
+
+func TestDarwinMouseClickUsesCurrentPointerWhenCoordinatesOmitted(t *testing.T) {
+	originalCurrentMousePositionFunc := darwinCurrentMousePositionFunc
+	originalPostMouseMoveFunc := darwinPostMouseMoveFunc
+	originalPostMouseButtonEventFunc := darwinPostMouseButtonEventFunc
+	t.Cleanup(func() {
+		darwinCurrentMousePositionFunc = originalCurrentMousePositionFunc
+		darwinPostMouseMoveFunc = originalPostMouseMoveFunc
+		darwinPostMouseButtonEventFunc = originalPostMouseButtonEventFunc
+	})
+
+	darwinCurrentMousePositionFunc = func() (int, int, error) {
+		return 77, 88, nil
+	}
+	darwinPostMouseMoveFunc = func(x int, y int) error {
+		t.Fatalf("omitted-coordinate click should not post an extra move, got (%d,%d)", x, y)
+		return nil
+	}
+	events := []mouseEventCall{}
+	darwinPostMouseButtonEventFunc = func(eventKind int, button int, x int, y int, clickState int) error {
+		events = append(events, mouseEventCall{kind: "button", eventKind: eventKind, button: button, x: x, y: y, clickState: clickState})
+		return nil
+	}
+
+	result, err := darwinMouseClick(context.Background(), map[string]any{"button": "right"})
+	if err != nil {
+		t.Fatalf("expected click without explicit coordinates to succeed, got %v", err)
+	}
+	wantEvents := []mouseEventCall{
+		{kind: "button", eventKind: mouseEventDown, button: 1, x: 77, y: 88, clickState: 1},
+		{kind: "button", eventKind: mouseEventUp, button: 1, x: 77, y: 88, clickState: 1},
+	}
+	if !reflect.DeepEqual(events, wantEvents) {
+		t.Fatalf("unexpected darwin click event sequence without coordinates: got %#v want %#v", events, wantEvents)
+	}
+	if intValue(result["x"], 0) != 77 || intValue(result["y"], 0) != 88 || stringValue(result["button"]) != "right" {
+		t.Fatalf("unexpected click result without coordinates: %#v", result)
+	}
+}
+
+func TestDarwinKeyPressFallsBackToTypeTextForNonASCII(t *testing.T) {
+	originalDarwinTypeTextFunc := darwinTypeTextFunc
+	t.Cleanup(func() {
+		darwinTypeTextFunc = originalDarwinTypeTextFunc
+	})
+	called := false
+	var capturedArguments map[string]any
+	darwinTypeTextFunc = func(ctx context.Context, arguments map[string]any) (map[string]any, error) {
+		called = true
+		capturedArguments = map[string]any{}
+		for key, value := range arguments {
+			capturedArguments[key] = value
+		}
+		return map[string]any{"platform": "darwin"}, nil
+	}
+
+	result, err := darwinKeyPress(context.Background(), map[string]any{"key": "老", "repeat": 2})
+	if err != nil {
+		t.Fatalf("expected non-ASCII key_press to fall back to type_text, got %v", err)
+	}
+	if !called {
+		t.Fatal("expected non-ASCII key_press to call type_text fallback")
+	}
+	if stringValue(capturedArguments["text"]) != "老老" {
+		t.Fatalf("expected repeated text to be forwarded to type_text, got %#v", capturedArguments)
+	}
+	if stringValue(result["fallback_mode"]) != "type_text" || intValue(result["text_length"], 0) != 2 {
+		t.Fatalf("expected fallback result metadata, got %#v", result)
+	}
+}
+
+func TestDarwinKeyPressRejectsNonASCIIWithModifiers(t *testing.T) {
+	originalDarwinTypeTextFunc := darwinTypeTextFunc
+	t.Cleanup(func() {
+		darwinTypeTextFunc = originalDarwinTypeTextFunc
+	})
+	darwinTypeTextFunc = func(ctx context.Context, arguments map[string]any) (map[string]any, error) {
+		t.Fatalf("expected modified non-ASCII key_press to fail before type_text fallback, got %#v", arguments)
+		return nil, nil
+	}
+
+	_, err := darwinKeyPress(context.Background(), map[string]any{"key": "老", "modifiers": []any{"command"}})
+	if err == nil || !strings.Contains(err.Error(), "请改用 type_text") {
+		t.Fatalf("expected modified non-ASCII key_press to fail with guidance, got %v", err)
+	}
+}
+
+func TestDarwinKeyPressFallsBackToTypeTextForTextLikeKey(t *testing.T) {
+	originalDarwinTypeTextFunc := darwinTypeTextFunc
+	t.Cleanup(func() {
+		darwinTypeTextFunc = originalDarwinTypeTextFunc
+	})
+	called := false
+	var capturedText string
+	darwinTypeTextFunc = func(ctx context.Context, arguments map[string]any) (map[string]any, error) {
+		called = true
+		capturedText = stringValue(arguments["text"])
+		return map[string]any{"platform": "darwin"}, nil
+	}
+
+	result, err := darwinKeyPress(context.Background(), map[string]any{"key": "老婆A"})
+	if err != nil {
+		t.Fatalf("expected text-like key_press to fall back to type_text, got %v", err)
+	}
+	if !called {
+		t.Fatal("expected text-like key_press to call type_text fallback")
+	}
+	if capturedText != "老婆A" {
+		t.Fatalf("expected full key string to be forwarded to type_text, got %q", capturedText)
+	}
+	if stringValue(result["fallback_mode"]) != "type_text" || intValue(result["text_length"], 0) != 3 {
+		t.Fatalf("expected text fallback metadata, got %#v", result)
+	}
+}
+
+func TestDarwinKeyPressKeepsNamedSpecialKeys(t *testing.T) {
+	if text, fallback, err := darwinKeyPressTextFallback("enter", "", 1); err != nil {
+		t.Fatalf("expected named special key to bypass text fallback, got err=%v", err)
+	} else if fallback || text != "" {
+		t.Fatalf("expected named special key to avoid text fallback, got text=%q fallback=%t", text, fallback)
 	}
 }
 

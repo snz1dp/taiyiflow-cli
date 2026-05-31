@@ -277,7 +277,7 @@ func TestApplyExplicitTaskSessionIDOverridesSessionAndClearsStaleTitle(t *testin
 	}
 }
 
-func TestStreamTaskDoesNotRetryDisconnectedEventWhenConfigDisablesRetry(t *testing.T) {
+func TestStreamTaskDoesNotRetryDisconnectedEvent(t *testing.T) {
 	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
 	manager, err := internalconfig.NewManager()
 	if err != nil {
@@ -313,57 +313,10 @@ func TestStreamTaskDoesNotRetryDisconnectedEventWhenConfigDisablesRetry(t *testi
 		t.Fatalf("expected disconnected stream error, got %v", err)
 	}
 	if providerStub.calls != 1 {
-		t.Fatalf("expected no retry when stream_retry_attempts is 0, got %d calls", providerStub.calls)
+		t.Fatalf("expected no CLI retry, got %d calls", providerStub.calls)
 	}
 	if strings.Contains(stdout.String(), "正在自动重试") {
 		t.Fatalf("expected no retry progress output, got %q", stdout.String())
-	}
-}
-
-func TestStreamTaskRetriesDisconnectedEventUsingConfiguredLimit(t *testing.T) {
-	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
-	manager, err := internalconfig.NewManager()
-	if err != nil {
-		t.Fatalf("new manager failed: %v", err)
-	}
-	store, err := agent.NewSessionStore()
-	if err != nil {
-		t.Fatalf("new session store failed: %v", err)
-	}
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	app := &App{stdout: &stdout, stderr: &stderr, configManager: manager, sessionStore: store}
-	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
-
-	config := internalconfig.Default()
-	config.Workdir = t.TempDir()
-	config.StreamRetryAttempts = 2
-	providerStub := &sequenceStreamProvider{streams: []<-chan provider.StreamEvent{
-		streamWithEvents(provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "读取流失败: read tcp: connection reset by peer"}}),
-		streamWithEvents(provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "读取流失败: read tcp: connection reset by peer"}}),
-		streamWithEvents(provider.StreamEvent{Type: provider.EventClose}),
-	}}
-
-	_, err = app.streamTask(
-		context.Background(),
-		providerStub,
-		config,
-		"demo-flow",
-		"请处理任务",
-		agent.SessionState{FlowID: "demo-flow", RequestMode: provider.RequestTypeAgent, ContextDir: config.Workdir, Workdir: config.Workdir},
-		"",
-		true,
-		false,
-	)
-	if err != nil {
-		t.Fatalf("streamTask failed: %v", err)
-	}
-	if providerStub.calls != 3 {
-		t.Fatalf("expected two retries plus final stream, got %d calls", providerStub.calls)
-	}
-	output := stdout.String()
-	if !strings.Contains(output, "正在自动重试（1/2）") || !strings.Contains(output, "正在自动重试（2/2）") {
-		t.Fatalf("expected configured retry progress output, got %q", output)
 	}
 }
 
@@ -623,7 +576,6 @@ func TestRunTaskStreamRetryFlagOverridesSystemConfig(t *testing.T) {
 	config := internalconfig.Default()
 	config.BackendBaseURL = server.URL
 	config.AccessToken = "access-1"
-	config.StreamRetryAttempts = 0
 	if err := manager.Save(config); err != nil {
 		t.Fatalf("save config failed: %v", err)
 	}
@@ -641,15 +593,12 @@ func TestRunTaskStreamRetryFlagOverridesSystemConfig(t *testing.T) {
 		runtime:       clientruntime.NewClientRuntime(strings.NewReader(""), &stdout, io.Discard),
 	}
 
-	if err := app.runTask(context.Background(), []string{"--stream-retry-attempts", "2", "--show-stream-events", "测试任务"}); err != nil {
-		t.Fatalf("runTask failed: %v", err)
+	err = app.runTask(context.Background(), []string{"--stream-retry-attempts", "2", "--show-stream-events", "测试任务"})
+	if err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Fatalf("expected removed stream retry flag to be rejected, got %v", err)
 	}
-	if streamCalls != 3 {
-		t.Fatalf("expected flag override to allow two retries, got %d stream calls", streamCalls)
-	}
-	output := stdout.String()
-	if !strings.Contains(output, "正在自动重试（1/2）") || !strings.Contains(output, "正在自动重试（2/2）") {
-		t.Fatalf("expected retry progress from flag override, got %q", output)
+	if streamCalls != 0 {
+		t.Fatalf("expected removed flag to fail before issuing stream request, got %d calls", streamCalls)
 	}
 }
 

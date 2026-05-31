@@ -1528,7 +1528,6 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 			HTTPTimeoutSeconds:        "75",
 			CommandTimeoutSeconds:     "45",
 			StreamIdleTimeoutSeconds:  "300",
-			StreamRetryAttempts:       "2",
 			CrossSessionMemoryEnabled: true,
 			QRWaitTimeoutSeconds:      "90",
 			AgentAutoLoopMaxRounds:    "0",
@@ -1586,9 +1585,6 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	if updated.QRWaitTimeoutSeconds != 90 {
 		t.Fatalf("expected qr wait timeout saved, got %#v", updated.QRWaitTimeoutSeconds)
 	}
-	if updated.StreamRetryAttempts != 2 {
-		t.Fatalf("expected stream retry attempts saved, got %#v", updated.StreamRetryAttempts)
-	}
 	if !updated.CrossSessionMemoryEnabled {
 		t.Fatalf("expected cross session memory saved, got %#v", updated.CrossSessionMemoryEnabled)
 	}
@@ -1617,9 +1613,6 @@ func TestApplyConfigFormSubmissionIncludesPermissionFields(t *testing.T) {
 	}
 	if reloaded.QRWaitTimeoutSeconds != 90 {
 		t.Fatalf("expected persisted qr wait timeout, got %#v", reloaded.QRWaitTimeoutSeconds)
-	}
-	if reloaded.StreamRetryAttempts != 2 {
-		t.Fatalf("expected persisted stream retry attempts, got %#v", reloaded.StreamRetryAttempts)
 	}
 	if !reloaded.CrossSessionMemoryEnabled {
 		t.Fatalf("expected persisted cross session memory, got %#v", reloaded.CrossSessionMemoryEnabled)

@@ -111,8 +111,6 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		runtimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
 		quietRuntimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
 		skillRetryCount := 0
-		streamRetryCount := 0
-		streamRetryLimit := internalconfig.NormalizeStreamRetryAttempts(config.StreamRetryAttempts)
 		callbackProvider := a.providerWithCallbackAuthRefresh(providerClient, &config)
 		for {
 			resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
@@ -154,16 +152,6 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				ClientSkillPackages:       clientSkillPackages,
 			})
 			if streamErr != nil {
-				if streamRetryCount < streamRetryLimit && shouldRetryStreamRequestError(streamErr) {
-					streamRetryCount++
-					emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("检测到流式连接异常，正在自动重试（%d/%d）...", streamRetryCount, streamRetryLimit)})
-					select {
-					case <-runCtx.Done():
-						return runCtx.Err()
-					case <-time.After(300 * time.Millisecond):
-					}
-					continue
-				}
 				return fmt.Errorf("%s", explainBackendFailure(streamErr))
 			}
 
@@ -338,12 +326,6 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 								break eventLoop
 							}
 						}
-					}
-					if streamRetryCount < streamRetryLimit && shouldRetryStreamError(normalizedErr) {
-						streamRetryCount++
-						retryRequested = true
-						emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("检测到流式连接中断，正在自动重试（%d/%d）...", streamRetryCount, streamRetryLimit)})
-						break eventLoop
 					}
 					return normalizedErr
 				case provider.EventClose:
@@ -2879,7 +2861,6 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			HTTPTimeoutSeconds:        strconv.Itoa(config.HTTPTimeoutSeconds),
 			CommandTimeoutSeconds:     strconv.Itoa(config.CommandTimeoutSeconds),
 			StreamIdleTimeoutSeconds:  strconv.Itoa(config.StreamIdleTimeoutSeconds),
-			StreamRetryAttempts:       strconv.Itoa(config.StreamRetryAttempts),
 			CrossSessionMemoryEnabled: config.CrossSessionMemoryEnabled,
 			QRWaitTimeoutSeconds:      strconv.Itoa(config.QRWaitTimeoutSeconds),
 			AgentAutoLoopMaxRounds:    strconv.Itoa(config.AgentAutoLoopMaxRounds),
@@ -2984,12 +2965,6 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		config.StreamIdleTimeoutSeconds = internalconfig.Default().StreamIdleTimeoutSeconds
 	} else if err := assignConfigValue(&config, "stream_idle_timeout_seconds", submission.Values.StreamIdleTimeoutSeconds); err != nil {
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "stream_idle_timeout_seconds", Message: err.Error()}
-	}
-
-	if strings.TrimSpace(submission.Values.StreamRetryAttempts) == "" {
-		config.StreamRetryAttempts = internalconfig.Default().StreamRetryAttempts
-	} else if err := assignConfigValue(&config, "stream_retry_attempts", submission.Values.StreamRetryAttempts); err != nil {
-		return internalconfig.Config{}, tui.ConfigFieldError{Field: "stream_retry_attempts", Message: err.Error()}
 	}
 
 	if err := assignConfigValue(&config, "cross_session_memory_enabled", strconv.FormatBool(submission.Values.CrossSessionMemoryEnabled)); err != nil {

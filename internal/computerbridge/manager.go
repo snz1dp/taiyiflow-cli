@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"math"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -35,6 +37,21 @@ const (
 	mouseEventUp          = 1
 	mouseEventDragged     = 2
 )
+
+var (
+	darwinCurrentMousePositionFunc = darwinCurrentMousePosition
+	darwinPostMouseMoveFunc        = darwinPostMouseMove
+	darwinPostMouseButtonEventFunc = darwinPostMouseButtonEvent
+	darwinTypeTextFunc             = darwinTypeText
+	displayScreenshotDimensionsMu  sync.RWMutex
+	displayScreenshotByID          = map[string]displayScreenshotDimensions{}
+	displayScreenshotByIndex       = map[int]displayScreenshotDimensions{}
+)
+
+type displayScreenshotDimensions struct {
+	Width  int
+	Height int
+}
 
 type displayLayout struct {
 	DisplayID    string
@@ -99,6 +116,80 @@ func translateDisplayLocalCoordinate(value int, logicalSize int, pixelSize int) 
 		return logicalSize - 1
 	}
 	return translated
+}
+
+func cacheDisplayScreenshotDimensions(displayID string, displayIndex int, width int, height int) {
+	if width <= 0 || height <= 0 {
+		return
+	}
+	displayScreenshotDimensionsMu.Lock()
+	defer displayScreenshotDimensionsMu.Unlock()
+	entry := displayScreenshotDimensions{Width: width, Height: height}
+	if trimmedID := strings.TrimSpace(displayID); trimmedID != "" {
+		displayScreenshotByID[trimmedID] = entry
+	}
+	if displayIndex > 0 {
+		displayScreenshotByIndex[displayIndex] = entry
+	}
+}
+
+func cachedDisplayScreenshotDimensions(displayID string, displayIndex int) (displayScreenshotDimensions, bool) {
+	displayScreenshotDimensionsMu.RLock()
+	defer displayScreenshotDimensionsMu.RUnlock()
+	if trimmedID := strings.TrimSpace(displayID); trimmedID != "" {
+		if entry, ok := displayScreenshotByID[trimmedID]; ok {
+			return entry, true
+		}
+	}
+	if displayIndex > 0 {
+		if entry, ok := displayScreenshotByIndex[displayIndex]; ok {
+			return entry, true
+		}
+	}
+	return displayScreenshotDimensions{}, false
+}
+
+func clearDisplayScreenshotDimensionsCache() {
+	displayScreenshotDimensionsMu.Lock()
+	defer displayScreenshotDimensionsMu.Unlock()
+	displayScreenshotByID = map[string]displayScreenshotDimensions{}
+	displayScreenshotByIndex = map[int]displayScreenshotDimensions{}
+}
+
+func resolveDisplayLocalPixelDimensions(arguments map[string]any, layout displayLayout) (int, int) {
+	width := intValue(arguments["screenshot_width_px"], 0)
+	height := intValue(arguments["screenshot_height_px"], 0)
+	if width > 0 && height > 0 {
+		return width, height
+	}
+	if cached, ok := cachedDisplayScreenshotDimensions(strings.TrimSpace(firstString(arguments, "display_id")), intValue(arguments["display_index"], 0)); ok {
+		if width <= 0 {
+			width = cached.Width
+		}
+		if height <= 0 {
+			height = cached.Height
+		}
+	}
+	if width <= 0 {
+		width = displayPixelWidth(layout)
+	}
+	if height <= 0 {
+		height = displayPixelHeight(layout)
+	}
+	return width, height
+}
+
+func readPNGDimensions(path string) (int, int, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer file.Close()
+	config, err := png.DecodeConfig(file)
+	if err != nil {
+		return 0, 0, err
+	}
+	return config.Width, config.Height, nil
 }
 
 type Capability struct {
@@ -644,7 +735,7 @@ func darwinMouseMove(ctx context.Context, arguments map[string]any) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	if err := darwinPostMouseMove(point.X, point.Y); err != nil {
+	if err := darwinPostMouseMoveFunc(point.X, point.Y); err != nil {
 		return nil, err
 	}
 	result := map[string]any{
@@ -667,7 +758,7 @@ func darwinMouseClick(ctx context.Context, arguments map[string]any) (map[string
 	}
 	point := resolvedScreenPoint{X: x, Y: y, InputCoordinateSpace: "global_screen"}
 	if !hasPosition {
-		x, y, err = darwinCurrentMousePosition()
+		x, y, err = darwinCurrentMousePositionFunc()
 		if err != nil {
 			return nil, err
 		}
@@ -684,6 +775,9 @@ func darwinMouseClick(ctx context.Context, arguments map[string]any) (map[string
 		}
 		x = point.X
 		y = point.Y
+		if err := darwinPostMouseMoveFunc(x, y); err != nil {
+			return nil, err
+		}
 	}
 	buttonCode, buttonLabel, err := resolveMouseButton(arguments)
 	if err != nil {
@@ -694,10 +788,10 @@ func darwinMouseClick(ctx context.Context, arguments map[string]any) (map[string
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if err := darwinPostMouseButtonEvent(mouseEventDown, buttonCode, x, y, current); err != nil {
+		if err := darwinPostMouseButtonEventFunc(mouseEventDown, buttonCode, x, y, current); err != nil {
 			return nil, err
 		}
-		if err := darwinPostMouseButtonEvent(mouseEventUp, buttonCode, x, y, current); err != nil {
+		if err := darwinPostMouseButtonEventFunc(mouseEventUp, buttonCode, x, y, current); err != nil {
 			return nil, err
 		}
 	}
@@ -991,10 +1085,22 @@ func darwinScreenshot(ctx context.Context, arguments map[string]any) (map[string
 		if displayIndex > 0 {
 			result["display_index"] = displayIndex
 		}
-		if layouts, layoutErr := platformDisplayLayouts(); layoutErr == nil {
+	}
+	screenshotWidth, screenshotHeight, screenshotErr := readPNGDimensions(path)
+	if screenshotErr == nil && screenshotWidth > 0 && screenshotHeight > 0 {
+		result["screenshot_width_px"] = screenshotWidth
+		result["screenshot_height_px"] = screenshotHeight
+	}
+	if layouts, layoutErr := platformDisplayLayouts(); layoutErr == nil {
+		if displaySelector != "" {
 			if layout, ok := findDisplayLayout(layouts, displayID, displayIndex); ok {
 				applyDisplayScope(result, layout)
+				if screenshotWidth > 0 && screenshotHeight > 0 {
+					cacheDisplayScreenshotDimensions(layout.DisplayID, layout.DisplayIndex, screenshotWidth, screenshotHeight)
+				}
 			}
+		} else if len(layouts) == 1 && screenshotWidth > 0 && screenshotHeight > 0 {
+			cacheDisplayScreenshotDimensions(layouts[0].DisplayID, layouts[0].DisplayIndex, screenshotWidth, screenshotHeight)
 		}
 	}
 	return result, nil
@@ -1134,6 +1240,21 @@ func darwinKeyPress(ctx context.Context, arguments map[string]any) (map[string]a
 	if err != nil {
 		return nil, err
 	}
+	if fallbackText, fallback, err := darwinKeyPressTextFallback(key, modifierClause, repeatCount); err != nil {
+		return nil, err
+	} else if fallback {
+		if _, err := darwinTypeTextFunc(ctx, map[string]any{"text": fallbackText}); err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"platform":      "darwin",
+			"key":           key,
+			"repeat":        repeatCount,
+			"modifiers":     stringSlice(arguments["modifiers"]),
+			"text_length":   utf8.RuneCountInString(fallbackText),
+			"fallback_mode": "type_text",
+		}, nil
+	}
 	command, err := appleScriptKeyCommand(key, modifierClause)
 	if err != nil {
 		return nil, err
@@ -1148,6 +1269,45 @@ func darwinKeyPress(ctx context.Context, arguments map[string]any) (map[string]a
 		"repeat":    repeatCount,
 		"modifiers": stringSlice(arguments["modifiers"]),
 	}, nil
+}
+
+func darwinKeyPressTextFallback(key string, modifierClause string, repeatCount int) (string, bool, error) {
+	trimmedKey := strings.TrimSpace(key)
+	if trimmedKey == "" {
+		return "", false, nil
+	}
+	if darwinKeyPressUsesNamedKey(trimmedKey) {
+		return "", false, nil
+	}
+	keyRunes := []rune(trimmedKey)
+	fallbackText := trimmedKey
+	if len(keyRunes) == 1 && keyRunes[0] <= utf8.RuneSelf {
+		return "", false, nil
+	}
+	if strings.TrimSpace(modifierClause) != "" {
+		return "", false, fmt.Errorf("key_press 不支持带修饰键的非 ASCII 文本，请改用 type_text")
+	}
+	if repeatCount < 1 {
+		repeatCount = 1
+	}
+	return strings.Repeat(fallbackText, repeatCount), true, nil
+}
+
+func darwinKeyPressUsesNamedKey(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	if normalized == "" {
+		return false
+	}
+	switch normalized {
+	case "enter", "return", "tab", "escape", "esc", "space", "backspace", "delete", "left", "right", "down", "up":
+		return true
+	}
+	if strings.HasPrefix(normalized, "f") {
+		if len(normalized) >= 2 && len(normalized) <= 3 {
+			return true
+		}
+	}
+	return false
 }
 
 func darwinAccessibilityError() string {
@@ -1395,8 +1555,9 @@ func translateScreenPoint(arguments map[string]any, x int, y int, layouts []disp
 	if !ok {
 		return resolvedScreenPoint{}, fmt.Errorf("未找到显示器 %s", displaySpecifier)
 	}
-	point.X = layout.OriginX + translateDisplayLocalCoordinate(x, displayLogicalWidth(layout), displayPixelWidth(layout))
-	point.Y = layout.OriginY + translateDisplayLocalCoordinate(y, displayLogicalHeight(layout), displayPixelHeight(layout))
+	pixelWidth, pixelHeight := resolveDisplayLocalPixelDimensions(arguments, layout)
+	point.X = layout.OriginX + translateDisplayLocalCoordinate(x, displayLogicalWidth(layout), pixelWidth)
+	point.Y = layout.OriginY + translateDisplayLocalCoordinate(y, displayLogicalHeight(layout), pixelHeight)
 	point.Display = layout
 	point.HasDisplay = true
 	return point, nil

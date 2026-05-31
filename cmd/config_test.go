@@ -29,27 +29,17 @@ func TestResetConfigValueStreamIdleTimeoutSeconds(t *testing.T) {
 	}
 }
 
-func TestAssignConfigValueStreamRetryAttempts(t *testing.T) {
+func TestAssignConfigValueRejectsRemovedStreamRetryAttempts(t *testing.T) {
 	config := internalconfig.Default()
-	if err := assignConfigValue(&config, "stream_retry_attempts", "3"); err != nil {
-		t.Fatalf("assignConfigValue returned error: %v", err)
-	}
-	if config.StreamRetryAttempts != 3 {
-		t.Fatalf("expected stream retry attempts 3, got %d", config.StreamRetryAttempts)
-	}
-	if err := assignConfigValue(&config, "stream_retry_count", "4"); err == nil {
-		t.Fatal("expected out-of-range stream retry attempts to fail")
+	if err := assignConfigValue(&config, "stream_retry_attempts", "3"); err == nil {
+		t.Fatal("expected removed stream retry attempts config to be rejected")
 	}
 }
 
-func TestResetConfigValueStreamRetryAttempts(t *testing.T) {
+func TestResetConfigValueRejectsRemovedStreamRetryAttempts(t *testing.T) {
 	config := internalconfig.Default()
-	config.StreamRetryAttempts = 3
-	if err := resetConfigValue(&config, "stream_retry_attempts"); err != nil {
-		t.Fatalf("resetConfigValue returned error: %v", err)
-	}
-	if config.StreamRetryAttempts != internalconfig.Default().StreamRetryAttempts {
-		t.Fatalf("expected default stream retry attempts %d, got %d", internalconfig.Default().StreamRetryAttempts, config.StreamRetryAttempts)
+	if err := resetConfigValue(&config, "stream_retry_attempts"); err == nil {
+		t.Fatal("expected removed stream retry attempts config reset to be rejected")
 	}
 }
 
