@@ -1142,7 +1142,7 @@ func darwinTypeText(ctx context.Context, arguments map[string]any) (map[string]a
 	}
 	lines := splitTypedText(text)
 	pressEnter := boolValue(arguments["press_enter"])
-	if requiresDarwinClipboardTextInput(text) {
+	if shouldDarwinUseClipboardTextInput(text, darwinUnicodeTextInputAvailable()) {
 		if err := darwinPasteText(ctx, text); err != nil {
 			return nil, err
 		}
@@ -1183,6 +1183,16 @@ func darwinTypeText(ctx context.Context, arguments map[string]any) (map[string]a
 		"line_count":  len(lines),
 		"press_enter": pressEnter,
 	}, nil
+}
+
+func shouldDarwinUseClipboardTextInput(text string, unicodeInputAvailable bool) bool {
+	if requiresDarwinClipboardTextInput(text) {
+		return true
+	}
+	if !unicodeInputAvailable {
+		return true
+	}
+	return false
 }
 
 func requiresDarwinClipboardTextInput(text string) bool {

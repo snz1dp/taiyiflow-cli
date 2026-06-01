@@ -468,6 +468,21 @@ func TestRequiresDarwinClipboardTextInput(t *testing.T) {
 	}
 }
 
+func TestShouldDarwinUseClipboardTextInput(t *testing.T) {
+	if !shouldDarwinUseClipboardTextInput("hello", false) {
+		t.Fatal("expected ASCII text to use clipboard path when Unicode input is unavailable")
+	}
+	if shouldDarwinUseClipboardTextInput("hello", true) {
+		t.Fatal("expected ASCII text to stay on direct input path when Unicode input is available")
+	}
+	if !shouldDarwinUseClipboardTextInput("老婆A", true) {
+		t.Fatal("expected mixed Chinese text to use clipboard path")
+	}
+	if !shouldDarwinUseClipboardTextInput("老婆A", false) {
+		t.Fatal("expected mixed Chinese text to keep using clipboard path when Unicode input is unavailable")
+	}
+}
+
 func TestBuildDarwinPasteShortcutScriptUsesCommandVWithDelay(t *testing.T) {
 	script := buildDarwinPasteShortcutScript()
 	if !strings.Contains(script, "key code 9 using command down") {

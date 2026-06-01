@@ -2,7 +2,12 @@
 
 package computerbridge
 
-import "fmt"
+import (
+	"bytes"
+	"fmt"
+	"os/exec"
+	"runtime"
+)
 
 func darwinPointerInputAvailability() (bool, string) {
 	return false, "当前构建未启用 CGO，桌面鼠标与滚轮注入不可用"
@@ -48,15 +53,40 @@ func darwinPostUnicodeText(text string) error {
 }
 
 func darwinCaptureClipboard() ([]byte, error) {
-	return nil, fmt.Errorf("当前构建未启用 CGO，无法读取系统剪贴板快照")
+	if runtime.GOOS != "darwin" {
+		return nil, fmt.Errorf("当前平台不支持读取系统剪贴板快照")
+	}
+	command := exec.Command("pbpaste")
+	output, err := command.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) == 0 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("当前构建未启用 CGO，读取系统剪贴板文本失败: %w", err)
+	}
+	return bytes.Clone(output), nil
 }
 
 func darwinRestoreClipboard(snapshot []byte) error {
-	_ = snapshot
-	return fmt.Errorf("当前构建未启用 CGO，无法恢复系统剪贴板快照")
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("当前平台不支持恢复系统剪贴板快照")
+	}
+	command := exec.Command("pbcopy")
+	command.Stdin = bytes.NewReader(snapshot)
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("当前构建未启用 CGO，恢复系统剪贴板文本失败: %w", err)
+	}
+	return nil
 }
 
 func darwinSetClipboardText(text string) error {
-	_ = text
-	return fmt.Errorf("当前构建未启用 CGO，无法写入系统剪贴板")
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("当前平台不支持写入系统剪贴板")
+	}
+	command := exec.Command("pbcopy")
+	command.Stdin = bytes.NewBufferString(text)
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("当前构建未启用 CGO，写入系统剪贴板文本失败: %w", err)
+	}
+	return nil
 }
