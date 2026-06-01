@@ -5876,16 +5876,6 @@ func searchActivityText(content string) string {
 	}
 }
 
-func streamingIndicatorTargetIndex(entries []entry) int {
-	for index := len(entries) - 1; index >= 0; index-- {
-		switch entries[index].role {
-		case "assistant", "reasoning":
-			return index
-		}
-	}
-	return -1
-}
-
 func buildWelcomeRenderLines(snapshot Snapshot, content string) []string {
 	trimmedContent := strings.TrimSpace(content)
 	lines := []string{}
