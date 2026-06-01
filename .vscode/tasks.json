@@ -53,6 +53,16 @@
 				"./internal/tui"
 			],
 			"isBackground": false
+		},
+		{
+			"label": "test computerbridge package",
+			"type": "shell",
+			"command": "go",
+			"args": [
+				"test",
+				"./internal/computerbridge"
+			],
+			"isBackground": false
 		}
 	]
 }

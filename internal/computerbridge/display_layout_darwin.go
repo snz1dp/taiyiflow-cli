@@ -52,8 +52,6 @@ static int copyDisplayLayouts(TaiyiDisplayLayout* items, uint32_t capacity, uint
 		double pixelWidth = bounds.size.width;
 		double pixelHeight = bounds.size.height;
 		if (mode != NULL) {
-			logicalWidth = (double)CGDisplayModeGetWidth(mode);
-			logicalHeight = (double)CGDisplayModeGetHeight(mode);
 			pixelWidth = (double)CGDisplayModeGetPixelWidth(mode);
 			pixelHeight = (double)CGDisplayModeGetPixelHeight(mode);
 			CGDisplayModeRelease(mode);
