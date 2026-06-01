@@ -193,8 +193,8 @@ func TestIsExecutableSlashCommandInputUsesSplitDialogueCommands(t *testing.T) {
 	if !isExecutableSlashCommandInput("/upload report.txt") {
 		t.Fatalf("expected /upload to be executable")
 	}
-	if !isExecutableSlashCommandInput("/think 1") {
-		t.Fatalf("expected /think to be executable")
+	if isExecutableSlashCommandInput("/think 1") {
+		t.Fatalf("expected /think to be removed from executable commands")
 	}
 	if !isExecutableSlashCommandInput("/session title 项目排障") {
 		t.Fatalf("expected /session title to be executable")
@@ -309,6 +309,9 @@ func TestVisibleSlashCommandsOmitsPermissionsCommand(t *testing.T) {
 	for _, command := range commands {
 		if command.Trigger == "/permissions" {
 			t.Fatalf("expected /permissions to be removed from slash commands, got %#v", commands)
+		}
+		if command.Trigger == "/think" {
+			t.Fatalf("expected /think to be removed from slash commands, got %#v", commands)
 		}
 	}
 }

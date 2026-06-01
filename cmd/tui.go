@@ -569,8 +569,6 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			return executeTUIKnowledgeCommand(trimmed, snapshot)
 		case strings.EqualFold(trimmed, "/upload") || strings.HasPrefix(strings.ToLower(trimmed), "/upload "):
 			return executeTUIUploadCommand(ctx, authRefreshProvider(), trimmed, snapshot)
-		case strings.EqualFold(trimmed, "/think") || strings.HasPrefix(strings.ToLower(trimmed), "/think "):
-			return executeTUIThinkCommand(trimmed, snapshot)
 		case strings.EqualFold(trimmed, knowledgePickerCommandPrefix) || strings.HasPrefix(strings.ToLower(trimmed), knowledgePickerCommandPrefix+" "):
 			return executeTUIKnowledgePickerCommand(trimmed, snapshot)
 		case strings.EqualFold(trimmed, "/skills help"):
@@ -851,7 +849,6 @@ func buildTUIHelpLines(snapshot tui.Snapshot) []string {
 		"/internet [on|off|status] 查看或切换当前对话的联网搜索",
 		"/knowledge 打开知识库范围选择器；/knowledge status 查看当前状态；/knowledge auto 切回自动",
 		"/upload <本地文件路径> 上传文件并附带到当前对话；/upload status 查看当前文件状态",
-		"/think [编号] 查看历史消息里的思考内容；不带编号时列出可查看项",
 		"/review [路径] 发起当前工作区或指定路径的代码审查",
 		"/agent 或 /agent <任务> 切换执行模式",
 		"/ask 或 /ask <问题> 切换问答模式",
@@ -1251,27 +1248,14 @@ func loadRecentSessionHistory(ctx context.Context, providerClient provider.Provi
 	}
 
 	entries := make([]tui.HistoryEntry, 0, len(messages.Items))
-	thinkingIndex := 0
 	for index := len(messages.Items) - 1; index >= 0; index-- {
 		item := messages.Items[index]
 		role := mapMessageRole(item)
 		content := strings.TrimSpace(item.Text)
-		reasoning := strings.TrimSpace(item.ReasonText)
-		currentThinkingIndex := 0
-		if role == "assistant" && reasoning != "" {
-			thinkingIndex++
-			currentThinkingIndex = thinkingIndex
-			note := fmt.Sprintf("[历史思考已隐藏，输入 /think %d 查看]", currentThinkingIndex)
-			if content == "" {
-				content = note
-			} else {
-				content = content + "\n\n" + note
-			}
-		}
 		if content == "" {
 			continue
 		}
-		entries = append(entries, tui.HistoryEntry{Role: role, Content: content, ThinkingText: reasoning, ThinkingIndex: currentThinkingIndex})
+		entries = append(entries, tui.HistoryEntry{Role: role, Content: content})
 	}
 	return entries
 }
@@ -3410,35 +3394,6 @@ func executeTUIUploadCommand(ctx context.Context, providerClient provider.Provid
 	}, nil
 }
 
-func executeTUIThinkCommand(command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
-	trimmed := strings.TrimSpace(command)
-	fields := strings.Fields(trimmed)
-	available := availableThinkingHistory(snapshot.History)
-	if len(fields) == 1 || (len(fields) == 2 && strings.EqualFold(fields[1], "list")) {
-		if len(available) == 0 {
-			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: "当前历史消息中没有可查看的思考内容。"}}}, nil
-		}
-		lines := []string{"可查看的历史思考:"}
-		for _, item := range available {
-			lines = append(lines, fmt.Sprintf("#%d %s", item.ThinkingIndex, summarizeThinkingHistory(item.Content)))
-		}
-		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: strings.Join(lines, "\n")}}}, nil
-	}
-	if len(fields) != 2 {
-		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "用法: /think [编号]"}}}, nil
-	}
-	index, err := strconv.Atoi(strings.TrimSpace(fields[1]))
-	if err != nil || index <= 0 {
-		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "用法: /think [编号]"}}}, nil
-	}
-	for _, item := range available {
-		if item.ThinkingIndex == index {
-			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: fmt.Sprintf("历史消息 #%d 的思考过程:\n%s", index, item.ThinkingText)}}}, nil
-		}
-	}
-	return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: fmt.Sprintf("未找到编号为 %d 的历史思考。", index)}}}, nil
-}
-
 type tuiRenderedSegment struct {
 	Text      string
 	Reasoning bool
@@ -3531,26 +3486,6 @@ func (s *tuiAssistantRenderState) flush() []tuiRenderedSegment {
 	s.pending = ""
 	s.controlResidue.flush()
 	return nil
-}
-
-func availableThinkingHistory(items []tui.HistoryEntry) []tui.HistoryEntry {
-	available := make([]tui.HistoryEntry, 0, len(items))
-	for _, item := range items {
-		if item.ThinkingIndex > 0 && strings.TrimSpace(item.ThinkingText) != "" {
-			available = append(available, item)
-		}
-	}
-	return available
-}
-
-func summarizeThinkingHistory(content string) string {
-	trimmed := strings.TrimSpace(content)
-	trimmed = strings.ReplaceAll(trimmed, "\n", " ")
-	if len([]rune(trimmed)) <= 24 {
-		return trimmed
-	}
-	runes := []rune(trimmed)
-	return string(runes[:24]) + "..."
 }
 
 func loadLatestSearchResultsSummary(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string) string {

@@ -865,6 +865,9 @@ func TestBuildTUIHelpLinesUsesLoginOverlayWording(t *testing.T) {
 	if strings.Contains(joined, "/chat") {
 		t.Fatalf("expected help text to remove /chat, got %q", joined)
 	}
+	if strings.Contains(joined, "/think") {
+		t.Fatalf("expected help text to remove /think, got %q", joined)
+	}
 	if !strings.Contains(joined, "/internet [on|off|status]") || !strings.Contains(joined, "/knowledge 打开知识库范围选择器") || !strings.Contains(joined, "/upload <本地文件路径> 上传文件并附带到当前对话") {
 		t.Fatalf("expected help text to include split dialogue commands, got %q", joined)
 	}
@@ -1175,29 +1178,6 @@ func TestExecuteTUIUploadCommandCreatesSessionWhenMissing(t *testing.T) {
 	}
 	if len(result.Snapshot.InputFiles) != 1 || result.Snapshot.InputFiles[0] != "flow-1/session-created/report.txt" {
 		t.Fatalf("unexpected snapshot after upload: %#v", result.Snapshot)
-	}
-}
-
-func TestExecuteTUIThinkCommandListsAndShowsReasoning(t *testing.T) {
-	snapshot := internaltui.Snapshot{History: []internaltui.HistoryEntry{
-		{Role: "assistant", Content: "历史回答一\n\n[历史思考已隐藏，输入 /think 1 查看]", ThinkingText: "第一条思考", ThinkingIndex: 1},
-		{Role: "assistant", Content: "历史回答二\n\n[历史思考已隐藏，输入 /think 2 查看]", ThinkingText: "第二条思考", ThinkingIndex: 2},
-	}}
-
-	listResult, err := executeTUIThinkCommand("/think", snapshot)
-	if err != nil {
-		t.Fatalf("executeTUIThinkCommand list failed: %v", err)
-	}
-	if len(listResult.Events) != 1 || !strings.Contains(listResult.Events[0].Text, "#1") || !strings.Contains(listResult.Events[0].Text, "#2") {
-		t.Fatalf("unexpected think list result: %#v", listResult.Events)
-	}
-
-	showResult, err := executeTUIThinkCommand("/think 2", snapshot)
-	if err != nil {
-		t.Fatalf("executeTUIThinkCommand show failed: %v", err)
-	}
-	if len(showResult.Events) != 1 || !strings.Contains(showResult.Events[0].Text, "第二条思考") {
-		t.Fatalf("unexpected think detail result: %#v", showResult.Events)
 	}
 }
 

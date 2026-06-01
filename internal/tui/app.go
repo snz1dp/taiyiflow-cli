@@ -1007,7 +1007,6 @@ var slashCommands = []slashCommand{
 	{Trigger: "/internet", Completion: "/internet ", Description: "查看或切换当前对话的联网搜索"},
 	{Trigger: "/knowledge", Completion: "/knowledge ", Description: "查看或切换当前对话的知识库范围"},
 	{Trigger: "/upload", Completion: "/upload ", Description: "上传文件并附带到当前对话，可用 /upload status 查看状态"},
-	{Trigger: "/think", Completion: "/think ", Description: "查看历史消息中的思考内容，可用 /think 列表或 /think <编号> 查看详情"},
 	{Trigger: "/session", Completion: "/session", Description: "显示当前会话状态"},
 	{Trigger: "/session title", Completion: "/session title ", Description: "设置当前会话标题，新会话不可用"},
 	{Trigger: "/reasoning", Completion: "/reasoning ", Description: "切换思考模式，支持 on、off、default、status"},
@@ -5767,7 +5766,7 @@ func (m model) backendUnavailableMessage() string {
 func welcomeCommandsLabel(snapshot Snapshot) []string {
 	labelValue := "可用命令: "
 	if snapshot.BackendAvailable {
-		return []string{labelValue + "/agents /internet /knowledge /upload /think /refresh /login /config /todo /tasks /skills /reasoning /session /new /exit"}
+		return []string{labelValue + "/agents /internet /knowledge /upload /refresh /login /config /todo /tasks /skills /reasoning /session /new /exit"}
 	}
 	return []string{labelValue + "/refresh /login /config /todo /tasks /skills /reasoning /help /clear /exit"}
 }
@@ -9315,8 +9314,6 @@ func isExecutableSlashCommandInput(input string) bool {
 		return true
 	case strings.EqualFold(trimmed, "/upload"):
 		return true
-	case strings.EqualFold(trimmed, "/think"):
-		return true
 	case strings.EqualFold(trimmed, "/ask"):
 		return true
 	case strings.EqualFold(trimmed, "/plan"):
@@ -9369,8 +9366,6 @@ func isExecutableSlashCommandInput(input string) bool {
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/knowledge ")) != ""
 	case strings.HasPrefix(strings.ToLower(trimmed), "/upload "):
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/upload ")) != ""
-	case strings.HasPrefix(strings.ToLower(trimmed), "/think "):
-		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/think ")) != ""
 	case strings.HasPrefix(strings.ToLower(trimmed), "/session title "):
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/session title ")) != ""
 	case strings.HasPrefix(strings.ToLower(trimmed), "/reasoning "):
