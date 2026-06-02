@@ -401,7 +401,7 @@ type streamRequestBody struct {
 	SessionID                 string         `json:"session_id,omitempty"`
 	RunID                     string         `json:"run_id,omitempty"`
 	RequestType               string         `json:"request_type,omitempty"`
-	DeviceType                string         `json:"device_type,omitempty"`
+	ClientType                string         `json:"client_type,omitempty"`
 	ClientContextDir          string         `json:"client_context_dir,omitempty"`
 	CommandExecutionTarget    string         `json:"command_execution_target,omitempty"`
 	MaxIterations             int            `json:"max_iterations,omitempty"`
@@ -1272,7 +1272,7 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 		SessionID:                 trimmedSessionID,
 		RunID:                     request.RunID,
 		RequestType:               provider.NormalizeRequestType(request.RequestType),
-		DeviceType:                firstNonEmpty(strings.TrimSpace(request.DeviceType), provider.DeviceTypeCLI),
+		ClientType:                firstNonEmpty(strings.TrimSpace(request.ClientType), provider.ClientTypeCLI),
 		ClientContextDir:          strings.TrimSpace(request.ClientContextDir),
 		CommandExecutionTarget:    firstNonEmpty(request.CommandExecutionTarget, "client"),
 		MaxIterations:             request.MaxIterations,

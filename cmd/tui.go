@@ -143,7 +143,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				AgentAutoLoopEnabled:      resolveAgentAutoLoopEnabled(config, sessionState, request.RequestMode),
 				AgentAutoLoopMaxRounds:    resolveAgentAutoLoopMaxRounds(config, sessionState, request.RequestMode),
 				CrossSessionMemoryEnabled: boolPtr(config.CrossSessionMemoryEnabled),
-				DeviceType:                provider.DeviceTypeCLI,
+				ClientType:                provider.ClientTypeCLI,
 				ClientContextDir:          clientContextDir,
 				CommandExecutionTarget:    commandExecutionTarget,
 				UserAgent:                 buildCLIUserAgent(),

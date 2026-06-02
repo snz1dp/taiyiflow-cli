@@ -24,7 +24,7 @@ const (
 	RequestTypeAsk                                       = "ask"
 	RequestTypePlan                                      = "plan"
 	RequestTypeAgent                                     = "agent"
-	DeviceTypeCLI                                        = "cli"
+	ClientTypeCLI                                        = "cli"
 	ImageCompressionStrategyPassthrough                  = "passthrough"
 	ImageCompressionStrategyFollowSystem                 = "follow_system"
 	FeatureInternetSearch                                = "internet_search"
@@ -69,7 +69,7 @@ type StreamRequest struct {
 	SessionID                 string
 	RunID                     string
 	RequestType               string
-	DeviceType                string
+	ClientType                string
 	ClientContextDir          string
 	UserAgent                 string
 	CommandExecutionTarget    string

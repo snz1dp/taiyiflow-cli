@@ -678,7 +678,7 @@ func (a *App) streamTaskWithSkillRetry(
 		AgentAutoLoopEnabled:      resolveAgentAutoLoopEnabled(config, sessionState, sessionState.RequestMode),
 		AgentAutoLoopMaxRounds:    resolveAgentAutoLoopMaxRounds(config, sessionState, sessionState.RequestMode),
 		CrossSessionMemoryEnabled: boolPtr(config.CrossSessionMemoryEnabled),
-		DeviceType:                provider.DeviceTypeCLI,
+		ClientType:                provider.ClientTypeCLI,
 		ClientContextDir:          clientContextDir,
 		CommandExecutionTarget:    commandExecutionTarget,
 		UserAgent:                 buildCLIUserAgent(),
