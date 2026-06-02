@@ -18,8 +18,8 @@ const (
 
 	screenshotImageUnderstandingSystemTemplate = "你是截图理解助手。当前输入图像仅来自桌面 ComputerUse 或浏览器自动化截图，不是文档结构化解析任务。请只依据截图中可见的像素内容，优先识别界面结构、可交互元素、状态变化、错误提示、可见文本和与当前问题直接相关的线索；不要臆测不可见内容，不要补全被遮挡区域，也不要把截图按文档理解流程处理。若问题涉及按钮、输入框、链接或其他目标的位置，请优先使用截图左上角为原点的截图本地像素坐标(x,y)描述，不要自行换算成全局桌面坐标；只有在问题明确要求且已提供显示器 origin 等元数据时，才说明如何换算。"
 	screenshotImageUnderstandingUserTemplate   = "请仅依据截图中可见内容回答问题，并且只返回纯文本结果；若截图中没有足够证据，请直接说明“截图中未见相关信息”。\n问题：{question}"
-	screenshotImageUnderstandingDefaultInput  = "请概述截图中的界面结构、可见文本、可交互元素和关键状态信息。"
-	screenshotImageUnderstandingContextPrefix = "截图坐标上下文："
+	screenshotImageUnderstandingDefaultInput   = "请概述截图中的界面结构、可见文本、可交互元素和关键状态信息。"
+	screenshotImageUnderstandingContextPrefix  = "截图坐标上下文："
 )
 
 func (r *ClientRuntime) understandImageWithProvider(
@@ -113,15 +113,15 @@ func (r *ClientRuntime) runImageUnderstanding(
 	if compressionStrategy == "" {
 		compressionStrategy = provider.ImageCompressionStrategyFollowSystem
 	}
+	imageTweaks := imageUnderstandingTweaksWithCompression(tweaks, compressionStrategy)
 	result, err := imageRunner.RunImageUnderstanding(ctx, provider.ImageUnderstandingRequest{
-		FlowID:                   strings.TrimSpace(serviceConfig.ImageFlowID),
-		Input:                    argumentString(arguments, "input_value", "input", "prompt"),
-		InputType:                fallbackString(argumentString(arguments, "input_type", "inputType"), "any"),
-		Tweaks:                   tweaks,
-		InputFiles:               remotePaths,
-		OutputType:               "any",
-		SessionID:                sessionID,
-		ImageCompressionStrategy: compressionStrategy,
+		FlowID:     strings.TrimSpace(serviceConfig.ImageFlowID),
+		Input:      argumentString(arguments, "input_value", "input", "prompt"),
+		InputType:  fallbackString(argumentString(arguments, "input_type", "inputType"), "any"),
+		Tweaks:     imageTweaks,
+		InputFiles: remotePaths,
+		OutputType: "any",
+		SessionID:  sessionID,
 	})
 	if err != nil {
 		return nil, newToolError("EXECUTION_FAILED", "调用图像理解服务失败: %v", err)
@@ -136,10 +136,18 @@ func (r *ClientRuntime) runImageUnderstanding(
 		"session_id":     fallbackString(strings.TrimSpace(result.SessionID), sessionID),
 		"uploaded_files": uploadedFiles,
 	}
-	if rawOutput := strings.TrimSpace(result.Output); rawOutput != "" {
-		response["raw_output"] = rawOutput
-	}
 	return response, nil
+}
+
+func imageUnderstandingTweaksWithCompression(tweaks map[string]any, compressionStrategy string) map[string]any {
+	merged := make(map[string]any, len(tweaks)+1)
+	for key, value := range tweaks {
+		merged[key] = value
+	}
+	if trimmedStrategy := strings.TrimSpace(compressionStrategy); trimmedStrategy != "" {
+		merged["image_compression_strategy"] = trimmedStrategy
+	}
+	return merged
 }
 
 func imageUnderstandingPaths(arguments map[string]any) ([]string, error) {

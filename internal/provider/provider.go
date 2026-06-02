@@ -410,14 +410,13 @@ type DocumentUnstructuredResult struct {
 }
 
 type ImageUnderstandingRequest struct {
-	FlowID                   string
-	Input                    string
-	InputType                string
-	Tweaks                   map[string]any
-	InputFiles               []string
-	OutputType               string
-	SessionID                string
-	ImageCompressionStrategy string
+	FlowID     string
+	Input      string
+	InputType  string
+	Tweaks     map[string]any
+	InputFiles []string
+	OutputType string
+	SessionID  string
 }
 
 type ImageUnderstandingResult struct {

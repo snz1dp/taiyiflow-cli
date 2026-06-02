@@ -135,8 +135,8 @@ func TestTranslateScreenPointUsesExplicitScreenshotDimensions(t *testing.T) {
 		Primary:      true,
 	}}
 	point, err := translateScreenPoint(map[string]any{
-		"display_id":          "1",
-		"screenshot_width_px": 3200,
+		"display_id":           "1",
+		"screenshot_width_px":  3200,
 		"screenshot_height_px": 2080,
 	}, 1600, 260, layouts)
 	if err != nil {
@@ -370,6 +370,38 @@ func TestDarwinKeyPressFallsBackToTypeTextForTextLikeKey(t *testing.T) {
 	}
 }
 
+func TestDarwinKeyPressUsesCGEventForCommandShortcut(t *testing.T) {
+	originalPostModifiedKeyCodeFunc := darwinPostModifiedKeyCodeFunc
+	originalSettleAfterShortcut := darwinSettleAfterShortcut
+	t.Cleanup(func() {
+		darwinPostModifiedKeyCodeFunc = originalPostModifiedKeyCodeFunc
+		darwinSettleAfterShortcut = originalSettleAfterShortcut
+	})
+
+	called := false
+	darwinPostModifiedKeyCodeFunc = func(keyCode int, command bool, shift bool, option bool, control bool) error {
+		called = true
+		if keyCode != 3 || !command || shift || option || control {
+			t.Fatalf("unexpected modified key event: keyCode=%d command=%t shift=%t option=%t control=%t", keyCode, command, shift, option, control)
+		}
+		return nil
+	}
+	darwinSettleAfterShortcut = func(ctx context.Context) error {
+		return ctx.Err()
+	}
+
+	result, err := darwinKeyPress(context.Background(), map[string]any{"key": "f", "modifiers": []any{"command"}})
+	if err != nil {
+		t.Fatalf("expected command shortcut to use CGEvent path, got %v", err)
+	}
+	if !called {
+		t.Fatal("expected command shortcut to post a modified key code event")
+	}
+	if stringValue(result["input_method"]) != "cg_event_key_code" {
+		t.Fatalf("expected CGEvent input method metadata, got %#v", result)
+	}
+}
+
 func TestDarwinKeyPressKeepsNamedSpecialKeys(t *testing.T) {
 	if text, fallback, err := darwinKeyPressTextFallback("enter", "", 1); err != nil {
 		t.Fatalf("expected named special key to bypass text fallback, got err=%v", err)
@@ -488,7 +520,7 @@ func TestBuildDarwinPasteShortcutScriptUsesCommandVWithDelay(t *testing.T) {
 	if !strings.Contains(script, "key code 9 using command down") {
 		t.Fatalf("expected paste shortcut script to send Command+V, got %q", script)
 	}
-	if !strings.Contains(script, "delay 0.05") {
+	if !strings.Contains(script, "delay 0.35") {
 		t.Fatalf("expected paste shortcut script to wait briefly before clipboard restore, got %q", script)
 	}
 }

@@ -101,6 +101,13 @@ func assertScreenshotImageUnderstandingTweaks(t *testing.T, request provider.Ima
 	}
 }
 
+func assertImageCompressionStrategy(t *testing.T, request provider.ImageUnderstandingRequest, expected string) {
+	t.Helper()
+	if request.Tweaks["image_compression_strategy"] != expected {
+		t.Fatalf("expected image compression strategy %q under tweaks, got %#v", expected, request)
+	}
+}
+
 func assertScreenshotImageUnderstandingInput(t *testing.T, request provider.ImageUnderstandingRequest, baseInput string, expectsMetadata bool) {
 	t.Helper()
 	input := strings.TrimSpace(request.Input)
@@ -937,9 +944,7 @@ func TestExecuteClientToolPayloadWithProviderImageUnderstanding(t *testing.T) {
 	if strings.TrimSpace(providerStub.imageRunRequest.Input) != "请概述截图内容" {
 		t.Fatalf("expected image prompt to be forwarded, got %#v", providerStub.imageRunRequest)
 	}
-	if providerStub.imageRunRequest.ImageCompressionStrategy != provider.ImageCompressionStrategyFollowSystem {
-		t.Fatalf("expected generic image_understanding to default to follow_system, got %#v", providerStub.imageRunRequest)
-	}
+	assertImageCompressionStrategy(t, providerStub.imageRunRequest, provider.ImageCompressionStrategyFollowSystem)
 	result, ok := resultAny.(map[string]any)
 	if !ok {
 		t.Fatalf("expected image_understanding result map, got %#v", resultAny)
@@ -949,9 +954,6 @@ func TestExecuteClientToolPayloadWithProviderImageUnderstanding(t *testing.T) {
 	}
 	if result["session_id"] != "session-image-2" {
 		t.Fatalf("expected returned session id, got %#v", result["session_id"])
-	}
-	if strings.TrimSpace(stringValue(result["raw_output"])) != "截图中央是登录表单" {
-		t.Fatalf("expected raw output to be preserved, got %#v", result)
 	}
 	textOutput, ok := providerStub.imageRunRequest.Tweaks[imageUnderstandingTextOutputComponent].(map[string]any)
 	if !ok || strings.TrimSpace(stringValue(textOutput["output_format"])) != "text" {
@@ -2063,9 +2065,7 @@ func TestBrowserScreenshotAddsImageUnderstandingWhenConfigured(t *testing.T) {
 	}
 	assertScreenshotImageUnderstandingInput(t, providerStub.imageRunRequest, "请提取图像内容", true)
 	assertScreenshotImageUnderstandingTweaks(t, providerStub.imageRunRequest)
-	if providerStub.imageRunRequest.ImageCompressionStrategy != provider.ImageCompressionStrategyPassthrough {
-		t.Fatalf("expected default image compression strategy passthrough, got %#v", providerStub.imageRunRequest)
-	}
+	assertImageCompressionStrategy(t, providerStub.imageRunRequest, provider.ImageCompressionStrategyPassthrough)
 	imageUnderstanding := strings.TrimSpace(stringValue(resultMap["image_understanding"]))
 	if imageUnderstanding == "" {
 		t.Fatalf("expected image_understanding result, got %#v", resultMap)
@@ -2119,9 +2119,7 @@ func TestBrowserScreenshotAddsDefaultImageUnderstandingInputWhenMissing(t *testi
 	}
 	assertScreenshotImageUnderstandingInput(t, providerStub.imageRunRequest, screenshotImageUnderstandingDefaultInput, true)
 	assertScreenshotImageUnderstandingTweaks(t, providerStub.imageRunRequest)
-	if providerStub.imageRunRequest.ImageCompressionStrategy != provider.ImageCompressionStrategyPassthrough {
-		t.Fatalf("expected default image compression strategy passthrough, got %#v", providerStub.imageRunRequest)
-	}
+	assertImageCompressionStrategy(t, providerStub.imageRunRequest, provider.ImageCompressionStrategyPassthrough)
 }
 
 func TestExecuteClientToolPayloadDispatchesComputerTool(t *testing.T) {
@@ -2343,9 +2341,7 @@ func TestComputerScreenshotAddsImageUnderstandingWhenConfigured(t *testing.T) {
 	}
 	assertScreenshotImageUnderstandingInput(t, providerStub.imageRunRequest, "请提取状态栏内容", true)
 	assertScreenshotImageUnderstandingTweaks(t, providerStub.imageRunRequest)
-	if providerStub.imageRunRequest.ImageCompressionStrategy != provider.ImageCompressionStrategyPassthrough {
-		t.Fatalf("expected passthrough compression strategy, got %#v", providerStub.imageRunRequest)
-	}
+	assertImageCompressionStrategy(t, providerStub.imageRunRequest, provider.ImageCompressionStrategyPassthrough)
 	resultMap, ok := resultAny.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map result, got %#v", resultAny)
@@ -2403,7 +2399,5 @@ func TestComputerScreenshotAddsDefaultImageUnderstandingInputWhenMissing(t *test
 	}
 	assertScreenshotImageUnderstandingInput(t, providerStub.imageRunRequest, screenshotImageUnderstandingDefaultInput, true)
 	assertScreenshotImageUnderstandingTweaks(t, providerStub.imageRunRequest)
-	if providerStub.imageRunRequest.ImageCompressionStrategy != provider.ImageCompressionStrategyPassthrough {
-		t.Fatalf("expected passthrough compression strategy, got %#v", providerStub.imageRunRequest)
-	}
+	assertImageCompressionStrategy(t, providerStub.imageRunRequest, provider.ImageCompressionStrategyPassthrough)
 }

@@ -47,6 +47,19 @@ func darwinPostKeyCode(keyCode int) error {
 	return fmt.Errorf("当前构建未启用 CGO，无法执行键盘按键注入")
 }
 
+func darwinPostModifiedKeyCode(keyCode int, command bool, shift bool, option bool, control bool) error {
+	_ = keyCode
+	_ = command
+	_ = shift
+	_ = option
+	_ = control
+	return fmt.Errorf("当前构建未启用 CGO，无法执行带修饰键的键盘按键注入")
+}
+
+func darwinPostCommandVShortcut() error {
+	return fmt.Errorf("当前构建未启用 CGO，无法执行 Command+V 粘贴快捷键")
+}
+
 func darwinPostUnicodeText(text string) error {
 	_ = text
 	return fmt.Errorf("当前构建未启用 CGO，无法执行 Unicode 文本输入")

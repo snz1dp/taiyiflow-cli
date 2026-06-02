@@ -52,10 +52,14 @@ var (
 			return nil
 		}
 	}
-	darwinTypeTextFunc             = darwinTypeText
-	displayScreenshotDimensionsMu  sync.RWMutex
-	displayScreenshotByID          = map[string]displayScreenshotDimensions{}
-	displayScreenshotByIndex       = map[int]displayScreenshotDimensions{}
+	darwinTypeTextFunc            = darwinTypeText
+	darwinPostModifiedKeyCodeFunc = darwinPostModifiedKeyCode
+	darwinSettleAfterShortcut     = func(ctx context.Context) error {
+		return waitForDarwinInputSettle(ctx, 160*time.Millisecond)
+	}
+	displayScreenshotDimensionsMu sync.RWMutex
+	displayScreenshotByID         = map[string]displayScreenshotDimensions{}
+	displayScreenshotByIndex      = map[int]displayScreenshotDimensions{}
 )
 
 type displayScreenshotDimensions struct {
@@ -1142,10 +1146,18 @@ func darwinTypeText(ctx context.Context, arguments map[string]any) (map[string]a
 	}
 	lines := splitTypedText(text)
 	pressEnter := boolValue(arguments["press_enter"])
+	restoreClipboard := boolValue(arguments["restore_clipboard"])
+	inputMethod := "cg_event_unicode"
+	pasteBackend := ""
+	clipboardRestoreScope := "not_used"
 	if shouldDarwinUseClipboardTextInput(text, darwinUnicodeTextInputAvailable()) {
-		if err := darwinPasteText(ctx, text); err != nil {
+		inputMethod = "clipboard_paste"
+		backend, restoreScope, err := darwinPasteText(ctx, text, restoreClipboard)
+		if err != nil {
 			return nil, err
 		}
+		pasteBackend = backend
+		clipboardRestoreScope = restoreScope
 		if pressEnter {
 			if err := darwinPostKeyCode(36); err != nil {
 				return nil, err
@@ -1173,16 +1185,25 @@ func darwinTypeText(ctx context.Context, arguments map[string]any) (map[string]a
 			}
 		}
 	} else {
+		inputMethod = "applescript_keystroke"
 		if _, err := runOSAScript(ctx, buildDarwinTypeTextScript(text, pressEnter)); err != nil {
 			return nil, err
 		}
 	}
-	return map[string]any{
-		"platform":    "darwin",
-		"text_length": utf8.RuneCountInString(text),
-		"line_count":  len(lines),
-		"press_enter": pressEnter,
-	}, nil
+	result := map[string]any{
+		"platform":     "darwin",
+		"text_length":  utf8.RuneCountInString(text),
+		"line_count":   len(lines),
+		"press_enter":  pressEnter,
+		"input_method": inputMethod,
+	}
+	if pasteBackend != "" {
+		result["paste_backend"] = pasteBackend
+		result["clipboard_backend"] = "nspasteboard"
+		result["restore_clipboard"] = restoreClipboard
+		result["clipboard_restore_scope"] = clipboardRestoreScope
+	}
+	return result, nil
 }
 
 func shouldDarwinUseClipboardTextInput(text string, unicodeInputAvailable bool) bool {
@@ -1199,37 +1220,67 @@ func requiresDarwinClipboardTextInput(text string) bool {
 	return len(text) != utf8.RuneCountInString(text)
 }
 
-func darwinPasteText(ctx context.Context, text string) error {
-	previous, err := darwinCaptureClipboard()
-	if err != nil {
-		return err
+func waitForDarwinInputSettle(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := darwinSetClipboardText(text); err != nil {
-		return err
-	}
-	pasteErr := darwinTriggerPasteShortcut(ctx)
-	restoreErr := darwinRestoreClipboard(previous)
-	if pasteErr != nil {
-		return pasteErr
-	}
-	if restoreErr != nil {
-		return restoreErr
-	}
-	return nil
 }
 
-func darwinTriggerPasteShortcut(ctx context.Context) error {
-	if _, err := runOSAScript(ctx, buildDarwinPasteShortcutScript()); err != nil {
-		return fmt.Errorf("执行系统粘贴失败: %w", err)
+func darwinPasteText(ctx context.Context, text string, restoreClipboard bool) (string, string, error) {
+	var previous []byte
+	if restoreClipboard {
+		captured, err := darwinCaptureClipboard()
+		if err != nil {
+			return "", "", err
+		}
+		previous = captured
 	}
-	return nil
+	if err := ctx.Err(); err != nil {
+		return "", "", err
+	}
+	if err := darwinSetClipboardText(text); err != nil {
+		return "", "", err
+	}
+	if err := waitForDarwinInputSettle(ctx, 90*time.Millisecond); err != nil {
+		return "", "", err
+	}
+	pasteBackend, pasteErr := darwinTriggerPasteShortcut(ctx)
+	if pasteErr != nil {
+		return "", "", pasteErr
+	}
+	if !restoreClipboard {
+		return pasteBackend, "not_restored", nil
+	}
+	if err := waitForDarwinInputSettle(ctx, 1200*time.Millisecond); err != nil {
+		return "", "", err
+	}
+	restoreErr := darwinRestoreClipboard(previous)
+	if restoreErr != nil {
+		return "", "", restoreErr
+	}
+	return pasteBackend, "full_snapshot", nil
+}
+
+func darwinTriggerPasteShortcut(ctx context.Context) (string, error) {
+	if err := darwinPostCommandVShortcut(); err == nil {
+		if err := waitForDarwinInputSettle(ctx, 320*time.Millisecond); err != nil {
+			return "", err
+		}
+		return "cg_event_command_v", nil
+	}
+	if _, err := runOSAScript(ctx, buildDarwinPasteShortcutScript()); err != nil {
+		return "", fmt.Errorf("执行系统粘贴失败: %w", err)
+	}
+	return "applescript_command_v", nil
 }
 
 func buildDarwinPasteShortcutScript() string {
-	return "tell application \"System Events\"\n  key code 9 using command down\n  delay 0.05\nend tell"
+	return "tell application \"System Events\"\n  key code 9 using command down\n  delay 0.35\nend tell"
 }
 
 func buildDarwinTypeTextScript(text string, pressEnter bool) string {
@@ -1259,10 +1310,11 @@ func darwinKeyPress(ctx context.Context, arguments map[string]any) (map[string]a
 	if repeatCount < 1 {
 		repeatCount = 1
 	}
-	modifierClause, err := appleScriptModifiers(arguments["modifiers"])
+	modifierState, err := darwinModifierStateFromValue(arguments["modifiers"])
 	if err != nil {
 		return nil, err
 	}
+	modifierClause := appleScriptModifierClause(modifierState)
 	if fallbackText, fallback, err := darwinKeyPressTextFallback(key, modifierClause, repeatCount); err != nil {
 		return nil, err
 	} else if fallback {
@@ -1273,10 +1325,21 @@ func darwinKeyPress(ctx context.Context, arguments map[string]any) (map[string]a
 			"platform":      "darwin",
 			"key":           key,
 			"repeat":        repeatCount,
-			"modifiers":     stringSlice(arguments["modifiers"]),
+			"modifiers":     modifierState.Labels,
 			"text_length":   utf8.RuneCountInString(fallbackText),
 			"fallback_mode": "type_text",
 		}, nil
+	}
+	if keyCode, ok := darwinKeyCodeForShortcut(key); ok && (modifierState.HasAny() || darwinKeyPressUsesNamedKey(key)) {
+		if err := darwinPostKeyCodeWithModifiers(ctx, keyCode, modifierState, repeatCount); err == nil {
+			return map[string]any{
+				"platform":     "darwin",
+				"key":          key,
+				"repeat":       repeatCount,
+				"modifiers":    modifierState.Labels,
+				"input_method": "cg_event_key_code",
+			}, nil
+		}
 	}
 	command, err := appleScriptKeyCommand(key, modifierClause)
 	if err != nil {
@@ -1286,12 +1349,106 @@ func darwinKeyPress(ctx context.Context, arguments map[string]any) (map[string]a
 	if _, err := runOSAScript(ctx, strings.Join(scriptLines, "\n")); err != nil {
 		return nil, err
 	}
+	if modifierState.HasAny() {
+		if err := darwinSettleAfterShortcut(ctx); err != nil {
+			return nil, err
+		}
+	}
 	return map[string]any{
-		"platform":  "darwin",
-		"key":       key,
-		"repeat":    repeatCount,
-		"modifiers": stringSlice(arguments["modifiers"]),
+		"platform":     "darwin",
+		"key":          key,
+		"repeat":       repeatCount,
+		"modifiers":    modifierState.Labels,
+		"input_method": "applescript_key",
 	}, nil
+}
+
+type darwinModifierState struct {
+	Command bool
+	Shift   bool
+	Option  bool
+	Control bool
+	Labels  []string
+}
+
+func (state darwinModifierState) HasAny() bool {
+	return state.Command || state.Shift || state.Option || state.Control
+}
+
+func darwinModifierStateFromValue(value any) (darwinModifierState, error) {
+	items := stringSlice(value)
+	state := darwinModifierState{Labels: []string{}}
+	for _, item := range items {
+		switch strings.ToLower(strings.TrimSpace(item)) {
+		case "command", "cmd", "meta":
+			if !state.Command {
+				state.Command = true
+				state.Labels = append(state.Labels, "command")
+			}
+		case "shift":
+			if !state.Shift {
+				state.Shift = true
+				state.Labels = append(state.Labels, "shift")
+			}
+		case "option", "alt":
+			if !state.Option {
+				state.Option = true
+				state.Labels = append(state.Labels, "option")
+			}
+		case "control", "ctrl":
+			if !state.Control {
+				state.Control = true
+				state.Labels = append(state.Labels, "control")
+			}
+		default:
+			return darwinModifierState{}, fmt.Errorf("不支持的修饰键: %s", item)
+		}
+	}
+	return state, nil
+}
+
+func appleScriptModifierClause(state darwinModifierState) string {
+	if !state.HasAny() {
+		return ""
+	}
+	mapped := make([]string, 0, len(state.Labels))
+	for _, label := range state.Labels {
+		switch label {
+		case "command":
+			mapped = append(mapped, "command down")
+		case "shift":
+			mapped = append(mapped, "shift down")
+		case "option":
+			mapped = append(mapped, "option down")
+		case "control":
+			mapped = append(mapped, "control down")
+		}
+	}
+	return "{" + strings.Join(mapped, ", ") + "}"
+}
+
+func darwinPostKeyCodeWithModifiers(ctx context.Context, keyCode int, modifierState darwinModifierState, repeatCount int) error {
+	if repeatCount < 1 {
+		repeatCount = 1
+	}
+	for current := 0; current < repeatCount; current++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if modifierState.HasAny() {
+			if err := darwinPostModifiedKeyCodeFunc(keyCode, modifierState.Command, modifierState.Shift, modifierState.Option, modifierState.Control); err != nil {
+				return err
+			}
+			if err := darwinSettleAfterShortcut(ctx); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := darwinPostKeyCode(keyCode); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func darwinKeyPressTextFallback(key string, modifierClause string, repeatCount int) (string, bool, error) {
@@ -1331,6 +1488,56 @@ func darwinKeyPressUsesNamedKey(key string) bool {
 		}
 	}
 	return false
+}
+
+func darwinKeyCodeForShortcut(key string) (int, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	if normalized == "" {
+		return 0, false
+	}
+	namedCodes := map[string]int{
+		"enter":     36,
+		"return":    36,
+		"tab":       48,
+		"escape":    53,
+		"esc":       53,
+		"space":     49,
+		"backspace": 51,
+		"delete":    51,
+		"left":      123,
+		"right":     124,
+		"down":      125,
+		"up":        126,
+		"f1":        122,
+		"f2":        120,
+		"f3":        99,
+		"f4":        118,
+		"f5":        96,
+		"f6":        97,
+		"f7":        98,
+		"f8":        100,
+		"f9":        101,
+		"f10":       109,
+		"f11":       103,
+		"f12":       111,
+	}
+	if code, ok := namedCodes[normalized]; ok {
+		return code, true
+	}
+	if len([]rune(normalized)) != 1 {
+		return 0, false
+	}
+	ansiCodes := map[rune]int{
+		'a': 0, 's': 1, 'd': 2, 'f': 3, 'h': 4, 'g': 5, 'z': 6, 'x': 7,
+		'c': 8, 'v': 9, 'b': 11, 'q': 12, 'w': 13, 'e': 14, 'r': 15, 'y': 16,
+		't': 17, '1': 18, '2': 19, '3': 20, '4': 21, '6': 22, '5': 23,
+		'=': 24, '9': 25, '7': 26, '-': 27, '8': 28, '0': 29, ']': 30,
+		'o': 31, 'u': 32, '[': 33, 'i': 34, 'p': 35, 'l': 37, 'j': 38,
+		'\'': 39, 'k': 40, ';': 41, '\\': 42, ',': 43, '/': 44, 'n': 45,
+		'm': 46, '.': 47, '`': 50,
+	}
+	code, ok := ansiCodes[[]rune(normalized)[0]]
+	return code, ok
 }
 
 func darwinAccessibilityError() string {

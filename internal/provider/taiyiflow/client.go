@@ -945,18 +945,12 @@ func (c *Client) RunImageUnderstanding(ctx context.Context, request provider.Ima
 }
 
 func mergeImageUnderstandingTweaks(request provider.ImageUnderstandingRequest) map[string]any {
-	var tweaks map[string]any
-	if len(request.Tweaks) > 0 {
-		tweaks = make(map[string]any, len(request.Tweaks)+1)
-		for key, value := range request.Tweaks {
-			tweaks[key] = value
-		}
+	if len(request.Tweaks) == 0 {
+		return nil
 	}
-	if compressionStrategy := strings.TrimSpace(request.ImageCompressionStrategy); compressionStrategy != "" {
-		if tweaks == nil {
-			tweaks = make(map[string]any, 1)
-		}
-		tweaks["image_compression_strategy"] = compressionStrategy
+	tweaks := make(map[string]any, len(request.Tweaks))
+	for key, value := range request.Tweaks {
+		tweaks[key] = value
 	}
 	return tweaks
 }

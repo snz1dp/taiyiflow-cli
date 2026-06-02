@@ -250,13 +250,14 @@ func computerClientToolDefinitions() []map[string]any {
 		},
 		{
 			"name":                 computerToolTypeText,
-			"description":          "向当前焦点输入文本，可选输入后回车。",
+			"description":          "向当前焦点输入文本，可选输入后回车。macOS 中文或混合文本默认通过剪贴板粘贴并保留剪贴板为本次文本，避免目标应用异步读取旧剪贴板导致输入错误；如确需恢复剪贴板，可传 restore_clipboard=true。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"text":        map[string]any{"type": "string"},
-					"press_enter": map[string]any{"type": "boolean"},
+					"text":              map[string]any{"type": "string"},
+					"press_enter":       map[string]any{"type": "boolean"},
+					"restore_clipboard": map[string]any{"type": "boolean", "description": "仅 macOS 剪贴板粘贴路径使用；默认 false。设为 true 会在粘贴后延迟恢复原剪贴板，但某些应用可能异步读取剪贴板，存在输入旧内容风险。"},
 				},
 				"required":             []string{"text"},
 				"additionalProperties": false,

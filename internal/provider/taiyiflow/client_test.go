@@ -719,18 +719,18 @@ func TestRunImageUnderstandingPostsSimplifiedRequestAndPreservesTextResponse(t *
 
 	client := NewClient(server.URL, "")
 	result, err := client.RunImageUnderstanding(context.Background(), provider.ImageUnderstandingRequest{
-		FlowID:                   "image-flow",
-		Input:                    "请提取图像内容",
-		InputType:                "any",
+		FlowID:    "image-flow",
+		Input:     "请提取图像内容",
+		InputType: "any",
 		Tweaks: map[string]any{
-			"Prompt-G6Qwq":   map[string]any{"template": "系统提示词模板"},
-			"Prompt-e2cjZ":   map[string]any{"template": "问题：{question}"},
-			"TextOutput-sMWXv": map[string]any{"output_format": "text"},
+			"Prompt-G6Qwq":               map[string]any{"template": "系统提示词模板"},
+			"Prompt-e2cjZ":               map[string]any{"template": "问题：{question}"},
+			"TextOutput-sMWXv":           map[string]any{"output_format": "text"},
+			"image_compression_strategy": provider.ImageCompressionStrategyPassthrough,
 		},
-		InputFiles:               []string{"flow/session/screenshot.png"},
-		OutputType:               "any",
-		SessionID:                "session-image-1",
-		ImageCompressionStrategy: provider.ImageCompressionStrategyPassthrough,
+		InputFiles: []string{"flow/session/screenshot.png"},
+		OutputType: "any",
+		SessionID:  "session-image-1",
 	})
 	if err != nil {
 		t.Fatalf("expected RunImageUnderstanding to succeed, got %v", err)

@@ -5,6 +5,7 @@ package computerbridge
 /*
 #cgo LDFLAGS: -framework ApplicationServices -framework AppKit -framework Foundation
 #include <ApplicationServices/ApplicationServices.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -112,6 +113,60 @@ static int postKeyCodeEvent(int keyCode) {
 	return 0;
 }
 
+static int postKeyboardEventWithFlags(int keyCode, bool down, CGEventFlags flags) {
+	CGEventRef event = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)keyCode, down);
+	if (event == NULL) {
+		return 1;
+	}
+	CGEventSetFlags(event, flags);
+	CGEventPost(kCGHIDEventTap, event);
+	CFRelease(event);
+	return 0;
+}
+
+static int postModifiedKeyCodeEvent(int keyCode, int command, int shift, int option, int control) {
+	CGEventFlags flags = 0;
+	if (control) {
+		flags |= kCGEventFlagMaskControl;
+		if (postKeyboardEventWithFlags(59, true, flags) != 0) return 1;
+	}
+	if (option) {
+		flags |= kCGEventFlagMaskAlternate;
+		if (postKeyboardEventWithFlags(58, true, flags) != 0) return 1;
+	}
+	if (shift) {
+		flags |= kCGEventFlagMaskShift;
+		if (postKeyboardEventWithFlags(56, true, flags) != 0) return 1;
+	}
+	if (command) {
+		flags |= kCGEventFlagMaskCommand;
+		if (postKeyboardEventWithFlags(55, true, flags) != 0) return 1;
+	}
+	if (postKeyboardEventWithFlags(keyCode, true, flags) != 0) return 1;
+	if (postKeyboardEventWithFlags(keyCode, false, flags) != 0) return 1;
+	if (command) {
+		flags &= ~kCGEventFlagMaskCommand;
+		if (postKeyboardEventWithFlags(55, false, flags) != 0) return 1;
+	}
+	if (shift) {
+		flags &= ~kCGEventFlagMaskShift;
+		if (postKeyboardEventWithFlags(56, false, flags) != 0) return 1;
+	}
+	if (option) {
+		flags &= ~kCGEventFlagMaskAlternate;
+		if (postKeyboardEventWithFlags(58, false, flags) != 0) return 1;
+	}
+	if (control) {
+		flags &= ~kCGEventFlagMaskControl;
+		if (postKeyboardEventWithFlags(59, false, flags) != 0) return 1;
+	}
+	return 0;
+}
+
+static int postCommandVShortcutEvent(void) {
+	return postModifiedKeyCodeEvent(9, 1, 0, 0, 0);
+}
+
 static int postUnicodeTextEvent(const uint16_t* chars, long length) {
 	CGEventRef down = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)0, true);
 	if (down == NULL) {
@@ -180,6 +235,27 @@ func darwinUnicodeTextInputAvailable() bool {
 func darwinPostKeyCode(keyCode int) error {
 	if code := int(C.postKeyCodeEvent(C.int(keyCode))); code != 0 {
 		return fmt.Errorf("发布按键事件失败")
+	}
+	return nil
+}
+
+func darwinPostModifiedKeyCode(keyCode int, command bool, shift bool, option bool, control bool) error {
+	if code := int(C.postModifiedKeyCodeEvent(C.int(keyCode), boolToCInt(command), boolToCInt(shift), boolToCInt(option), boolToCInt(control))); code != 0 {
+		return fmt.Errorf("发布带修饰键的按键事件失败")
+	}
+	return nil
+}
+
+func boolToCInt(value bool) C.int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func darwinPostCommandVShortcut() error {
+	if code := int(C.postCommandVShortcutEvent()); code != 0 {
+		return fmt.Errorf("发布 Command+V 粘贴快捷键失败")
 	}
 	return nil
 }
