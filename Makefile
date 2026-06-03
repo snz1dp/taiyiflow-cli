@@ -114,12 +114,6 @@ release: check-docker browser-extension-dist-docker
 		bash -lc "cd $(DOCKER_WORKDIR) && make build-release-cross"
 	@$(MAKE) build-release-darwin-native
 
-release-download-image: check-docker release
-	@$(CTL_CMD) make docker --push
-
-publish:
-	@$(CTL_CMD) make publish
-
 test: check-go
 	@$(GO) test ./...
 
