@@ -448,7 +448,7 @@ func TestManagerLoadTrimsAuthState(t *testing.T) {
 	tempDir := t.TempDir()
 	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
 
-	content := []byte("backend_base_url: http://localhost:4005\npersistent_token: '  keep-me  '\ndevice_id: '  device-1  '\nauth_updated_at: '  2026-05-01T08:00:00Z  '\naccess_token: '  access-token  '\n")
+	content := []byte("backend_base_url: http://localhost:4005\npersistent_token: '  keep-me  '\nclient_id: '  client-1  '\ndevice_id: '  device-1  '\nauth_updated_at: '  2026-05-01T08:00:00Z  '\naccess_token: '  access-token  '\n")
 	if err := os.WriteFile(manager.path, content, 0o644); err != nil {
 		t.Fatalf("write config failed: %v", err)
 	}
@@ -459,6 +459,9 @@ func TestManagerLoadTrimsAuthState(t *testing.T) {
 	}
 	if loaded.PersistentToken != "keep-me" {
 		t.Fatalf("expected trimmed persistent token, got %q", loaded.PersistentToken)
+	}
+	if loaded.ClientID != "client-1" {
+		t.Fatalf("expected trimmed client id, got %q", loaded.ClientID)
 	}
 	if loaded.DeviceID != "device-1" {
 		t.Fatalf("expected trimmed device id, got %q", loaded.DeviceID)

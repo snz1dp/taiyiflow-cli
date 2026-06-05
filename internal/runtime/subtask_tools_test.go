@@ -1,0 +1,473 @@
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"strings"
+	"sync"
+	"testing"
+
+	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
+)
+
+type subtaskProviderStub struct {
+	provider.Provider
+	mu               sync.Mutex
+	tasks            map[string]provider.ClientCollaborationTask
+	createdSessionID string
+	nextSessionID    int
+	createdTaskStatus string
+	createdTaskStatusPayload map[string]any
+	createdRequest   provider.ClientCollaborationCreateRequest
+	createdRequests  []provider.ClientCollaborationCreateRequest
+	getTaskIDs       []string
+	updatedTaskIDs   []string
+	updateRequests   []provider.ClientCollaborationUpdateRequest
+	stream           <-chan provider.StreamEvent
+	streams          []<-chan provider.StreamEvent
+	streamSession    *provider.StreamSession
+	streamSessions   []*provider.StreamSession
+	streamCalls      int
+	lastStream       provider.StreamRequest
+	currentTask      provider.ClientCollaborationTask
+}
+
+func (s *subtaskProviderStub) CreateSessionID(context.Context) (string, error) {
+	if strings.TrimSpace(s.createdSessionID) != "" {
+		return s.createdSessionID, nil
+	}
+	s.nextSessionID++
+	return fmt.Sprintf("child-session-%d", s.nextSessionID), nil
+}
+
+func (s *subtaskProviderStub) CreateClientCollaboration(_ context.Context, request provider.ClientCollaborationCreateRequest) (*provider.ClientCollaborationTask, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.createdRequest = request
+	s.createdRequests = append(s.createdRequests, request)
+	taskID := fmt.Sprintf("collab-%d", len(s.createdRequests))
+	task := provider.ClientCollaborationTask{
+		ID:              taskID,
+		Status:          firstNonEmptySubtask(strings.TrimSpace(s.createdTaskStatus), "pending"),
+		TaskKind:        request.TaskKind,
+		DeliveryPolicy:  request.DeliveryPolicy,
+		TargetClientID:  request.TargetClientID,
+		TargetDeviceID:  request.TargetDeviceID,
+		SourceSessionID: request.SourceSessionID,
+		SourceRunID:     request.SourceRunID,
+		SourceMessageID: request.SourceMessageID,
+		ChildSessionID:  request.ChildSessionID,
+		ChildRunID:      request.ChildRunID,
+		CommandPayload:  request.CommandPayload,
+		StatusPayload:   s.createdTaskStatusPayload,
+	}
+	if s.tasks == nil {
+		s.tasks = map[string]provider.ClientCollaborationTask{}
+	}
+	s.tasks[taskID] = task
+	s.currentTask = task
+	taskCopy := task
+	return &taskCopy, nil
+}
+
+func (s *subtaskProviderStub) UpdateClientCollaboration(_ context.Context, taskID string, request provider.ClientCollaborationUpdateRequest) (*provider.ClientCollaborationTask, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.updatedTaskIDs = append(s.updatedTaskIDs, taskID)
+	s.updateRequests = append(s.updateRequests, request)
+	task := s.lookupTaskLocked(taskID)
+	if strings.TrimSpace(request.Status) != "" {
+		task.Status = request.Status
+	}
+	if request.StatusPayload != nil {
+		task.StatusPayload = request.StatusPayload
+	}
+	if request.ResultPayload != nil {
+		task.ResultPayload = request.ResultPayload
+	}
+	if strings.TrimSpace(request.ErrorMessage) != "" {
+		task.ErrorMessage = request.ErrorMessage
+	}
+	if s.tasks == nil {
+		s.tasks = map[string]provider.ClientCollaborationTask{}
+	}
+	s.tasks[taskID] = task
+	if s.currentTask.ID == taskID {
+		s.currentTask = task
+	}
+	taskCopy := task
+	return &taskCopy, nil
+}
+
+func (s *subtaskProviderStub) GetClientCollaboration(_ context.Context, taskID string) (*provider.ClientCollaborationTask, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.getTaskIDs = append(s.getTaskIDs, taskID)
+	if task, ok := s.tasks[taskID]; ok {
+		taskCopy := task
+		return &taskCopy, nil
+	}
+	if taskID != s.currentTask.ID {
+		return &provider.ClientCollaborationTask{ID: taskID, Status: "failed", ErrorMessage: "unexpected task id"}, nil
+	}
+	taskCopy := s.currentTask
+	return &taskCopy, nil
+}
+
+func (s *subtaskProviderStub) Stream(_ context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
+	s.lastStream = request
+	if s.streamCalls < len(s.streams) {
+		stream := s.streams[s.streamCalls]
+		var streamSession *provider.StreamSession
+		if s.streamCalls < len(s.streamSessions) {
+			streamSession = s.streamSessions[s.streamCalls]
+		}
+		s.streamCalls++
+		return stream, streamSession, nil
+	}
+	s.streamCalls++
+	return s.stream, s.streamSession, nil
+}
+
+func streamWithEvents(events ...provider.StreamEvent) <-chan provider.StreamEvent {
+	stream := make(chan provider.StreamEvent, len(events))
+	for _, event := range events {
+		stream <- event
+	}
+	close(stream)
+	return stream
+}
+
+func (s *subtaskProviderStub) lookupTaskLocked(taskID string) provider.ClientCollaborationTask {
+	if task, ok := s.tasks[taskID]; ok {
+		return task
+	}
+	if s.currentTask.ID == taskID {
+		return s.currentTask
+	}
+	return provider.ClientCollaborationTask{ID: taskID, Status: "failed", ErrorMessage: "unexpected task id"}
+}
+
+func TestExecuteClientToolPayloadRunSubtaskCreatesAndExecutesLocalCollaboration(t *testing.T) {
+	tempDir := t.TempDir()
+	providerStub := &subtaskProviderStub{
+		createdSessionID: "child-session-1",
+		stream: streamWithEvents(
+			provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "子任务完成", "message_id": "child-message-1"}},
+			provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}},
+		),
+		streamSession: &provider.StreamSession{SessionID: "child-session-1"},
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+
+	toolName, resultAny, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		ClientID:     "cli-123",
+		DeviceID:     "device-456",
+	}, map[string]any{
+		"flow_id": "parent-flow",
+		"server":  map[string]any{"name": "local"},
+		"context": map[string]any{"session_id": "parent-session-1", "run_id": "parent-run-1", "message_id": "parent-message-1"},
+		"function": map[string]any{
+			"name": "run_subtask",
+			"arguments": map[string]any{
+				"prompt": "请总结当前变更",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected run_subtask to succeed, got %v", err)
+	}
+	if toolName != "run_subtask" {
+		t.Fatalf("unexpected tool name: %s", toolName)
+	}
+	if providerStub.createdRequest.SourceSessionID != "parent-session-1" || providerStub.createdRequest.SourceRunID != "parent-run-1" || providerStub.createdRequest.SourceMessageID != "parent-message-1" {
+		t.Fatalf("expected parent lineage in create request, got %#v", providerStub.createdRequest)
+	}
+	if providerStub.createdRequest.TargetClientID != "cli-123" || providerStub.createdRequest.TargetDeviceID != "device-456" {
+		t.Fatalf("expected current client identity in create request, got %#v", providerStub.createdRequest)
+	}
+	if providerStub.lastStream.SessionID != "child-session-1" {
+		t.Fatalf("expected child session id in stream request, got %#v", providerStub.lastStream)
+	}
+	if providerStub.lastStream.RunID != providerStub.createdRequest.ChildRunID {
+		t.Fatalf("expected child run id in stream request, got %#v / %#v", providerStub.lastStream, providerStub.createdRequest)
+	}
+	if len(providerStub.updateRequests) != 2 {
+		t.Fatalf("expected running+success updates, got %#v", providerStub.updateRequests)
+	}
+	if providerStub.updateRequests[0].Status != "running" || providerStub.updateRequests[1].Status != "success" {
+		t.Fatalf("unexpected update sequence: %#v", providerStub.updateRequests)
+	}
+	result, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %#v", resultAny)
+	}
+	if result["task_id"] != "collab-1" || result["text"] != "子任务完成" {
+		t.Fatalf("unexpected subtask result: %#v", result)
+	}
+	if result["child_message_id"] != "child-message-1" {
+		t.Fatalf("expected child_message_id in result, got %#v", result)
+	}
+}
+
+func TestExecuteClientToolPayloadRunSubtaskSelfTargetPrefersDispatchedWorker(t *testing.T) {
+	tempDir := t.TempDir()
+	providerStub := &subtaskProviderStub{
+		createdSessionID:        "child-session-1",
+		createdTaskStatus:       "dispatched",
+		createdTaskStatusPayload: map[string]any{"delivery_channel": "client_websocket"},
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+
+	toolName, resultAny, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		ClientID:     "cli-123",
+		DeviceID:     "device-456",
+	}, map[string]any{
+		"flow_id": "parent-flow",
+		"server":  map[string]any{"name": "local"},
+		"context": map[string]any{"session_id": "parent-session-1", "run_id": "parent-run-1", "message_id": "parent-message-1"},
+		"function": map[string]any{
+			"name": "run_subtask",
+			"arguments": map[string]any{
+				"prompt":              "请总结当前变更",
+				"wait_for_completion": false,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected run_subtask to succeed, got %v", err)
+	}
+	if toolName != "run_subtask" {
+		t.Fatalf("unexpected tool name: %s", toolName)
+	}
+	if providerStub.streamCalls != 0 {
+		t.Fatalf("expected self-target task to be delegated to worker without local stream, got %d", providerStub.streamCalls)
+	}
+	if len(providerStub.updateRequests) != 0 {
+		t.Fatalf("expected delegated task not to emit local status updates, got %#v", providerStub.updateRequests)
+	}
+	result, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %#v", resultAny)
+	}
+	if result["status"] != "dispatched" {
+		t.Fatalf("expected dispatched status from worker-delegated task, got %#v", result)
+	}
+	statusPayload, ok := result["status_payload"].(map[string]any)
+	if !ok || statusPayload["delivery_channel"] != "client_websocket" {
+		t.Fatalf("expected delivery channel to round-trip, got %#v", result)
+	}
+}
+
+func TestExecuteClientCollaborationTaskReusesExistingChildLineage(t *testing.T) {
+	tempDir := t.TempDir()
+	providerStub := &subtaskProviderStub{
+		stream: streamWithEvents(
+			provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "远端 worker 完成", "message_id": "child-message-2"}},
+			provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}},
+		),
+		streamSession: &provider.StreamSession{SessionID: "child-session-existing"},
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	result, err := runtimeClient.ExecuteClientCollaborationTask(context.Background(), providerStub, internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		ClientID:     "cli-123",
+		DeviceID:     "device-456",
+	}, &provider.ClientCollaborationTask{
+		ID:              "collab-existing",
+		TargetClientID:  "cli-123",
+		TargetDeviceID:  "device-456",
+		SourceSessionID: "parent-session-2",
+		SourceRunID:     "parent-run-2",
+		SourceMessageID: "parent-message-2",
+		ChildSessionID:  "child-session-existing",
+		ChildRunID:      "child-run-existing",
+		TaskKind:        "dialogue_subtask",
+		DeliveryPolicy:  "fail_if_offline",
+		CommandPayload: map[string]any{
+			"prompt":            "请检查当前变更",
+			"flow_id":           "flow-child",
+			"request_mode":      "agent",
+			"working_directory": tempDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected ExecuteClientCollaborationTask to succeed, got %v", err)
+	}
+	if providerStub.createdRequest.ChildSessionID != "" {
+		t.Fatalf("expected existing collaboration execution not to create a new task, got %#v", providerStub.createdRequest)
+	}
+	if providerStub.lastStream.SessionID != "child-session-existing" {
+		t.Fatalf("expected existing child session id in stream request, got %#v", providerStub.lastStream)
+	}
+	if providerStub.lastStream.RunID != "child-run-existing" {
+		t.Fatalf("expected existing child run id in stream request, got %#v", providerStub.lastStream)
+	}
+	if len(providerStub.updateRequests) != 0 {
+		t.Fatalf("expected ExecuteClientCollaborationTask not to write HTTP updates directly, got %#v", providerStub.updateRequests)
+	}
+	if result["task_id"] != "collab-existing" || result["text"] != "远端 worker 完成" {
+		t.Fatalf("unexpected collaboration execution result: %#v", result)
+	}
+	if result["child_session_id"] != "child-session-existing" || result["child_run_id"] != "child-run-existing" {
+		t.Fatalf("expected existing child lineage in result, got %#v", result)
+	}
+	if result["child_message_id"] != "child-message-2" {
+		t.Fatalf("expected child_message_id in result, got %#v", result)
+	}
+}
+
+func TestExecuteClientToolPayloadRunSubtaskAggregatesParallelResults(t *testing.T) {
+	tempDir := t.TempDir()
+	providerStub := &subtaskProviderStub{
+		streams: []<-chan provider.StreamEvent{
+			streamWithEvents(
+				provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "子任务一完成", "message_id": "child-message-1"}},
+				provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}},
+			),
+			streamWithEvents(
+				provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "子任务二完成", "message_id": "child-message-2"}},
+				provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}},
+			),
+		},
+		streamSessions: []*provider.StreamSession{
+			{SessionID: "child-session-1"},
+			{SessionID: "child-session-2"},
+		},
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+
+	_, resultAny, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		ClientID:     "cli-123",
+		DeviceID:     "device-456",
+	}, map[string]any{
+		"flow_id": "parent-flow",
+		"server":  map[string]any{"name": "local"},
+		"context": map[string]any{"session_id": "parent-session-1", "run_id": "parent-run-1", "message_id": "parent-message-1"},
+		"function": map[string]any{
+			"name": "run_subtask",
+			"arguments": map[string]any{
+				"parallel": true,
+				"subtasks": []any{
+					map[string]any{"prompt": "请总结代码改动一", "working_directory": tempDir},
+					map[string]any{"prompt": "请总结代码改动二", "working_directory": tempDir},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected parallel run_subtask to succeed, got %v", err)
+	}
+	result, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %#v", resultAny)
+	}
+	if result["status"] != "success" || result["success_count"] != 2 || result["failure_count"] != 0 {
+		t.Fatalf("unexpected aggregate status: %#v", result)
+	}
+	if result["mode"] != "parallel" || result["total"] != 2 {
+		t.Fatalf("unexpected aggregate metadata: %#v", result)
+	}
+	items, ok := result["results"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("expected two aggregate result items, got %#v", result["results"])
+	}
+	textSet := map[string]bool{}
+	taskIDSet := map[string]bool{}
+	for _, item := range items {
+		entry, _ := item.(map[string]any)
+		textSet[stringValue(entry["text"])] = true
+		taskIDSet[stringValue(entry["task_id"])] = true
+	}
+	if !textSet["子任务一完成"] || !textSet["子任务二完成"] {
+		t.Fatalf("unexpected aggregate item payloads: %#v", items)
+	}
+	if len(taskIDSet) != 2 {
+		t.Fatalf("expected distinct task ids in aggregate payload, got %#v", items)
+	}
+	statusCounts := map[string]int{}
+	for _, request := range providerStub.updateRequests {
+		statusCounts[request.Status]++
+	}
+	if statusCounts["running"] != 2 || statusCounts["success"] != 2 {
+		t.Fatalf("unexpected update sequence counts: %#v", providerStub.updateRequests)
+	}
+	if len(providerStub.createdRequests) != 2 {
+		t.Fatalf("expected two collaboration create requests, got %#v", providerStub.createdRequests)
+	}
+}
+
+func TestExecuteClientToolPayloadRunSubtaskParallelAggregatesFailuresWithoutError(t *testing.T) {
+	tempDir := t.TempDir()
+	providerStub := &subtaskProviderStub{
+		streams: []<-chan provider.StreamEvent{
+			streamWithEvents(
+				provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "子任务一完成", "message_id": "child-message-1"}},
+				provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}},
+			),
+			streamWithEvents(
+				provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"message": "子任务二失败"}},
+			),
+		},
+		streamSessions: []*provider.StreamSession{
+			{SessionID: "child-session-1"},
+			{SessionID: "child-session-2"},
+		},
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+
+	_, resultAny, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		ClientID:     "cli-123",
+		DeviceID:     "device-456",
+	}, map[string]any{
+		"flow_id": "parent-flow",
+		"server":  map[string]any{"name": "local"},
+		"context": map[string]any{"session_id": "parent-session-1", "run_id": "parent-run-1", "message_id": "parent-message-1"},
+		"function": map[string]any{
+			"name": "run_subtask",
+			"arguments": map[string]any{
+				"parallel": true,
+				"subtasks": []any{
+					map[string]any{"prompt": "请总结代码改动一", "working_directory": tempDir},
+					map[string]any{"prompt": "请总结代码改动二", "working_directory": tempDir},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected partial failures to be aggregated without direct tool error, got %v", err)
+	}
+	result, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %#v", resultAny)
+	}
+	if result["status"] != "partial_failed" || result["success_count"] != 1 || result["failure_count"] != 1 {
+		t.Fatalf("unexpected aggregate partial failure status: %#v", result)
+	}
+	if !strings.Contains(stringValue(result["error_message"]), "子任务二失败") {
+		t.Fatalf("expected aggregate error summary, got %#v", result)
+	}
+	items, ok := result["results"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("expected two aggregate result items, got %#v", result["results"])
+	}
+	statusSet := map[string]bool{}
+	for _, item := range items {
+		entry, _ := item.(map[string]any)
+		statusSet[stringValue(entry["status"])] = true
+	}
+	if !statusSet["success"] || !statusSet["failed"] {
+		t.Fatalf("expected one success and one failed aggregate item, got %#v", items)
+	}
+}

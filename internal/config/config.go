@@ -107,6 +107,7 @@ type Config struct {
 	AuthAPIPrefix             string           `yaml:"auth_api_prefix,omitempty"`
 	AccessToken               string           `yaml:"access_token,omitempty"`
 	PersistentToken           string           `yaml:"persistent_token,omitempty"`
+	ClientID                  string           `yaml:"client_id,omitempty"`
 	DeviceID                  string           `yaml:"device_id,omitempty"`
 	AuthUpdatedAt             string           `yaml:"auth_updated_at,omitempty"`
 	DefaultFlow               string           `yaml:"default_flow,omitempty"`
@@ -591,6 +592,7 @@ func (m *Manager) Load() (Config, error) {
 	config.AuthAPIPrefix = NormalizeAuthAPIPrefix(config.AuthAPIPrefix)
 	config.AccessToken = strings.TrimSpace(config.AccessToken)
 	config.PersistentToken = strings.TrimSpace(config.PersistentToken)
+	config.ClientID = strings.TrimSpace(config.ClientID)
 	config.DeviceID = strings.TrimSpace(config.DeviceID)
 	config.AuthUpdatedAt = strings.TrimSpace(config.AuthUpdatedAt)
 	config.DocUnstructuredExts = NormalizeDocUnstructuredExts(config.DocUnstructuredExts)

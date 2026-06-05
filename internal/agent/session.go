@@ -20,6 +20,8 @@ type SessionState struct {
 	SessionID                      string            `json:"session_id"`
 	SessionTitle                   string            `json:"session_title,omitempty"`
 	SessionTitleAliases            map[string]string `json:"session_title_aliases,omitempty"`
+	LastRunID                      string            `json:"last_run_id,omitempty"`
+	LastMessageID                  string            `json:"last_message_id,omitempty"`
 	Workdir                        string            `json:"workdir,omitempty"`
 	RequestMode                    string            `json:"request_mode,omitempty"`
 	ContextDir                     string            `json:"context_dir,omitempty"`
@@ -102,6 +104,8 @@ func (s *SessionStore) Load(flowID string, workdir string) (SessionState, error)
 	state.FlowDisplayName = strings.TrimSpace(state.FlowDisplayName)
 	state.SessionTitle = strings.TrimSpace(state.SessionTitle)
 	state.SessionTitleAliases = normalizeSessionTitleAliases(state.SessionTitleAliases)
+	state.LastRunID = strings.TrimSpace(state.LastRunID)
+	state.LastMessageID = strings.TrimSpace(state.LastMessageID)
 	if strings.TrimSpace(state.Workdir) == "" {
 		state.Workdir = normalizedWorkdir
 	}
@@ -130,6 +134,8 @@ func (s *SessionStore) Save(state SessionState) error {
 	state.SessionTitle = strings.TrimSpace(state.SessionTitle)
 	state.Workdir = normalizeWorkdir(state.Workdir)
 	state.SessionTitleAliases = mergeSessionTitleAliases(readExistingSessionTitleAliases(s.filePath(state.FlowID, state.Workdir)), state.SessionTitleAliases)
+	state.LastRunID = strings.TrimSpace(state.LastRunID)
+	state.LastMessageID = strings.TrimSpace(state.LastMessageID)
 	state.RequestMode = normalizeRequestMode(state.RequestMode)
 	if strings.TrimSpace(state.ContextDir) == "" {
 		state.ContextDir = state.Workdir

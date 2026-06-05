@@ -402,6 +402,8 @@ type streamRequestBody struct {
 	RunID                     string         `json:"run_id,omitempty"`
 	RequestType               string         `json:"request_type,omitempty"`
 	ClientType                string         `json:"client_type,omitempty"`
+	ClientID                  string         `json:"client_id,omitempty"`
+	DeviceID                  string         `json:"device_id,omitempty"`
 	ClientContextDir          string         `json:"client_context_dir,omitempty"`
 	CommandExecutionTarget    string         `json:"command_execution_target,omitempty"`
 	MaxIterations             int            `json:"max_iterations,omitempty"`
@@ -428,6 +430,50 @@ type clientCallResultBody struct {
 	Success      bool   `json:"success"`
 	Result       any    `json:"result,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+type clientCollaborationCreateRequestBody struct {
+	TaskKind        string         `json:"task_kind,omitempty"`
+	TargetClientID  string         `json:"target_client_id,omitempty"`
+	TargetDeviceID  string         `json:"target_device_id,omitempty"`
+	DeliveryPolicy  string         `json:"delivery_policy,omitempty"`
+	CommandPayload  map[string]any `json:"command_payload,omitempty"`
+	SourceSessionID string         `json:"source_session_id,omitempty"`
+	SourceRunID     string         `json:"source_run_id,omitempty"`
+	SourceMessageID string         `json:"source_message_id,omitempty"`
+	ChildSessionID  string         `json:"child_session_id,omitempty"`
+	ChildRunID      string         `json:"child_run_id,omitempty"`
+}
+
+type clientCollaborationUpdateRequestBody struct {
+	Status        string         `json:"status,omitempty"`
+	StatusPayload map[string]any `json:"status_payload,omitempty"`
+	ResultPayload map[string]any `json:"result_payload,omitempty"`
+	ErrorMessage  string         `json:"error_message,omitempty"`
+}
+
+type clientCollaborationTaskResponse struct {
+	ID              string         `json:"id"`
+	OwnerUserID     string         `json:"owner_user_id"`
+	TargetClientID  string         `json:"target_client_id"`
+	TargetDeviceID  string         `json:"target_device_id"`
+	SourceSessionID string         `json:"source_session_id"`
+	SourceRunID     string         `json:"source_run_id"`
+	SourceMessageID string         `json:"source_message_id"`
+	ChildSessionID  string         `json:"child_session_id"`
+	ChildRunID      string         `json:"child_run_id"`
+	TaskKind        string         `json:"task_kind"`
+	DeliveryPolicy  string         `json:"delivery_policy"`
+	Status          string         `json:"status"`
+	CommandPayload  map[string]any `json:"command_payload"`
+	StatusPayload   map[string]any `json:"status_payload"`
+	ResultPayload   map[string]any `json:"result_payload"`
+	ErrorMessage    string         `json:"error_message"`
+	DispatchedAt    string         `json:"dispatched_at"`
+	FinishedAt      string         `json:"finished_at"`
+	ExpiredAt       string         `json:"expired_at"`
+	CreatedAt       string         `json:"created_at"`
+	UpdatedAt       string         `json:"updated_at"`
 }
 
 func NewClient(baseURL, apiKey string) *Client {
@@ -1273,6 +1319,8 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 		RunID:                     request.RunID,
 		RequestType:               provider.NormalizeRequestType(request.RequestType),
 		ClientType:                firstNonEmpty(strings.TrimSpace(request.ClientType), provider.ClientTypeCLI),
+		ClientID:                  strings.TrimSpace(request.ClientID),
+		DeviceID:                  strings.TrimSpace(request.DeviceID),
 		ClientContextDir:          strings.TrimSpace(request.ClientContextDir),
 		CommandExecutionTarget:    firstNonEmpty(request.CommandExecutionTarget, "client"),
 		MaxIterations:             request.MaxIterations,
@@ -1636,6 +1684,117 @@ func (c *Client) TriggerMemoryConsolidation(ctx context.Context, request provide
 	}, nil
 }
 
+func (c *Client) CreateClientCollaboration(ctx context.Context, request provider.ClientCollaborationCreateRequest) (*provider.ClientCollaborationTask, error) {
+	body := clientCollaborationCreateRequestBody{
+		TaskKind:        firstNonEmpty(strings.TrimSpace(request.TaskKind), "dialogue_subtask"),
+		TargetClientID:  strings.TrimSpace(request.TargetClientID),
+		TargetDeviceID:  strings.TrimSpace(request.TargetDeviceID),
+		DeliveryPolicy:  firstNonEmpty(strings.TrimSpace(request.DeliveryPolicy), "fail_if_offline"),
+		CommandPayload:  request.CommandPayload,
+		SourceSessionID: strings.TrimSpace(request.SourceSessionID),
+		SourceRunID:     strings.TrimSpace(request.SourceRunID),
+		SourceMessageID: strings.TrimSpace(request.SourceMessageID),
+		ChildSessionID:  strings.TrimSpace(request.ChildSessionID),
+		ChildRunID:      strings.TrimSpace(request.ChildRunID),
+	}
+	content, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("序列化客户端协同任务请求失败: %w", err)
+	}
+	endpoint := c.apiURL("/agents/client/collaborations")
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(content))
+	if err != nil {
+		return nil, fmt.Errorf("创建客户端协同任务请求失败: %w", err)
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	c.applyAuth(httpRequest)
+
+	response, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("创建客户端协同任务失败: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("创建客户端协同任务失败", response)
+	}
+
+	var payload clientCollaborationTaskResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析客户端协同任务响应失败: %w", err)
+	}
+	return mapClientCollaborationTask(payload)
+}
+
+func (c *Client) GetClientCollaboration(ctx context.Context, taskID string) (*provider.ClientCollaborationTask, error) {
+	trimmedTaskID := strings.TrimSpace(taskID)
+	if trimmedTaskID == "" {
+		return nil, fmt.Errorf("查询客户端协同任务失败: task_id 不能为空")
+	}
+	endpoint := c.apiURL(fmt.Sprintf("/agents/client/collaborations/%s", url.PathEscape(trimmedTaskID)))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建查询客户端协同任务请求失败: %w", err)
+	}
+	c.applyAuth(httpRequest)
+
+	response, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("查询客户端协同任务失败: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("查询客户端协同任务失败", response)
+	}
+
+	var payload clientCollaborationTaskResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析客户端协同任务详情失败: %w", err)
+	}
+	return mapClientCollaborationTask(payload)
+}
+
+func (c *Client) UpdateClientCollaboration(ctx context.Context, taskID string, request provider.ClientCollaborationUpdateRequest) (*provider.ClientCollaborationTask, error) {
+	trimmedTaskID := strings.TrimSpace(taskID)
+	if trimmedTaskID == "" {
+		return nil, fmt.Errorf("更新客户端协同任务失败: task_id 不能为空")
+	}
+	body := clientCollaborationUpdateRequestBody{
+		Status:        strings.TrimSpace(request.Status),
+		StatusPayload: request.StatusPayload,
+		ResultPayload: request.ResultPayload,
+		ErrorMessage:  strings.TrimSpace(request.ErrorMessage),
+	}
+	content, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("序列化更新客户端协同任务请求失败: %w", err)
+	}
+	endpoint := c.apiURL(fmt.Sprintf("/agents/client/collaborations/%s", url.PathEscape(trimmedTaskID)))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPatch, endpoint, bytes.NewReader(content))
+	if err != nil {
+		return nil, fmt.Errorf("创建更新客户端协同任务请求失败: %w", err)
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	c.applyAuth(httpRequest)
+
+	response, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("更新客户端协同任务失败: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("更新客户端协同任务失败", response)
+	}
+
+	var payload clientCollaborationTaskResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析更新客户端协同任务响应失败: %w", err)
+	}
+	return mapClientCollaborationTask(payload)
+}
+
 func (c *Client) fetchCompressionPayload(ctx context.Context, flowID string, sessionID string, runID string) ([]compressionRecordResponse, error) {
 	compressionEndpoint := c.apiURL(fmt.Sprintf(
 		"/agents/flows/%s/sessions/%s/run/%s/compressions",
@@ -1866,6 +2025,52 @@ func parseTaiyiTime(value string) (time.Time, error) {
 	}
 
 	return time.Time{}, fmt.Errorf("无法识别的时间格式: %s", trimmed)
+}
+
+func mapClientCollaborationTask(payload clientCollaborationTaskResponse) (*provider.ClientCollaborationTask, error) {
+	dispatchedAt, err := parseTaiyiTime(payload.DispatchedAt)
+	if err != nil {
+		return nil, fmt.Errorf("解析客户端协同任务 dispatched_at 失败: %w", err)
+	}
+	finishedAt, err := parseTaiyiTime(payload.FinishedAt)
+	if err != nil {
+		return nil, fmt.Errorf("解析客户端协同任务 finished_at 失败: %w", err)
+	}
+	expiredAt, err := parseTaiyiTime(payload.ExpiredAt)
+	if err != nil {
+		return nil, fmt.Errorf("解析客户端协同任务 expired_at 失败: %w", err)
+	}
+	createdAt, err := parseTaiyiTime(payload.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("解析客户端协同任务 created_at 失败: %w", err)
+	}
+	updatedAt, err := parseTaiyiTime(payload.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("解析客户端协同任务 updated_at 失败: %w", err)
+	}
+	return &provider.ClientCollaborationTask{
+		ID:              strings.TrimSpace(payload.ID),
+		OwnerUserID:     strings.TrimSpace(payload.OwnerUserID),
+		TargetClientID:  strings.TrimSpace(payload.TargetClientID),
+		TargetDeviceID:  strings.TrimSpace(payload.TargetDeviceID),
+		SourceSessionID: strings.TrimSpace(payload.SourceSessionID),
+		SourceRunID:     strings.TrimSpace(payload.SourceRunID),
+		SourceMessageID: strings.TrimSpace(payload.SourceMessageID),
+		ChildSessionID:  strings.TrimSpace(payload.ChildSessionID),
+		ChildRunID:      strings.TrimSpace(payload.ChildRunID),
+		TaskKind:        strings.TrimSpace(payload.TaskKind),
+		DeliveryPolicy:  strings.TrimSpace(payload.DeliveryPolicy),
+		Status:          strings.TrimSpace(payload.Status),
+		CommandPayload:  payload.CommandPayload,
+		StatusPayload:   payload.StatusPayload,
+		ResultPayload:   payload.ResultPayload,
+		ErrorMessage:    strings.TrimSpace(payload.ErrorMessage),
+		DispatchedAt:    dispatchedAt,
+		FinishedAt:      finishedAt,
+		ExpiredAt:       expiredAt,
+		CreatedAt:       createdAt,
+		UpdatedAt:       updatedAt,
+	}, nil
 }
 
 func parseTokenUsage(payload map[string]any) *provider.TokenUsage {

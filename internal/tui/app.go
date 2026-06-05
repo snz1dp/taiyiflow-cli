@@ -1026,7 +1026,10 @@ var slashCommands = []slashCommand{
 	{Trigger: "/exit", Completion: "/exit", Description: "退出当前智能对话"},
 }
 
-func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, refreshSnapshot SnapshotRefreshHandler, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, configFormSubmit ConfigFormSubmitHandler, loginFormSubmit LoginFormSubmitHandler, localCommand LocalCommandHandler, startupCommand string) error {
+func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, refreshSnapshot SnapshotRefreshHandler, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, configFormSubmit ConfigFormSubmitHandler, loginFormSubmit LoginFormSubmitHandler, localCommand LocalCommandHandler, startupCommand string, externalQueuedInputs <-chan string) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	inputModel := textarea.New()
 	if snapshot.BackendAvailable {
 		inputModel.Placeholder = multilineInputPlaceholder(os.Environ())
@@ -1061,8 +1064,13 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 
 	initialEntries := buildInitialEntries(snapshot)
 	initialRequestStats := cloneRequestMetrics(snapshot.RequestStats)
+	eventCh := make(chan tea.Msg)
+	if externalQueuedInputs != nil {
+		go relayExternalQueuedInputs(runCtx, eventCh, externalQueuedInputs)
+	}
+
 	program := tea.NewProgram(model{
-		ctx:                        ctx,
+		ctx:                        runCtx,
 		snapshot:                   snapshot,
 		flows:                      flows,
 		runner:                     runner,
@@ -1073,7 +1081,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 		configFormSubmit:           configFormSubmit,
 		loginFormSubmit:            loginFormSubmit,
 		localCommand:               localCommand,
-		eventCh:                    make(chan tea.Msg),
+		eventCh:                    eventCh,
 		entries:                    initialEntries,
 		input:                      inputModel,
 		flowFilter:                 flowFilterModel,
@@ -1093,6 +1101,28 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 		}
 	}
 	return err
+}
+
+func relayExternalQueuedInputs(ctx context.Context, eventCh chan<- tea.Msg, queuedInputs <-chan string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case queued, ok := <-queuedInputs:
+			if !ok {
+				return
+			}
+			queued = strings.TrimSpace(queued)
+			if queued == "" {
+				continue
+			}
+			eventCh <- localCommandExecutedMsg{result: LocalCommandResult{
+				Handled: true,
+				Events: []Event{{Kind: EventSystemNote, Text: "收到远端主任务，已加入当前实例队列。"}},
+				QueuedInput: queued,
+			}}
+		}
+	}
 }
 
 func (m model) Init() tea.Cmd {

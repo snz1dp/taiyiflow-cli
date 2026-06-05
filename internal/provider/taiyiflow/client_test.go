@@ -392,6 +392,91 @@ func TestTriggerMemoryConsolidationPostsRequestAndParsesResponse(t *testing.T) {
 	}
 }
 
+func TestCreateClientCollaborationPostsRequestAndParsesResponse(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != backendAPIPath("/agents/client/collaborations") {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.Method != http.MethodPost {
+			t.Fatalf("expected POST request, got %s", request.Method)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request body failed: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusCreated)
+		fmt.Fprint(writer, `{"id":"collab-1","owner_user_id":"user-1","target_client_id":"cli-123","target_device_id":"device-456","source_session_id":"session-parent","source_run_id":"run-parent","source_message_id":"message-parent","child_session_id":"session-child","child_run_id":"run-child","task_kind":"dialogue_subtask","delivery_policy":"fail_if_offline","status":"pending","command_payload":{"prompt":"请总结变更"},"created_at":"2026-06-04T10:00:00Z","updated_at":"2026-06-04T10:00:00Z"}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	task, err := client.CreateClientCollaboration(context.Background(), provider.ClientCollaborationCreateRequest{
+		TargetClientID:  "cli-123",
+		TargetDeviceID:  "device-456",
+		CommandPayload:  map[string]any{"prompt": "请总结变更"},
+		SourceSessionID: "session-parent",
+		SourceRunID:     "run-parent",
+		SourceMessageID: "message-parent",
+		ChildSessionID:  "session-child",
+		ChildRunID:      "run-child",
+	})
+	if err != nil {
+		t.Fatalf("expected CreateClientCollaboration to succeed, got %v", err)
+	}
+	if captured["target_client_id"] != "cli-123" || captured["target_device_id"] != "device-456" {
+		t.Fatalf("expected target ids in request body, got %#v", captured)
+	}
+	if captured["source_message_id"] != "message-parent" || captured["child_run_id"] != "run-child" {
+		t.Fatalf("expected lineage fields in request body, got %#v", captured)
+	}
+	if task == nil || task.ID != "collab-1" || task.Status != "pending" {
+		t.Fatalf("expected collaboration task to be parsed, got %#v", task)
+	}
+	if task.CommandPayload["prompt"] != "请总结变更" {
+		t.Fatalf("expected command payload to round-trip, got %#v", task)
+	}
+}
+
+func TestUpdateClientCollaborationPatchesStatusAndParsesResponse(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != backendAPIPath("/agents/client/collaborations/collab-1") {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.Method != http.MethodPatch {
+			t.Fatalf("expected PATCH request, got %s", request.Method)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request body failed: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(writer, `{"id":"collab-1","owner_user_id":"user-1","target_client_id":"cli-123","target_device_id":"device-456","source_session_id":"session-parent","source_run_id":"run-parent","source_message_id":"message-parent","child_session_id":"session-child","child_run_id":"run-child","task_kind":"dialogue_subtask","delivery_policy":"fail_if_offline","status":"success","command_payload":{"prompt":"请总结变更"},"result_payload":{"text":"子任务完成"},"finished_at":"2026-06-04T10:05:00Z","created_at":"2026-06-04T10:00:00Z","updated_at":"2026-06-04T10:05:00Z"}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	task, err := client.UpdateClientCollaboration(context.Background(), "collab-1", provider.ClientCollaborationUpdateRequest{
+		Status:        "success",
+		ResultPayload: map[string]any{"text": "子任务完成"},
+	})
+	if err != nil {
+		t.Fatalf("expected UpdateClientCollaboration to succeed, got %v", err)
+	}
+	if captured["status"] != "success" {
+		t.Fatalf("expected status in request body, got %#v", captured)
+	}
+	resultPayload, ok := captured["result_payload"].(map[string]any)
+	if !ok || resultPayload["text"] != "子任务完成" {
+		t.Fatalf("expected result_payload in request body, got %#v", captured)
+	}
+	if task == nil || task.Status != "success" || task.ResultPayload["text"] != "子任务完成" {
+		t.Fatalf("expected updated collaboration task to be parsed, got %#v", task)
+	}
+}
+
 func TestUpdateSessionTitlePostsSessionName(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost {
@@ -1094,6 +1179,39 @@ func TestStreamIncludesSessionIDInQueryAndBody(t *testing.T) {
 	}
 	if captured.SessionID != "session-123" {
 		t.Fatalf("expected session_id in request body, got %#v", captured)
+	}
+}
+
+func TestStreamIncludesClientIdentityFields(t *testing.T) {
+	var captured streamRequestBody
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != backendAPIPath("/run/demo-flow/stream") {
+			http.NotFound(writer, request)
+			return
+		}
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request body failed: %v", err)
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	stream, _, err := client.Stream(context.Background(), provider.StreamRequest{
+		FlowID:   "demo-flow",
+		ClientID: "cli-123",
+		DeviceID: "device-456",
+	})
+	if err != nil {
+		t.Fatalf("expected stream request to succeed, got %v", err)
+	}
+	for range stream {
+	}
+	if captured.ClientID != "cli-123" {
+		t.Fatalf("expected client_id in request body, got %#v", captured)
+	}
+	if captured.DeviceID != "device-456" {
+		t.Fatalf("expected device_id in request body, got %#v", captured)
 	}
 }
 

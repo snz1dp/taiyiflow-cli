@@ -189,3 +189,46 @@ func TestPersistAuthenticatedSessionGeneratesDeviceIDWhenMissing(t *testing.T) {
 		t.Fatalf("expected saved device id %q, got %#v", updatedConfig.DeviceID, reloaded)
 	}
 }
+
+func TestEnsureClientIdentityGeneratesAndPersistsClientAndDeviceID(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	config := internalconfig.Default()
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	app := &App{configManager: manager}
+	updatedConfig, changed, err := app.ensureClientIdentity(config)
+	if err != nil {
+		t.Fatalf("ensureClientIdentity failed: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected client identity helper to persist generated ids")
+	}
+	if strings.TrimSpace(updatedConfig.ClientID) == "" {
+		t.Fatalf("expected generated client id, got %#v", updatedConfig)
+	}
+	if strings.TrimSpace(updatedConfig.DeviceID) == "" {
+		t.Fatalf("expected generated device id, got %#v", updatedConfig)
+	}
+
+	reloaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("reload config failed: %v", err)
+	}
+	if reloaded.ClientID != updatedConfig.ClientID || reloaded.DeviceID != updatedConfig.DeviceID {
+		t.Fatalf("expected generated client identity to persist, got %#v", reloaded)
+	}
+
+	againConfig, changed, err := app.ensureClientIdentity(reloaded)
+	if err != nil {
+		t.Fatalf("ensureClientIdentity second call failed: %v", err)
+	}
+	if changed {
+		t.Fatalf("expected second ensureClientIdentity call to be idempotent, got %#v", againConfig)
+	}
+}

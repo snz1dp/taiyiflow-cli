@@ -23,6 +23,7 @@ var (
 	deviceIDInterfaces = net.Interfaces
 	deviceIDReadFile   = os.ReadFile
 	deviceIDRandomRead = cryptorand.Read
+	clientIDRandomRead = cryptorand.Read
 )
 
 var deviceIDMachineIDPaths = []string{
@@ -32,6 +33,33 @@ var deviceIDMachineIDPaths = []string{
 }
 
 const deviceIDNamespace = "taiyiflow-cli/device-id/v1"
+
+func (a *App) ensureClientIdentity(config internalconfig.Config) (internalconfig.Config, bool, error) {
+	changed := false
+	if strings.TrimSpace(config.DeviceID) == "" {
+		deviceID, err := generateDeviceID()
+		if err != nil {
+			return config, false, err
+		}
+		config.DeviceID = deviceID
+		changed = true
+	}
+	if strings.TrimSpace(config.ClientID) == "" {
+		clientID, err := generateClientID()
+		if err != nil {
+			return config, changed, err
+		}
+		config.ClientID = clientID
+		changed = true
+	}
+	if !changed || a == nil || a.configManager == nil {
+		return config, changed, nil
+	}
+	if err := a.configManager.Save(config); err != nil {
+		return config, true, err
+	}
+	return config, true, nil
+}
 
 func (a *App) ensureProviderAuthenticated(
 	ctx context.Context,
@@ -250,6 +278,16 @@ func readMACAddressSeed() ([]string, error) {
 func buildDeviceIDFromSeed(seed string) string {
 	sum := sha256.Sum256([]byte(deviceIDNamespace + "|" + strings.TrimSpace(seed)))
 	return hex.EncodeToString(sum[:16])
+}
+
+func generateClientID() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := clientIDRandomRead(raw); err != nil {
+		return "", fmt.Errorf("生成客户端标识失败: %w", err)
+	}
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+	return fmt.Sprintf("cli-%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16]), nil
 }
 
 func shouldAttemptPersistentLogin(config internalconfig.Config, err error) bool {

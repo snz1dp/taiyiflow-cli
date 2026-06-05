@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"context"
+	cryptorand "crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/term"
 
@@ -21,6 +23,7 @@ import (
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/workspaceinstance"
 )
 
 var (
@@ -88,6 +91,16 @@ func buildAuthClient(config internalconfig.Config) *providerclient.AuthClient {
 	return client
 }
 
+func newRequestRunID() string {
+	raw := make([]byte, 16)
+	if _, err := cryptorand.Read(raw); err != nil {
+		return fmt.Sprintf("run-%d", time.Now().UnixNano())
+	}
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
+}
+
 func NewApp() (*App, error) {
 	configManager, err := internalconfig.NewManager()
 	if err != nil {
@@ -134,6 +147,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.runConfig(args[1:])
 	case "browser":
 		return a.runBrowser(ctx, args[1:])
+	case "worker":
+		return a.runWorker(ctx, args[1:])
 	case "doctor":
 		return a.runDoctor(args[1:])
 	case "agents":
@@ -215,6 +230,10 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	if err != nil {
 		return err
 	}
+	config, _, err = a.ensureClientIdentity(config)
+	if err != nil {
+		return err
+	}
 	if options.CrossSessionMemorySet {
 		config.CrossSessionMemoryEnabled = options.CrossSessionMemoryEnabled
 	}
@@ -236,6 +255,13 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 		return err
 	}
 	workdir := resolveLocalWorkdir(config.Workdir)
+	instanceLease, err := workspaceinstance.Acquire(workdir)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = instanceLease.Close()
+	}()
 
 	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir, options.RequestMode)
 	if err != nil {
@@ -250,6 +276,32 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	}
 	flowDisplayName := a.resolveFlowDisplayName(ctx, providerClient, flowID)
 	sessionState.FlowDisplayName = flowDisplayName
+	configRef := newPrimaryClientConfigRef(config)
+	primaryDispatchCh := make(chan primaryTaskDispatch, 8)
+	primaryClientCtx, primaryClientCancel := context.WithCancel(ctx)
+	defer primaryClientCancel()
+	primaryClientErrCh := make(chan error, 1)
+	primaryClient := newPrimaryClientManager(configRef, instanceLease, sessionState.SessionID, primaryClientOptions{
+		OnDispatch: func(dispatch primaryTaskDispatch) {
+			select {
+			case primaryDispatchCh <- dispatch:
+			default:
+			}
+		},
+	})
+	go func() {
+		primaryClientErrCh <- primaryClient.Run(primaryClientCtx)
+	}()
+	defer func() {
+		primaryClientCancel()
+		select {
+		case runErr := <-primaryClientErrCh:
+			if runErr != nil && !errors.Is(runErr, context.Canceled) {
+				fmt.Fprintf(a.stderr, "提示: 主实例长连接已退出: %v\n", runErr)
+			}
+		default:
+		}
+	}()
 
 	metadata, err := providerClient.GetMetadata(ctx, flowID)
 	if err == nil && metadata.WelcomeMessage != "" {
@@ -263,205 +315,265 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 		fmt.Fprintf(a.stderr, "提示: 获取元信息失败，继续进入交互模式: %v\n", err)
 	}
 
-	reader := bufio.NewScanner(a.stdin)
 	fmt.Fprintln(a.stdout, "进入交互模式，输入 /ask、/plan、/agent 切换请求模式，输入 /reasoning 调整思考模式，输入 /exit 退出。")
+	readerCh := make(chan interactiveInputResult, 1)
+	go readInteractiveInputs(a.stdin, a.stdout, readerCh)
 
 	for {
-		fmt.Fprint(a.stdout, "> ")
-		if !reader.Scan() {
-			if err := reader.Err(); err != nil {
-				return fmt.Errorf("读取输入失败: %w", err)
-			}
-			return nil
-		}
-
-		line := strings.TrimSpace(reader.Text())
-		if line == "" {
-			continue
-		}
-
-		switch {
-		case line == "/exit":
-			return nil
-		case line == "/review" || strings.HasPrefix(strings.ToLower(line), "/review "):
-			target, reviewErr := parseReviewSlashCommand(line)
-			if reviewErr != nil {
-				fmt.Fprintf(a.stderr, "审查命令执行失败: %v\n", reviewErr)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case dispatch := <-primaryDispatchCh:
+			if strings.TrimSpace(dispatch.Prompt) == "" {
 				continue
 			}
-			prompt := a.buildReviewPrompt(ctx, workdir, target)
-			sessionState.RequestMode = reviewRequestMode()
+			if strings.TrimSpace(dispatch.SessionID) != "" && strings.TrimSpace(dispatch.SessionID) != strings.TrimSpace(sessionState.SessionID) {
+				sessionState.SessionID = strings.TrimSpace(dispatch.SessionID)
+				sessionState.SessionTitle = ""
+				if err := saveSessionStateIfReady(a.sessionStore, sessionState); err != nil {
+					return err
+				}
+				primaryClient.UpdateSession(sessionState.SessionID)
+			}
+			fmt.Fprintln(a.stdout, "\n[系统提示]: 收到远端主任务，当前实例开始执行。")
 			sessionState.ContextDir = workdir
 			sessionState.FlowDisplayName = flowDisplayName
-			updatedState, err := a.streamTask(ctx, providerClient, config, flowID, prompt, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents, options.ShowThinking)
+			updatedState, err := a.streamTask(ctx, providerClient, config, flowID, dispatch.Prompt, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents, options.ShowThinking)
 			if err != nil {
-				fmt.Fprintf(a.stderr, "执行审查失败: %v\n", err)
+				fmt.Fprintf(a.stderr, "远端主任务执行失败: %v\n", err)
 				continue
 			}
 			sessionState = updatedState
+			primaryClient.UpdateSession(sessionState.SessionID)
 			continue
-		case isTasksSlashCommand(line):
-			output, _, err := a.executeTasksSlashCommand(ctx, config, line)
-			if err != nil {
-				fmt.Fprintf(a.stderr, "任务命令执行失败: %v\n", err)
+		case inputResult, ok := <-readerCh:
+			if !ok {
+				return nil
+			}
+			if inputResult.err != nil {
+				return fmt.Errorf("读取输入失败: %w", inputResult.err)
+			}
+			if inputResult.eof {
+				return nil
+			}
+			line := strings.TrimSpace(inputResult.line)
+			if line == "" {
 				continue
 			}
-			fmt.Fprintln(a.stdout, output)
-			continue
-		case line == "/permissions" || strings.HasPrefix(strings.ToLower(line), "/permissions "):
-			fmt.Fprintln(a.stdout, "/permissions 已移除，请使用 /config 管理权限与执行配置。")
-			continue
-		case line == "/skills" || strings.HasPrefix(strings.ToLower(line), "/skills "):
-			output, err := a.executeSkillsCommand(parseSlashSkillsArgs(line))
-			if err != nil {
-				fmt.Fprintf(a.stderr, "技能命令执行失败: %v\n", err)
+
+			switch {
+			case line == "/exit":
+				return nil
+			case line == "/review" || strings.HasPrefix(strings.ToLower(line), "/review "):
+				target, reviewErr := parseReviewSlashCommand(line)
+				if reviewErr != nil {
+					fmt.Fprintf(a.stderr, "审查命令执行失败: %v\n", reviewErr)
+					continue
+				}
+				prompt := a.buildReviewPrompt(ctx, workdir, target)
+				sessionState.RequestMode = reviewRequestMode()
+				sessionState.ContextDir = workdir
+				sessionState.FlowDisplayName = flowDisplayName
+				updatedState, err := a.streamTask(ctx, providerClient, config, flowID, prompt, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents, options.ShowThinking)
+				if err != nil {
+					fmt.Fprintf(a.stderr, "执行审查失败: %v\n", err)
+					continue
+				}
+				sessionState = updatedState
+				primaryClient.UpdateSession(sessionState.SessionID)
 				continue
-			}
-			fmt.Fprintln(a.stdout, output)
-			continue
-		case isMemorySlashCommand(line):
-			output, _, err := a.executeMemorySlashCommand(ctx, providerClient, line, flowID)
-			if err != nil {
-				fmt.Fprintf(a.stderr, "跨会话记忆命令执行失败: %v\n", err)
-				continue
-			}
-			if strings.TrimSpace(output) != "" {
+			case isTasksSlashCommand(line):
+				output, _, err := a.executeTasksSlashCommand(ctx, config, line)
+				if err != nil {
+					fmt.Fprintf(a.stderr, "任务命令执行失败: %v\n", err)
+					continue
+				}
 				fmt.Fprintln(a.stdout, output)
-			}
-			continue
-		case line == "/reasoning" || strings.HasPrefix(strings.ToLower(line), "/reasoning "):
-			output, updatedState, err := a.executeReasoningCommand(config, line, sessionState)
-			if err != nil {
-				fmt.Fprintf(a.stderr, "思考模式命令执行失败: %v\n", err)
 				continue
-			}
-			sessionState = updatedState
-			fmt.Fprintln(a.stdout, output)
-			continue
-		case line == "/agents":
-			fmt.Fprintln(a.stdout, "请使用 `taiyiflow-cli agents` 查看或切换默认智能体。")
-			continue
-		case line == "/help":
-			a.printInteractiveUsage(ctx, providerClient, flowDisplayName, flowID, sessionState)
-			continue
-		case line == "/about":
-			fmt.Fprintln(a.stdout, renderAboutText())
-			continue
-		case line == "/clear":
-			a.clearInteractiveScreen()
-			continue
-		case line == "/session":
-			a.printSessionStatus(ctx, providerClient, flowDisplayName, flowID, sessionState)
-			continue
-		case line == "/sessions":
-			if err := a.printSavedSessions(flowID, sessionState.SessionID, workdir); err != nil {
-				return err
-			}
-			continue
-		case line == "/new":
-			sessionState = agent.SessionState{
-				FlowID:                         flowID,
-				FlowDisplayName:                flowDisplayName,
-				Workdir:                        workdir,
-				RequestMode:                    provider.RequestTypeAgent,
-				ContextDir:                     workdir,
-				AgentAutoLoopMaxRoundsOverride: sessionState.AgentAutoLoopMaxRoundsOverride,
-				SandboxEscapePolicyOverride:    sessionState.SandboxEscapePolicyOverride,
-			}
-			if err := a.sessionStore.Delete(flowID, workdir); err != nil {
-				return err
-			}
-			a.clearInteractiveScreen()
-			fmt.Fprintln(a.stdout, "已重置本地会话。")
-			continue
-		case strings.HasPrefix(strings.ToLower(line), "/config session "):
-			output, err := a.runInteractiveSessionConfigCommand(line, &sessionState)
-			if err != nil {
-				fmt.Fprintf(a.stderr, "会话配置命令执行失败: %v\n", err)
+			case line == "/permissions" || strings.HasPrefix(strings.ToLower(line), "/permissions "):
+				fmt.Fprintln(a.stdout, "/permissions 已移除，请使用 /config 管理权限与执行配置。")
 				continue
-			}
-			fmt.Fprintln(a.stdout, output)
-			continue
-		case line == "/config" || strings.HasPrefix(strings.ToLower(line), "/config "):
-			if err := a.runInteractiveConfigCommand(line); err != nil {
-				fmt.Fprintf(a.stderr, "配置命令执行失败: %v\n", err)
+			case line == "/skills" || strings.HasPrefix(strings.ToLower(line), "/skills "):
+				output, err := a.executeSkillsCommand(parseSlashSkillsArgs(line))
+				if err != nil {
+					fmt.Fprintf(a.stderr, "技能命令执行失败: %v\n", err)
+					continue
+				}
+				fmt.Fprintln(a.stdout, output)
 				continue
-			}
-			if !isMutatingSlashConfigCommand(line) {
+			case isMemorySlashCommand(line):
+				output, _, err := a.executeMemorySlashCommand(ctx, providerClient, line, flowID)
+				if err != nil {
+					fmt.Fprintf(a.stderr, "跨会话记忆命令执行失败: %v\n", err)
+					continue
+				}
+				if strings.TrimSpace(output) != "" {
+					fmt.Fprintln(a.stdout, output)
+				}
 				continue
-			}
-
-			updatedConfig, err := a.configManager.Load()
-			if err != nil {
-				return err
-			}
-			config = updatedConfig
-			providerClient = buildProviderClient(config)
-			workdir = resolveLocalWorkdir(config.Workdir)
-
-			if err := a.ensureBackendAvailable(ctx, providerClient, config.BackendBaseURL); err != nil {
-				flowID = strings.TrimSpace(firstNonEmpty(options.Flow, config.DefaultFlow))
-				flowDisplayName = a.resolveFlowDisplayName(ctx, providerClient, flowID)
+			case line == "/reasoning" || strings.HasPrefix(strings.ToLower(line), "/reasoning "):
+				output, updatedState, err := a.executeReasoningCommand(config, line, sessionState)
+				if err != nil {
+					fmt.Fprintf(a.stderr, "思考模式命令执行失败: %v\n", err)
+					continue
+				}
+				sessionState = updatedState
+				fmt.Fprintln(a.stdout, output)
+				continue
+			case line == "/agents":
+				fmt.Fprintln(a.stdout, "请使用 `taiyiflow-cli agents` 查看或切换默认智能体。")
+				continue
+			case line == "/help":
+				a.printInteractiveUsage(ctx, providerClient, flowDisplayName, flowID, sessionState)
+				continue
+			case line == "/about":
+				fmt.Fprintln(a.stdout, renderAboutText())
+				continue
+			case line == "/clear":
+				a.clearInteractiveScreen()
+				continue
+			case line == "/session":
+				a.printSessionStatus(ctx, providerClient, flowDisplayName, flowID, sessionState)
+				continue
+			case line == "/sessions":
+				if err := a.printSavedSessions(flowID, sessionState.SessionID, workdir); err != nil {
+					return err
+				}
+				continue
+			case line == "/new":
 				sessionState = agent.SessionState{
 					FlowID:                         flowID,
 					FlowDisplayName:                flowDisplayName,
 					Workdir:                        workdir,
-					RequestMode:                    firstNonEmpty(sessionState.RequestMode, provider.RequestTypeAgent),
-					ContextDir:                     resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir)),
+					RequestMode:                    provider.RequestTypeAgent,
+					ContextDir:                     workdir,
 					AgentAutoLoopMaxRoundsOverride: sessionState.AgentAutoLoopMaxRoundsOverride,
 					SandboxEscapePolicyOverride:    sessionState.SandboxEscapePolicyOverride,
-					SkillReviewPolicyOverride:      sessionState.SkillReviewPolicyOverride,
-					ApprovedSkillNames:             sessionState.ApprovedSkillNames,
 				}
-				fmt.Fprintf(a.stderr, "提示: 新配置尚未连通服务端: %v\n", err)
-				continue
-			}
-
-			config, err = a.ensureDefaultFlow(ctx, providerClient, config)
-			if err != nil {
-				fmt.Fprintf(a.stderr, "提示: 刷新默认智能体失败: %v\n", err)
-				continue
-			}
-			flowID, err = resolveFlowID(options.Flow, config.DefaultFlow)
-			if err != nil {
-				fmt.Fprintf(a.stderr, "提示: %v\n", err)
-				continue
-			}
-			flowDisplayName = a.resolveFlowDisplayName(ctx, providerClient, flowID)
-			sessionState, err = a.prepareSession(flowID, false, workdir, sessionState.RequestMode)
-			if err != nil {
-				return err
-			}
-			sessionState.FlowDisplayName = flowDisplayName
-			continue
-		}
-
-		if mode, prompt, ok := parseModeSlashCommand(line); ok {
-			sessionState.RequestMode = mode
-			sessionState.ContextDir = workdir
-			sessionState.FlowDisplayName = flowDisplayName
-			if strings.TrimSpace(prompt) == "" {
-				if err := a.sessionStore.Save(sessionState); err != nil {
+				if err := a.sessionStore.Delete(flowID, workdir); err != nil {
 					return err
 				}
-				fmt.Fprintf(a.stdout, "已切换请求模式: %s\n", requestModeLabel(mode))
+				primaryClient.UpdateSession("")
+				a.clearInteractiveScreen()
+				fmt.Fprintln(a.stdout, "已重置本地会话。")
+				continue
+			case strings.HasPrefix(strings.ToLower(line), "/config session "):
+				output, err := a.runInteractiveSessionConfigCommand(line, &sessionState)
+				if err != nil {
+					fmt.Fprintf(a.stderr, "会话配置命令执行失败: %v\n", err)
+					continue
+				}
+				fmt.Fprintln(a.stdout, output)
+				continue
+			case line == "/config" || strings.HasPrefix(strings.ToLower(line), "/config "):
+				if err := a.runInteractiveConfigCommand(line); err != nil {
+					fmt.Fprintf(a.stderr, "配置命令执行失败: %v\n", err)
+					continue
+				}
+				if !isMutatingSlashConfigCommand(line) {
+					continue
+				}
+
+				updatedConfig, err := a.configManager.Load()
+				if err != nil {
+					return err
+				}
+				config = updatedConfig
+				configRef.Store(updatedConfig)
+				providerClient = buildProviderClient(config)
+				workdir = resolveLocalWorkdir(config.Workdir)
+
+				if err := a.ensureBackendAvailable(ctx, providerClient, config.BackendBaseURL); err != nil {
+					flowID = strings.TrimSpace(firstNonEmpty(options.Flow, config.DefaultFlow))
+					flowDisplayName = a.resolveFlowDisplayName(ctx, providerClient, flowID)
+					sessionState = agent.SessionState{
+						FlowID:                         flowID,
+						FlowDisplayName:                flowDisplayName,
+						Workdir:                        workdir,
+						RequestMode:                    firstNonEmpty(sessionState.RequestMode, provider.RequestTypeAgent),
+						ContextDir:                     resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir)),
+						AgentAutoLoopMaxRoundsOverride: sessionState.AgentAutoLoopMaxRoundsOverride,
+						SandboxEscapePolicyOverride:    sessionState.SandboxEscapePolicyOverride,
+						SkillReviewPolicyOverride:      sessionState.SkillReviewPolicyOverride,
+						ApprovedSkillNames:             sessionState.ApprovedSkillNames,
+					}
+					fmt.Fprintf(a.stderr, "提示: 新配置尚未连通服务端: %v\n", err)
+					continue
+				}
+
+				config, err = a.ensureDefaultFlow(ctx, providerClient, config)
+				if err != nil {
+					fmt.Fprintf(a.stderr, "提示: 刷新默认智能体失败: %v\n", err)
+					continue
+				}
+				configRef.Store(config)
+				flowID, err = resolveFlowID(options.Flow, config.DefaultFlow)
+				if err != nil {
+					fmt.Fprintf(a.stderr, "提示: %v\n", err)
+					continue
+				}
+				flowDisplayName = a.resolveFlowDisplayName(ctx, providerClient, flowID)
+				sessionState, err = a.prepareSession(flowID, false, workdir, sessionState.RequestMode)
+				if err != nil {
+					return err
+				}
+				sessionState.FlowDisplayName = flowDisplayName
+				primaryClient.UpdateSession(sessionState.SessionID)
 				continue
 			}
-			updatedState, err := a.streamTask(ctx, providerClient, config, flowID, prompt, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents, options.ShowThinking)
+
+			if mode, prompt, ok := parseModeSlashCommand(line); ok {
+				sessionState.RequestMode = mode
+				sessionState.ContextDir = workdir
+				sessionState.FlowDisplayName = flowDisplayName
+				if strings.TrimSpace(prompt) == "" {
+					if err := a.sessionStore.Save(sessionState); err != nil {
+						return err
+					}
+					fmt.Fprintf(a.stdout, "已切换请求模式: %s\n", requestModeLabel(mode))
+					continue
+				}
+				updatedState, err := a.streamTask(ctx, providerClient, config, flowID, prompt, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents, options.ShowThinking)
+				if err != nil {
+					fmt.Fprintf(a.stderr, "执行任务失败: %v\n", err)
+					continue
+				}
+				sessionState = updatedState
+				primaryClient.UpdateSession(sessionState.SessionID)
+				continue
+			}
+
+			updatedState, err := a.streamTask(ctx, providerClient, config, flowID, line, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents, options.ShowThinking)
 			if err != nil {
 				fmt.Fprintf(a.stderr, "执行任务失败: %v\n", err)
 				continue
 			}
 			sessionState = updatedState
-			continue
+			primaryClient.UpdateSession(sessionState.SessionID)
 		}
+	}
+}
 
-		updatedState, err := a.streamTask(ctx, providerClient, config, flowID, line, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents, options.ShowThinking)
-		if err != nil {
-			fmt.Fprintf(a.stderr, "执行任务失败: %v\n", err)
-			continue
+type interactiveInputResult struct {
+	line string
+	err  error
+	eof  bool
+}
+
+func readInteractiveInputs(reader io.Reader, stdout io.Writer, results chan<- interactiveInputResult) {
+	defer close(results)
+	scanner := bufio.NewScanner(reader)
+	for {
+		_, _ = fmt.Fprint(stdout, "> ")
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				results <- interactiveInputResult{err: err}
+				return
+			}
+			results <- interactiveInputResult{eof: true}
+			return
 		}
-		sessionState = updatedState
+		results <- interactiveInputResult{line: scanner.Text()}
 	}
 }
 
@@ -481,6 +593,10 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	if err != nil {
 		return err
 	}
+	config, _, err = a.ensureClientIdentity(config)
+	if err != nil {
+		return err
+	}
 	if options.CrossSessionMemorySet {
 		config.CrossSessionMemoryEnabled = options.CrossSessionMemoryEnabled
 	}
@@ -502,6 +618,13 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 		return err
 	}
 	workdir := resolveLocalWorkdir(config.Workdir)
+	instanceLease, err := workspaceinstance.Acquire(workdir)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = instanceLease.Close()
+	}()
 
 	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir, options.RequestMode)
 	if err != nil {
@@ -617,7 +740,7 @@ func (a *App) streamTaskWithInputFiles(
 	showThinking bool,
 	inputFiles []string,
 ) (agent.SessionState, error) {
-	return a.streamTaskWithSkillRetry(
+	updatedState, err := a.streamTaskWithSkillRetry(
 		ctx,
 		providerClient,
 		config,
@@ -630,6 +753,14 @@ func (a *App) streamTaskWithInputFiles(
 		inputFiles,
 		0,
 	)
+	if a.runtime != nil {
+		errorMessage := ""
+		if err != nil {
+			errorMessage = err.Error()
+		}
+		a.runtime.EmitOnComplete(config, flowID, updatedState.SessionID, updatedState.LastRunID, updatedState.LastMessageID, updatedState.RequestMode, err == nil, errorMessage)
+	}
+	return updatedState, err
 }
 
 func (a *App) streamTaskWithSkillRetry(
@@ -659,11 +790,17 @@ func (a *App) streamTaskWithSkillRetry(
 	}
 	clientContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir))
 	commandExecutionTarget := "client"
+	requestRunID := newRequestRunID()
 	ensuredSessionID, err := clientruntime.EnsureSessionID(ctx, providerClient, sessionState.SessionID)
 	if err != nil {
 		return sessionState, err
 	}
 	sessionState.SessionID = ensuredSessionID
+	if applySessionRequestLineage(&sessionState, flowID, firstNonEmpty(sessionState.Workdir, config.Workdir), sessionState.RequestMode, requestRunID) {
+		if err := saveSessionStateIfReady(a.sessionStore, sessionState); err != nil {
+			return sessionState, err
+		}
+	}
 	stream, streamSession, err := providerClient.Stream(ctx, provider.StreamRequest{
 		FlowID:                    flowID,
 		Input:                     strings.TrimSpace(task),
@@ -673,12 +810,15 @@ func (a *App) streamTaskWithSkillRetry(
 		InternetSearch:            resolveInternetSearchEnabled(sessionState.InternetSearchOverride),
 		OutputType:                "any",
 		SessionID:                 sessionState.SessionID,
+		RunID:                     requestRunID,
 		RequestType:               normalizeRequestMode(sessionState.RequestMode),
 		ReasoningEnabled:          resolveReasoningEnabled(config, sessionState.ReasoningOverride),
 		AgentAutoLoopEnabled:      resolveAgentAutoLoopEnabled(config, sessionState, sessionState.RequestMode),
 		AgentAutoLoopMaxRounds:    resolveAgentAutoLoopMaxRounds(config, sessionState, sessionState.RequestMode),
 		CrossSessionMemoryEnabled: boolPtr(config.CrossSessionMemoryEnabled),
 		ClientType:                provider.ClientTypeCLI,
+		ClientID:                  config.ClientID,
+		DeviceID:                  config.DeviceID,
 		ClientContextDir:          clientContextDir,
 		CommandExecutionTarget:    commandExecutionTarget,
 		UserAgent:                 buildCLIUserAgent(),
@@ -725,6 +865,11 @@ func (a *App) streamTaskWithSkillRetry(
 	}
 
 	for event := range stream {
+		if updateSessionLineageFromEvent(&sessionState, event) {
+			if err := saveSessionStateIfReady(a.sessionStore, sessionState); err != nil {
+				return sessionState, err
+			}
+		}
 		switch event.Type {
 		case provider.EventMessage:
 			if sessionTitle := firstNonEmptyTrimmedStringMapValue(event.Data, "session_name"); sessionTitle != "" {
@@ -1207,6 +1352,7 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli login [help|status|logout|password|qr]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli config [show|init|path|set|unset]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli browser [install|help]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli worker [--max-concurrency N] [--recent-limit N]  启动协同驻留执行进程")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli agents [list|current|use] [参数]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli memory [status|trigger] [flow=<智能体>] [参数]")
 	fmt.Fprintf(a.stdout, "  %s\n", skillsCommandSynopsis())

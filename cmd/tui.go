@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -21,6 +22,7 @@ import (
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/tui"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/workspaceinstance"
 )
 
 var bracketErrorCodePattern = regexp.MustCompile(`^\[[A-Z0-9_]+\]\s*`)
@@ -49,6 +51,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	config, _, err = a.ensureClientIdentity(config)
+	if err != nil {
+		return err
+	}
 
 	providerClient := buildProviderClient(config)
 	config = a.prepareInitialTUIAuthentication(ctx, providerClient, config)
@@ -63,6 +69,14 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}
 	}
 	workdir := resolveLocalWorkdir(config.Workdir)
+	instanceLease, err := workspaceinstance.Acquire(workdir)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = instanceLease.Close()
+	}()
+	configRef := newPrimaryClientConfigRef(config)
 	var serviceConfig *provider.ServiceConfig
 	if backend.Available {
 		serviceConfig, _ = authRefreshProvider().GetServiceConfig(ctx)
@@ -71,10 +85,40 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	primaryDispatchCh := make(chan string, 8)
+	primaryClientCtx, primaryClientCancel := context.WithCancel(ctx)
+	defer primaryClientCancel()
+	primaryClientErrCh := make(chan error, 1)
+	var primaryClient *primaryClientManager
+	primaryClient = newPrimaryClientManager(configRef, instanceLease, snapshot.SessionID, primaryClientOptions{
+		OnDispatch: func(dispatch primaryTaskDispatch) {
+			prompt := strings.TrimSpace(dispatch.Prompt)
+			if prompt == "" {
+				return
+			}
+			select {
+			case primaryDispatchCh <- prompt:
+			default:
+			}
+		},
+	})
+	go func() {
+		primaryClientErrCh <- primaryClient.Run(primaryClientCtx)
+	}()
+	defer func() {
+		primaryClientCancel()
+		select {
+		case err := <-primaryClientErrCh:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				fmt.Fprintf(a.stderr, "提示: 主 CLI 长连接已退出: %v\n", err)
+			}
+		default:
+		}
+	}()
 
 	flowItems := []tui.FlowItem{}
 
-	runner := func(runCtx context.Context, request tui.Request, emit func(tui.Event), confirm func(tui.ConfirmRequest) bool, askUser func(clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error)) error {
+	runner := func(runCtx context.Context, request tui.Request, emit func(tui.Event), confirm func(tui.ConfirmRequest) bool, askUser func(clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error)) (returnErr error) {
 		currentFlow := strings.TrimSpace(request.FlowID)
 		if currentFlow == "" {
 			return fmt.Errorf("未配置默认智能体，请先执行 taiyiflow-cli agents use <名称>")
@@ -90,6 +134,13 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 
 		runtimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), logWriter, logWriter)
 		quietRuntimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), io.Discard, io.Discard)
+		defer func() {
+			errorMessage := ""
+			if returnErr != nil {
+				errorMessage = returnErr.Error()
+			}
+			runtimeClient.EmitOnComplete(config, currentFlow, sessionState.SessionID, firstNonEmpty(sessionState.LastRunID, request.RunID), sessionState.LastMessageID, normalizeRequestMode(request.RequestMode), returnErr == nil, errorMessage)
+		}()
 		runtimeClient.SetAskUserPrompter(func(_ context.Context, request clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error) {
 			return askUser(request)
 		})
@@ -126,6 +177,12 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				return ensureErr
 			}
 			sessionState.SessionID = ensuredSessionID
+			if applySessionRequestLineage(&sessionState, currentFlow, firstNonEmpty(sessionState.Workdir, workdir), request.RequestMode, request.RunID) {
+				if err := saveSessionStateIfReady(a.sessionStore, sessionState); err != nil {
+					return err
+				}
+				primaryClient.UpdateSession(sessionState.SessionID)
+			}
 			stream, streamSession, streamErr := callbackProvider.Stream(runCtx, provider.StreamRequest{
 				FlowID:                    currentFlow,
 				Input:                     strings.TrimSpace(request.Input),
@@ -144,6 +201,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				AgentAutoLoopMaxRounds:    resolveAgentAutoLoopMaxRounds(config, sessionState, request.RequestMode),
 				CrossSessionMemoryEnabled: boolPtr(config.CrossSessionMemoryEnabled),
 				ClientType:                provider.ClientTypeCLI,
+				ClientID:                  config.ClientID,
+				DeviceID:                  config.DeviceID,
 				ClientContextDir:          clientContextDir,
 				CommandExecutionTarget:    commandExecutionTarget,
 				UserAgent:                 buildCLIUserAgent(),
@@ -169,6 +228,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				if err := a.sessionStore.Save(sessionState); err != nil {
 					return err
 				}
+				primaryClient.UpdateSession(sessionState.SessionID)
 				emit(tui.Event{Kind: tui.EventSessionUpdate, SessionID: streamSession.SessionID, SessionTitle: resolveSessionTitle(sessionState)})
 			}
 
@@ -176,6 +236,12 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			assistantRenderState := tuiAssistantRenderState{}
 		eventLoop:
 			for event := range stream {
+				if updateSessionLineageFromEvent(&sessionState, event) {
+					if err := saveSessionStateIfReady(a.sessionStore, sessionState); err != nil {
+						return err
+					}
+					primaryClient.UpdateSession(sessionState.SessionID)
+				}
 				switch event.Type {
 				case provider.EventMessage:
 					if sessionTitle := firstNonEmptyTrimmedStringMapValue(event.Data, "session_name"); sessionTitle != "" {
@@ -405,6 +471,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			}
 		}
 		config = updatedConfig
+		configRef.Store(updatedConfig)
+		primaryClient.UpdateSession(snapshot.SessionID)
 
 		return snapshot, flowItems, nil
 	}
@@ -424,6 +492,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			return tui.Snapshot{}, err
 		}
 		config = updatedConfig
+		configRef.Store(updatedConfig)
+		primaryClient.UpdateSession(updatedSnapshot.SessionID)
 		return updatedSnapshot, nil
 	}
 
@@ -461,6 +531,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			return tui.Snapshot{}, err
 		}
 		config = updatedConfig
+		configRef.Store(updatedConfig)
+		primaryClient.UpdateSession(updatedSnapshot.SessionID)
 		return preserveTUIChatState(current, updatedSnapshot), nil
 	}
 
@@ -479,6 +551,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			return tui.Snapshot{}, err
 		}
 		config = updatedConfig
+		configRef.Store(updatedConfig)
 		return updatedSnapshot, nil
 	}
 
@@ -753,6 +826,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			updatedSnapshot.SessionSandboxEscapePolicy = ""
 			updatedSnapshot.History = nil
 			updatedSnapshot.RequestStats = nil
+			primaryClient.UpdateSession("")
 			return tui.LocalCommandResult{
 				Handled:        true,
 				ClearHistory:   true,
@@ -767,7 +841,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}
 	}
 
-	return tui.Run(ctx, snapshot, flowItems, runner, refreshSnapshot, flowChange, sessionChange, approvalChange, configFormSubmit, loginFormSubmit, localCommand, startupCommand)
+	return tui.Run(ctx, snapshot, flowItems, runner, refreshSnapshot, flowChange, sessionChange, approvalChange, configFormSubmit, loginFormSubmit, localCommand, startupCommand, primaryDispatchCh)
 }
 
 func (a *App) buildInitialTUISnapshot(

@@ -145,3 +145,30 @@ func TestSessionStoreSavePreservesExistingSessionTitleAliases(t *testing.T) {
 		t.Fatalf("expected existing alias to be preserved, got %#v", loaded.SessionTitleAliases)
 	}
 }
+
+func TestSessionStoreSaveLoadLastLineageIDs(t *testing.T) {
+	tempDir := t.TempDir()
+	store := &SessionStore{rootDir: tempDir}
+
+	state := SessionState{
+		FlowID:        "demo-flow",
+		Workdir:       tempDir,
+		SessionID:     "session-1",
+		LastRunID:     "  run-1  ",
+		LastMessageID: "  message-1  ",
+	}
+	if err := store.Save(state); err != nil {
+		t.Fatalf("save session failed: %v", err)
+	}
+
+	loaded, err := store.Load("demo-flow", tempDir)
+	if err != nil {
+		t.Fatalf("load session failed: %v", err)
+	}
+	if loaded.LastRunID != "run-1" {
+		t.Fatalf("expected trimmed last run id, got %#v", loaded)
+	}
+	if loaded.LastMessageID != "message-1" {
+		t.Fatalf("expected trimmed last message id, got %#v", loaded)
+	}
+}

@@ -174,6 +174,18 @@ func (s stubProvider) SubmitClientCallResult(_ context.Context, result provider.
 	return nil
 }
 
+func (s stubProvider) CreateClientCollaboration(context.Context, provider.ClientCollaborationCreateRequest) (*provider.ClientCollaborationTask, error) {
+	return &provider.ClientCollaborationTask{}, nil
+}
+
+func (s stubProvider) GetClientCollaboration(context.Context, string) (*provider.ClientCollaborationTask, error) {
+	return &provider.ClientCollaborationTask{}, nil
+}
+
+func (s stubProvider) UpdateClientCollaboration(context.Context, string, provider.ClientCollaborationUpdateRequest) (*provider.ClientCollaborationTask, error) {
+	return &provider.ClientCollaborationTask{}, nil
+}
+
 func streamWithEvents(events ...provider.StreamEvent) <-chan provider.StreamEvent {
 	stream := make(chan provider.StreamEvent, len(events))
 	for _, event := range events {
@@ -317,6 +329,106 @@ func TestStreamTaskDoesNotRetryDisconnectedEvent(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "正在自动重试") {
 		t.Fatalf("expected no retry progress output, got %q", stdout.String())
+	}
+}
+
+func TestStreamTaskIncludesClientIdentityAndGeneratedRunID(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	providerStub := &stubProvider{
+		stream:        streamWithEvents(provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{"message": "over"}}),
+		streamSession: &provider.StreamSession{SessionID: "session-123"},
+	}
+	config := internalconfig.Default()
+	config.Workdir = t.TempDir()
+	config.ClientID = "cli-123"
+	config.DeviceID = "device-456"
+
+	_, err := app.streamTask(
+		context.Background(),
+		providerStub,
+		config,
+		"demo-flow",
+		"请处理任务",
+		agent.SessionState{FlowID: "demo-flow", RequestMode: provider.RequestTypeAgent, ContextDir: config.Workdir, Workdir: config.Workdir},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+	if providerStub.lastRequest.ClientID != "cli-123" {
+		t.Fatalf("expected client_id to be forwarded, got %#v", providerStub.lastRequest)
+	}
+	if providerStub.lastRequest.DeviceID != "device-456" {
+		t.Fatalf("expected device_id to be forwarded, got %#v", providerStub.lastRequest)
+	}
+	if strings.TrimSpace(providerStub.lastRequest.RunID) == "" {
+		t.Fatalf("expected generated run_id, got %#v", providerStub.lastRequest)
+	}
+	if providerStub.lastRequest.ClientContextDir != resolveLocalWorkdir(config.Workdir) {
+		t.Fatalf("expected client_context_dir to stay aligned with workdir, got %#v", providerStub.lastRequest)
+	}
+	if providerStub.lastRequest.ClientType != provider.ClientTypeCLI {
+		t.Fatalf("expected client_type=%q, got %#v", provider.ClientTypeCLI, providerStub.lastRequest)
+	}
+	if providerStub.lastRequest.CommandExecutionTarget != "client" {
+		t.Fatalf("expected command target client, got %#v", providerStub.lastRequest)
+	}
+}
+
+func TestStreamTaskPersistsSessionLineage(t *testing.T) {
+	app := newTestAppWithSessionStore(t)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app.stdout = &stdout
+	app.stderr = &stderr
+	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
+
+	providerStub := &stubProvider{
+		stream: streamWithEvents(
+			provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "子任务结果", "message_id": "message-789"}},
+			provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{"message": "over"}},
+		),
+		streamSession: &provider.StreamSession{SessionID: "session-123"},
+	}
+	config := internalconfig.Default()
+	config.Workdir = t.TempDir()
+	config.ClientID = "cli-123"
+	config.DeviceID = "device-456"
+
+	_, err := app.streamTask(
+		context.Background(),
+		providerStub,
+		config,
+		"demo-flow",
+		"请处理任务",
+		agent.SessionState{FlowID: "demo-flow", RequestMode: provider.RequestTypeAgent, ContextDir: config.Workdir, Workdir: config.Workdir},
+		"",
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("streamTask failed: %v", err)
+	}
+	loaded, err := app.sessionStore.Load("demo-flow", config.Workdir)
+	if err != nil {
+		t.Fatalf("load session failed: %v", err)
+	}
+	if loaded.SessionID != "session-123" {
+		t.Fatalf("expected persisted session id, got %#v", loaded)
+	}
+	if loaded.LastRunID != providerStub.lastRequest.RunID {
+		t.Fatalf("expected persisted last run id %q, got %#v", providerStub.lastRequest.RunID, loaded)
+	}
+	if loaded.LastMessageID != "message-789" {
+		t.Fatalf("expected persisted last message id, got %#v", loaded)
 	}
 }
 

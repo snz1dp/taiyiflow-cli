@@ -288,6 +288,42 @@ func (p *callbackAuthRefreshProvider) SubmitClientCallResult(ctx context.Context
 	return p.Provider.SubmitClientCallResult(ctx, result)
 }
 
+func (p *callbackAuthRefreshProvider) CreateClientCollaboration(ctx context.Context, request provider.ClientCollaborationCreateRequest) (*provider.ClientCollaborationTask, error) {
+	task, err := p.Provider.CreateClientCollaboration(ctx, request)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return task, err
+	}
+	return p.Provider.CreateClientCollaboration(ctx, request)
+}
+
+func (p *callbackAuthRefreshProvider) GetClientCollaboration(ctx context.Context, taskID string) (*provider.ClientCollaborationTask, error) {
+	task, err := p.Provider.GetClientCollaboration(ctx, taskID)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return task, err
+	}
+	return p.Provider.GetClientCollaboration(ctx, taskID)
+}
+
+func (p *callbackAuthRefreshProvider) UpdateClientCollaboration(ctx context.Context, taskID string, request provider.ClientCollaborationUpdateRequest) (*provider.ClientCollaborationTask, error) {
+	task, err := p.Provider.UpdateClientCollaboration(ctx, taskID, request)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return task, err
+	}
+	return p.Provider.UpdateClientCollaboration(ctx, taskID, request)
+}
+
 func (a *App) providerWithCallbackAuthRefresh(providerClient provider.Provider, config *internalconfig.Config) provider.Provider {
 	if existing, ok := providerClient.(*callbackAuthRefreshProvider); ok {
 		existing.config = config

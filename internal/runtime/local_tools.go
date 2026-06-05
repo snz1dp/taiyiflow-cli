@@ -358,6 +358,31 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 			},
 		},
 		{
+			"name":                 "run_subtask",
+			"description":          "基于客户端协同任务接口创建并执行子任务。支持单子任务，也支持通过 subtasks 做 fan-out 并行调度与聚合回收；未显式指定 target_client_id 或 target_device_id 时，默认投递到当前 CLI。",
+			"waiting_for_response": true,
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"prompt":              map[string]any{"type": "string", "description": "子任务提示词。"},
+					"subtasks": map[string]any{"type": "array", "description": "并行子任务列表；每项可为字符串 prompt 或完整对象。提供后会进入批量调度模式。", "items": map[string]any{"anyOf": []any{map[string]any{"type": "string"}, map[string]any{"type": "object"}}}},
+					"flow_id":             map[string]any{"type": "string", "description": "子任务所属智能体 ID；默认继承当前 flow。"},
+					"request_mode":        map[string]any{"type": "string", "enum": []string{"ask", "plan", "agent"}, "description": "子任务请求模式；默认 agent。"},
+					"working_directory":   map[string]any{"type": "string", "description": "子任务工作目录；默认继承当前上下文目录。"},
+					"target_client_id":    map[string]any{"type": "string", "description": "目标客户端 ID；默认当前 CLI client_id。"},
+					"target_device_id":    map[string]any{"type": "string", "description": "目标设备 ID；默认当前 CLI device_id。"},
+					"delivery_policy":     map[string]any{"type": "string", "description": "协同任务投递策略；默认 fail_if_offline。"},
+					"wait_for_completion": map[string]any{"type": "boolean", "description": "远端子任务是否等待完成；默认 true。本地串行执行始终等待。"},
+					"timeout_seconds":     map[string]any{"type": "integer", "minimum": 1, "maximum": internalconfig.MaxCommandTimeoutSeconds, "description": "本地执行或远端等待的超时时间。"},
+					"parallel":            map[string]any{"type": "boolean", "description": "是否启用批量并行调度；默认在提供 subtasks 时开启。"},
+					"max_parallelism":     map[string]any{"type": "integer", "minimum": 1, "maximum": 32, "description": "批量子任务的最大并发度；默认等于 subtasks 数量。"},
+					"serial":              map[string]any{"type": "boolean", "description": "兼容旧参数；在批量模式下传 true 会强制串行执行。"},
+				},
+				"anyOf":                []any{map[string]any{"required": []string{"prompt"}}, map[string]any{"required": []string{"subtasks"}}},
+				"additionalProperties": false,
+			},
+		},
+		{
 			"name":                 "search_files",
 			"description":          "在当前工作目录访问范围内搜索文本，支持 ripgrep 风格模式、glob 过滤和输出模式。",
 			"waiting_for_response": true,
@@ -665,7 +690,7 @@ func mutatingClientTool(toolName string) bool {
 		return !computerReadOnlyTool(toolName)
 	}
 	switch canonicalClientToolName(toolName) {
-	case "shell_exec", "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit", "document_unstructured", "write_file":
+	case "shell_exec", "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit", "document_unstructured", "write_file", "run_subtask":
 		return true
 	default:
 		return false
@@ -724,6 +749,11 @@ func previewClientTool(toolName string, arguments map[string]any) string {
 		return "task_list"
 	case "terminal_capture":
 		return fmt.Sprintf("terminal_capture %s", fallbackString(stringValue(arguments["task_id"]), "<missing>"))
+	case "run_subtask":
+		if rawSubtasks, ok := arguments["subtasks"].([]any); ok && len(rawSubtasks) > 0 {
+			return fmt.Sprintf("run_subtask %d 项", len(rawSubtasks))
+		}
+		return fmt.Sprintf("run_subtask %s", fallbackString(argumentString(arguments, "flow_id"), "<current-flow>"))
 	case "write_file":
 		return fmt.Sprintf("write_file %s (%s)", path, fallbackString(stringValue(arguments["mode"]), "overwrite"))
 	case "read_file", "search_files":

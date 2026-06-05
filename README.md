@@ -33,7 +33,6 @@
 - `make build-release-cross`：仅执行 linux/windows 发布产物的 Go 交叉编译；要求 `browser-extension/chrome/dist/manifest.json` 已存在，主要供容器内复用
 - `make build-release-darwin-native`：仅在当前 macOS 主机上生成 `darwin/amd64` 与 `darwin/arm64` 原生 CGO 产物
 - `make release`：使用 Docker/Podman 构建发布产物；先通过 `snz1.cn/base/node:20-alpine` 刷新浏览器扩展 dist，再在容器里生成 linux/windows 产物，最后回到 macOS 主机生成 darwin 原生产物
-- `make release-download-image`：基于 `build/release/` 构建发行下载镜像，镜像内会生成下载首页、`manifest.json` 与 `downloads/SHA256SUMS`
 - `make browser-extension-dist`：仅刷新浏览器扩展构建产物
 - `make browser-extension-dist-docker`：使用 `snz1.cn/base/node:20-alpine` 刷新浏览器扩展构建产物
 - `make verify-computer-live-darwin`：在 macOS 上打开一个可见的 Chromium 窗口，实机验证桌面 `double click`、`right click`、`drag` 与 `scroll` 行为；默认使用 Chrome，可通过 `TAIYIFLOW_COMPUTER_LIVE_BROWSER=edge|chromium|brave` 覆盖
@@ -41,8 +40,6 @@
 - 运行：`./taiyiflow-cli`
 
 桌面实机验证前提：执行 `make verify-computer-live-darwin` 前，需要先为当前终端/Go 进程授予 macOS 辅助功能权限；如果测试页面需要接收事件，验证过程中请不要切走前台浏览器窗口。
-
-发行下载镜像说明：根目录 [BUILD.yaml](BUILD.yaml) 与 [Dockerfile](Dockerfile) 参考 ctl 仓库的下载镜像结构，镜像默认发布名为 `snz1.cn/dp/ai/taiyi/taiyiflow-cli-download`，运行后通过静态页面暴露 `build/release/` 中的各平台产物。
 
 ## 登录
 

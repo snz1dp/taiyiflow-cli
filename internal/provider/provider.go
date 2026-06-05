@@ -70,6 +70,8 @@ type StreamRequest struct {
 	RunID                     string
 	RequestType               string
 	ClientType                string
+	ClientID                  string
+	DeviceID                  string
 	ClientContextDir          string
 	UserAgent                 string
 	CommandExecutionTarget    string
@@ -463,6 +465,50 @@ type ClientCallResult struct {
 	ErrorMessage string
 }
 
+type ClientCollaborationCreateRequest struct {
+	TaskKind        string
+	TargetClientID  string
+	TargetDeviceID  string
+	DeliveryPolicy  string
+	CommandPayload  map[string]any
+	SourceSessionID string
+	SourceRunID     string
+	SourceMessageID string
+	ChildSessionID  string
+	ChildRunID      string
+}
+
+type ClientCollaborationUpdateRequest struct {
+	Status        string
+	StatusPayload map[string]any
+	ResultPayload map[string]any
+	ErrorMessage  string
+}
+
+type ClientCollaborationTask struct {
+	ID              string
+	OwnerUserID     string
+	TargetClientID  string
+	TargetDeviceID  string
+	SourceSessionID string
+	SourceRunID     string
+	SourceMessageID string
+	ChildSessionID  string
+	ChildRunID      string
+	TaskKind        string
+	DeliveryPolicy  string
+	Status          string
+	CommandPayload  map[string]any
+	StatusPayload   map[string]any
+	ResultPayload   map[string]any
+	ErrorMessage    string
+	DispatchedAt    time.Time
+	FinishedAt      time.Time
+	ExpiredAt       time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 type Provider interface {
 	Name() string
 	ListFlows(ctx context.Context, filter string, agentType string, offset, limit int) (*FlowList, error)
@@ -484,4 +530,7 @@ type Provider interface {
 	ListMemoryConsolidations(ctx context.Context, query MemoryConsolidationQuery) (*MemoryConsolidationPage, error)
 	TriggerMemoryConsolidation(ctx context.Context, request MemoryConsolidationTriggerRequest) (*MemoryConsolidationTriggerResult, error)
 	SubmitClientCallResult(ctx context.Context, result ClientCallResult) error
+	CreateClientCollaboration(ctx context.Context, request ClientCollaborationCreateRequest) (*ClientCollaborationTask, error)
+	GetClientCollaboration(ctx context.Context, taskID string) (*ClientCollaborationTask, error)
+	UpdateClientCollaboration(ctx context.Context, taskID string, request ClientCollaborationUpdateRequest) (*ClientCollaborationTask, error)
 }

@@ -81,10 +81,11 @@ type ClientRuntime struct {
 	sandboxEscapePolicyOverride string
 	streamEventLogsEnabled      bool
 	interactivePromptsEnabled   bool
+	hookHandlers                []HookHandler
 }
 
 func NewClientRuntime(stdin io.Reader, stdout io.Writer, stderr io.Writer) *ClientRuntime {
-	return &ClientRuntime{stdin: stdin, stdout: stdout, stderr: stderr, browserToolExecutor: defaultBrowserToolExecutor{}, computerToolExecutor: defaultComputerToolExecutor{}, streamEventLogsEnabled: true, interactivePromptsEnabled: true}
+	return &ClientRuntime{stdin: stdin, stdout: stdout, stderr: stderr, browserToolExecutor: defaultBrowserToolExecutor{}, computerToolExecutor: defaultComputerToolExecutor{}, streamEventLogsEnabled: true, interactivePromptsEnabled: true, hookHandlers: []HookHandler{auditHookHandler}}
 }
 
 func (r *ClientRuntime) SetSandboxEscapeConfirmer(confirmer func(path string) (bool, error)) {
@@ -112,6 +113,25 @@ func (r *ClientRuntime) InteractivePromptsEnabled() bool {
 		return false
 	}
 	return r.interactivePromptsEnabled
+}
+
+func (r *ClientRuntime) cloneRuntime() *ClientRuntime {
+	if r == nil {
+		return NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	}
+	return &ClientRuntime{
+		stdin:                       r.stdin,
+		stdout:                      r.stdout,
+		stderr:                      r.stderr,
+		askUserPrompter:             r.askUserPrompter,
+		browserToolExecutor:         r.browserToolExecutor,
+		computerToolExecutor:        r.computerToolExecutor,
+		sandboxEscapeConfirmer:      r.sandboxEscapeConfirmer,
+		sandboxEscapePolicyOverride: r.sandboxEscapePolicyOverride,
+		streamEventLogsEnabled:      r.streamEventLogsEnabled,
+		interactivePromptsEnabled:   r.interactivePromptsEnabled,
+		hookHandlers:                append([]HookHandler(nil), r.hookHandlers...),
+	}
 }
 
 func (r *ClientRuntime) writeStreamEventf(writer io.Writer, format string, args ...any) {
@@ -157,30 +177,45 @@ func (r *ClientRuntime) HandleBuiltInEvent(
 	providerClient provider.Provider,
 	config internalconfig.Config,
 	payload map[string]any,
-) error {
+	) (returnErr error) {
 	serverName := nestedString(payload, "server", "name")
 	commandName := nestedString(payload, "command", "name")
+	arguments := nestedMap(payload, "command", "arguments")
+	preview := commandPreview(arguments)
+	r.emitHook(config, buildPreToolHookEvent("built_in", commandName, preview, payload, nil))
+	var toolResult any
+	var toolErr error
+	defer func() {
+		r.emitHook(config, buildPostToolHookEvent("built_in", commandName, preview, payload, toolErr == nil, toolErr, toolResult, nil))
+	}()
 	if serverName != "built_in_command" || commandName != "run_command_via_client" {
-		return r.submitCallback(ctx, providerClient, payload, false, nil, fmt.Sprintf("不支持的内置调用: %s/%s", serverName, commandName))
+		toolErr = fmt.Errorf("不支持的内置调用: %s/%s", serverName, commandName)
+		returnErr = r.submitCallback(ctx, providerClient, payload, false, nil, toolErr.Error())
+		return returnErr
 	}
 
-	arguments := nestedMap(payload, "command", "arguments")
 	policy := nestedMap(payload, "command", "policy")
 	if policyConfirmationRequired(policy) {
 		approved, err := r.confirmCommand(arguments, config)
 		if err != nil {
-			return r.submitCallback(ctx, providerClient, payload, false, nil, err.Error())
+			toolErr = err
+			returnErr = r.submitCallback(ctx, providerClient, payload, false, nil, err.Error())
+			return returnErr
 		}
 		if !approved {
-			return r.submitCallback(ctx, providerClient, payload, false, nil, "用户拒绝执行客户端命令。")
+			toolErr = fmt.Errorf("用户拒绝执行客户端命令")
+			returnErr = r.submitCallback(ctx, providerClient, payload, false, nil, "用户拒绝执行客户端命令。")
+			return returnErr
 		}
 	}
 
-	result, err := r.runCommand(ctx, config, arguments)
-	if err != nil {
-		return r.submitCallback(ctx, providerClient, payload, false, nil, err.Error())
+	toolResult, toolErr = r.runCommand(ctx, config, arguments)
+	if toolErr != nil {
+		returnErr = r.submitCallback(ctx, providerClient, payload, false, nil, toolErr.Error())
+		return returnErr
 	}
-	return r.submitCallback(ctx, providerClient, payload, true, result, "")
+	returnErr = r.submitCallback(ctx, providerClient, payload, true, toolResult, "")
+	return returnErr
 }
 
 func (r *ClientRuntime) HandleClientToolEvent(
@@ -215,23 +250,24 @@ func (r *ClientRuntime) executeClientToolPayload(
 	providerClient provider.Provider,
 	config internalconfig.Config,
 	payload map[string]any,
-) (string, any, error) {
+	) (toolName string, result any, err error) {
 	serverName := nestedString(payload, "server", "name")
-	toolName := canonicalClientToolName(nestedString(payload, "function", "name"))
+	toolName = canonicalClientToolName(nestedString(payload, "function", "name"))
 	arguments := nestedMap(payload, "function", "arguments")
 	arguments = enrichToolArgumentsWithContext(arguments, payload)
 
 	if serverName != localToolServerName {
 		return toolName, nil, fmt.Errorf("不支持的客户端工具服务: %s", serverName)
 	}
-	if err := r.authorizeClientTool(toolName, arguments, config); err != nil {
+	preview := previewClientTool(toolName, arguments)
+	r.emitHook(config, buildPreToolHookEvent("client_tool", toolName, preview, payload, arguments))
+	defer func() {
+		r.emitHook(config, buildPostToolHookEvent("client_tool", toolName, preview, payload, err == nil, err, result, arguments))
+	}()
+	if err = r.authorizeClientTool(toolName, arguments, config); err != nil {
 		return toolName, nil, err
 	}
 
-	var (
-		result any
-		err    error
-	)
 	switch toolName {
 	case "ask_user":
 		result, err = r.askUser(ctx, arguments)
@@ -257,6 +293,8 @@ func (r *ClientRuntime) executeClientToolPayload(
 		result, err = r.taskList(config)
 	case "terminal_capture":
 		result, err = r.terminalCapture(config, arguments)
+	case "run_subtask":
+		result, err = r.runSubtask(ctx, providerClient, config, payload, arguments)
 	case "search_files":
 		result, err = r.searchFiles(ctx, config, arguments)
 	case "read_file":
