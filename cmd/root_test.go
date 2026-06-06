@@ -3329,3 +3329,56 @@ func TestBuildTUIAssistantChunkEventAllowsSplitMarkerWithoutChunk(t *testing.T) 
 		t.Fatalf("expected split-only assistant event, got %#v", event)
 	}
 }
+
+func TestBuildTUIStreamStatsMetricsParsesNestedTokenUsage(t *testing.T) {
+	metrics := buildTUIStreamStatsMetrics(map[string]any{
+		"run_id": "run-123",
+		"properties": map[string]any{
+			"token_usage": map[string]any{
+				"prompt_tokens":     120,
+				"completion_tokens": 40,
+				"total_tokens":      160,
+				"finish_reason":     "stop",
+				"model":             "qwen-max",
+				"context_window": map[string]any{
+					"max_input_tokens":              200000,
+					"current_round_input_tokens":    3200,
+					"current_round_available_tokens": 196800,
+				},
+			},
+		},
+	})
+
+	if metrics == nil || metrics.TokenUsage == nil {
+		t.Fatalf("expected stream stats metrics, got %#v", metrics)
+	}
+	if metrics.RunID != "run-123" {
+		t.Fatalf("expected run id to be preserved, got %#v", metrics)
+	}
+	if metrics.TokenUsage.InputTokens != 120 || metrics.TokenUsage.OutputTokens != 40 || metrics.TokenUsage.TotalTokens != 160 {
+		t.Fatalf("expected token usage totals, got %#v", metrics.TokenUsage)
+	}
+	if metrics.TokenUsage.StopReason != "stop" || metrics.TokenUsage.ModelName != "qwen-max" {
+		t.Fatalf("expected finish reason and model fallback fields, got %#v", metrics.TokenUsage)
+	}
+	if metrics.TokenUsage.ContextWindow == nil || metrics.TokenUsage.ContextWindow.CurrentRoundInputTokens != 3200 {
+		t.Fatalf("expected nested context window to be parsed, got %#v", metrics.TokenUsage)
+	}
+}
+
+func TestBuildTUIStreamStatsMetricsAcceptsTopLevelContextWindow(t *testing.T) {
+	metrics := buildTUIStreamStatsMetrics(map[string]any{
+		"context_window": map[string]any{
+			"max_input_tokens":              200000,
+			"current_round_input_tokens":    64000,
+			"current_round_available_tokens": 136000,
+		},
+	})
+
+	if metrics == nil || metrics.TokenUsage == nil || metrics.TokenUsage.ContextWindow == nil {
+		t.Fatalf("expected top-level context window metrics, got %#v", metrics)
+	}
+	if metrics.TokenUsage.ContextWindow.CurrentRoundInputTokens != 64000 {
+		t.Fatalf("expected top-level context window to be preserved, got %#v", metrics.TokenUsage.ContextWindow)
+	}
+}

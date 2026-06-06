@@ -2079,11 +2079,11 @@ func parseTokenUsage(payload map[string]any) *provider.TokenUsage {
 	}
 
 	usage := &provider.TokenUsage{
-		InputTokens:  intValue(payload["input"]),
-		OutputTokens: intValue(payload["output"]),
-		TotalTokens:  intValue(payload["total"]),
-		StopReason:   stringValue(payload["stop_reason"]),
-		ModelName:    stringValue(payload["model_name"]),
+		InputTokens:  firstMapIntValue(payload, "input", "input_tokens", "prompt_tokens"),
+		OutputTokens: firstMapIntValue(payload, "output", "output_tokens", "completion_tokens"),
+		TotalTokens:  firstMapIntValue(payload, "total", "total_tokens"),
+		StopReason:   firstMapStringValue(payload, "stop_reason", "finish_reason"),
+		ModelName:    firstMapStringValue(payload, "model_name", "model"),
 	}
 
 	if contextWindow, ok := payload["context_window"].(map[string]any); ok {
@@ -2123,6 +2123,34 @@ func parseCompressionRecord(payload compressionRecordResponse) provider.Compress
 		CompressionRatio:      payload.CompressionRatio,
 		ReservedHistoryTokens: payload.ReservedHistoryTokens,
 	}
+}
+
+func firstMapIntValue(payload map[string]any, keys ...string) int {
+	for _, key := range keys {
+		value, ok := payload[key]
+		if !ok || value == nil {
+			continue
+		}
+		parsed := intValue(value)
+		if parsed != 0 {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func firstMapStringValue(payload map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := payload[key]
+		if !ok || value == nil {
+			continue
+		}
+		parsed := stringValue(value)
+		if parsed != "" {
+			return parsed
+		}
+	}
+	return ""
 }
 
 func intValue(value any) int {

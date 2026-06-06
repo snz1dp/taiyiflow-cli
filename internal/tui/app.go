@@ -1117,8 +1117,8 @@ func relayExternalQueuedInputs(ctx context.Context, eventCh chan<- tea.Msg, queu
 				continue
 			}
 			eventCh <- localCommandExecutedMsg{result: LocalCommandResult{
-				Handled: true,
-				Events: []Event{{Kind: EventSystemNote, Text: "收到远端主任务，已加入当前实例队列。"}},
+				Handled:     true,
+				Events:      []Event{{Kind: EventSystemNote, Text: "收到远端主任务，已加入当前实例队列。"}},
 				QueuedInput: queued,
 			}}
 		}
@@ -1765,6 +1765,15 @@ func (m model) handleAskUserFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	current := &m.askUserForm.questions[m.askUserForm.cursor]
+	if current.question.InputFormat != "select" && shouldPrioritizeTextEntry(msg) {
+		previousValue := current.input.Value()
+		var cmd tea.Cmd
+		current.input, cmd = current.input.Update(msg)
+		if current.input.Value() != previousValue {
+			m.syncLayout()
+		}
+		return m, cmd
+	}
 	switch msg.String() {
 	case "esc", "q", "ctrl+c":
 		return m.cancelAskUserForm()
@@ -2172,6 +2181,12 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.configForm.flowOpen {
 		return m.handleConfigFlowDropdownKey(msg)
 	}
+	if isConfigTextField(m.configForm.cursor) && shouldPrioritizeConfigTextInput(msg) {
+		var cmd tea.Cmd
+		m.configForm.inputs[m.configForm.cursor], cmd = m.configForm.inputs[m.configForm.cursor].Update(msg)
+		m.syncLayout()
+		return m, cmd
+	}
 
 	switch msg.String() {
 	case "esc", "q":
@@ -2421,6 +2436,22 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+func shouldPrioritizeTextEntry(msg tea.KeyMsg) bool {
+	return msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace || msg.String() == " "
+}
+
+func shouldPrioritizeConfigTextInput(msg tea.KeyMsg) bool {
+	if shouldPrioritizeTextEntry(msg) {
+		return true
+	}
+	switch msg.String() {
+	case "left", "right":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m model) handleLoginFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -8957,7 +8988,7 @@ func formatContextAvailabilityRate(available int, maxTokens int) string {
 	if available > maxTokens {
 		available = maxTokens
 	}
-	return fmt.Sprintf("共%s剩%s可用", formatCompactInt(maxTokens), formatCompactInt(available))
+	return fmt.Sprintf("%s/%s", formatCompactInt(available), formatCompactInt(maxTokens))
 }
 
 func formatContextHistoryUsage(contextWindow *ContextWindow) string {

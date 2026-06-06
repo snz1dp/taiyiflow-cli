@@ -244,6 +244,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				}
 				switch event.Type {
 				case provider.EventMessage:
+					if metrics := buildTUIStreamStatsMetrics(event.Data); metrics != nil {
+						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
+					}
 					if sessionTitle := firstNonEmptyTrimmedStringMapValue(event.Data, "session_name"); sessionTitle != "" {
 						sessionState.SessionTitle = sessionTitle
 						if strings.TrimSpace(sessionState.SessionID) != "" {
@@ -279,8 +282,14 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
 					}
 				case provider.EventToolCall:
+					if metrics := buildTUIStreamStatsMetrics(event.Data); metrics != nil {
+						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
+					}
 					emit(tui.Event{Kind: tui.EventToolCall, Text: strings.TrimSpace(stringMapValue(event.Data, "text"))})
 				case provider.EventBuiltIn:
+					if metrics := buildTUIStreamStatsMetrics(event.Data); metrics != nil {
+						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
+					}
 					if !modeAllowsBuiltIn(request.RequestMode) {
 						emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝本地命令执行：当前为%s。", requestModeLabel(request.RequestMode))})
 						if err := submitClientCallFailure(runCtx, callbackProvider, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(request.RequestMode))); err != nil {
@@ -317,6 +326,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						return err
 					}
 				case provider.EventClientTool:
+					if metrics := buildTUIStreamStatsMetrics(event.Data); metrics != nil {
+						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
+					}
 					toolName := nestedStringValue(event.Data, "function", "name")
 					if !modeAllowsClientTool(request.RequestMode, toolName) {
 						emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝客户端工具 %s：当前为%s。", toolName, requestModeLabel(request.RequestMode))})
@@ -2444,6 +2456,67 @@ func buildTUIAssistantChunkEvent(payload map[string]any) (tui.Event, bool) {
 	}, true
 }
 
+func buildTUIStreamStatsMetrics(payload map[string]any) *tui.RequestMetrics {
+	if len(payload) == 0 {
+		return nil
+	}
+	metrics := &tui.RequestMetrics{}
+	usagePayload := extractStreamTokenUsagePayload(payload)
+	if usagePayload != nil {
+		tokenUsage := &tui.TokenUsage{
+			InputTokens:  firstIntMapValue(usagePayload, "input", "input_tokens", "prompt_tokens"),
+			OutputTokens: firstIntMapValue(usagePayload, "output", "output_tokens", "completion_tokens"),
+			TotalTokens:  firstIntMapValue(usagePayload, "total", "total_tokens"),
+			StopReason:   firstNonEmptyTrimmedStringMapValue(usagePayload, "stop_reason", "finish_reason"),
+			ModelName:    firstNonEmptyTrimmedStringMapValue(usagePayload, "model_name", "model"),
+		}
+		if contextWindow := buildTUIContextWindowFromValue(usagePayload["context_window"]); contextWindow != nil {
+			tokenUsage.ContextWindow = contextWindow
+		} else if contextWindow := buildTUIContextWindowFromValue(payload["context_window"]); contextWindow != nil {
+			tokenUsage.ContextWindow = contextWindow
+		}
+		if tokenUsage.InputTokens != 0 || tokenUsage.OutputTokens != 0 || tokenUsage.TotalTokens != 0 || tokenUsage.StopReason != "" || tokenUsage.ModelName != "" || tokenUsage.ContextWindow != nil {
+			metrics.TokenUsage = tokenUsage
+			metrics.RunID = firstNonEmptyTrimmedStringMapValue(usagePayload, "run_id")
+		}
+	} else if contextWindow := buildTUIContextWindowFromValue(payload["context_window"]); contextWindow != nil {
+		metrics.TokenUsage = &tui.TokenUsage{ContextWindow: contextWindow}
+	}
+	if metrics.TokenUsage == nil {
+		return nil
+	}
+	if metrics.RunID == "" {
+		metrics.RunID = firstNonEmptyTrimmedStringMapValue(payload, "run_id")
+	}
+	return metrics
+}
+
+func extractStreamTokenUsagePayload(payload map[string]any) map[string]any {
+	if directUsage, ok := payload["token_usage"].(map[string]any); ok {
+		return directUsage
+	}
+	if properties, ok := nestedMapValue(payload, "properties"); ok {
+		if nestedUsage, ok := properties["token_usage"].(map[string]any); ok {
+			return nestedUsage
+		}
+	}
+	return nil
+}
+
+func firstIntMapValue(payload map[string]any, keys ...string) int {
+	for _, key := range keys {
+		value, ok := payload[key]
+		if !ok || value == nil {
+			continue
+		}
+		parsed := intMapValue(payload, key)
+		if parsed != 0 {
+			return parsed
+		}
+	}
+	return 0
+}
+
 func firstNonEmptyRawStringMapValue(payload map[string]any, keys ...string) string {
 	for _, key := range keys {
 		if value, ok := payload[key].(string); ok && value != "" {
@@ -2702,8 +2775,11 @@ func buildTUICompressionMetrics(payload map[string]any) *tui.RequestMetrics {
 }
 
 func buildTUICompressionContextWindow(payload map[string]any) *tui.ContextWindow {
-	rawContextWindow, ok := payload["context_window"]
-	if !ok || rawContextWindow == nil {
+	return buildTUIContextWindowFromValue(payload["context_window"])
+}
+
+func buildTUIContextWindowFromValue(rawContextWindow any) *tui.ContextWindow {
+	if rawContextWindow == nil {
 		return nil
 	}
 	contextWindow, ok := rawContextWindow.(map[string]any)

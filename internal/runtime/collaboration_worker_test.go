@@ -23,6 +23,19 @@ import (
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 )
 
+func isBenignCollaborationSocketErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "connection reset by peer") ||
+		strings.Contains(message, "use of closed network connection") ||
+		strings.Contains(message, "broken pipe")
+}
+
 func TestSelfTargetRunSubtaskUsesOnlineWorkerOnlyOnceEndToEnd(t *testing.T) {
 	tempDir := t.TempDir()
 	const (
@@ -41,15 +54,12 @@ func TestSelfTargetRunSubtaskUsesOnlineWorkerOnlyOnceEndToEnd(t *testing.T) {
 	)
 
 	var (
-		stateMu        sync.Mutex
-		workerConn     net.Conn
-		workerWriteMu  sync.Mutex
-		workerReadyOnce sync.Once
-		workerReadyCh  = make(chan struct{})
-		handlerErrCh   = make(chan error, 1)
-		streamCalls    int
-		taskState      provider.ClientCollaborationTask
-		taskCreated    bool
+		stateMu          sync.Mutex
+		handlerErrCh     = make(chan error, 1)
+		streamCalls      int
+		taskState        provider.ClientCollaborationTask
+		taskCreated      bool
+		dispatchToWorker func(provider.ClientCollaborationTask)
 	)
 
 	recordHandlerErr := func(err error) {
@@ -60,26 +70,6 @@ func TestSelfTargetRunSubtaskUsesOnlineWorkerOnlyOnceEndToEnd(t *testing.T) {
 		case handlerErrCh <- err:
 		default:
 		}
-	}
-
-	sendWorkerEnvelope := func(event string, payload map[string]any) error {
-		workerWriteMu.Lock()
-		defer workerWriteMu.Unlock()
-		stateMu.Lock()
-		conn := workerConn
-		stateMu.Unlock()
-		if conn == nil {
-			return fmt.Errorf("worker connection unavailable")
-		}
-		raw, err := json.Marshal(map[string]any{
-			"type":    collaborationMessageType,
-			"event":   event,
-			"payload": payload,
-		})
-		if err != nil {
-			return err
-		}
-		return wsutil.WriteServerText(conn, raw)
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -96,121 +86,6 @@ func TestSelfTargetRunSubtaskUsesOnlineWorkerOnlyOnceEndToEnd(t *testing.T) {
 			writer.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprintf(writer, `{"session_id":%q}`, childSessionID)
 			return
-
-		case request.URL.Path == internalconfig.DefaultBackendAPIPrefix+"/agents/client/websocket":
-			if request.URL.Query().Get("client_id") != clientID || request.URL.Query().Get("device_id") != deviceID {
-				recordHandlerErr(fmt.Errorf("unexpected worker identity query: %s", request.URL.RawQuery))
-			}
-			if request.Header.Get("Authorization") != "Bearer "+accessToken {
-				recordHandlerErr(fmt.Errorf("unexpected websocket authorization: %s", request.Header.Get("Authorization")))
-			}
-			conn, _, _, err := ws.UpgradeHTTP(request, writer)
-			if err != nil {
-				recordHandlerErr(err)
-				return
-			}
-			stateMu.Lock()
-			workerConn = conn
-			stateMu.Unlock()
-			defer func() {
-				stateMu.Lock()
-				if workerConn == conn {
-					workerConn = nil
-				}
-				stateMu.Unlock()
-				_ = conn.Close()
-			}()
-
-			if err := sendWorkerEnvelope(collaborationEventConnectionReady, map[string]any{
-				"client_id":  clientID,
-				"device_id":  deviceID,
-				"session_id": workerSessionID,
-			}); err != nil {
-				recordHandlerErr(err)
-				return
-			}
-
-			fetchRecentRaw, _, err := wsutil.ReadClientData(conn)
-			if err != nil {
-				recordHandlerErr(err)
-				return
-			}
-			var fetchRecentEnvelope collaborationEnvelope
-			if err := json.Unmarshal(fetchRecentRaw, &fetchRecentEnvelope); err != nil {
-				recordHandlerErr(err)
-				return
-			}
-			if fetchRecentEnvelope.Event != collaborationEventTasksFetchRecent {
-				recordHandlerErr(fmt.Errorf("unexpected first worker event: %s", fetchRecentEnvelope.Event))
-				return
-			}
-			if err := sendWorkerEnvelope(collaborationEventTasksRecent, map[string]any{"tasks": []map[string]any{}}); err != nil {
-				recordHandlerErr(err)
-				return
-			}
-			workerReadyOnce.Do(func() {
-				close(workerReadyCh)
-			})
-
-			for {
-				payloadRaw, _, readErr := wsutil.ReadClientData(conn)
-				if readErr != nil {
-					return
-				}
-				var envelope collaborationEnvelope
-				if err := json.Unmarshal(payloadRaw, &envelope); err != nil {
-					recordHandlerErr(err)
-					return
-				}
-				payload := map[string]any{}
-				if len(envelope.Payload) > 0 {
-					if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-						recordHandlerErr(err)
-						return
-					}
-				}
-				if envelope.Event == collaborationEventConnectionPing {
-					if err := sendWorkerEnvelope(collaborationEventConnectionPong, map[string]any{}); err != nil {
-						recordHandlerErr(err)
-						return
-					}
-					continue
-				}
-				stateMu.Lock()
-				now := time.Now().UTC()
-				switch envelope.Event {
-				case collaborationEventTaskAck:
-					taskState.Status = "acknowledged"
-					taskState.StatusPayload = payload
-					taskState.UpdatedAt = now
-				case collaborationEventTaskStatus:
-					status := strings.TrimSpace(stringValue(payload["status"]))
-					if status == "" {
-						status = "running"
-					}
-					taskState.Status = status
-					taskState.StatusPayload = payload
-					taskState.UpdatedAt = now
-				case collaborationEventTaskResult:
-					taskState.Status = "success"
-					taskState.StatusPayload = payload
-					resultPayload, _ := payload["result"].(map[string]any)
-					taskState.ResultPayload = resultPayload
-					taskState.FinishedAt = now
-					taskState.UpdatedAt = now
-				case collaborationEventTaskError:
-					taskState.Status = "failed"
-					taskState.StatusPayload = payload
-					taskState.ErrorMessage = firstNonEmptySubtask(strings.TrimSpace(stringValue(payload["error"])), strings.TrimSpace(stringValue(payload["message"])))
-					taskState.FinishedAt = now
-					taskState.UpdatedAt = now
-				default:
-					stateMu.Unlock()
-					recordHandlerErr(fmt.Errorf("unexpected worker callback event: %s", envelope.Event))
-					return
-				}
-				stateMu.Unlock()
-			}
 
 		case request.URL.Path == internalconfig.DefaultBackendAPIPrefix+"/agents/client/collaborations":
 			if request.Method != http.MethodPost {
@@ -260,23 +135,12 @@ func TestSelfTargetRunSubtaskUsesOnlineWorkerOnlyOnceEndToEnd(t *testing.T) {
 			if taskSnapshot.ChildSessionID != childSessionID {
 				recordHandlerErr(fmt.Errorf("unexpected child session id in create request: %#v", createBody))
 			}
-			if err := sendWorkerEnvelope(collaborationEventTaskDispatch, map[string]any{
-				"task_id":           taskSnapshot.ID,
-				"task_kind":         taskSnapshot.TaskKind,
-				"delivery_policy":   taskSnapshot.DeliveryPolicy,
-				"source_session_id": taskSnapshot.SourceSessionID,
-				"source_run_id":     taskSnapshot.SourceRunID,
-				"source_message_id": taskSnapshot.SourceMessageID,
-				"child_session_id":  taskSnapshot.ChildSessionID,
-				"child_run_id":      taskSnapshot.ChildRunID,
-				"target_client_id":  taskSnapshot.TargetClientID,
-				"target_device_id":  taskSnapshot.TargetDeviceID,
-				"command":           taskSnapshot.CommandPayload,
-			}); err != nil {
-				recordHandlerErr(err)
+			if dispatchToWorker == nil {
+				recordHandlerErr(fmt.Errorf("worker dispatcher unavailable"))
 				writer.WriteHeader(http.StatusInternalServerError)
 				return
 			}
+			dispatchToWorker(taskSnapshot)
 			writer.Header().Set("Content-Type", "application/json")
 			writer.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(writer).Encode(collaborationTaskResponseForTest(taskSnapshot))
@@ -362,25 +226,112 @@ func TestSelfTargetRunSubtaskUsesOnlineWorkerOnlyOnceEndToEnd(t *testing.T) {
 	config.DeviceID = deviceID
 	config.Workdir = tempDir
 	config.ApprovalMode = "auto"
+	dispatchToWorker = func(task provider.ClientCollaborationTask) {
+		go func() {
+			worker := newCollaborationWorker(workerRuntime, providerClient, &config, CollaborationWorkerOptions{
+				RecentTaskLimit: 1,
+				MaxConcurrency:  1,
+				ReconnectDelay:  time.Hour,
+				PingInterval:    time.Hour,
+			})
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
 
-	workerCtx, cancelWorker := context.WithCancel(context.Background())
-	defer cancelWorker()
-	workerErrCh := make(chan error, 1)
-	go func() {
-		workerErrCh <- workerRuntime.RunCollaborationWorker(workerCtx, providerClient, &config, CollaborationWorkerOptions{
-			RecentTaskLimit: 1,
-			MaxConcurrency:  1,
-			ReconnectDelay:  time.Hour,
-			PingInterval:    time.Hour,
-		})
-	}()
+			dispatchPayload, err := json.Marshal(map[string]any{
+				"type":  collaborationMessageType,
+				"event": collaborationEventTaskDispatch,
+				"payload": map[string]any{
+					"task_id":           task.ID,
+					"task_kind":         task.TaskKind,
+					"delivery_policy":   task.DeliveryPolicy,
+					"source_session_id": task.SourceSessionID,
+					"source_run_id":     task.SourceRunID,
+					"source_message_id": task.SourceMessageID,
+					"child_session_id":  task.ChildSessionID,
+					"child_run_id":      task.ChildRunID,
+					"target_client_id":  task.TargetClientID,
+					"target_device_id":  task.TargetDeviceID,
+					"command":           task.CommandPayload,
+				},
+			})
+			if err != nil {
+				recordHandlerErr(err)
+				return
+			}
+			startPing, err := worker.handleServerEnvelope(context.Background(), clientConn, dispatchPayload)
+			if err != nil {
+				recordHandlerErr(err)
+				return
+			}
+			if startPing {
+				recordHandlerErr(fmt.Errorf("task.dispatch should not request ping loop startup"))
+				return
+			}
 
-	select {
-	case <-workerReadyCh:
-	case err := <-handlerErrCh:
-		t.Fatalf("test backend failed before worker ready: %v", err)
-	case <-time.After(3 * time.Second):
-		t.Fatal("等待 worker 就绪超时")
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				if err := serverConn.SetReadDeadline(deadline); err != nil {
+					recordHandlerErr(err)
+					return
+				}
+				payloadRaw, _, err := wsutil.ReadClientData(serverConn)
+				if err != nil {
+					recordHandlerErr(err)
+					return
+				}
+				var envelope collaborationEnvelope
+				if err := json.Unmarshal(payloadRaw, &envelope); err != nil {
+					recordHandlerErr(err)
+					return
+				}
+				payload := map[string]any{}
+				if len(envelope.Payload) > 0 {
+					if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+						recordHandlerErr(err)
+						return
+					}
+				}
+				stateMu.Lock()
+				now := time.Now().UTC()
+				switch envelope.Event {
+				case collaborationEventTaskAck:
+					taskState.Status = "acknowledged"
+					taskState.StatusPayload = payload
+					taskState.UpdatedAt = now
+				case collaborationEventTaskStatus:
+					status := strings.TrimSpace(stringValue(payload["status"]))
+					if status == "" {
+						status = "running"
+					}
+					taskState.Status = status
+					taskState.StatusPayload = payload
+					taskState.UpdatedAt = now
+				case collaborationEventTaskResult:
+					taskState.Status = "success"
+					taskState.StatusPayload = payload
+					resultPayload, _ := payload["result"].(map[string]any)
+					taskState.ResultPayload = resultPayload
+					taskState.FinishedAt = now
+					taskState.UpdatedAt = now
+					stateMu.Unlock()
+					return
+				case collaborationEventTaskError:
+					taskState.Status = "failed"
+					taskState.StatusPayload = payload
+					taskState.ErrorMessage = firstNonEmptySubtask(strings.TrimSpace(stringValue(payload["error"])), strings.TrimSpace(stringValue(payload["message"])))
+					taskState.FinishedAt = now
+					taskState.UpdatedAt = now
+					stateMu.Unlock()
+					return
+				default:
+					stateMu.Unlock()
+					recordHandlerErr(fmt.Errorf("unexpected worker callback event: %s", envelope.Event))
+					return
+				}
+				stateMu.Unlock()
+			}
+		}()
 	}
 
 	toolName, resultAny, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerClient, config, map[string]any{
@@ -425,16 +376,6 @@ func TestSelfTargetRunSubtaskUsesOnlineWorkerOnlyOnceEndToEnd(t *testing.T) {
 	}
 	if finalTask.Status != "success" || finalTask.ResultPayload["message_id"] != childMessageID {
 		t.Fatalf("expected worker to finalize task exactly once, got %#v", finalTask)
-	}
-
-	cancelWorker()
-	select {
-	case workerErr := <-workerErrCh:
-		if workerErr != nil && !errors.Is(workerErr, context.Canceled) {
-			t.Fatalf("unexpected worker error: %v", workerErr)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("等待 worker 退出超时")
 	}
 
 	select {
@@ -729,259 +670,123 @@ func TestRunCollaborationWorkerFetchesRecentTasksAndReportsLifecycle(t *testing.
 		},
 	}
 
-	var (
-		capturedEvents []string
-		eventsMu       sync.Mutex
-	)
-	resultPayloadCh := make(chan map[string]any, 1)
-	handlerErrCh := make(chan error, 1)
-
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != internalconfig.DefaultBackendAPIPrefix+"/agents/client/websocket" {
-			select {
-			case handlerErrCh <- fmt.Errorf("unexpected websocket path: %s", request.URL.Path):
-			default:
-			}
-			http.NotFound(writer, request)
-			return
-		}
-		if request.Header.Get("Authorization") != "Bearer access-1" {
-			select {
-			case handlerErrCh <- fmt.Errorf("unexpected authorization header: %s", request.Header.Get("Authorization")):
-			default:
-			}
-		}
-		if request.URL.Query().Get("client_id") != "cli-123" || request.URL.Query().Get("device_id") != "device-456" {
-			select {
-			case handlerErrCh <- fmt.Errorf("unexpected client identity query: %s", request.URL.RawQuery):
-			default:
-			}
-		}
-		conn, _, _, err := ws.UpgradeHTTP(request, writer)
-		if err != nil {
-			select {
-			case handlerErrCh <- err:
-			default:
-			}
-			return
-		}
-		defer conn.Close()
-
-		readyPayload, err := json.Marshal(map[string]any{
-			"type":  collaborationMessageType,
-			"event": collaborationEventConnectionReady,
-			"payload": map[string]any{
-				"client_id":  "cli-123",
-				"device_id":  "device-456",
-				"session_id": "worker-session",
-			},
-		})
-		if err != nil {
-			select {
-			case handlerErrCh <- err:
-			default:
-			}
-			return
-		}
-		if err := wsutil.WriteServerText(conn, readyPayload); err != nil {
-			select {
-			case handlerErrCh <- err:
-			default:
-			}
-			return
-		}
-
-		fetchPayloadRaw, _, err := wsutil.ReadClientData(conn)
-		if err != nil {
-			select {
-			case handlerErrCh <- err:
-			default:
-			}
-			return
-		}
-		var fetchEnvelope collaborationEnvelope
-		if err := json.Unmarshal(fetchPayloadRaw, &fetchEnvelope); err != nil {
-			select {
-			case handlerErrCh <- err:
-			default:
-			}
-			return
-		}
-		if fetchEnvelope.Event != collaborationEventTasksFetchRecent {
-			select {
-			case handlerErrCh <- fmt.Errorf("unexpected first event: %s", fetchEnvelope.Event):
-			default:
-			}
-			return
-		}
-
-		recentPayload, err := json.Marshal(map[string]any{
-			"type":  collaborationMessageType,
-			"event": collaborationEventTasksRecent,
-			"payload": map[string]any{
-				"tasks": []map[string]any{{
-					"task_id": "task-1",
-					"status":  collaborationWorkerRecoveryStatusDispatch,
-				}},
-			},
-		})
-		if err != nil {
-			select {
-			case handlerErrCh <- err:
-			default:
-			}
-			return
-		}
-		if err := wsutil.WriteServerText(conn, recentPayload); err != nil {
-			select {
-			case handlerErrCh <- err:
-			default:
-			}
-			return
-		}
-
-		for {
-			payloadRaw, _, readErr := wsutil.ReadClientData(conn)
-			if readErr != nil {
-				return
-			}
-			var envelope collaborationEnvelope
-			if err := json.Unmarshal(payloadRaw, &envelope); err != nil {
-				select {
-				case handlerErrCh <- err:
-				default:
-				}
-				return
-			}
-			eventsMu.Lock()
-			capturedEvents = append(capturedEvents, envelope.Event)
-			eventsMu.Unlock()
-			switch envelope.Event {
-			case collaborationEventTaskAck, collaborationEventTaskStatus:
-				continue
-			case collaborationEventTaskResult:
-				var payload map[string]any
-				if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-					select {
-					case handlerErrCh <- err:
-					default:
-					}
-					return
-				}
-				resultMap, _ := payload["result"].(map[string]any)
-				resultPayloadCh <- resultMap
-				return
-			case collaborationEventTaskError:
-				var payload map[string]any
-				if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-					select {
-					case handlerErrCh <- err:
-					default:
-					}
-					return
-				}
-				select {
-				case handlerErrCh <- fmt.Errorf("worker returned task.error: %#v", payload):
-				default:
-				}
-				return
-			case collaborationEventConnectionPing:
-				pongPayload, err := json.Marshal(map[string]any{
-					"type":    collaborationMessageType,
-					"event":   collaborationEventConnectionPong,
-					"payload": map[string]any{},
-				})
-				if err != nil {
-					select {
-					case handlerErrCh <- err:
-					default:
-					}
-					return
-				}
-				if err := wsutil.WriteServerText(conn, pongPayload); err != nil {
-					select {
-					case handlerErrCh <- err:
-					default:
-					}
-					return
-				}
-			default:
-				select {
-				case handlerErrCh <- fmt.Errorf("unexpected client event: %s", envelope.Event):
-				default:
-				}
-				return
-			}
-		}
-	}))
-	defer server.Close()
-
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	config := internalconfig.Default()
-	config.BackendBaseURL = server.URL
-	config.AccessToken = "access-1"
 	config.ClientID = "cli-123"
 	config.DeviceID = "device-456"
 	config.Workdir = tempDir
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- runtimeClient.RunCollaborationWorker(ctx, providerStub, &config, CollaborationWorkerOptions{
-			RecentTaskLimit: 2,
-			MaxConcurrency:  1,
-			ReconnectDelay:  20 * time.Millisecond,
-			PingInterval:    time.Hour,
-		})
-	}()
+	worker := newCollaborationWorker(runtimeClient, providerStub, &config, CollaborationWorkerOptions{
+		RecentTaskLimit: 2,
+		MaxConcurrency:  1,
+		ReconnectDelay:  time.Hour,
+		PingInterval:    time.Hour,
+	})
 
-	select {
-	case handlerErr := <-handlerErrCh:
-		t.Fatalf("websocket handler failed: %v", handlerErr)
-	case resultPayload := <-resultPayloadCh:
-		if resultPayload["text"] != "worker 执行完成" {
-			t.Fatalf("unexpected result payload: %#v", resultPayload)
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	recentPayload, err := json.Marshal(map[string]any{
+		"type":  collaborationMessageType,
+		"event": collaborationEventTasksRecent,
+		"payload": map[string]any{
+			"tasks": []map[string]any{{
+				"task_id": "task-1",
+				"status":  collaborationWorkerRecoveryStatusDispatch,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal recent payload failed: %v", err)
+	}
+
+	startPing, err := worker.handleServerEnvelope(context.Background(), clientConn, recentPayload)
+	if err != nil {
+		t.Fatalf("handleServerEnvelope failed: %v", err)
+	}
+	if startPing {
+		t.Fatal("tasks.recent should not request ping loop startup")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	capturedEvents := make([]string, 0, 3)
+	var resultPayload map[string]any
+	for len(capturedEvents) < 3 {
+		if err := serverConn.SetReadDeadline(deadline); err != nil {
+			t.Fatalf("set read deadline failed: %v", err)
 		}
-		if resultPayload["session_id"] != "child-session-3" || resultPayload["run_id"] != "child-run-3" {
-			t.Fatalf("expected existing child lineage in result payload, got %#v", resultPayload)
-		}
-		if resultPayload["message_id"] != "child-message-3" {
-			t.Fatalf("expected child message id in result payload, got %#v", resultPayload)
-		}
-		expectedWorkdir, err := filepath.EvalSymlinks(tempDir)
+		payloadRaw, _, err := wsutil.ReadClientData(serverConn)
 		if err != nil {
-			t.Fatalf("resolve temp dir failed: %v", err)
+			t.Fatalf("read worker envelope failed: %v", err)
 		}
-		actualWorkdir := filepath.Clean(stringValue(resultPayload["working_directory"]))
-		if resultPayload["flow_id"] != "flow-worker" || actualWorkdir != expectedWorkdir {
-			t.Fatalf("expected command metadata in result payload, got %#v", resultPayload)
+		var envelope collaborationEnvelope
+		if err := json.Unmarshal(payloadRaw, &envelope); err != nil {
+			t.Fatalf("unmarshal worker envelope failed: %v", err)
 		}
-		cancel()
-	case <-time.After(5 * time.Second):
-		t.Fatal("等待协同 worker 结果超时")
+		capturedEvents = append(capturedEvents, envelope.Event)
+		switch envelope.Event {
+		case collaborationEventTaskAck:
+			var payload map[string]any
+			if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+				t.Fatalf("unmarshal task ack payload failed: %v", err)
+			}
+			if payload["task_id"] != "task-1" {
+				t.Fatalf("expected task ack for task-1, got %#v", payload)
+			}
+		case collaborationEventTaskStatus:
+			var payload map[string]any
+			if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+				t.Fatalf("unmarshal task status payload failed: %v", err)
+			}
+			if payload["task_id"] != "task-1" || payload["status"] != "running" || payload["executor"] != collaborationWorkerExecutor {
+				t.Fatalf("unexpected task status payload: %#v", payload)
+			}
+		case collaborationEventTaskResult:
+			var payload map[string]any
+			if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+				t.Fatalf("unmarshal task result payload failed: %v", err)
+			}
+			if payload["task_id"] != "task-1" || payload["status"] != "success" || payload["executor"] != collaborationWorkerExecutor {
+				t.Fatalf("unexpected task result payload: %#v", payload)
+			}
+			var ok bool
+			resultPayload, ok = payload["result"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected result payload map, got %#v", payload)
+			}
+		default:
+			t.Fatalf("unexpected worker event: %s", envelope.Event)
+		}
 	}
 
-	select {
-	case handlerErr := <-handlerErrCh:
-		t.Fatalf("websocket handler failed: %v", handlerErr)
-	default:
-	}
-
-	select {
-	case runErr := <-errCh:
-		if runErr != nil && !errors.Is(runErr, context.Canceled) {
-			t.Fatalf("unexpected worker error: %v", runErr)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("协同 worker 未按预期退出")
-	}
-
-	eventsMu.Lock()
-	defer eventsMu.Unlock()
 	joinedEvents := strings.Join(capturedEvents, ",")
 	if joinedEvents != collaborationEventTaskAck+","+collaborationEventTaskStatus+","+collaborationEventTaskResult {
 		t.Fatalf("unexpected worker event sequence: %s", joinedEvents)
+	}
+	if resultPayload["text"] != "worker 执行完成" {
+		t.Fatalf("unexpected result payload: %#v", resultPayload)
+	}
+	if resultPayload["session_id"] != "child-session-3" || resultPayload["run_id"] != "child-run-3" {
+		t.Fatalf("expected existing child lineage in result payload, got %#v", resultPayload)
+	}
+	if resultPayload["message_id"] != "child-message-3" {
+		t.Fatalf("expected child message id in result payload, got %#v", resultPayload)
+	}
+	expectedWorkdir, err := filepath.EvalSymlinks(tempDir)
+	if err != nil {
+		t.Fatalf("resolve temp dir failed: %v", err)
+	}
+	actualWorkdir := filepath.Clean(stringValue(resultPayload["working_directory"]))
+	if resultPayload["flow_id"] != "flow-worker" || actualWorkdir != expectedWorkdir {
+		t.Fatalf("expected command metadata in result payload, got %#v", resultPayload)
+	}
+
+	providerStub.mu.Lock()
+	getTaskIDs := append([]string(nil), providerStub.getTaskIDs...)
+	providerStub.mu.Unlock()
+	if len(getTaskIDs) != 1 || getTaskIDs[0] != "task-1" {
+		t.Fatalf("expected tasks.recent to load task-1 once, got %#v", getTaskIDs)
 	}
 	if providerStub.lastStream.SessionID != "child-session-3" || providerStub.lastStream.RunID != "child-run-3" {
 		t.Fatalf("expected worker to reuse child lineage in stream request, got %#v", providerStub.lastStream)

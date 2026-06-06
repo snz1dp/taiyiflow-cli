@@ -583,6 +583,27 @@ func TestTerminalCaptureReturnsCombinedOutput(t *testing.T) {
 		t.Fatalf("shellExec background failed: %v", err)
 	}
 	taskID := result["task_id"].(string)
+	t.Cleanup(func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			output, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": taskID})
+			if outputErr == nil && output["status"] != "running" {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if _, deleteErr := runtimeClient.taskDelete(configValue, map[string]any{"task_id": taskID}); deleteErr != nil {
+			output, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": taskID})
+			if outputErr == nil && output["status"] == "running" {
+				if _, stopErr := runtimeClient.taskStop(configValue, map[string]any{"task_id": taskID}); stopErr != nil {
+					t.Fatalf("cleanup taskStop failed: %v", stopErr)
+				}
+			}
+			if _, retryErr := runtimeClient.taskDelete(configValue, map[string]any{"task_id": taskID}); retryErr != nil {
+				t.Fatalf("cleanup taskDelete failed: %v", retryErr)
+			}
+		}
+	})
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

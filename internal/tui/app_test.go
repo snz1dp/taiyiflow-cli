@@ -811,6 +811,29 @@ func TestRenderConfigFormUsesTextInputForAgentAutoLoopMaxRounds(t *testing.T) {
 	}
 }
 
+func TestHandleConfigFormKeyTextInputAllowsShortcutRunes(t *testing.T) {
+	state := newConfigFormState(ConfigFormState{Title: "配置设置"})
+	appModel := model{configForm: state}
+	appModel.focusConfigFormField(configFieldWorkdir)
+
+	updatedAny, _ := appModel.handleConfigFormKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	updated := updatedAny.(model)
+	updatedAny, _ = updated.handleConfigFormKey(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
+	updated = updatedAny.(model)
+	updatedAny, _ = updated.handleConfigFormKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	updated = updatedAny.(model)
+
+	if updated.configForm == nil {
+		t.Fatal("expected config form to stay open while editing text")
+	}
+	if updated.configForm.cursor != configFieldWorkdir {
+		t.Fatalf("expected config cursor to stay on workdir field, got %d", updated.configForm.cursor)
+	}
+	if got := updated.configForm.inputs[configFieldWorkdir].Value(); got != "q k" {
+		t.Fatalf("expected config text input to preserve shortcut-like runes, got %q", got)
+	}
+}
+
 func TestRenderConfigFormIncludesCrossSessionMemoryToggle(t *testing.T) {
 	state := newConfigFormState(ConfigFormState{
 		Title: "配置设置",
@@ -1120,6 +1143,36 @@ func TestHandleAskUserFormKeyEscCancelsResponse(t *testing.T) {
 	result := <-responseCh
 	if result.err == nil || !strings.Contains(result.err.Error(), "取消 ask_user") {
 		t.Fatalf("expected ask_user cancel error, got %#v", result.err)
+	}
+}
+
+func TestHandleAskUserFormKeyTextInputAllowsShortcutRunes(t *testing.T) {
+	responseCh := make(chan askUserResult, 1)
+	form := newAskUserFormState(clientruntime.AskUserRequest{
+		Questions: []clientruntime.AskUserQuestion{{Name: "project", Label: "项目名称", InputFormat: "text"}},
+	}, responseCh)
+	appModel := model{askUserForm: form, eventCh: make(chan tea.Msg, 2)}
+
+	updatedAny, _ := appModel.handleAskUserFormKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	updated := updatedAny.(model)
+	updatedAny, _ = updated.handleAskUserFormKey(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
+	updated = updatedAny.(model)
+	updatedAny, _ = updated.handleAskUserFormKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	updated = updatedAny.(model)
+
+	if updated.askUserForm == nil {
+		t.Fatal("expected ask_user form to stay open while editing text")
+	}
+	if got := updated.askUserForm.questions[0].input.Value(); got != "q g" {
+		t.Fatalf("expected ask_user text input to preserve shortcut-like runes, got %q", got)
+	}
+	select {
+	case result := <-responseCh:
+		t.Fatalf("expected no ask_user response while editing text, got %#v", result)
+	default:
+	}
+	if updated.askUserForm.cursor != 0 {
+		t.Fatalf("expected ask_user cursor to stay on current text field, got %d", updated.askUserForm.cursor)
 	}
 }
 

@@ -265,6 +265,12 @@ func TestGetRunStatsPollsCompressionRecordsUntilAvailable(t *testing.T) {
 	if len(stats.Compressions) != 1 {
 		t.Fatalf("expected one compression record after polling, got %#v", stats.Compressions)
 	}
+	if stats.TokenUsage == nil {
+		t.Fatalf("expected token usage to be parsed, got %#v", stats)
+	}
+	if stats.TokenUsage.InputTokens != 120 || stats.TokenUsage.OutputTokens != 40 || stats.TokenUsage.TotalTokens != 160 {
+		t.Fatalf("expected token usage fields to support current backend names, got %#v", stats.TokenUsage)
+	}
 	if stats.Compressions[0].AfterTokens != 6000 {
 		t.Fatalf("expected compression payload to be preserved, got %#v", stats.Compressions[0])
 	}
