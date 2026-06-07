@@ -5793,9 +5793,6 @@ func currentUserStatus(name string, compact bool) string {
 	if trimmed == "" {
 		return ""
 	}
-	if trimmed == "默认管理员" {
-		return "admin"
-	}
 	if compact {
 		return trimText(trimmed, 12)
 	}
