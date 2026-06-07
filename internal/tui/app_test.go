@@ -3935,7 +3935,7 @@ func TestRenderStatusBarUsesCompactLeftStatusLabels(t *testing.T) {
 	}
 
 	got := sanitizeTerminalText(model.renderStatusBar())
-	for _, expected := range []string{"执行", "自动", "思考开", "F6选字", "Web / AutoKB", "admin"} {
+	for _, expected := range []string{"执行", "自动", "思考开", "F6选字", "联网 / 知识库", "admin"} {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("expected compact status label %q in status bar, got %q", expected, got)
 		}
@@ -3943,6 +3943,29 @@ func TestRenderStatusBarUsesCompactLeftStatusLabels(t *testing.T) {
 	for _, unexpected := range []string{"执行模式", "自动执行任何命令", "思考模式已开", "鼠标选字/F6", "联网搜索开启", "自动选择知识库", "默认管理员"} {
 		if strings.Contains(got, unexpected) {
 			t.Fatalf("expected verbose status label %q removed from status bar, got %q", unexpected, got)
+		}
+	}
+}
+
+func TestRenderStatusBarHidesDisabledCapabilityLabels(t *testing.T) {
+	model := model{
+		snapshot: Snapshot{
+			BackendAvailable:         true,
+			RequestMode:              "agent",
+			ApprovalMode:             "confirm",
+			InternetSearchSupported:  true,
+			InternetSearchEnabled:    false,
+			KnowledgeSearchSupported: true,
+		},
+		state:        newProgressState(progressIdle),
+		width:        160,
+		contentWidth: 160,
+	}
+
+	got := sanitizeTerminalText(model.renderStatusBar())
+	for _, unexpected := range []string{"Web", "WebOff", "AutoKB", "NoKB", "联网", "知识库"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("expected disabled capability label %q to be hidden, got %q", unexpected, got)
 		}
 	}
 }

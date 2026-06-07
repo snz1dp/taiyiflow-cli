@@ -5702,23 +5702,17 @@ func mouseModeStatus(enabled bool, compact bool) string {
 
 func chatCapabilityStatus(snapshot Snapshot, compact bool) string {
 	parts := []string{}
-	if snapshot.InternetSearchSupported {
-		label := "WebOff"
-		if snapshot.InternetSearchEnabled {
-			label = "Web"
-		}
-		parts = append(parts, label)
+	if snapshot.InternetSearchSupported && snapshot.InternetSearchEnabled {
+		parts = append(parts, "联网")
 	}
 	if snapshot.KnowledgeSearchSupported {
 		if count := len(snapshot.SelectedKnowledgeBases); count > 0 {
-			parts = append(parts, fmt.Sprintf("KB%d", count))
+			parts = append(parts, fmt.Sprintf("知识库%d", count))
 		} else if len(snapshot.KnowledgeBases) > 0 {
-			parts = append(parts, "AutoKB")
-		} else {
-			parts = append(parts, "NoKB")
+			parts = append(parts, "知识库")
 		}
 	} else if snapshot.KnowledgeSystemEnabled {
-		parts = append(parts, "KB")
+		parts = append(parts, "知识库")
 	}
 	if len(parts) == 0 {
 		return ""
