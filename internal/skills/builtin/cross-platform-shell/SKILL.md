@@ -2,6 +2,9 @@
 name: cross-platform-shell
 description: 在本地命令执行场景下，按当前 OS/ARCH 选择可用命令并处理 fork/exec 兼容问题。
 category: tools
+metadata:
+  request_types:
+    - agent
 ---
 
 当任务需要执行本地命令时，先读取当前环境里的 OS、ARCH、工作目录和命令执行目标，再决定命令形式。

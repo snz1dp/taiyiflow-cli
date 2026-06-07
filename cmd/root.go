@@ -784,7 +784,7 @@ func (a *App) streamTaskWithSkillRetry(
 	runtimeConfig = applyEffectiveSkillReviewPolicy(runtimeConfig, sessionState.SkillReviewPolicyOverride)
 	resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir))
 	skillConfig := a.resolveEffectiveSkillConfig(config, resolvedContextDir)
-	requestedSkillNames, clientSkillPackages, err := loadSkillPayloadWithConfig(skillConfig)
+	requestedSkillNames, clientSkillPackages, err := loadSkillPayloadWithConfig(skillConfig, sessionState.RequestMode)
 	if err != nil {
 		return sessionState, err
 	}

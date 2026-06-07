@@ -273,6 +273,25 @@ func TestLoadBundledTaiyiFlowComputerSkill(t *testing.T) {
 	}
 }
 
+func TestLoadBundledPuaSkill(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	config := internalconfig.Config{}
+
+	item, _, err := LoadByName(config, "pua")
+	if err != nil {
+		t.Fatalf("load bundled skill failed: %v", err)
+	}
+	if item.Source != "bundled" {
+		t.Fatalf("expected bundled source, got %s", item.Source)
+	}
+	if !item.Enabled {
+		t.Fatal("expected bundled pua skill enabled by default")
+	}
+	if !strings.Contains(item.Body, "三条铁律") {
+		t.Fatalf("expected pua skill body to keep core methodology, got %q", item.Body)
+	}
+}
+
 func TestLoadFileFallsBackToMeaningfulSummary(t *testing.T) {
 	tempDir := t.TempDir()
 	skillDir := filepath.Join(tempDir, "summarized")

@@ -14,6 +14,12 @@ import (
 
 const skillFileName = "SKILL.md"
 
+const (
+	skillRequestTypeAsk   = "ask"
+	skillRequestTypePlan  = "plan"
+	skillRequestTypeAgent = "agent"
+)
+
 type Manifest struct {
 	Name          string         `yaml:"name"`
 	Description   string         `yaml:"description"`
@@ -369,6 +375,88 @@ func EnabledSkillNames(items []Skill) []string {
 		}
 	}
 	return names
+}
+
+func FilterByRequestType(items []Skill, requestType string) []Skill {
+	normalizedRequestType := normalizeSkillRequestType(requestType)
+	filtered := make([]Skill, 0, len(items))
+	for _, item := range items {
+		if skillSupportsRequestType(item, normalizedRequestType) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func ApplicableRequestTypes(item Skill) []string {
+	if normalized := normalizeSkillRequestTypes(metadataRequestTypes(item.Metadata)); len(normalized) > 0 {
+		return normalized
+	}
+	definition, ok := bundledSkillDefinitionByName(item.Name)
+	if !ok {
+		return nil
+	}
+	return normalizeSkillRequestTypes(definition.RequestTypes)
+}
+
+func metadataRequestTypes(metadata map[string]any) []string {
+	if len(metadata) == 0 {
+		return nil
+	}
+	if value, ok := metadata["request_types"]; ok {
+		return metadataStringSlice(value)
+	}
+	if value, ok := metadata["request_type"]; ok {
+		return metadataStringSlice(value)
+	}
+	return nil
+}
+
+func normalizeSkillRequestTypes(values []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized, ok := parseSkillRequestType(value)
+		if !ok || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		result = append(result, normalized)
+	}
+	return result
+}
+
+func normalizeSkillRequestType(value string) string {
+	if normalized, ok := parseSkillRequestType(value); ok {
+		return normalized
+	}
+	return skillRequestTypeAsk
+}
+
+func parseSkillRequestType(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case skillRequestTypeAsk:
+		return skillRequestTypeAsk, true
+	case skillRequestTypePlan:
+		return skillRequestTypePlan, true
+	case skillRequestTypeAgent:
+		return skillRequestTypeAgent, true
+	default:
+		return "", false
+	}
+}
+
+func skillSupportsRequestType(item Skill, requestType string) bool {
+	requestTypes := ApplicableRequestTypes(item)
+	if len(requestTypes) == 0 {
+		return true
+	}
+	for _, itemRequestType := range requestTypes {
+		if itemRequestType == requestType {
+			return true
+		}
+	}
+	return false
 }
 
 func ClientPackages(items []Skill, rootDir string) any {

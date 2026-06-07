@@ -344,10 +344,8 @@ func (m *localTaskManager) taskDelete(
 	if err != nil {
 		return nil, err
 	}
-	task.mu.RLock()
-	status := task.status
 	result := taskSummary(task)
-	task.mu.RUnlock()
+	status, _ := result["status"].(string)
 	if status == "running" {
 		return nil, newToolError("EXECUTION_FAILED", "运行中的任务不能删除，请先停止任务")
 	}

@@ -166,7 +166,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		for {
 			resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
 			skillConfig := a.resolveEffectiveSkillConfig(config, resolvedContextDir)
-			requestedSkillNames, clientSkillPackages, skillErr := loadSkillPayloadWithConfig(skillConfig)
+			requestedSkillNames, clientSkillPackages, skillErr := loadSkillPayloadWithConfig(skillConfig, request.RequestMode)
 			if skillErr != nil {
 				return skillErr
 			}

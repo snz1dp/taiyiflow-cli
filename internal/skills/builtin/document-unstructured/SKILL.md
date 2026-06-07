@@ -2,6 +2,9 @@
 name: document-unstructured
 description: 在独立本地音频、视频、PDF 等非图片文件需要服务端结构化解析的场景下，指导优先使用 local.document_unstructured。
 category: tools
+metadata:
+  request_types:
+    - agent
 ---
 
 当任务目标是从本地文件中提取正文、字幕、转写或结构化结果时，优先考虑 `local.document_unstructured`，而不是把文件当作普通附件直接上传。

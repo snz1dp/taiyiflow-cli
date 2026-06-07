@@ -408,18 +408,19 @@ func (a *App) resolveEffectiveSkillConfig(config internalconfig.Config, contextD
 	return resolved
 }
 
-func loadSkillPayloadWithConfig(config internalconfig.Config) ([]string, any, error) {
+func loadSkillPayloadWithConfig(config internalconfig.Config, requestType string) ([]string, any, error) {
 	items, directory, err := skills.Discover(config)
 	if err != nil {
 		return nil, nil, err
 	}
+	items = skills.FilterByRequestType(items, requestType)
 	requestedSkillNames := skills.EnabledSkillNames(items)
 	clientSkillPackages := skills.ClientPackages(items, directory)
 	return requestedSkillNames, clientSkillPackages, nil
 }
 
-func (a *App) loadSkillPayload(config internalconfig.Config, contextDir string) ([]string, any, error) {
-	return loadSkillPayloadWithConfig(a.resolveEffectiveSkillConfig(config, contextDir))
+func (a *App) loadSkillPayload(config internalconfig.Config, contextDir string, requestType string) ([]string, any, error) {
+	return loadSkillPayloadWithConfig(a.resolveEffectiveSkillConfig(config, contextDir), requestType)
 }
 
 func normalizeSkillNames(items []string) []string {

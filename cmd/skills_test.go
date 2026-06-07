@@ -13,11 +13,12 @@ import (
 	"testing"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
 
-func TestLoadSkillPayloadIncludesBundledEnabledSkillsByDefault(t *testing.T) {
+func TestLoadSkillPayloadIncludesBundledEnabledSkillsForAgentMode(t *testing.T) {
 	config := internalconfig.Default()
-	names, packages, err := loadSkillPayloadWithConfig(config)
+	names, packages, err := loadSkillPayloadWithConfig(config, provider.RequestTypeAgent)
 	if err != nil {
 		t.Fatalf("loadSkillPayload failed: %v", err)
 	}
@@ -29,6 +30,15 @@ func TestLoadSkillPayloadIncludesBundledEnabledSkillsByDefault(t *testing.T) {
 	}
 	if !containsIgnoreCase(names, "cross-platform-shell") {
 		t.Fatalf("expected cross-platform-shell in requested names: %#v", names)
+	}
+	if !containsIgnoreCase(names, "developer") {
+		t.Fatalf("expected developer in requested names: %#v", names)
+	}
+	if !containsIgnoreCase(names, "planner") {
+		t.Fatalf("expected planner in requested names for agent mode: %#v", names)
+	}
+	if !containsIgnoreCase(names, "pua") {
+		t.Fatalf("expected pua in requested names for agent mode: %#v", names)
 	}
 	if !containsIgnoreCase(names, "document-unstructured") {
 		t.Fatalf("expected document-unstructured to be enabled by default, got %#v", names)
@@ -55,7 +65,7 @@ func TestLoadSkillPayloadIncludesBundledEnabledSkillsByDefault(t *testing.T) {
 func TestLoadSkillPayloadIncludesDocumentUnstructuredSkillWhenExtensionsConfigured(t *testing.T) {
 	config := internalconfig.Default()
 	config.DocUnstructuredExts = []string{"pdf", "png"}
-	names, _, err := loadSkillPayloadWithConfig(config)
+	names, _, err := loadSkillPayloadWithConfig(config, provider.RequestTypeAgent)
 	if err != nil {
 		t.Fatalf("loadSkillPayload failed: %v", err)
 	}
@@ -67,7 +77,7 @@ func TestLoadSkillPayloadIncludesDocumentUnstructuredSkillWhenExtensionsConfigur
 func TestLoadSkillPayloadSkipsDocumentUnstructuredSkillWhenExtensionsDisabled(t *testing.T) {
 	config := internalconfig.Default()
 	config.DocUnstructuredExts = nil
-	names, _, err := loadSkillPayloadWithConfig(config)
+	names, _, err := loadSkillPayloadWithConfig(config, provider.RequestTypeAgent)
 	if err != nil {
 		t.Fatalf("loadSkillPayload failed: %v", err)
 	}
@@ -99,7 +109,7 @@ func TestLoadSkillPayloadUsesContextDirWorkspaceSkills(t *testing.T) {
 	if err := manager.Save(config); err != nil {
 		t.Fatalf("save config failed: %v", err)
 	}
-	names, packages, err := app.loadSkillPayload(config, workspaceDir)
+	names, packages, err := app.loadSkillPayload(config, workspaceDir, provider.RequestTypeAgent)
 	if err != nil {
 		t.Fatalf("loadSkillPayload failed: %v", err)
 	}
@@ -146,7 +156,7 @@ func TestLoadSkillPayloadReflectsDisabledSkillImmediately(t *testing.T) {
 	if err := manager.Save(config); err != nil {
 		t.Fatalf("save config failed: %v", err)
 	}
-	names, _, err := app.loadSkillPayload(config, "")
+	names, _, err := app.loadSkillPayload(config, "", provider.RequestTypeAgent)
 	if err != nil {
 		t.Fatalf("loadSkillPayload failed: %v", err)
 	}
@@ -156,7 +166,7 @@ func TestLoadSkillPayloadReflectsDisabledSkillImmediately(t *testing.T) {
 	if _, err := app.executeSkillsCommand([]string{"disable", "update-config"}); err != nil {
 		t.Fatalf("disable skill failed: %v", err)
 	}
-	names, _, err = app.loadSkillPayload(config, "")
+	names, _, err = app.loadSkillPayload(config, "", provider.RequestTypeAgent)
 	if err != nil {
 		t.Fatalf("loadSkillPayload after disable failed: %v", err)
 	}
@@ -166,7 +176,7 @@ func TestLoadSkillPayloadReflectsDisabledSkillImmediately(t *testing.T) {
 	if _, err := app.executeSkillsCommand([]string{"enable", "update-config"}); err != nil {
 		t.Fatalf("re-enable skill failed: %v", err)
 	}
-	names, _, err = app.loadSkillPayload(config, "")
+	names, _, err = app.loadSkillPayload(config, "", provider.RequestTypeAgent)
 	if err != nil {
 		t.Fatalf("loadSkillPayload after enable failed: %v", err)
 	}
@@ -242,6 +252,103 @@ func TestExecuteSkillsListGroupsBundledSkillsBySource(t *testing.T) {
 	}
 	if !strings.Contains(output, "渐进披露") {
 		t.Fatalf("expected status badge, got %q", output)
+	}
+}
+
+func TestLoadSkillPayloadFiltersBundledSkillsByRequestType(t *testing.T) {
+	config := internalconfig.Default()
+	config.DocUnstructuredExts = []string{"pdf"}
+
+	askNames, _, err := loadSkillPayloadWithConfig(config, provider.RequestTypeAsk)
+	if err != nil {
+		t.Fatalf("loadSkillPayload ask failed: %v", err)
+	}
+	if containsIgnoreCase(askNames, "planner") {
+		t.Fatalf("expected planner excluded from ask mode, got %#v", askNames)
+	}
+	if containsIgnoreCase(askNames, "cross-platform-shell") {
+		t.Fatalf("expected cross-platform-shell excluded from ask mode, got %#v", askNames)
+	}
+	if !containsIgnoreCase(askNames, "askuser") {
+		t.Fatalf("expected askuser kept in ask mode, got %#v", askNames)
+	}
+	if !containsIgnoreCase(askNames, "pua") {
+		t.Fatalf("expected pua kept in ask mode, got %#v", askNames)
+	}
+
+	planNames, _, err := loadSkillPayloadWithConfig(config, provider.RequestTypePlan)
+	if err != nil {
+		t.Fatalf("loadSkillPayload plan failed: %v", err)
+	}
+	if !containsIgnoreCase(planNames, "planner") {
+		t.Fatalf("expected planner included in plan mode, got %#v", planNames)
+	}
+	if !containsIgnoreCase(planNames, "pua") {
+		t.Fatalf("expected pua included in plan mode, got %#v", planNames)
+	}
+	if containsIgnoreCase(planNames, "cross-platform-shell") {
+		t.Fatalf("expected cross-platform-shell excluded from plan mode, got %#v", planNames)
+	}
+	if containsIgnoreCase(planNames, "document-unstructured") {
+		t.Fatalf("expected document-unstructured excluded from plan mode, got %#v", planNames)
+	}
+	if !containsIgnoreCase(planNames, "askuser") {
+		t.Fatalf("expected askuser kept in plan mode, got %#v", planNames)
+	}
+
+	agentNames, _, err := loadSkillPayloadWithConfig(config, provider.RequestTypeAgent)
+	if err != nil {
+		t.Fatalf("loadSkillPayload agent failed: %v", err)
+	}
+	if !containsIgnoreCase(agentNames, "planner") {
+		t.Fatalf("expected planner included in agent mode, got %#v", agentNames)
+	}
+	if !containsIgnoreCase(agentNames, "pua") {
+		t.Fatalf("expected pua included in agent mode, got %#v", agentNames)
+	}
+	if !containsIgnoreCase(agentNames, "cross-platform-shell") {
+		t.Fatalf("expected cross-platform-shell included in agent mode, got %#v", agentNames)
+	}
+	if !containsIgnoreCase(agentNames, "document-unstructured") {
+		t.Fatalf("expected document-unstructured included in agent mode, got %#v", agentNames)
+	}
+}
+
+func TestLoadSkillPayloadHonorsCustomSkillRequestTypes(t *testing.T) {
+	tempDir := t.TempDir()
+	skillDir := filepath.Join(tempDir, "plan-only")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir failed: %v", err)
+	}
+	content := "---\n" +
+		"name: Plan Only\n" +
+		"description: 仅在计划模式供应\n" +
+		"metadata:\n" +
+		"  request_types:\n" +
+		"    - plan\n" +
+		"---\n\n" +
+		"只在计划模式生效。\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill file failed: %v", err)
+	}
+
+	config := internalconfig.Default()
+	config.Skills.Directory = tempDir
+
+	askNames, _, err := loadSkillPayloadWithConfig(config, provider.RequestTypeAsk)
+	if err != nil {
+		t.Fatalf("loadSkillPayload ask failed: %v", err)
+	}
+	if containsIgnoreCase(askNames, "Plan Only") {
+		t.Fatalf("expected plan-only skill excluded from ask mode, got %#v", askNames)
+	}
+
+	planNames, _, err := loadSkillPayloadWithConfig(config, provider.RequestTypePlan)
+	if err != nil {
+		t.Fatalf("loadSkillPayload plan failed: %v", err)
+	}
+	if !containsIgnoreCase(planNames, "Plan Only") {
+		t.Fatalf("expected plan-only skill included in plan mode, got %#v", planNames)
 	}
 }
 

@@ -2,6 +2,11 @@
 name: askuser
 description: 在命令行（CLI）执行过程中向用户补齐关键信息，或在高风险动作前做明确确认。
 category: planning
+metadata:
+  request_types:
+    - ask
+    - plan
+    - agent
 ---
 
 你是运行在命令行（CLI）里的智能体。目标是完成 <user_request>，但不能靠猜测补齐关键输入。

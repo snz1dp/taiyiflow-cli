@@ -1,6 +1,9 @@
 ---
 name: taiyiflow-computer
 description: 使用本地桌面操作工具读取显示器、窗口和桌面截图，并在 capability 允许时执行焦点切换或键盘输入。
+metadata:
+  request_types:
+    - agent
 ---
 
 你可以通过桌面操作工具族 `taiyiflow-computer__*` 与本机桌面环境交互，但要先尊重 CLI 当前的 capability 与权限状态。
