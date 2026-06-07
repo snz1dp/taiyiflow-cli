@@ -3905,14 +3905,45 @@ func TestRenderStatusBarShowsMouseModeShortcut(t *testing.T) {
 	}
 
 	got := sanitizeTerminalText(model.renderStatusBar())
-	if !strings.Contains(got, "鼠标选字/F6") {
+	if !strings.Contains(got, "F6选字") {
 		t.Fatalf("expected default mouse selection shortcut in status bar, got %q", got)
 	}
 
 	model.mouseScrollEnabled = true
 	got = sanitizeTerminalText(model.renderStatusBar())
-	if !strings.Contains(got, "鼠标滚动/F6") {
+	if !strings.Contains(got, "F6滚动") {
 		t.Fatalf("expected mouse scroll shortcut in status bar after toggle, got %q", got)
+	}
+}
+
+func TestRenderStatusBarUsesCompactLeftStatusLabels(t *testing.T) {
+	model := model{
+		snapshot: Snapshot{
+			BackendAvailable:         true,
+			RequestMode:              "agent",
+			ApprovalMode:             "auto",
+			ReasoningEnabled:         true,
+			InternetSearchSupported:  true,
+			InternetSearchEnabled:    true,
+			KnowledgeSearchSupported: true,
+			KnowledgeBases:           []KnowledgeBaseItem{{Code: "kb-a", Name: "知识库A"}},
+			CurrentUserName:          "默认管理员",
+		},
+		state:        newProgressState(progressIdle),
+		width:        200,
+		contentWidth: 200,
+	}
+
+	got := sanitizeTerminalText(model.renderStatusBar())
+	for _, expected := range []string{"执行", "自动", "思考开", "F6选字", "Web / AutoKB", "admin"} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("expected compact status label %q in status bar, got %q", expected, got)
+		}
+	}
+	for _, unexpected := range []string{"执行模式", "自动执行任何命令", "思考模式已开", "鼠标选字/F6", "联网搜索开启", "自动选择知识库", "默认管理员"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("expected verbose status label %q removed from status bar, got %q", unexpected, got)
+		}
 	}
 }
 

@@ -5694,37 +5694,31 @@ func (m model) statusBarSegments(maxWidth int) []string {
 }
 
 func mouseModeStatus(enabled bool, compact bool) string {
-	if compact {
-		if enabled {
-			return "鼠标滚动/F6"
-		}
-		return "鼠标选字/F6"
-	}
 	if enabled {
-		return "鼠标滚动/F6"
+		return "F6滚动"
 	}
-	return "鼠标选字/F6"
+	return "F6选字"
 }
 
 func chatCapabilityStatus(snapshot Snapshot, compact bool) string {
 	parts := []string{}
 	if snapshot.InternetSearchSupported {
-		label := "联网搜索关闭"
+		label := "WebOff"
 		if snapshot.InternetSearchEnabled {
-			label = "联网搜索开启"
+			label = "Web"
 		}
 		parts = append(parts, label)
 	}
 	if snapshot.KnowledgeSearchSupported {
 		if count := len(snapshot.SelectedKnowledgeBases); count > 0 {
-			parts = append(parts, fmt.Sprintf("知识库%d", count))
+			parts = append(parts, fmt.Sprintf("KB%d", count))
 		} else if len(snapshot.KnowledgeBases) > 0 {
-			parts = append(parts, "自动选择知识库")
+			parts = append(parts, "AutoKB")
 		} else {
-			parts = append(parts, "无知识库")
+			parts = append(parts, "NoKB")
 		}
 	} else if snapshot.KnowledgeSystemEnabled {
-		parts = append(parts, "知识库可用")
+		parts = append(parts, "KB")
 	}
 	if len(parts) == 0 {
 		return ""
@@ -5804,6 +5798,12 @@ func currentUserStatus(name string, compact bool) string {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
 		return ""
+	}
+	if trimmed == "默认管理员" {
+		return "admin"
+	}
+	if compact {
+		return trimText(trimmed, 12)
 	}
 	return trimmed
 }
@@ -9498,32 +9498,26 @@ func approvalModeLabel(value string) string {
 }
 
 func approvalModeStatus(value string, compact bool) string {
-	if compact {
-		switch strings.TrimSpace(strings.ToLower(value)) {
-		case "auto":
-			return "自动"
-		case "readonly":
-			return "只读"
-		case "confirm", "":
-			return "确认"
-		default:
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "auto":
+		return "自动"
+	case "readonly":
+		return "只读"
+	case "confirm", "":
+		return "确认"
+	default:
+		if compact {
 			return trimText(strings.TrimSpace(value), 8)
 		}
+		return trimText(strings.TrimSpace(value), 12)
 	}
-	return approvalModeLabel(value)
 }
 
 func reasoningStatus(enabled bool, compact bool) string {
-	if compact {
-		if enabled {
-			return "思考开"
-		}
-		return "思考关"
-	}
 	if enabled {
-		return "思考模式已开"
+		return "思考开"
 	}
-	return "思考模式已关"
+	return "思考关"
 }
 
 func sessionSandboxEscapePolicyStatus(value string, compact bool) string {
@@ -9549,17 +9543,14 @@ func sessionSandboxEscapePolicyStatus(value string, compact bool) string {
 }
 
 func requestModeStatus(value string, compact bool) string {
-	if compact {
-		switch requestModeKey(value) {
-		case "plan":
-			return "计划"
-		case "agent":
-			return "执行"
-		default:
-			return "问答"
-		}
+	switch requestModeKey(value) {
+	case "plan":
+		return "计划"
+	case "agent":
+		return "执行"
+	default:
+		return "问答"
 	}
-	return requestModeLabel(value)
 }
 
 func requestModeLabel(value string) string {
