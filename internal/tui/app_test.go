@@ -2207,10 +2207,25 @@ func TestCompressionProgressNoteRendersInFooterInsteadOfTransientStatus(t *testi
 		contentWidth: 120,
 	}
 
+	model.applyEvent(Event{Kind: EventProgressNote, Text: "开始进行上下文压缩：history_trim / history_message_limit", EventType: "compression_progress"})
+
+	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "压缩中") {
+		t.Fatalf("expected compact compression start footer status, got %q", got)
+	}
+	if got := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(got, "开始进行上下文压缩") {
+		t.Fatalf("expected verbose compression start copy removed from footer, got %q", got)
+	}
+
 	model.applyEvent(Event{Kind: EventProgressNote, Text: "上下文压缩完成：320 -> 160", EventType: "compression_progress"})
 
-	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "上下文压缩完成：320 -> 160") {
-		t.Fatalf("expected compression progress in footer status bar, got %q", got)
+	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "320→160") {
+		t.Fatalf("expected compact compression progress in footer status bar, got %q", got)
+	}
+	if got := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(got, "压缩320→160") {
+		t.Fatalf("expected footer completion copy to stay minimal, got %q", got)
+	}
+	if got := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(got, "上下文压缩完成：320 -> 160") {
+		t.Fatalf("expected verbose compression completion copy removed from footer, got %q", got)
 	}
 }
 
@@ -3610,58 +3625,6 @@ func firstBorderLineIndex(rendered string) int {
 	return -1
 }
 
-func TestContextUsageSegmentShowsCurrentRoundUsage(t *testing.T) {
-	model := model{
-		requestStats: RequestMetrics{
-			TokenUsage: &TokenUsage{
-				ContextWindow: &ContextWindow{
-					MaxInputTokens:           8192,
-					CurrentRoundInputTokens:  2048,
-					NextRoundAvailableTokens: 6144,
-					ContextUsageTokens:       3072,
-					DirectMessageTokens:      2048,
-					CompressedHistoryTokens:  1024,
-				},
-			},
-		},
-	}
-
-	got := model.contextUsageSegment(false)
-	if !strings.Contains(got, "当前上下文 2K/8K 25%") {
-		t.Fatalf("expected current round usage in context segment, got %q", got)
-	}
-	if !strings.Contains(got, "可用 6K") {
-		t.Fatalf("expected available context tokens in context segment, got %q", got)
-	}
-	if !strings.Contains(got, "历史 3K（直传 2K / 压缩 1K）") {
-		t.Fatalf("expected short-term history in context segment, got %q", got)
-	}
-}
-
-func TestContextUsageSegmentShowsWatermarkWarning(t *testing.T) {
-	model := model{
-		requestStats: RequestMetrics{
-			TokenUsage: &TokenUsage{
-				ContextWindow: &ContextWindow{
-					MaxInputTokens:           8192,
-					CurrentRoundInputTokens:  7000,
-					NextRoundAvailableTokens: 1192,
-					HighWatermarkTokens:      6963,
-					CompressionTargetTokens:  4915,
-				},
-			},
-		},
-	}
-
-	got := model.contextUsageSegment(false)
-	if !strings.Contains(got, "已过高水位") {
-		t.Fatalf("expected watermark warning in context segment, got %q", got)
-	}
-	if !strings.Contains(got, "5K") {
-		t.Fatalf("expected compression target hint in context segment, got %q", got)
-	}
-}
-
 func TestInputContextUsageHintShowsCurrentUsageDetails(t *testing.T) {
 	model := model{
 		snapshot: Snapshot{SessionID: "session-123"},
@@ -3681,11 +3644,11 @@ func TestInputContextUsageHintShowsCurrentUsageDetails(t *testing.T) {
 	}
 
 	got := model.inputContextUsageHint()
-	if !strings.Contains(got, "共8K剩6K可用") {
-		t.Fatalf("expected compact availability summary in input hint, got %q", got)
+	if !strings.Contains(got, "2K/8K") {
+		t.Fatalf("expected compact usage summary in input hint, got %q", got)
 	}
-	if !strings.Contains(got, "历史 3K（直传 2K / 压缩 1K）") {
-		t.Fatalf("expected history split summary in input hint, got %q", got)
+	if !strings.Contains(got, "1K+2K") {
+		t.Fatalf("expected compact history split summary in input hint, got %q", got)
 	}
 	if strings.Contains(got, "共12条消息") {
 		t.Fatalf("expected history message count hidden to save width, got %q", got)
@@ -3716,11 +3679,11 @@ func TestInputContextUsageHintShowsProjectedUsageWhileTyping(t *testing.T) {
 	if strings.Contains(got, "7 ·") {
 		t.Fatalf("expected draft token estimate removed to save width, got %q", got)
 	}
-	if !strings.Contains(got, "共8K剩6K可用") {
-		t.Fatalf("expected compact availability summary in input hint, got %q", got)
+	if !strings.Contains(got, "2K/8K") {
+		t.Fatalf("expected compact usage summary in input hint, got %q", got)
 	}
-	if !strings.Contains(got, "历史 3K（直传 2K / 压缩 1K）") {
-		t.Fatalf("expected history split summary in input hint, got %q", got)
+	if !strings.Contains(got, "1K+2K") {
+		t.Fatalf("expected compact history split summary in input hint, got %q", got)
 	}
 }
 
@@ -3978,7 +3941,7 @@ func TestRenderStatusBarShowsContextGrid(t *testing.T) {
 	if !strings.Contains(got, "■■□□□□□□ 25%") {
 		t.Fatalf("expected context usage grid in status bar, got %q", got)
 	}
-	if !strings.Contains(got, "共8K剩6K可用") {
+	if !strings.Contains(got, "2K/8K") {
 		t.Fatalf("expected compact context hint on the right side of status bar, got %q", got)
 	}
 }
@@ -4069,7 +4032,7 @@ func TestApplyEventStatsUpdatePreservesExistingContextWindow(t *testing.T) {
 	if got := model.requestStats.TokenUsage.StopReason; got != "user_interrupted" {
 		t.Fatalf("expected incoming stop reason to still update, got %q", got)
 	}
-	if hint := model.inputContextUsageHint(); !strings.Contains(hint, "共8K剩6K可用") {
+	if hint := model.inputContextUsageHint(); !strings.Contains(hint, "2K/8K") {
 		t.Fatalf("expected preserved footer context usage hint, got %q", hint)
 	}
 }
@@ -4233,11 +4196,14 @@ func TestStartRequestStatsPreservesKnownContextAndCompressionHints(t *testing.T)
 	if strings.Contains(got, "正在输出...") {
 		t.Fatalf("expected startRequestStats to preserve known context hint, got %q", got)
 	}
-	if !strings.Contains(got, "共8K剩6K可用") {
+	if !strings.Contains(got, "2K/8K") {
 		t.Fatalf("expected preserved context availability hint, got %q", got)
 	}
-	if !strings.Contains(got, "压缩9K→6K 剩2K") {
+	if !strings.Contains(got, "压9K→6K") {
 		t.Fatalf("expected preserved compression hint, got %q", got)
+	}
+	if strings.Contains(got, "余2K") {
+		t.Fatalf("expected remaining token suffix removed from compression hint, got %q", got)
 	}
 }
 

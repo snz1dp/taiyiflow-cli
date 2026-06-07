@@ -3112,7 +3112,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 	case EventProgressNote:
 		if strings.TrimSpace(event.Text) != "" {
 			if event.EventType == "compression_progress" {
-				m.footerHint = strings.TrimSpace(event.Text)
+				m.footerHint = formatCompressionFooterHint(event.Text)
 				break
 			}
 			m.activityHint = strings.TrimSpace(event.Text)
@@ -8856,51 +8856,6 @@ func (m *model) clampFlowCursor() {
 	}
 }
 
-func (m model) contextUsageSegment(compact bool) string {
-	usage := m.requestStats.TokenUsage
-	if usage == nil || usage.ContextWindow == nil {
-		return ""
-	}
-	contextWindow := usage.ContextWindow
-	maxTokens := contextWindow.MaxInputTokens
-	currentTokens := contextWindow.CurrentRoundInputTokens
-	available := resolveContextAvailableTokens(contextWindow)
-	if maxTokens > 0 {
-		if currentTokens < 0 {
-			currentTokens = 0
-		}
-		if currentTokens > maxTokens {
-			currentTokens = maxTokens
-		}
-		percent := float64(currentTokens) / float64(maxTokens) * 100
-		if compact {
-			parts := []string{fmt.Sprintf("上下文 %s/%s", formatCompactInt(currentTokens), formatCompactInt(maxTokens))}
-			if available > 0 {
-				parts = append(parts, "可"+formatCompactInt(available))
-			}
-			return strings.Join(parts, " ")
-		}
-		parts := []string{fmt.Sprintf("当前上下文 %s/%s %.0f%%", formatCompactInt(currentTokens), formatCompactInt(maxTokens), percent)}
-		if available > 0 {
-			parts = append(parts, fmt.Sprintf("可用 %s", formatCompactInt(available)))
-		}
-		if historyUsage := formatContextHistoryUsage(contextWindow); historyUsage != "" {
-			parts = append(parts, historyUsage)
-		}
-		if watermarkWarning := formatContextWatermarkWarning(contextWindow); watermarkWarning != "" {
-			parts = append(parts, watermarkWarning)
-		}
-		return strings.Join(parts, " · ")
-	}
-	if available <= 0 {
-		return ""
-	}
-	if compact {
-		return fmt.Sprintf("上下文可用 %s", formatCompactInt(available))
-	}
-	return fmt.Sprintf("上下文可用 %s", formatCompactInt(available))
-}
-
 func (m model) contextUsageGrid() string {
 	usage := m.requestStats.TokenUsage
 	if usage == nil || usage.ContextWindow == nil {
@@ -8988,25 +8943,28 @@ func formatContextAvailabilityRate(available int, maxTokens int) string {
 	if available > maxTokens {
 		available = maxTokens
 	}
-	return fmt.Sprintf("%s/%s", formatCompactInt(available), formatCompactInt(maxTokens))
+	used := maxTokens - available
+	if used < 0 {
+		used = 0
+	}
+	return fmt.Sprintf("%s/%s", formatCompactInt(used), formatCompactInt(maxTokens))
 }
 
 func formatContextHistoryUsage(contextWindow *ContextWindow) string {
 	if contextWindow == nil || contextWindow.ContextUsageTokens <= 0 {
 		return ""
 	}
-	historyUsage := fmt.Sprintf("历史 %s", formatCompactInt(contextWindow.ContextUsageTokens))
 	breakdown := make([]string, 0, 2)
-	if contextWindow.DirectMessageTokens > 0 {
-		breakdown = append(breakdown, fmt.Sprintf("直传 %s", formatCompactInt(contextWindow.DirectMessageTokens)))
-	}
 	if contextWindow.CompressedHistoryTokens > 0 {
-		breakdown = append(breakdown, fmt.Sprintf("压缩 %s", formatCompactInt(contextWindow.CompressedHistoryTokens)))
+		breakdown = append(breakdown, formatCompactInt(contextWindow.CompressedHistoryTokens))
 	}
-	if len(breakdown) == 0 {
-		return historyUsage
+	if contextWindow.DirectMessageTokens > 0 {
+		breakdown = append(breakdown, formatCompactInt(contextWindow.DirectMessageTokens))
 	}
-	return historyUsage + "（" + strings.Join(breakdown, " / ") + "）"
+	if len(breakdown) > 0 {
+		return strings.Join(breakdown, "+")
+	}
+	return formatCompactInt(contextWindow.ContextUsageTokens)
 }
 
 func formatCompressionStatusHint(compression *CompressionStats) string {
@@ -9015,20 +8973,43 @@ func formatCompressionStatusHint(compression *CompressionStats) string {
 	}
 	parts := []string{}
 	if compression.BeforeTokens > 0 && compression.AfterTokens > 0 {
-		parts = append(parts, fmt.Sprintf("压缩%s→%s", formatCompactInt(compression.BeforeTokens), formatCompactInt(compression.AfterTokens)))
+		parts = append(parts, fmt.Sprintf("压%s→%s", formatCompactInt(compression.BeforeTokens), formatCompactInt(compression.AfterTokens)))
 	} else if compression.AfterTokens > 0 {
-		parts = append(parts, "压缩后"+formatCompactInt(compression.AfterTokens))
-	}
-	if compression.RemainingTokens > 0 {
-		parts = append(parts, "剩"+formatCompactInt(compression.RemainingTokens))
+		parts = append(parts, "压后"+formatCompactInt(compression.AfterTokens))
 	}
 	if len(parts) > 0 {
 		return strings.Join(parts, " ")
 	}
 	if compression.Count > 0 {
-		return fmt.Sprintf("已完成%d次压缩", compression.Count)
+		return fmt.Sprintf("压缩%d次", compression.Count)
 	}
 	return ""
+}
+
+func formatCompressionFooterHint(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.Contains(trimmed, "开始进行上下文压缩") {
+		return "压缩中"
+	}
+	normalized := strings.ReplaceAll(trimmed, " -> ", "→")
+	normalized = strings.ReplaceAll(normalized, "->", "→")
+	if strings.HasPrefix(normalized, "上下文压缩完成：") {
+		summary := strings.TrimSpace(strings.TrimPrefix(normalized, "上下文压缩完成："))
+		if markerIndex := strings.Index(summary, "（"); markerIndex >= 0 {
+			summary = strings.TrimSpace(summary[:markerIndex])
+		}
+		if summary != "" {
+			return summary
+		}
+		return "压缩完成"
+	}
+	if strings.HasPrefix(normalized, "上下文压缩完成") {
+		return "压缩完成"
+	}
+	return normalized
 }
 
 func resolveContextAvailableTokens(contextWindow *ContextWindow) int {
