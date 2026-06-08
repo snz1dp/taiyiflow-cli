@@ -808,6 +808,14 @@ func (a *App) streamTaskWithSkillRetry(
 			return sessionState, err
 		}
 	}
+	// 注入子任务能力字段，确保 run_subtask 创建的子智能体拥有与主任务相同的能力
+	a.runtime.SetSubtaskCapabilities(
+		clientSkillPackages,
+		requestedSkillNames,
+		resolveReasoningEnabled(config, sessionState.ReasoningOverride),
+		resolveInternetSearchEnabled(sessionState.InternetSearchOverride),
+		boolPtr(config.CrossSessionMemoryEnabled),
+	)
 	stream, streamSession, err := providerClient.Stream(ctx, provider.StreamRequest{
 		FlowID:                    flowID,
 		Input:                     strings.TrimSpace(task),

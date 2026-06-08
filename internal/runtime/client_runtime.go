@@ -82,6 +82,12 @@ type ClientRuntime struct {
 	streamEventLogsEnabled      bool
 	interactivePromptsEnabled   bool
 	hookHandlers                []HookHandler
+	// 子任务能力继承字段：由 cmd 层在发起 Stream 前注入，子任务执行时复用。
+	subtaskSkillPackages       any
+	subtaskRequestedSkillNames []string
+	subtaskReasoningEnabled    bool
+	subtaskInternetSearch      bool
+	subtaskCrossSessionMemory  *bool
 }
 
 func NewClientRuntime(stdin io.Reader, stdout io.Writer, stderr io.Writer) *ClientRuntime {
@@ -115,6 +121,16 @@ func (r *ClientRuntime) InteractivePromptsEnabled() bool {
 	return r.interactivePromptsEnabled
 }
 
+// SetSubtaskCapabilities 注入子任务执行时需要继承的能力字段。
+// 由 cmd 层在发起 Stream 前调用，确保子任务拥有与主任务相同的 skills、MCP、reasoning 等能力。
+func (r *ClientRuntime) SetSubtaskCapabilities(skillPackages any, requestedSkillNames []string, reasoningEnabled bool, internetSearch bool, crossSessionMemory *bool) {
+	r.subtaskSkillPackages = skillPackages
+	r.subtaskRequestedSkillNames = requestedSkillNames
+	r.subtaskReasoningEnabled = reasoningEnabled
+	r.subtaskInternetSearch = internetSearch
+	r.subtaskCrossSessionMemory = crossSessionMemory
+}
+
 func (r *ClientRuntime) cloneRuntime() *ClientRuntime {
 	if r == nil {
 		return NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
@@ -131,6 +147,11 @@ func (r *ClientRuntime) cloneRuntime() *ClientRuntime {
 		streamEventLogsEnabled:      r.streamEventLogsEnabled,
 		interactivePromptsEnabled:   r.interactivePromptsEnabled,
 		hookHandlers:                append([]HookHandler(nil), r.hookHandlers...),
+		subtaskSkillPackages:        r.subtaskSkillPackages,
+		subtaskRequestedSkillNames:  append([]string(nil), r.subtaskRequestedSkillNames...),
+		subtaskReasoningEnabled:     r.subtaskReasoningEnabled,
+		subtaskInternetSearch:       r.subtaskInternetSearch,
+		subtaskCrossSessionMemory:   r.subtaskCrossSessionMemory,
 	}
 }
 

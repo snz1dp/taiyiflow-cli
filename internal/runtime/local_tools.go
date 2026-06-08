@@ -359,16 +359,16 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "run_subtask",
-			"description":          "基于客户端协同任务接口创建并执行子任务。支持单子任务，也支持通过 subtasks 做 fan-out 并行调度与聚合回收；未显式指定 target_client_id 或 target_device_id 时，默认投递到当前 CLI。",
+			"description":          "创建并执行子智能体任务。适用场景：1) 并行搜索多个目录或代码面；2) 把独立验证任务隔离到单独上下文执行；3) 长链路任务拆成多个子任务并行推进。支持单子任务（传 prompt）和批量并行（传 subtasks 数组）。子任务拥有与主任务相同的工具能力（shell、文件读写、搜索等）。不要为简单单文件修改或强耦合连续编辑拆分。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"prompt":              map[string]any{"type": "string", "description": "子任务提示词。"},
-					"subtasks": map[string]any{"type": "array", "description": "并行子任务列表；每项可为字符串 prompt 或完整对象。提供后会进入批量调度模式。", "items": map[string]any{"anyOf": []any{map[string]any{"type": "string"}, map[string]any{"type": "object"}}}},
+					"prompt":              map[string]any{"type": "string", "description": "子任务提示词，描述子任务要完成的具体目标。"},
+					"subtasks": map[string]any{"type": "array", "description": "批量并行子任务列表；每项可为字符串 prompt 或完整参数对象。提供后自动进入并行调度模式。", "items": map[string]any{"anyOf": []any{map[string]any{"type": "string"}, map[string]any{"type": "object"}}}},
 					"flow_id":             map[string]any{"type": "string", "description": "子任务所属智能体 ID；默认继承当前 flow。"},
 					"request_mode":        map[string]any{"type": "string", "enum": []string{"ask", "plan", "agent"}, "description": "子任务请求模式；默认 agent。"},
-					"working_directory":   map[string]any{"type": "string", "description": "子任务工作目录；默认继承当前上下文目录。"},
+					"working_directory":   map[string]any{"type": "string", "description": "子任务工作目录；默认继承当前上下文目录。可为不同子任务指定不同目录。"},
 					"target_client_id":    map[string]any{"type": "string", "description": "目标客户端 ID；默认当前 CLI client_id。"},
 					"target_device_id":    map[string]any{"type": "string", "description": "目标设备 ID；默认当前 CLI device_id。"},
 					"delivery_policy":     map[string]any{"type": "string", "description": "协同任务投递策略；默认 fail_if_offline。"},
@@ -690,7 +690,7 @@ func mutatingClientTool(toolName string) bool {
 		return !computerReadOnlyTool(toolName)
 	}
 	switch canonicalClientToolName(toolName) {
-	case "shell_exec", "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit", "document_unstructured", "write_file", "run_subtask":
+	case "shell_exec", "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit", "document_unstructured", "write_file":
 		return true
 	default:
 		return false

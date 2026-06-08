@@ -1,6 +1,6 @@
 ---
 name: taiyiflow-in-chrome
-description: 自动化控制当前浏览器与网页交互，支持导航、点击、输入、截图、读取页面文本和控制台日志。当前实现支持两种模式：通过本地消息扩展接入当前浏览器会话，或启动一个独立隔离实例。
+description: 当需要与网页交互时（导航、点击、输入、截图、读取页面文本或控制台日志），使用浏览器自动化工具族。支持接入当前浏览器会话或启动隔离实例。
 category: browser
 metadata:
   request_types:

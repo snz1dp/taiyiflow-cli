@@ -182,6 +182,14 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				}
 				primaryClient.UpdateSession(sessionState.SessionID)
 			}
+			// 注入子任务能力字段，确保 run_subtask 创建的子智能体拥有与主任务相同的能力
+			runtimeClient.SetSubtaskCapabilities(
+				clientSkillPackages,
+				requestedSkillNames,
+				request.ReasoningEnabled,
+				request.InternetSearch,
+				boolPtr(config.CrossSessionMemoryEnabled),
+			)
 			stream, streamSession, streamErr := callbackProvider.Stream(runCtx, provider.StreamRequest{
 				FlowID:                    currentFlow,
 				Input:                     strings.TrimSpace(request.Input),
