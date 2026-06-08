@@ -533,7 +533,8 @@ func TestRefreshSlashCommandForcesHistoryReload(t *testing.T) {
 	if final.manualSnapshotRefresh {
 		t.Fatal("expected manual refresh flag to clear after snapshot reload")
 	}
-	rendered := sanitizeTerminalText(renderEntries(final.entries, 80, 20, nil, final.snapshot, "", -1))
+	rendered, _ := renderEntries(final.entries, 80, 20, nil, final.snapshot, "", -1)
+	rendered = sanitizeTerminalText(rendered)
 	if !strings.Contains(rendered, "刷新后的历史消息") {
 		t.Fatalf("expected refreshed history in entries, got %q", rendered)
 	}
@@ -548,6 +549,77 @@ func TestRefreshSlashCommandForcesHistoryReload(t *testing.T) {
 	}
 	if final.viewport.YOffset != 0 && final.viewport.YOffset < 0 {
 		t.Fatalf("unexpected viewport offset after refresh: %d", final.viewport.YOffset)
+	}
+}
+
+func TestMaybeLoadOlderHistoryPrependsEntriesWithoutJumpingViewport(t *testing.T) {
+	loaded := false
+	appModel := model{
+		ctx: context.Background(),
+		snapshot: Snapshot{
+			BackendAvailable:   true,
+			DefaultFlow:        "flow-1",
+			SessionID:          "session-1",
+			History:            []HistoryEntry{{Role: "assistant", Content: "当前历史回答"}},
+			HistoryLoadedCount: 1,
+			HistoryTotal:       2,
+		},
+		input: textarea.New(),
+		viewport: viewport.New(0, 0),
+		entries:  []entry{{role: "assistant", content: "当前历史回答"}},
+		historyLoad: func(ctx context.Context, snapshot Snapshot) (HistoryLoadResult, error) {
+			loaded = true
+			if snapshot.HistoryLoadedCount != 1 {
+				t.Fatalf("expected loader to receive current loaded count, got %#v", snapshot)
+			}
+			return HistoryLoadResult{
+				Entries:     []HistoryEntry{{Role: "user", Content: "更早的问题"}},
+				LoadedCount: 2,
+				Total:       2,
+			}, nil
+		},
+		ready:        true,
+		width:        100,
+		height:       12,
+		contentWidth: 80,
+	}
+	appModel.syncLayout()
+	appModel.viewport.GotoTop()
+
+	updatedModel, cmd := appModel.handleMainKey(tea.KeyMsg{Type: tea.KeyUp})
+	if cmd == nil {
+		t.Fatal("expected top-of-history scroll to trigger older history load")
+	}
+	updated := updatedModel.(model)
+	if !updated.historyLoading {
+		t.Fatal("expected history loading state to be enabled")
+	}
+
+	msg := cmd()
+	historyMsg, ok := msg.(historyLoadedMsg)
+	if !ok {
+		t.Fatalf("expected historyLoadedMsg, got %T", msg)
+	}
+	updatedModel, nextCmd := updated.Update(historyMsg)
+	if nextCmd != nil {
+		t.Fatalf("expected history load update not to enqueue follow-up command, got %#v", nextCmd)
+	}
+	updated = updatedModel.(model)
+
+	if !loaded {
+		t.Fatal("expected history loader to run")
+	}
+	if updated.snapshot.HistoryLoadedCount != 2 || updated.snapshot.HistoryTotal != 2 {
+		t.Fatalf("expected updated history counters, got %#v", updated.snapshot)
+	}
+	if len(updated.entries) < 2 || updated.entries[0].content != "更早的问题" {
+		t.Fatalf("expected older history to be prepended, got %#v", updated.entries)
+	}
+	if updated.viewport.YOffset <= 0 {
+		t.Fatalf("expected viewport offset to stay anchored after prepend, got %d", updated.viewport.YOffset)
+	}
+	if got := sanitizeTerminalText(updated.viewport.View()); !strings.Contains(got, "当前历史回答") {
+		t.Fatalf("expected original top content to stay visible after prepend, got %q", got)
 	}
 }
 
@@ -1931,6 +2003,18 @@ func TestSanitizeTerminalTextStripsThinkControlTags(t *testing.T) {
 	}
 }
 
+func TestSanitizeTerminalTextStripsWatermarkCharacters(t *testing.T) {
+	content := "可见内容" + "\u206a\u200b\u2061\u206b" + "保留正文"
+	got := sanitizeTerminalText(content)
+
+	if strings.Contains(got, "\u206a") || strings.Contains(got, "\u200b") || strings.Contains(got, "\u2061") || strings.Contains(got, "\u206b") {
+		t.Fatalf("expected watermark characters removed, got %q", got)
+	}
+	if got != "可见内容保留正文" {
+		t.Fatalf("expected visible text retained, got %q", got)
+	}
+}
+
 func TestNewLoginFormStateRespectsFocusField(t *testing.T) {
 	state := newLoginFormState(LoginFormState{
 		Title:      "登录(login)",
@@ -2091,7 +2175,8 @@ func TestStreamingIndicatorSuffixUsesFixedWidthFrames(t *testing.T) {
 }
 
 func TestRenderEntriesAppendsStreamingIndicatorToLatestAssistant(t *testing.T) {
-	rendered := sanitizeTerminalText(renderEntries([]entry{{role: "user", content: "问题"}, {role: "assistant", content: "回答"}}, 80, 20, nil, Snapshot{}, ".  ", 1))
+	rendered, _ := renderEntries([]entry{{role: "user", content: "问题"}, {role: "assistant", content: "回答"}}, 80, 20, nil, Snapshot{}, ".  ", 1)
+	rendered = sanitizeTerminalText(rendered)
 	if !strings.Contains(rendered, "回答.") {
 		t.Fatalf("expected assistant entry to include streaming indicator, got %q", rendered)
 	}

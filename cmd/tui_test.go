@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,7 +18,24 @@ import (
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	internaltui "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/tui"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/workspaceinstance"
 )
+
+type pagedSessionMessageProvider struct {
+	stubProvider
+	responses map[int]*provider.SessionMessageList
+	offsets   []int
+	limits    []int
+}
+
+func (s *pagedSessionMessageProvider) ListSessionMessages(_ context.Context, _ string, _ string, offset, limit int) (*provider.SessionMessageList, error) {
+	s.offsets = append(s.offsets, offset)
+	s.limits = append(s.limits, limit)
+	if response, ok := s.responses[offset]; ok {
+		return response, nil
+	}
+	return &provider.SessionMessageList{Total: 0, Offset: offset}, nil
+}
 
 func TestBuildTUISkillsPickerIncludesRenamedBundledSkill(t *testing.T) {
 	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
@@ -163,14 +181,14 @@ func TestBuildTUIComputerDisplaysPanelShowsOrigin(t *testing.T) {
 
 func TestBuildTUIComputerScreenshotPanelShowsOriginAndImageUnderstanding(t *testing.T) {
 	panel := buildTUIComputerToolPanel("taiyiflow-computer__screenshot", map[string]any{
-		"display_id":        "2",
-		"display_index":     2,
-		"display_origin_x":  1920,
-		"display_origin_y":  -120,
-		"display_width_px":  2560,
-		"display_height_px": 1440,
-		"path":              "/tmp/shot.png",
-		"size":              123,
+		"display_id":          "2",
+		"display_index":       2,
+		"display_origin_x":    1920,
+		"display_origin_y":    -120,
+		"display_width_px":    2560,
+		"display_height_px":   1440,
+		"path":                "/tmp/shot.png",
+		"size":                123,
 		"image_understanding": "Status",
 	})
 	if panel == nil || !strings.Contains(panel.Body, "origin: (1920,-120)") || !strings.Contains(panel.Body, "image_understanding: Status") {
@@ -183,9 +201,9 @@ func TestBuildTUIComputerScreenshotPanelShowsOriginAndImageUnderstanding(t *test
 
 func TestBuildTUIBrowserScreenshotPanelShowsImageUnderstanding(t *testing.T) {
 	panel := buildTUIBrowserToolPanel("taiyiflow-in-chrome__screenshot", map[string]any{
-		"tab_id": "tab-1",
-		"path":   "/tmp/browser.png",
-		"size":   64,
+		"tab_id":              "tab-1",
+		"path":                "/tmp/browser.png",
+		"size":                64,
 		"image_understanding": "页面中央是控制台界面",
 	})
 	if panel == nil || !strings.Contains(panel.Body, "image_understanding: 页面中央是控制台界面") {
@@ -249,6 +267,44 @@ func TestEmitTUIAssistantChunkKeepsSplitMarkerButDropsClosingThinkTagText(t *tes
 	emitTUIAssistantChunk(emit, &state, internaltui.Event{Kind: internaltui.EventAssistantChunk, Text: "结论", MessageID: "msg-1"})
 	if len(events) != 1 || events[0].Text != "结论" || events[0].Kind != internaltui.EventAssistantChunk {
 		t.Fatalf("expected visible answer after closing think tag, got %#v", events)
+	}
+}
+
+func TestLoadSessionHistoryPageTracksPaginationAndDisplayOrder(t *testing.T) {
+	providerClient := &pagedSessionMessageProvider{
+		responses: map[int]*provider.SessionMessageList{
+			30: {
+				Total:  65,
+				Offset: 30,
+				Items: []provider.SessionMessage{
+					{Sender: "Machine", Text: "较新的回答"},
+					{Sender: "user", Text: "更早的问题"},
+				},
+			},
+		},
+	}
+
+	page, err := loadSessionHistoryPage(context.Background(), providerClient, "flow-1", "session-1", 30, 30)
+	if err != nil {
+		t.Fatalf("expected loadSessionHistoryPage to succeed, got %v", err)
+	}
+	if len(providerClient.offsets) != 1 || providerClient.offsets[0] != 30 {
+		t.Fatalf("expected offset 30 request, got %#v", providerClient.offsets)
+	}
+	if len(providerClient.limits) != 1 || providerClient.limits[0] != 30 {
+		t.Fatalf("expected limit 30 request, got %#v", providerClient.limits)
+	}
+	if page.LoadedCount != 32 || page.Total != 65 {
+		t.Fatalf("expected loaded/total counters to advance, got %#v", page)
+	}
+	if len(page.Entries) != 2 {
+		t.Fatalf("expected two displayable history entries, got %#v", page.Entries)
+	}
+	if page.Entries[0].Role != "user" || page.Entries[0].Content != "更早的问题" {
+		t.Fatalf("expected older user message first after reverse, got %#v", page.Entries)
+	}
+	if page.Entries[1].Role != "assistant" || page.Entries[1].Content != "较新的回答" {
+		t.Fatalf("expected newer assistant message second, got %#v", page.Entries)
 	}
 }
 
@@ -856,6 +912,48 @@ func TestPrepareInitialTUIAuthenticationRefreshesAccessTokenBeforeInitialSnapsho
 		t.Fatalf("reload config failed: %v", reloadErr)
 	} else if reloaded.AccessToken != "access-1" || reloaded.PersistentToken != "persist-2" {
 		t.Fatalf("expected refreshed auth state to persist before startup snapshot, got %#v", reloaded)
+	}
+}
+
+func TestRunTUIReturnsWorkspaceInstanceErrorBeforeStartupRequests(t *testing.T) {
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requestCount.Add(1)
+		http.NotFound(writer, request)
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	workdir := t.TempDir()
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.Workdir = workdir
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	lease, err := workspaceinstance.Acquire(workdir)
+	if err != nil {
+		t.Fatalf("acquire workspace lease failed: %v", err)
+	}
+	defer func() {
+		_ = lease.Close()
+	}()
+
+	app := &App{configManager: manager, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	err = app.runTUI(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected workspace instance error")
+	}
+	if !strings.Contains(err.Error(), "已有活跃 CLI 实例") {
+		t.Fatalf("expected workspace instance error, got %v", err)
+	}
+	if got := requestCount.Load(); got != 0 {
+		t.Fatalf("expected no startup backend requests before workspace lease check, got %d", got)
 	}
 }
 

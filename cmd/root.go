@@ -91,6 +91,15 @@ func buildAuthClient(config internalconfig.Config) *providerclient.AuthClient {
 	return client
 }
 
+func acquireWorkspaceLease(config internalconfig.Config) (string, *workspaceinstance.Lease, error) {
+	workdir := resolveLocalWorkdir(config.Workdir)
+	instanceLease, err := workspaceinstance.Acquire(workdir)
+	if err != nil {
+		return workdir, nil, err
+	}
+	return workdir, instanceLease, nil
+}
+
 func newRequestRunID() string {
 	raw := make([]byte, 16)
 	if _, err := cryptorand.Read(raw); err != nil {
@@ -237,6 +246,13 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	if options.CrossSessionMemorySet {
 		config.CrossSessionMemoryEnabled = options.CrossSessionMemoryEnabled
 	}
+	workdir, instanceLease, err := acquireWorkspaceLease(config)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = instanceLease.Close()
+	}()
 	providerClient := buildProviderClient(config)
 	config, _, err = a.ensureProviderAuthenticated(ctx, providerClient, config)
 	if err != nil {
@@ -254,14 +270,6 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	if err != nil {
 		return err
 	}
-	workdir := resolveLocalWorkdir(config.Workdir)
-	instanceLease, err := workspaceinstance.Acquire(workdir)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = instanceLease.Close()
-	}()
 
 	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir, options.RequestMode)
 	if err != nil {
@@ -600,6 +608,13 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	if options.CrossSessionMemorySet {
 		config.CrossSessionMemoryEnabled = options.CrossSessionMemoryEnabled
 	}
+	workdir, instanceLease, err := acquireWorkspaceLease(config)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = instanceLease.Close()
+	}()
 	providerClient := buildProviderClient(config)
 	config, _, err = a.ensureProviderAuthenticated(ctx, providerClient, config)
 	if err != nil {
@@ -617,14 +632,6 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	if err != nil {
 		return err
 	}
-	workdir := resolveLocalWorkdir(config.Workdir)
-	instanceLease, err := workspaceinstance.Acquire(workdir)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = instanceLease.Close()
-	}()
 
 	sessionState, err := a.prepareSession(flowID, options.NewSession, workdir, options.RequestMode)
 	if err != nil {

@@ -20,6 +20,7 @@ import (
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/workspaceinstance"
 )
 
 type stubProvider struct {
@@ -1548,6 +1549,48 @@ func TestRunFallsBackToTaskWhenSubcommandDoesNotMatch(t *testing.T) {
 	}
 	if runErr.Error() != taskErr.Error() {
 		t.Fatalf("expected Run fallback error %q to match runTask error %q", runErr, taskErr)
+	}
+}
+
+func TestRunTaskOnceReturnsWorkspaceInstanceErrorBeforeBackendRequests(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requestCount++
+		http.NotFound(writer, request)
+	}))
+	defer server.Close()
+
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	manager, err := internalconfig.NewManager()
+	if err != nil {
+		t.Fatalf("new manager failed: %v", err)
+	}
+	workdir := t.TempDir()
+	config := internalconfig.Default()
+	config.BackendBaseURL = server.URL
+	config.Workdir = workdir
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
+
+	lease, err := workspaceinstance.Acquire(workdir)
+	if err != nil {
+		t.Fatalf("acquire workspace lease failed: %v", err)
+	}
+	defer func() {
+		_ = lease.Close()
+	}()
+
+	app := &App{configManager: manager}
+	err = app.runTaskOnce(context.Background(), rootOptions{}, "hello")
+	if err == nil {
+		t.Fatal("expected workspace instance error")
+	}
+	if !strings.Contains(err.Error(), "已有活跃 CLI 实例") {
+		t.Fatalf("expected workspace instance error, got %v", err)
+	}
+	if requestCount != 0 {
+		t.Fatalf("expected no backend requests before workspace lease check, got %d", requestCount)
 	}
 }
 
@@ -3341,8 +3384,8 @@ func TestBuildTUIStreamStatsMetricsParsesNestedTokenUsage(t *testing.T) {
 				"finish_reason":     "stop",
 				"model":             "qwen-max",
 				"context_window": map[string]any{
-					"max_input_tokens":              200000,
-					"current_round_input_tokens":    3200,
+					"max_input_tokens":               200000,
+					"current_round_input_tokens":     3200,
 					"current_round_available_tokens": 196800,
 				},
 			},
@@ -3369,8 +3412,8 @@ func TestBuildTUIStreamStatsMetricsParsesNestedTokenUsage(t *testing.T) {
 func TestBuildTUIStreamStatsMetricsAcceptsTopLevelContextWindow(t *testing.T) {
 	metrics := buildTUIStreamStatsMetrics(map[string]any{
 		"context_window": map[string]any{
-			"max_input_tokens":              200000,
-			"current_round_input_tokens":    64000,
+			"max_input_tokens":               200000,
+			"current_round_input_tokens":     64000,
 			"current_round_available_tokens": 136000,
 		},
 	})

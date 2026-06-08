@@ -52,6 +52,8 @@ type Snapshot struct {
 	SessionID                     string
 	SessionTitle                  string
 	History                       []HistoryEntry
+	HistoryLoadedCount            int
+	HistoryTotal                  int
 	TodoItems                     []TodoItem
 	WelcomeMessage                string
 	SubHead                       string
@@ -539,12 +541,22 @@ type LoginFormSubmitHandler func(ctx context.Context, snapshot Snapshot, submiss
 
 type LocalCommandHandler func(ctx context.Context, command string, snapshot Snapshot) (LocalCommandResult, error)
 
+type HistoryLoadResult struct {
+	Entries      []HistoryEntry
+	LoadedCount  int
+	Total        int
+}
+
+type HistoryLoadHandler func(ctx context.Context, snapshot Snapshot) (HistoryLoadResult, error)
+
 type SnapshotRefreshHandler func(ctx context.Context, snapshot Snapshot) (Snapshot, []FlowItem, error)
 
 type entry struct {
-	role      string
-	content   string
-	messageID string
+	role        string
+	content     string
+	messageID   string
+	rendered    string // cached rendered output for lazy rendering
+	renderWidth int    // width at which the entry was last rendered
 }
 
 type confirmState struct {
@@ -622,6 +634,14 @@ type localCommandExecutedMsg struct {
 	err    error
 }
 
+type historyLoadedMsg struct {
+	result              HistoryLoadResult
+	flowID              string
+	sessionID           string
+	expectedLoadedCount int
+	err                 error
+}
+
 type qrCodeWaitTickMsg struct {
 	ticket string
 }
@@ -673,6 +693,7 @@ type model struct {
 	configFormSubmit           ConfigFormSubmitHandler
 	loginFormSubmit            LoginFormSubmitHandler
 	localCommand               LocalCommandHandler
+	historyLoad                HistoryLoadHandler
 	eventCh                    chan tea.Msg
 	entries                    []entry
 	input                      textarea.Model
@@ -729,6 +750,7 @@ type model struct {
 	currentStreamingEntryIndex int
 	todoPanelHidden            bool
 	manualSnapshotRefresh      bool
+	historyLoading             bool
 }
 
 type configFormState struct {
@@ -872,6 +894,26 @@ var (
 	ansiAPCRegexp      = regexp.MustCompile(`(?s)\x1b_G.*?\x1b\\`)
 	ansiTmuxDCSRegexp  = regexp.MustCompile(`(?s)\x1bPtmux;.*?\x1b\\`)
 	overlayFocusMarker = "<<overlay-focus>>"
+	watermarkCharReplacer = strings.NewReplacer(
+		"\u200b", "",
+		"\u200c", "",
+		"\u200d", "",
+		"\u2060", "",
+		"\ufeff", "",
+		"\u2061", "",
+		"\u2062", "",
+		"\u2063", "",
+		"\u2064", "",
+		"\u180e", "",
+		"\u200e", "",
+		"\u200f", "",
+		"\u202a", "",
+		"\u202b", "",
+		"\u202c", "",
+		"\u202d", "",
+		"\u206a", "",
+		"\u206b", "",
+	)
 
 	overlayStyle = lipgloss.NewStyle().
 			Border(lipgloss.ThickBorder()).
@@ -1026,7 +1068,7 @@ var slashCommands = []slashCommand{
 	{Trigger: "/exit", Completion: "/exit", Description: "退出当前智能对话"},
 }
 
-func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, refreshSnapshot SnapshotRefreshHandler, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, configFormSubmit ConfigFormSubmitHandler, loginFormSubmit LoginFormSubmitHandler, localCommand LocalCommandHandler, startupCommand string, externalQueuedInputs <-chan string) error {
+func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, refreshSnapshot SnapshotRefreshHandler, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, configFormSubmit ConfigFormSubmitHandler, loginFormSubmit LoginFormSubmitHandler, localCommand LocalCommandHandler, historyLoad HistoryLoadHandler, startupCommand string, externalQueuedInputs <-chan string) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -1081,6 +1123,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 		configFormSubmit:           configFormSubmit,
 		loginFormSubmit:            loginFormSubmit,
 		localCommand:               localCommand,
+		historyLoad:                historyLoad,
 		eventCh:                    eventCh,
 		entries:                    initialEntries,
 		input:                      inputModel,
@@ -1190,6 +1233,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		previouslyAuthRequired := m.snapshot.AuthRequired
 		previousReason := strings.TrimSpace(m.snapshot.BackendStatusReason)
 		m.snapshot = typed.snapshot
+		m.historyLoading = false
 		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
 		m.flows = typed.flows
 		if replaceInitialEntries {
@@ -1287,6 +1331,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		previousFlow := fallback(m.snapshot.DefaultFlowLabel, sanitizeFlowLabel(m.snapshot.DefaultFlow))
 		m.snapshot = typed.snapshot
+		m.historyLoading = false
 		m.flowCursor = currentFlowIndex(m.flows, m.snapshot.DefaultFlow)
 		m.flowFilter.SetValue("")
 		m.flowFilter.Blur()
@@ -1308,6 +1353,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.transitionProgress(progressFailed), m.maybeRefreshSnapshot())
 		}
 		m.snapshot = typed.snapshot
+		m.historyLoading = false
 		m.sessionPicker = nil
 		m.skillsPicker = nil
 		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
@@ -1397,6 +1443,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmd, textinput.Blink)
 		}
 		return m.continueQRCodeWaitIfNeeded()
+	case historyLoadedMsg:
+		if strings.TrimSpace(m.snapshot.DefaultFlow) != typed.flowID || strings.TrimSpace(m.snapshot.SessionID) != typed.sessionID || m.snapshot.HistoryLoadedCount != typed.expectedLoadedCount {
+			return m, nil
+		}
+		m.historyLoading = false
+		if typed.err != nil {
+			m.footerHint = "更早历史消息加载失败: " + typed.err.Error()
+			return m, nil
+		}
+		if typed.result.LoadedCount > m.snapshot.HistoryLoadedCount {
+			m.snapshot.HistoryLoadedCount = typed.result.LoadedCount
+		}
+		if typed.result.Total > m.snapshot.HistoryTotal {
+			m.snapshot.HistoryTotal = typed.result.Total
+		}
+		if len(typed.result.Entries) == 0 {
+			return m, nil
+		}
+		m.prependHistoryEntries(typed.result.Entries)
+		return m, nil
 	case qrCodeWaitTickMsg:
 		if m.loginForm == nil || m.loginForm.mode != loginFormModeQR || !m.loginForm.qrWaiting {
 			return m, tea.Batch(m.transitionProgress(progressIdle), textinput.Blink)
@@ -1659,7 +1725,7 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openFlowPicker()
 	case "pgup":
 		m.viewport.HalfViewUp()
-		return m, nil
+		return m, m.maybeLoadOlderHistory()
 	case "pgdown":
 		m.viewport.HalfViewDown()
 		return m, nil
@@ -1669,7 +1735,7 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.viewport.LineUp(1)
-		return m, nil
+		return m, m.maybeLoadOlderHistory()
 	case "down":
 		if m.showSlashCommandHints() {
 			m.moveSlashCommandCursor(1)
@@ -1679,7 +1745,7 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "home":
 		m.viewport.GotoTop()
-		return m, nil
+		return m, m.maybeLoadOlderHistory()
 	case "end":
 		m.viewport.GotoBottom()
 		return m, nil
@@ -2138,9 +2204,86 @@ func (m model) handleMainMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.MouseButtonWheelUp:
 		m.viewport.LineUp(3)
-		return m, nil
+		return m, m.maybeLoadOlderHistory()
 	default:
 		return m, nil
+	}
+}
+
+func (m model) canLoadOlderHistory() bool {
+	if m.historyLoad == nil || m.historyLoading || m.isBusy() {
+		return false
+	}
+	if !m.snapshot.BackendAvailable || m.snapshot.AuthRequired {
+		return false
+	}
+	if m.shouldPinHistoryTop() {
+		return false
+	}
+	if strings.TrimSpace(m.snapshot.DefaultFlow) == "" || strings.TrimSpace(m.snapshot.SessionID) == "" {
+		return false
+	}
+	if m.snapshot.HistoryTotal <= 0 {
+		return false
+	}
+	return m.snapshot.HistoryLoadedCount < m.snapshot.HistoryTotal
+}
+
+func (m *model) maybeLoadOlderHistory() tea.Cmd {
+	if m.viewport.YOffset > 0 || !m.canLoadOlderHistory() {
+		return nil
+	}
+	m.historyLoading = true
+	return loadOlderHistoryCmd(m.ctx, m.snapshot, m.historyLoad)
+}
+
+func loadOlderHistoryCmd(ctx context.Context, snapshot Snapshot, historyLoad HistoryLoadHandler) tea.Cmd {
+	return func() tea.Msg {
+		result, err := historyLoad(ctx, snapshot)
+		return historyLoadedMsg{
+			result:              result,
+			flowID:              strings.TrimSpace(snapshot.DefaultFlow),
+			sessionID:           strings.TrimSpace(snapshot.SessionID),
+			expectedLoadedCount: snapshot.HistoryLoadedCount,
+			err:                 err,
+		}
+	}
+}
+
+func (m *model) prependHistoryEntries(history []HistoryEntry) {
+	if len(history) == 0 {
+		return
+	}
+	prepended := make([]entry, 0, len(history))
+	for _, item := range history {
+		if strings.TrimSpace(item.Content) == "" {
+			continue
+		}
+		prepended = append(prepended, entry{role: item.Role, content: item.Content})
+	}
+	m.snapshot.History = append(append([]HistoryEntry(nil), history...), m.snapshot.History...)
+	if len(prepended) == 0 {
+		return
+	}
+	previousOffset := m.viewport.YOffset
+	lineShift := 0
+	if m.viewport.Width > 0 && m.viewport.Height > 0 {
+		prefixContent, _ := renderEntries(prepended, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot, "", -1)
+		lineShift = lipgloss.Height(prefixContent)
+		if len(m.entries) > 0 && lineShift > 0 {
+			lineShift++
+		}
+	}
+	m.entries = append(prepended, m.entries...)
+	if m.viewport.Width <= 0 || m.viewport.Height <= 0 {
+		return
+	}
+	content, updatedEntries := renderEntries(m.entries, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot, "", -1)
+	m.entries = updatedEntries
+	m.viewport.SetContent(content)
+	m.viewport.YOffset = previousOffset + lineShift
+	if m.viewport.YOffset < 0 {
+		m.viewport.YOffset = 0
 	}
 }
 
@@ -3383,7 +3526,8 @@ func (m model) useMinimalChrome() bool {
 }
 
 func (m *model) syncViewport() {
-	content := renderEntries(m.entries, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot, m.streamingIndicatorSuffix(), m.streamingIndicatorTargetIndex())
+	content, updatedEntries := renderEntries(m.entries, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot, m.streamingIndicatorSuffix(), m.streamingIndicatorTargetIndex())
+	m.entries = updatedEntries
 	m.viewport.SetContent(content)
 	if m.shouldPinHistoryTop() {
 		m.viewport.GotoTop()
@@ -3814,19 +3958,37 @@ func todoPanelSummary(items []TodoItem) string {
 	return fmt.Sprintf("共 %d 项 · 未完成 %d 项", len(items), countActiveTodoItems(items))
 }
 
-func renderEntries(entries []entry, width int, height int, renderer *glamour.TermRenderer, snapshot Snapshot, streamingSuffix string, targetIndex int) string {
+func renderEntries(entries []entry, width int, height int, renderer *glamour.TermRenderer, snapshot Snapshot, streamingSuffix string, targetIndex int) (string, []entry) {
 	if len(entries) == 0 {
-		return ""
+		return "", entries
 	}
 	blocks := make([]string, 0, len(entries))
-	for index, item := range entries {
-		renderItem := item
+	updatedEntries := make([]entry, len(entries))
+	copy(updatedEntries, entries)
+	for index := range updatedEntries {
+		// For streaming entries, always re-render since content is changing
 		if index == targetIndex {
+			renderItem := updatedEntries[index]
 			renderItem.content += streamingSuffix
+			rendered := renderEntry(renderItem, width, height, renderer, snapshot)
+			blocks = append(blocks, rendered)
+			// Don't cache streaming entries
+			updatedEntries[index].rendered = ""
+			updatedEntries[index].renderWidth = 0
+			continue
 		}
-		blocks = append(blocks, renderEntry(renderItem, width, height, renderer, snapshot))
+		// Use cached render if available and width matches
+		if updatedEntries[index].rendered != "" && updatedEntries[index].renderWidth == width {
+			blocks = append(blocks, updatedEntries[index].rendered)
+			continue
+		}
+		// Render and cache
+		rendered := renderEntry(updatedEntries[index], width, height, renderer, snapshot)
+		updatedEntries[index].rendered = rendered
+		updatedEntries[index].renderWidth = width
+		blocks = append(blocks, rendered)
 	}
-	return strings.Join(blocks, "\n\n")
+	return strings.Join(blocks, "\n\n"), updatedEntries
 }
 
 func (m model) renderStatusBar() string {
@@ -5954,7 +6116,8 @@ func sanitizeTerminalText(content string) string {
 	cleaned = ansiCSIRegexp.ReplaceAllString(cleaned, "")
 	cleaned = strings.ReplaceAll(cleaned, "\x1b", "")
 	cleaned = strings.ReplaceAll(cleaned, "<think>", "")
-	return strings.ReplaceAll(cleaned, "</think>", "")
+	cleaned = strings.ReplaceAll(cleaned, "</think>", "")
+	return watermarkCharReplacer.Replace(cleaned)
 }
 
 func hardWrapText(content string, width int) string {
@@ -6253,6 +6416,8 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
 		if result.Snapshot != nil {
 			result.Snapshot.History = nil
+			result.Snapshot.HistoryLoadedCount = 0
+			result.Snapshot.HistoryTotal = 0
 		}
 	}
 	if result.ClearHistory && strings.TrimSpace(result.FooterHint) == "" {
@@ -6295,6 +6460,7 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 	if result.Snapshot != nil {
 		previousTodoItems := append([]TodoItem(nil), m.snapshot.TodoItems...)
 		m.snapshot = *result.Snapshot
+		m.historyLoading = false
 		m.syncTodoPanelVisibility(previousTodoItems, m.snapshot.TodoItems)
 		m.flows = result.Flows
 		m.flowCursor = currentFlowIndex(m.flows, m.snapshot.DefaultFlow)

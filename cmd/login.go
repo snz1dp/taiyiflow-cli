@@ -400,6 +400,8 @@ func resetSnapshotForNewSession(snapshot tui.Snapshot) tui.Snapshot {
 	updatedSnapshot.ContextDir = resolveLocalWorkdir(snapshot.Workdir)
 	updatedSnapshot.SessionSandboxEscapePolicy = ""
 	updatedSnapshot.History = nil
+	updatedSnapshot.HistoryLoadedCount = 0
+	updatedSnapshot.HistoryTotal = 0
 	updatedSnapshot.RequestStats = preserveNewSessionRequestStats(snapshot.RequestStats)
 	return updatedSnapshot
 }
@@ -517,7 +519,12 @@ func (a *App) loadLoginSnapshotSession(ctx context.Context, providerClient provi
 		sessionState.SessionTitle = strings.TrimSpace(title)
 		snapshot.SessionTitle = resolveSessionTitle(sessionState)
 	}
-	snapshot.History = loadRecentSessionHistory(ctx, providerClient, flowID, snapshot.SessionID)
+	historyPage, historyErr := loadRecentSessionHistoryPage(ctx, providerClient, flowID, snapshot.SessionID)
+	if historyErr == nil {
+		snapshot.History = historyPage.Entries
+		snapshot.HistoryLoadedCount = historyPage.LoadedCount
+		snapshot.HistoryTotal = historyPage.Total
+	}
 	snapshot.RequestStats = loadLatestSessionMetrics(ctx, providerClient, flowID, snapshot.SessionID)
 }
 

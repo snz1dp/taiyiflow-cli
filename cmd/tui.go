@@ -22,7 +22,6 @@ import (
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/tui"
-	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/workspaceinstance"
 )
 
 var bracketErrorCodePattern = regexp.MustCompile(`^\[[A-Z0-9_]+\]\s*`)
@@ -31,6 +30,7 @@ const skillsPickerCommandPrefix = "/skills-picker"
 const knowledgePickerCommandPrefix = "/knowledge-picker"
 const sessionPickerDisplayPageSize = 25
 const sessionPickerFetchBatchSize = 100
+const sessionHistoryPageSize = 30
 
 func (a *App) prepareInitialTUIAuthentication(
 	ctx context.Context,
@@ -55,6 +55,13 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	workdir, instanceLease, err := acquireWorkspaceLease(config)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = instanceLease.Close()
+	}()
 
 	providerClient := buildProviderClient(config)
 	config = a.prepareInitialTUIAuthentication(ctx, providerClient, config)
@@ -68,14 +75,6 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	workdir := resolveLocalWorkdir(config.Workdir)
-	instanceLease, err := workspaceinstance.Acquire(workdir)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = instanceLease.Close()
-	}()
 	configRef := newPrimaryClientConfigRef(config)
 	var serviceConfig *provider.ServiceConfig
 	if backend.Available {
@@ -837,6 +836,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			updatedSnapshot.ContextDir = resolveLocalWorkdir(snapshot.Workdir)
 			updatedSnapshot.SessionSandboxEscapePolicy = ""
 			updatedSnapshot.History = nil
+			updatedSnapshot.HistoryLoadedCount = 0
+			updatedSnapshot.HistoryTotal = 0
 			updatedSnapshot.RequestStats = nil
 			primaryClient.UpdateSession("")
 			return tui.LocalCommandResult{
@@ -853,7 +854,24 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}
 	}
 
-	return tui.Run(ctx, snapshot, flowItems, runner, refreshSnapshot, flowChange, sessionChange, approvalChange, configFormSubmit, loginFormSubmit, localCommand, startupCommand, primaryDispatchCh)
+	historyLoad := func(loadCtx context.Context, snapshot tui.Snapshot) (tui.HistoryLoadResult, error) {
+		flowID := strings.TrimSpace(snapshot.DefaultFlow)
+		sessionID := strings.TrimSpace(snapshot.SessionID)
+		if flowID == "" || sessionID == "" {
+			return tui.HistoryLoadResult{LoadedCount: snapshot.HistoryLoadedCount, Total: snapshot.HistoryTotal}, nil
+		}
+		page, err := loadSessionHistoryPage(loadCtx, authRefreshProvider(), flowID, sessionID, snapshot.HistoryLoadedCount, sessionHistoryPageSize)
+		if err != nil {
+			return tui.HistoryLoadResult{}, fmt.Errorf("%s", explainBackendFailure(err))
+		}
+		return tui.HistoryLoadResult{
+			Entries:     page.Entries,
+			LoadedCount: page.LoadedCount,
+			Total:       page.Total,
+		}, nil
+	}
+
+	return tui.Run(ctx, snapshot, flowItems, runner, refreshSnapshot, flowChange, sessionChange, approvalChange, configFormSubmit, loginFormSubmit, localCommand, historyLoad, startupCommand, primaryDispatchCh)
 }
 
 func (a *App) buildInitialTUISnapshot(
@@ -1033,7 +1051,12 @@ func (a *App) buildTUISnapshot(
 			sessionState.SessionTitle = strings.TrimSpace(title)
 			snapshot.SessionTitle = resolveSessionTitle(sessionState)
 		}
-		snapshot.History = loadRecentSessionHistory(ctx, providerClient, flowID, snapshot.SessionID)
+		historyPage, historyErr := loadRecentSessionHistoryPage(ctx, providerClient, flowID, snapshot.SessionID)
+		if historyErr == nil {
+			snapshot.History = historyPage.Entries
+			snapshot.HistoryLoadedCount = historyPage.LoadedCount
+			snapshot.HistoryTotal = historyPage.Total
+		}
 		snapshot.RequestStats = loadLatestSessionMetrics(ctx, providerClient, flowID, snapshot.SessionID)
 	}
 
@@ -1320,17 +1343,43 @@ func resolveLocalWorkdir(configured string) string {
 	return absPath
 }
 
+type sessionHistoryPage struct {
+	Entries     []tui.HistoryEntry
+	LoadedCount int
+	Total       int
+}
+
+func loadRecentSessionHistoryPage(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string) (sessionHistoryPage, error) {
+	return loadSessionHistoryPage(ctx, providerClient, flowID, sessionID, 0, sessionHistoryPageSize)
+}
+
 func loadRecentSessionHistory(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string) []tui.HistoryEntry {
+	page, err := loadRecentSessionHistoryPage(ctx, providerClient, flowID, sessionID)
+	if err != nil {
+		return nil
+	}
+	return page.Entries
+}
+
+func loadSessionHistoryPage(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string, offset int, limit int) (sessionHistoryPage, error) {
 	trimmedFlowID := strings.TrimSpace(flowID)
 	trimmedSessionID := strings.TrimSpace(sessionID)
 	if providerClient == nil || trimmedFlowID == "" || trimmedSessionID == "" {
-		return nil
+		return sessionHistoryPage{}, nil
 	}
 
-	const historyLimit = 30
-	messages, err := providerClient.ListSessionMessages(ctx, trimmedFlowID, trimmedSessionID, 0, historyLimit)
-	if err != nil || messages == nil || len(messages.Items) == 0 {
-		return nil
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = sessionHistoryPageSize
+	}
+	messages, err := providerClient.ListSessionMessages(ctx, trimmedFlowID, trimmedSessionID, offset, limit)
+	if err != nil {
+		return sessionHistoryPage{}, err
+	}
+	if messages == nil {
+		return sessionHistoryPage{LoadedCount: offset, Total: offset}, nil
 	}
 
 	entries := make([]tui.HistoryEntry, 0, len(messages.Items))
@@ -1343,7 +1392,20 @@ func loadRecentSessionHistory(ctx context.Context, providerClient provider.Provi
 		}
 		entries = append(entries, tui.HistoryEntry{Role: role, Content: content})
 	}
-	return entries
+	loadedCount := offset + len(messages.Items)
+	return sessionHistoryPage{
+		Entries:     entries,
+		LoadedCount: loadedCount,
+		Total:       resolveSessionHistoryTotal(messages, loadedCount),
+	}, nil
+}
+
+func resolveSessionHistoryTotal(messages *provider.SessionMessageList, loadedCount int) int {
+	total := loadedCount
+	if messages != nil && messages.Total > total {
+		total = messages.Total
+	}
+	return total
 }
 
 func loadLatestSessionMetrics(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string) *tui.RequestMetrics {
