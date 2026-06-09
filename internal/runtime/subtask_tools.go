@@ -69,7 +69,10 @@ func (r *ClientRuntime) ExecuteClientCollaborationTask(
 	}
 	executionResult, execErr := r.executeLocalSubtask(ctx, providerClient, config, request)
 	if execErr != nil {
-		return buildSubtaskResult(task, nil), execErr
+		result := buildSubtaskResult(task, nil)
+		result["status"] = "failed"
+		result["error_message"] = execErr.Error()
+		return result, nil
 	}
 	return buildSubtaskResult(task, &executionResult), nil
 }
@@ -124,11 +127,15 @@ func (r *ClientRuntime) executeManagedSubtaskRequest(
 		}
 		finalTask, waitErr := waitForClientCollaboration(ctx, providerClient, createdTask.ID, request.TimeoutSeconds)
 		if waitErr != nil {
-			return nil, waitErr
+			result := buildSubtaskResult(createdTask, nil)
+			result["status"] = "failed"
+			result["error_message"] = waitErr.Error()
+			return result, nil
 		}
 		result := buildSubtaskResult(finalTask, nil)
 		if strings.TrimSpace(finalTask.Status) != "success" {
-			return result, newToolError("EXECUTION_FAILED", "子任务未成功完成: %s", firstNonEmptySubtask(strings.TrimSpace(finalTask.ErrorMessage), strings.TrimSpace(finalTask.Status)))
+			result["error_message"] = firstNonEmptySubtask(strings.TrimSpace(finalTask.ErrorMessage), strings.TrimSpace(finalTask.Status))
+			return result, nil
 		}
 		return result, nil
 	}
@@ -156,9 +163,14 @@ func (r *ClientRuntime) executeManagedSubtaskRequest(
 			},
 		})
 		if updateErr != nil {
-			return nil, newToolError("EXECUTION_FAILED", "子任务执行失败: %v；写回失败状态也失败: %v", execErr, updateErr)
+			result := buildSubtaskResult(createdTask, nil)
+			result["status"] = "failed"
+			result["error_message"] = fmt.Sprintf("子任务执行失败: %v；写回失败状态也失败: %v", execErr, updateErr)
+			return result, nil
 		}
-		return buildSubtaskResult(updatedTask, nil), execErr
+		result := buildSubtaskResult(updatedTask, nil)
+		result["error_message"] = execErr.Error()
+		return result, nil
 	}
 
 	updatedTask, err := providerClient.UpdateClientCollaboration(ctx, createdTask.ID, provider.ClientCollaborationUpdateRequest{
@@ -415,6 +427,12 @@ func (r *ClientRuntime) executeLocalSubtask(
 	}
 	childConfig := config
 	childConfig.Workdir = request.WorkingDirectory
+
+	// 为子任务创建静默运行时：禁用流事件日志，避免子任务的工具调用状态信息
+	// （如 [本地工具] read_file ...、[本地命令] ...）输出到父任务的消息区干扰用户。
+	quietRuntime := r.cloneRuntime()
+	quietRuntime.streamEventLogsEnabled = false
+
 	var outputBuilder strings.Builder
 	childMessageID := ""
 	for event := range stream {
@@ -427,11 +445,11 @@ func (r *ClientRuntime) executeLocalSubtask(
 				outputBuilder.WriteString(text)
 			}
 		case provider.EventBuiltIn:
-			if err := r.HandleBuiltInEvent(ctx, providerClient, childConfig, event.Data); err != nil {
+			if err := quietRuntime.HandleBuiltInEvent(ctx, providerClient, childConfig, event.Data); err != nil {
 				return subtaskExecutionResult{}, err
 			}
 		case provider.EventClientTool:
-			if err := r.HandleClientToolEvent(ctx, providerClient, childConfig, event.Data); err != nil {
+			if err := quietRuntime.HandleClientToolEvent(ctx, providerClient, childConfig, event.Data); err != nil {
 				return subtaskExecutionResult{}, err
 			}
 		case provider.EventError:
