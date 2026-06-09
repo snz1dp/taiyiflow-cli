@@ -65,6 +65,7 @@ type rootOptions struct {
 	SandboxEscapePolicy       string
 	CrossSessionMemoryEnabled bool
 	CrossSessionMemorySet     bool
+	ConfigOverrides           stringArrayFlag
 }
 
 type cliStreamRenderState struct {
@@ -193,6 +194,7 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	flagSet.BoolVar(&options.ShowThinking, "show-thinking", false, "显示思考内容（不输出 <think></think> 标签）")
 	flagSet.StringVar(&options.SandboxEscapePolicy, "external-resource-access-policy", "", "外部资源访问策略（confirm|deny|allow），仅影响当前命令")
 	flagSet.BoolVar(&options.CrossSessionMemoryEnabled, "cross-session-memory-enabled", false, "跨会话记忆（true|false），默认使用系统配置")
+	flagSet.Var(&options.ConfigOverrides, "config-override", "临时覆盖配置项（key=value），可多次使用，仅影响当前命令")
 
 	if err := flagSet.Parse(args); err != nil {
 		return err
@@ -242,6 +244,16 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	config, _, err = a.ensureClientIdentity(config)
 	if err != nil {
 		return err
+	}
+	if len(options.ConfigOverrides) > 0 {
+		overrides, parseErr := parseConfigOverridesFromFlag(options.ConfigOverrides)
+		if parseErr != nil {
+			return parseErr
+		}
+		config, err = applyConfigOverrides(config, overrides)
+		if err != nil {
+			return err
+		}
 	}
 	if options.CrossSessionMemorySet {
 		config.CrossSessionMemoryEnabled = options.CrossSessionMemoryEnabled
@@ -604,6 +616,16 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	config, _, err = a.ensureClientIdentity(config)
 	if err != nil {
 		return err
+	}
+	if len(options.ConfigOverrides) > 0 {
+		overrides, parseErr := parseConfigOverridesFromFlag(options.ConfigOverrides)
+		if parseErr != nil {
+			return parseErr
+		}
+		config, err = applyConfigOverrides(config, overrides)
+		if err != nil {
+			return err
+		}
 	}
 	if options.CrossSessionMemorySet {
 		config.CrossSessionMemoryEnabled = options.CrossSessionMemoryEnabled
@@ -1362,6 +1384,7 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "                     [--stream-retry-attempts 0-3] [--new] [--continue]")
 	fmt.Fprintln(a.stdout, "                     [--show-stream-events] [--show-thinking]")
 	fmt.Fprintln(a.stdout, "                     [--external-resource-access-policy allow|deny]")
+	fmt.Fprintln(a.stdout, "                     [--config-override key=value] (可多次使用)")
 	fmt.Fprintln(a.stdout, "                     [--session-id SESSION_ID]")
 	fmt.Fprintln(a.stdout, "                     [任务描述]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli login [help|status|logout|password|qr]")

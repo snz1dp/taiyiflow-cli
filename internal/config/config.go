@@ -28,6 +28,8 @@ const (
 	DefaultCommandTimeoutSeconds     = 3000
 	MaxHTTPTimeoutSeconds            = 2000
 	MaxCommandTimeoutSeconds         = 6000
+	DefaultSubtaskTimeoutSeconds     = 300
+	MaxSubtaskTimeoutSeconds         = 6000
 	DefaultStreamIdleTimeoutSeconds  = 1200
 	DefaultQRWaitTimeoutSeconds      = 120
 	DefaultAgentAutoLoopMaxRounds    = 0
@@ -118,6 +120,7 @@ type Config struct {
 	HTTPTimeoutSeconds        int              `yaml:"http_timeout_seconds,omitempty"`
 	SandboxEscapePolicy       string           `yaml:"sandbox_escape_policy,omitempty"`
 	CommandTimeoutSeconds     int              `yaml:"command_timeout_seconds,omitempty"`
+	SubtaskTimeoutSeconds     int              `yaml:"subtask_timeout_seconds,omitempty"`
 	StreamIdleTimeoutSeconds  int              `yaml:"stream_idle_timeout_seconds,omitempty"`
 	QRWaitTimeoutSeconds      int              `yaml:"qr_wait_timeout_seconds,omitempty"`
 	AgentAutoLoopEnabled      bool             `yaml:"agent_auto_loop_enabled,omitempty"`
@@ -191,6 +194,7 @@ func Default() Config {
 		HTTPTimeoutSeconds:        DefaultHTTPTimeoutSeconds,
 		CommandTimeoutSeconds:     DefaultCommandTimeoutSeconds,
 		DocUnstructuredExts:       append([]string(nil), defaultDocUnstructuredExts...),
+		SubtaskTimeoutSeconds:     DefaultSubtaskTimeoutSeconds,
 		StreamIdleTimeoutSeconds:  DefaultStreamIdleTimeoutSeconds,
 		QRWaitTimeoutSeconds:      DefaultQRWaitTimeoutSeconds,
 		AgentAutoLoopEnabled:      false,
@@ -464,6 +468,16 @@ func NormalizePermissionAction(value string) string {
 	}
 }
 
+func NormalizeSubtaskTimeoutSeconds(value int) int {
+	if value < 1 {
+		return DefaultSubtaskTimeoutSeconds
+	}
+	if value > MaxSubtaskTimeoutSeconds {
+		return MaxSubtaskTimeoutSeconds
+	}
+	return value
+}
+
 func NormalizeStreamIdleTimeoutSeconds(value int) int {
 	if value < 0 {
 		return DefaultStreamIdleTimeoutSeconds
@@ -605,6 +619,7 @@ func (m *Manager) Load() (Config, error) {
 	config.WriteConfirmationPolicy = NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy)
 	config.HTTPTimeoutSeconds = NormalizeHTTPTimeoutSeconds(config.HTTPTimeoutSeconds)
 	config.CommandTimeoutSeconds = NormalizeCommandTimeoutSeconds(config.CommandTimeoutSeconds)
+	config.SubtaskTimeoutSeconds = NormalizeSubtaskTimeoutSeconds(config.SubtaskTimeoutSeconds)
 	config.StreamIdleTimeoutSeconds = NormalizeStreamIdleTimeoutSeconds(config.StreamIdleTimeoutSeconds)
 	config.QRWaitTimeoutSeconds = NormalizeQRWaitTimeoutSeconds(config.QRWaitTimeoutSeconds)
 	config.AgentAutoLoopMaxRounds = NormalizeAgentAutoLoopMaxRounds(config.AgentAutoLoopMaxRounds)

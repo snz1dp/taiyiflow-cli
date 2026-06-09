@@ -88,6 +88,7 @@ type StreamRequest struct {
 	AvailableTools            []any
 	ClientMCPServers          map[string]any
 	ClientSkillPackages       any
+	ParentSessionID           string
 }
 
 type SkillResolveRequest struct {

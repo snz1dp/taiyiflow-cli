@@ -3171,6 +3171,12 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "stream_idle_timeout_seconds", Message: err.Error()}
 	}
 
+	if strings.TrimSpace(submission.Values.SubtaskTimeoutSeconds) == "" {
+		config.SubtaskTimeoutSeconds = internalconfig.Default().SubtaskTimeoutSeconds
+	} else if err := assignConfigValue(&config, "subtask_timeout_seconds", submission.Values.SubtaskTimeoutSeconds); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "subtask_timeout_seconds", Message: err.Error()}
+	}
+
 	if err := assignConfigValue(&config, "cross_session_memory_enabled", strconv.FormatBool(submission.Values.CrossSessionMemoryEnabled)); err != nil {
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "cross_session_memory_enabled", Message: err.Error()}
 	}

@@ -248,6 +248,7 @@ type ConfigFormValues struct {
 	HTTPTimeoutSeconds        string
 	CommandTimeoutSeconds     string
 	StreamIdleTimeoutSeconds  string
+	SubtaskTimeoutSeconds     string
 	CrossSessionMemoryEnabled bool
 	QRWaitTimeoutSeconds      string
 	AgentAutoLoopMaxRounds    string
@@ -848,6 +849,7 @@ const (
 	configFieldHTTPTimeout
 	configFieldCommandTimeout
 	configFieldStreamIdleTimeout
+	configFieldSubtaskTimeout
 	configFieldCrossSessionMemory
 	configFieldQRWaitTimeout
 	configFieldAgentAutoLoopMaxRounds
@@ -7885,6 +7887,7 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "HTTP 请求超时（秒）", placeholder: "60", description: "标准 HTTP 请求在未显式覆写时使用该默认值，范围 1-600 秒；不影响流式长连接。"},
 		{label: "命令执行超时（秒）", placeholder: "30", description: "本地命令与语言服务查询在未显式传超时(timeout)时使用该默认值，范围 1-6000 秒。"},
 		{label: "流式空闲超时（秒）", placeholder: "300", description: "大于等于 0 的整数秒，0 表示禁用流式空闲超时。"},
+		{label: "子智能体超时（秒）", placeholder: "300", description: "子智能体执行超时时间，范围 1-6000 秒。"},
 		{label: "跨会话记忆", placeholder: "", description: "左右键或空格切换是否允许后端启用跨会话记忆。命令行(CLI)参数可覆盖该系统配置。"},
 		{label: "扫码等待超时（秒）", placeholder: "30", description: "二维码登录在自动轮询时使用该默认值；大于等于 0 的整数秒，0 表示持续等待直到手动取消。"},
 		{label: "智能体自动续跑最大轮数", placeholder: "0", description: "仅对智能体模式生效；填写 0-10000 的整数，0 表示禁用。"},
@@ -7915,7 +7918,7 @@ func configFormFieldGroup(index int) string {
 		return "服务端与智能体"
 	case configFieldApprovalMode, configFieldSandboxPolicy, configFieldSkillReviewPolicy, configFieldWriteConfirmationPolicy, configFieldSandboxRoots, configFieldPermissionRules:
 		return "权限与审查"
-	case configFieldReasoningMode, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldCrossSessionMemory, configFieldQRWaitTimeout:
+	case configFieldReasoningMode, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldSubtaskTimeout, configFieldCrossSessionMemory, configFieldQRWaitTimeout:
 		return "运行与超时"
 	case configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage:
 		return "会话与输出"
@@ -7960,6 +7963,8 @@ func configFormFieldValue(index int, values ConfigFormValues) string {
 		return strings.TrimSpace(values.CommandTimeoutSeconds)
 	case configFieldStreamIdleTimeout:
 		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
+	case configFieldSubtaskTimeout:
+		return strings.TrimSpace(values.SubtaskTimeoutSeconds)
 	case configFieldCrossSessionMemory:
 		return ""
 	case configFieldQRWaitTimeout:
@@ -8033,6 +8038,9 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 	if len(inputs) > configFieldStreamIdleTimeout {
 		values.StreamIdleTimeoutSeconds = strings.TrimSpace(inputs[configFieldStreamIdleTimeout].Value())
 	}
+	if len(inputs) > configFieldSubtaskTimeout {
+		values.SubtaskTimeoutSeconds = strings.TrimSpace(inputs[configFieldSubtaskTimeout].Value())
+	}
 	if len(inputs) > configFieldQRWaitTimeout {
 		values.QRWaitTimeoutSeconds = strings.TrimSpace(inputs[configFieldQRWaitTimeout].Value())
 	}
@@ -8083,7 +8091,7 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 
 func isConfigTextField(index int) bool {
 	switch index {
-	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldQRWaitTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldBrowserExecutablePath, configFieldBrowserProfileDir, configFieldBrowserConnectTimeout, configFieldBrowserSocketDir, configFieldBrowserRemoteDebuggingURL, configFieldSkillsRegistryURL, configFieldDocUnstructuredExts:
+	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldSubtaskTimeout, configFieldQRWaitTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldBrowserExecutablePath, configFieldBrowserProfileDir, configFieldBrowserConnectTimeout, configFieldBrowserSocketDir, configFieldBrowserRemoteDebuggingURL, configFieldSkillsRegistryURL, configFieldDocUnstructuredExts:
 		return true
 	default:
 		return false
@@ -8118,6 +8126,8 @@ func configFieldKey(index int) string {
 		return "command_timeout_seconds"
 	case configFieldStreamIdleTimeout:
 		return "stream_idle_timeout_seconds"
+	case configFieldSubtaskTimeout:
+		return "subtask_timeout_seconds"
 	case configFieldCrossSessionMemory:
 		return "cross_session_memory_enabled"
 	case configFieldQRWaitTimeout:

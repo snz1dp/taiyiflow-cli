@@ -38,6 +38,7 @@ type subtaskExecutionRequest struct {
 
 type subtaskExecutionResult struct {
 	Text           string
+	Reason         string
 	ChildSessionID string
 	ChildRunID     string
 	ChildMessageID string
@@ -402,6 +403,7 @@ func (r *ClientRuntime) executeLocalSubtask(
 		RequestedSkillNames:       r.subtaskRequestedSkillNames,
 		ClientMCPServers:          r.ClientMCPServersForMode(request.RequestMode, config),
 		ClientSkillPackages:       r.subtaskSkillPackages,
+		ParentSessionID:           request.ParentSessionID,
 	})
 	if err != nil {
 		return subtaskExecutionResult{}, newToolError("EXECUTION_FAILED", "执行子任务流失败: %v", err)
@@ -437,8 +439,13 @@ func (r *ClientRuntime) executeLocalSubtask(
 		}
 	}
 
+	// 解析 <think> 标签，分离 reason 和 text
+	rawOutput := strings.TrimSpace(outputBuilder.String())
+	reason, text := splitThinkingContent(rawOutput)
+
 	return subtaskExecutionResult{
-		Text:           strings.TrimSpace(outputBuilder.String()),
+		Text:           text,
+		Reason:         reason,
 		ChildSessionID: childSessionID,
 		ChildRunID:     request.ChildRunID,
 		ChildMessageID: childMessageID,
@@ -481,6 +488,9 @@ func buildSubtaskResult(task *provider.ClientCollaborationTask, execution *subta
 			if text := strings.TrimSpace(stringValue(task.ResultPayload["text"])); text != "" {
 				result["text"] = text
 			}
+			if reason := strings.TrimSpace(stringValue(task.ResultPayload["reason"])); reason != "" {
+				result["reason"] = reason
+			}
 		}
 		if strings.TrimSpace(task.ErrorMessage) != "" {
 			result["error_message"] = task.ErrorMessage
@@ -489,6 +499,9 @@ func buildSubtaskResult(task *provider.ClientCollaborationTask, execution *subta
 	if execution != nil {
 		if strings.TrimSpace(execution.Text) != "" {
 			result["text"] = execution.Text
+		}
+		if strings.TrimSpace(execution.Reason) != "" {
+			result["reason"] = execution.Reason
 		}
 		if strings.TrimSpace(execution.ChildSessionID) != "" {
 			result["child_session_id"] = execution.ChildSessionID
@@ -504,7 +517,7 @@ func buildSubtaskResult(task *provider.ClientCollaborationTask, execution *subta
 }
 
 func buildSubtaskResultPayload(request subtaskExecutionRequest, execution subtaskExecutionResult) map[string]any {
-	return map[string]any{
+	payload := map[string]any{
 		"text":              execution.Text,
 		"flow_id":           request.FlowID,
 		"session_id":        execution.ChildSessionID,
@@ -513,6 +526,10 @@ func buildSubtaskResultPayload(request subtaskExecutionRequest, execution subtas
 		"request_mode":      request.RequestMode,
 		"working_directory": request.WorkingDirectory,
 	}
+	if strings.TrimSpace(execution.Reason) != "" {
+		payload["reason"] = execution.Reason
+	}
+	return payload
 }
 
 func (r *ClientRuntime) executeManagedSubtaskRequests(
@@ -757,4 +774,50 @@ func newSubtaskRunID() string {
 	raw[6] = (raw[6] & 0x0f) | 0x40
 	raw[8] = (raw[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
+}
+
+// splitThinkingContent 从文本中提取 <think> 标签内容和剩余文本
+// 返回值: reason (<think> 标签内的内容), text (</think> 标签后的内容)
+// 如果存在多个 <think> 块，取最后一个
+func splitThinkingContent(content string) (reason string, text string) {
+	const openTag = "<think>"
+	const closeTag = "</think>"
+
+	// 查找最后一个 </think> 标签的位置
+	lastCloseIdx := strings.LastIndex(content, closeTag)
+	if lastCloseIdx == -1 {
+		// 没有 </think> 标签，整个内容作为 text
+		return "", content
+	}
+
+	// 查找对应的 <think> 标签
+	searchStart := 0
+	lastOpenIdx := -1
+	for {
+		idx := strings.Index(content[searchStart:], openTag)
+		if idx == -1 {
+			break
+		}
+		absIdx := searchStart + idx
+		if absIdx < lastCloseIdx {
+			lastOpenIdx = absIdx
+			searchStart = absIdx + len(openTag)
+		} else {
+			break
+		}
+	}
+
+	if lastOpenIdx == -1 {
+		// 有 </think> 但没有对应的 <think>，整个内容作为 text
+		return "", content
+	}
+
+	// 提取 reason: <think> 和 </think> 之间的内容
+	reasonStart := lastOpenIdx + len(openTag)
+	reason = strings.TrimSpace(content[reasonStart:lastCloseIdx])
+
+	// 提取 text: </think> 之后的内容
+	text = strings.TrimSpace(content[lastCloseIdx+len(closeTag):])
+
+	return reason, text
 }

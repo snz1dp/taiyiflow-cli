@@ -307,6 +307,12 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("command_timeout_seconds 仅支持 1-%d 的整数秒", internalconfig.MaxCommandTimeoutSeconds)
 		}
 		config.CommandTimeoutSeconds = seconds
+	case "subtask_timeout_seconds":
+		seconds, err := strconv.Atoi(trimmedValue)
+		if err != nil || seconds < 1 || seconds > internalconfig.MaxSubtaskTimeoutSeconds {
+			return fmt.Errorf("subtask_timeout_seconds 仅支持 1-%d 的整数秒", internalconfig.MaxSubtaskTimeoutSeconds)
+		}
+		config.SubtaskTimeoutSeconds = seconds
 	case "stream_idle_timeout_seconds":
 		seconds, err := strconv.Atoi(trimmedValue)
 		if err != nil || seconds < 0 {
@@ -433,6 +439,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.HTTPTimeoutSeconds = defaults.HTTPTimeoutSeconds
 	case "command_timeout_seconds":
 		config.CommandTimeoutSeconds = defaults.CommandTimeoutSeconds
+	case "subtask_timeout_seconds":
+		config.SubtaskTimeoutSeconds = defaults.SubtaskTimeoutSeconds
 	case "stream_idle_timeout_seconds":
 		config.StreamIdleTimeoutSeconds = defaults.StreamIdleTimeoutSeconds
 	case "cross_session_memory_enabled":
@@ -503,6 +511,8 @@ func normalizeConfigKey(key string) string {
 		return "write_confirmation_policy"
 	case "command_timeout", "local_command_timeout", "local_command_timeout_seconds":
 		return "command_timeout_seconds"
+	case "subtask_timeout", "subtask_timeout_seconds", "run_subtask_timeout":
+		return "subtask_timeout_seconds"
 	case "http_timeout", "request_timeout", "backend_http_timeout":
 		return "http_timeout_seconds"
 	case "stream_idle_timeout":
@@ -562,6 +572,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("技能包审查策略: %s", fallbackConfigValue(config.SkillReviewPolicy, internalconfig.Default().SkillReviewPolicy)),
 		fmt.Sprintf("写入确认策略: %s", fallbackConfigValue(config.WriteConfirmationPolicy, internalconfig.Default().WriteConfirmationPolicy)),
 		fmt.Sprintf("命令执行超时: %d 秒", config.CommandTimeoutSeconds),
+		fmt.Sprintf("子智能体超时: %d 秒", config.SubtaskTimeoutSeconds),
 		fmt.Sprintf("流式空闲超时: %d 秒", config.StreamIdleTimeoutSeconds),
 		fmt.Sprintf("跨会话记忆: %t", config.CrossSessionMemoryEnabled),
 		fmt.Sprintf("扫码等待超时: %d 秒", config.QRWaitTimeoutSeconds),
