@@ -542,9 +542,9 @@ type LoginFormSubmitHandler func(ctx context.Context, snapshot Snapshot, submiss
 type LocalCommandHandler func(ctx context.Context, command string, snapshot Snapshot) (LocalCommandResult, error)
 
 type HistoryLoadResult struct {
-	Entries      []HistoryEntry
-	LoadedCount  int
-	Total        int
+	Entries     []HistoryEntry
+	LoadedCount int
+	Total       int
 }
 
 type HistoryLoadHandler func(ctx context.Context, snapshot Snapshot) (HistoryLoadResult, error)
@@ -889,11 +889,11 @@ const (
 )
 
 var (
-	ansiCSIRegexp      = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
-	ansiOSCRegexp      = regexp.MustCompile(`\x1b\][^\a]*(\a|\x1b\\)`)
-	ansiAPCRegexp      = regexp.MustCompile(`(?s)\x1b_G.*?\x1b\\`)
-	ansiTmuxDCSRegexp  = regexp.MustCompile(`(?s)\x1bPtmux;.*?\x1b\\`)
-	overlayFocusMarker = "<<overlay-focus>>"
+	ansiCSIRegexp         = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+	ansiOSCRegexp         = regexp.MustCompile(`\x1b\][^\a]*(\a|\x1b\\)`)
+	ansiAPCRegexp         = regexp.MustCompile(`(?s)\x1b_G.*?\x1b\\`)
+	ansiTmuxDCSRegexp     = regexp.MustCompile(`(?s)\x1bPtmux;.*?\x1b\\`)
+	overlayFocusMarker    = "<<overlay-focus>>"
 	watermarkCharReplacer = strings.NewReplacer(
 		"\u200b", "",
 		"\u200c", "",
@@ -1068,9 +1068,12 @@ var slashCommands = []slashCommand{
 	{Trigger: "/exit", Completion: "/exit", Description: "退出当前智能对话"},
 }
 
+var cleanupFinishedLocalTasks = clientruntime.CleanupFinishedLocalTasks
+
 func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, refreshSnapshot SnapshotRefreshHandler, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, configFormSubmit ConfigFormSubmitHandler, loginFormSubmit LoginFormSubmitHandler, localCommand LocalCommandHandler, historyLoad HistoryLoadHandler, startupCommand string, externalQueuedInputs <-chan string) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	defer clientruntime.ShutdownLocalTasks()
 
 	inputModel := textarea.New()
 	if snapshot.BackendAvailable {
@@ -1284,6 +1287,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentToolLabel = ""
 		m.requestCancel = nil
 		m.retryAvailable = m.lastRetryableRequest != nil
+		cleanupFinishedLocalTasks()
 		m.syncViewport()
 		m.input.Focus()
 		if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
@@ -1306,6 +1310,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentToolLabel = ""
 		m.requestCancel = nil
 		m.retryAvailable = false
+		cleanupFinishedLocalTasks()
 		m.input.Focus()
 		if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
 			return m, tea.Batch(queuedCmd, m.maybeRefreshSessionSnapshot())
@@ -5698,9 +5703,9 @@ func buildTaskActionPicker(item TaskItem) *TaskActionPickerState {
 	}
 	status := strings.ToLower(strings.TrimSpace(item.Status))
 	if status == "running" {
-		options = append(options, TaskActionItem{Label: "停止任务", Description: "发送停止请求，并保留当前输出记录。", Command: "/tasks stop " + item.ID})
+		options = append(options, TaskActionItem{Label: "停止任务", Description: "发送停止请求，任务结束后会自动从列表移除。", Command: "/tasks stop " + item.ID})
 	} else {
-		options = append(options, TaskActionItem{Label: "删除任务", Description: "删除任务及其持久化输出文件。", Command: "/tasks remove " + item.ID})
+		options = append(options, TaskActionItem{Label: "删除任务", Description: "删除任务及其临时输出文件。", Command: "/tasks remove " + item.ID})
 	}
 	return &TaskActionPickerState{
 		Title: fmt.Sprintf("任务操作(tasks): %s", fallback(strings.TrimSpace(item.Name), item.ID)),
@@ -9496,6 +9501,8 @@ func isExecutableSlashCommandInput(input string) bool {
 	trimmed := strings.TrimSpace(input)
 	switch {
 	case strings.EqualFold(trimmed, "/agents"):
+		return true
+	case strings.EqualFold(trimmed, "/retry"):
 		return true
 	case strings.EqualFold(trimmed, "/internet"):
 		return true

@@ -55,39 +55,36 @@ func (m *localTaskManager) ensureLoaded(config internalconfig.Config) error {
 	if loaded {
 		return nil
 	}
-
-	entries, err := os.ReadDir(storeDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			m.mu.Lock()
-			m.loadedRoots[storeDir] = true
-			m.mu.Unlock()
-			return nil
-		}
-		return fmt.Errorf("读取任务目录失败: %w", err)
-	}
-
-	loadedTasks := make([]*localTask, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		task, loadErr := loadPersistedTask(filepath.Join(storeDir, entry.Name()), storeDir)
-		if loadErr != nil {
-			return loadErr
-		}
-		loadedTasks = append(loadedTasks, task)
+	if err := clearPersistedTaskStore(storeDir); err != nil {
+		return fmt.Errorf("清理旧任务目录失败: %w", err)
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, task := range loadedTasks {
-		if _, exists := m.tasks[task.id]; exists {
+	m.loadedRoots[storeDir] = true
+	return nil
+}
+
+func clearPersistedTaskStore(storeDir string) error {
+	entries, err := os.ReadDir(storeDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
 			continue
 		}
-		m.tasks[task.id] = task
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".json") && !strings.HasSuffix(name, ".stdout") && !strings.HasSuffix(name, ".stderr") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(storeDir, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
-	m.loadedRoots[storeDir] = true
 	return nil
 }
 
@@ -177,6 +174,22 @@ func (m *localTaskManager) deleteTask(task *localTask) error {
 	delete(m.tasks, taskID)
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *localTaskManager) loadedStoreDirs() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	storeDirs := make([]string, 0, len(m.loadedRoots))
+	for storeDir := range m.loadedRoots {
+		storeDirs = append(storeDirs, storeDir)
+	}
+	return storeDirs
+}
+
+func (m *localTaskManager) resetLoadedRoots() {
+	m.mu.Lock()
+	m.loadedRoots = map[string]bool{}
+	m.mu.Unlock()
 }
 
 func (m *localTaskManager) tasksForStore(config internalconfig.Config) ([]*localTask, error) {

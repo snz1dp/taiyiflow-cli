@@ -650,17 +650,19 @@ func TestExecuteTUILocalShellCommandAutoBackgroundsTailFollow(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		_, detailsAny, detailsErr := runLocalReadTool(context.Background(), config, "task_output", map[string]any{"task_id": taskID})
-		if detailsErr != nil {
-			t.Fatalf("expected task_output to succeed, got %v", detailsErr)
-		}
-		details, _ := detailsAny.(map[string]any)
-		if strings.TrimSpace(stringMapValue(details, "status")) != "running" {
+		if _, _, detailsErr := runLocalReadTool(context.Background(), config, "task_output", map[string]any{"task_id": taskID}); detailsErr != nil {
+			output, refreshedPanel, outputErr := app.executeTasksSlashCommand(context.Background(), config, "/tasks")
+			if outputErr != nil {
+				t.Fatalf("expected /tasks refresh to succeed, got %v", outputErr)
+			}
+			if refreshedPanel != nil && strings.Contains(refreshedPanel.Body, taskID) {
+				t.Fatalf("expected auto cleaned task %q to disappear from /tasks, output=%q panel=%#v", taskID, output, refreshedPanel)
+			}
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("expected background task %s to stop within deadline", taskID)
+	t.Fatalf("expected background task %s to auto clean after stop", taskID)
 }
 
 func TestExecuteTUILocalShellCommandRejectsInteractiveTTYCommand(t *testing.T) {

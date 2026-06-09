@@ -178,6 +178,9 @@ func TestIsExecutableSlashCommandInputUsesSplitDialogueCommands(t *testing.T) {
 	if isExecutableSlashCommandInput("/chat") {
 		t.Fatalf("expected /chat to be removed from executable commands")
 	}
+	if !isExecutableSlashCommandInput("/retry") {
+		t.Fatalf("expected /retry to be executable")
+	}
 	if !isExecutableSlashCommandInput("/about") {
 		t.Fatalf("expected /about to be executable")
 	}
@@ -4394,6 +4397,36 @@ func TestUpdateEndToEndToolCallAndAssistantSplitChain(t *testing.T) {
 	}
 }
 
+func TestUpdateStreamDoneCleansFinishedTasks(t *testing.T) {
+	originalCleanup := cleanupFinishedLocalTasks
+	cleanupCalls := 0
+	cleanupFinishedLocalTasks = func() {
+		cleanupCalls++
+	}
+	defer func() {
+		cleanupFinishedLocalTasks = originalCleanup
+	}()
+
+	m := model{
+		snapshot: Snapshot{BackendAvailable: true},
+		state:    newProgressState(progressStreaming),
+		input:    textarea.New(),
+		viewport: viewport.New(80, 20),
+	}
+
+	updated, _ := m.Update(streamDoneMsg{})
+	typed, ok := updated.(model)
+	if !ok {
+		t.Fatalf("expected model type after stream done, got %T", updated)
+	}
+	if cleanupCalls != 1 {
+		t.Fatalf("expected stream done to cleanup finished tasks once, got %d", cleanupCalls)
+	}
+	if typed.state.phase != progressIdle {
+		t.Fatalf("expected progress idle after stream done cleanup, got %s", typed.state.phase)
+	}
+}
+
 func TestAssistantChunkSplitAfterStageEndBoundary(t *testing.T) {
 	m := model{}
 
@@ -4416,6 +4449,15 @@ func TestAssistantChunkSplitAfterStageEndBoundary(t *testing.T) {
 }
 
 func TestUpdateStreamFailedResetsAssistantSplitState(t *testing.T) {
+	originalCleanup := cleanupFinishedLocalTasks
+	cleanupCalls := 0
+	cleanupFinishedLocalTasks = func() {
+		cleanupCalls++
+	}
+	defer func() {
+		cleanupFinishedLocalTasks = originalCleanup
+	}()
+
 	m := model{
 		state:                  newProgressState(progressStreaming),
 		splitNextAssistant:     true,
@@ -4437,6 +4479,9 @@ func TestUpdateStreamFailedResetsAssistantSplitState(t *testing.T) {
 	}
 	if typed.lastAssistantMessageID != "" {
 		t.Fatalf("expected message id reset after stream failed, got %q", typed.lastAssistantMessageID)
+	}
+	if cleanupCalls != 1 {
+		t.Fatalf("expected stream failed to cleanup finished tasks once, got %d", cleanupCalls)
 	}
 }
 

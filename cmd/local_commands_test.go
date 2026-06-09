@@ -172,7 +172,7 @@ func TestExecuteTasksSlashCommandCapture(t *testing.T) {
 		"function": map[string]any{
 			"name": "shell_exec",
 			"arguments": map[string]any{
-				"raw_command": "printf 'capture-stdout\\n'; printf 'capture-stderr\\n' 1>&2",
+				"raw_command": "printf 'capture-stdout\\n'; printf 'capture-stderr\\n' 1>&2; sleep 0.5",
 				"background":  true,
 				"task_name":   "capture-task",
 			},
@@ -210,7 +210,7 @@ func TestExecuteTasksSlashCommandRemove(t *testing.T) {
 		"function": map[string]any{
 			"name": "shell_exec",
 			"arguments": map[string]any{
-				"raw_command": "printf 'remove-me\\n'",
+				"raw_command": "while true; do echo remove-me; sleep 1; done",
 				"background":  true,
 				"task_name":   "remove-task",
 			},
@@ -221,16 +221,12 @@ func TestExecuteTasksSlashCommandRemove(t *testing.T) {
 	}
 	taskID := resultAny.(map[string]any)["task_id"].(string)
 	app := &App{}
+	defer clientruntime.ShutdownLocalTasks()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		output, panel, commandErr := app.executeTasksSlashCommand(context.Background(), configValue, "/tasks remove "+taskID)
-		if commandErr == nil && panel != nil && strings.Contains(output, "任务及其持久化输出已删除") {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	_, _, commandErr := app.executeTasksSlashCommand(context.Background(), configValue, "/tasks remove "+taskID)
+	if commandErr == nil {
+		t.Fatal("expected /tasks remove to reject running task")
 	}
-	t.Fatal("expected /tasks remove to delete completed task")
 }
 
 func TestExecuteTasksSlashCommandCleanup(t *testing.T) {
@@ -259,12 +255,12 @@ func TestExecuteTasksSlashCommandCleanup(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		output, panel, commandErr := app.executeTasksSlashCommand(context.Background(), configValue, "/tasks cleanup")
-		if commandErr == nil && panel != nil && strings.Contains(output, "已清理 1 个任务") {
+		if commandErr == nil && panel != nil && strings.Contains(output, "已清理 0 个任务") {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("expected /tasks cleanup to remove completed tasks")
+	t.Fatal("expected /tasks cleanup to observe auto-cleaned completed tasks")
 }
 
 func TestParseTasksCommandAcceptsTasksOnly(t *testing.T) {

@@ -22,11 +22,12 @@ func TestShellExecBackgroundAndTaskOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell test uses POSIX shell")
 	}
+	t.Setenv(config.RootDirEnvName(), t.TempDir())
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	config := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
 
 	result, err := runtimeClient.shellExec(context.Background(), config, map[string]any{
-		"raw_command": "printf 'hello from task\\n'",
+		"raw_command": "printf 'hello from task\\n'; sleep 0.5",
 		"background":  true,
 		"task_name":   "hello-task",
 	})
@@ -35,31 +36,45 @@ func TestShellExecBackgroundAndTaskOutput(t *testing.T) {
 	}
 	taskID := result["task_id"].(string)
 
-	var output map[string]any
+	seenStdout := false
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		output, err = runtimeClient.taskOutput(config, map[string]any{"task_id": taskID})
-		if err != nil {
-			t.Fatalf("taskOutput failed: %v", err)
+		output, outputErr := runtimeClient.taskOutput(config, map[string]any{"task_id": taskID})
+		if outputErr != nil {
+			if seenStdout {
+				break
+			}
+			t.Fatalf("taskOutput failed before auto cleanup: %v", outputErr)
 		}
-		if output["status"].(string) != "running" {
+		if strings.Contains(stringValue(output["stdout"]), "hello from task") {
+			seenStdout = true
+		}
+		if seenStdout && stringValue(output["status"]) != "running" {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if output["status"].(string) != "completed" {
-		t.Fatalf("expected completed task, got %#v", output)
+	if !seenStdout {
+		t.Fatal("expected taskOutput to expose running task stdout before auto cleanup")
 	}
-	if !strings.Contains(output["stdout"].(string), "hello from task") {
-		t.Fatalf("expected stdout content, got %#v", output)
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err = runtimeClient.taskOutput(config, map[string]any{"task_id": taskID}); err != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err == nil {
+		t.Fatalf("expected completed task %s to be auto cleaned", taskID)
 	}
 
 	listed, err := runtimeClient.taskList(config)
 	if err != nil {
 		t.Fatalf("taskList failed: %v", err)
 	}
-	if listed["count"].(int) < 1 {
-		t.Fatalf("expected task list to include background task, got %#v", listed)
+	if listed["count"].(int) != 0 {
+		t.Fatalf("expected completed task to disappear from list, got %#v", listed)
 	}
 }
 
@@ -315,6 +330,7 @@ func TestShellExecBackgroundSupportsStructuredBuiltinCommand(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("builtin test uses POSIX export")
 	}
+	t.Setenv(config.RootDirEnvName(), t.TempDir())
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
 
@@ -331,25 +347,19 @@ func TestShellExecBackgroundSupportsStructuredBuiltinCommand(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		output, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": taskID})
-		if outputErr != nil {
-			t.Fatalf("taskOutput failed: %v", outputErr)
-		}
-		if output["status"].(string) != "running" {
-			if output["status"].(string) != "completed" {
-				t.Fatalf("expected completed task, got %#v", output)
-			}
+		if _, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": taskID}); outputErr != nil {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("expected structured builtin background task to finish")
+	t.Fatal("expected structured builtin background task to auto clean after finish")
 }
 
 func TestTaskStopCancelsBackgroundCommand(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell test uses POSIX shell")
 	}
+	t.Setenv(config.RootDirEnvName(), t.TempDir())
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	config := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
 
@@ -369,99 +379,57 @@ func TestTaskStopCancelsBackgroundCommand(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		output, err := runtimeClient.taskOutput(config, map[string]any{"task_id": taskID})
-		if err != nil {
-			t.Fatalf("taskOutput failed: %v", err)
-		}
-		if output["status"].(string) == "cancelled" {
+		if _, err := runtimeClient.taskOutput(config, map[string]any{"task_id": taskID}); err != nil {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("expected task to become cancelled")
+	t.Fatalf("expected task %s to be auto cleaned after stop", taskID)
 }
 
-func TestTaskManagerRestoresPersistedTaskAcrossManagerInstances(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell test uses POSIX shell")
-	}
+func TestTaskManagerDoesNotRestorePersistedTaskAcrossManagerInstances(t *testing.T) {
 	t.Setenv(config.RootDirEnvName(), t.TempDir())
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
-	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto", SandboxEscapePolicy: internalconfig.SandboxEscapePolicyAllow}
-	skillRoot := t.TempDir()
-	skillDir := filepath.Join(skillRoot, "wan-video")
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		t.Fatalf("mkdir skill dir failed: %v", err)
-	}
-	content := "---\nname: wan-video\ndescription: 视频生成\nmetadata:\n  openclaw:\n    requires:\n      env:\n        - DASHSCOPE_API_KEY\n---\n\n使用万相视频能力。\n"
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
-		t.Fatalf("write skill failed: %v", err)
-	}
-	t.Setenv("DASHSCOPE_API_KEY", "persisted-secret")
-	configValue.Skills.Directory = skillRoot
-	manager := newLocalTaskManager()
-
-	result, err := manager.startTask(context.Background(), runtimeClient, configValue, map[string]any{
-		"raw_command":  "printf 'persisted task\\n'",
-		"background":   true,
-		"task_name":    "persisted-task",
-		"source_skill": "wan-video",
-		"flow_id":      "demo-flow",
-		"session_id":   "session-1",
-		"run_id":       "run-1",
-	})
+	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
+	storeDir, err := defaultTaskStoreDir()
 	if err != nil {
-		t.Fatalf("startTask failed: %v", err)
+		t.Fatalf("defaultTaskStoreDir failed: %v", err)
 	}
-	taskID := result["task_id"].(string)
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		output, outputErr := manager.taskOutput(runtimeClient, configValue, map[string]any{"task_id": taskID})
-		if outputErr != nil {
-			t.Fatalf("taskOutput failed: %v", outputErr)
-		}
-		if output["status"].(string) != "running" {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		t.Fatalf("mkdir task store failed: %v", err)
+	}
+	metadataPath, stdoutPath, stderrPath := taskFilePaths(storeDir, "task-persisted")
+	content, err := json.MarshalIndent(persistedTaskState{
+		TaskID:      "task-persisted",
+		TaskName:    "persisted-task",
+		Command:     "printf 'persisted task'",
+		CWD:         configValue.Workdir,
+		Status:      "completed",
+		StartedAt:   time.Now().Add(-time.Minute),
+		CompletedAt: time.Now().Add(-30 * time.Second),
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal persisted task failed: %v", err)
+	}
+	if err := os.WriteFile(metadataPath, content, 0o644); err != nil {
+		t.Fatalf("write metadata failed: %v", err)
+	}
+	if err := os.WriteFile(stdoutPath, []byte("persisted task\n"), 0o644); err != nil {
+		t.Fatalf("write stdout failed: %v", err)
+	}
+	if err := os.WriteFile(stderrPath, []byte(""), 0o644); err != nil {
+		t.Fatalf("write stderr failed: %v", err)
 	}
 
 	restoredManager := newLocalTaskManager()
 	listed := restoredManager.taskList(runtimeClient, configValue)
-	if listed["count"].(int) != 1 {
-		t.Fatalf("expected one restored task, got %#v", listed)
+	if listed["count"].(int) != 0 {
+		t.Fatalf("expected stale tasks not to be restored, got %#v", listed)
 	}
-	tasks := listed["tasks"].([]map[string]any)
-	if tasks[0]["session_id"] != "session-1" {
-		t.Fatalf("expected restored session_id, got %#v", tasks[0])
-	}
-	if tasks[0]["source_skill"] != "wan-video" {
-		t.Fatalf("expected restored source_skill, got %#v", tasks[0])
-	}
-	injectedEnvKeys := stringSlice(tasks[0]["injected_env_keys"])
-	if len(injectedEnvKeys) != 1 || injectedEnvKeys[0] != "DASHSCOPE_API_KEY" {
-		t.Fatalf("expected restored injected env keys, got %#v", tasks[0])
-	}
-	expectedWorkdir, pathErr := filepath.EvalSymlinks(configValue.Workdir)
-	if pathErr != nil {
-		expectedWorkdir = configValue.Workdir
-	}
-	if tasks[0]["cwd"] != expectedWorkdir {
-		t.Fatalf("expected restored workdir, got %#v", tasks[0])
-	}
-	output, err := restoredManager.taskOutput(runtimeClient, configValue, map[string]any{"task_id": taskID})
-	if err != nil {
-		t.Fatalf("restored taskOutput failed: %v", err)
-	}
-	if !strings.Contains(output["stdout"].(string), "persisted task") {
-		t.Fatalf("expected restored stdout, got %#v", output)
-	}
-	if output["source_skill"] != "wan-video" {
-		t.Fatalf("expected restored source_skill in output, got %#v", output)
-	}
-	if strings.TrimSpace(stringValue(output["stdout_path"])) == "" {
-		t.Fatalf("expected stdout_path in restored output, got %#v", output)
+	for _, path := range []string{metadataPath, stdoutPath, stderrPath} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("expected stale task file %s to be cleared, stat err=%v", path, statErr)
+		}
 	}
 }
 
@@ -492,7 +460,7 @@ func TestExecuteClientToolPayloadShellExecPersistsContextIdentifiersAndSourceSki
 			"name": "shell_exec",
 			"arguments": map[string]any{
 				"command":    "sh",
-				"args":       []any{"-lc", `printf %s "$DASHSCOPE_API_KEY"`},
+				"args":       []any{"-lc", `printf %s "$DASHSCOPE_API_KEY"; sleep 0.5`},
 				"background": true,
 				"task_name":  "ctx-task",
 			},
@@ -506,28 +474,31 @@ func TestExecuteClientToolPayloadShellExecPersistsContextIdentifiersAndSourceSki
 	}
 	result := resultAny.(map[string]any)
 	taskID := result["task_id"].(string)
+	if result["flow_id"] != "demo-flow" || result["session_id"] != "session-ctx" || result["run_id"] != "run-ctx" {
+		t.Fatalf("expected context identifiers in task summary, got %#v", result)
+	}
+	if result["source_skill"] != "wan-video" {
+		t.Fatalf("expected source_skill in task summary, got %#v", result)
+	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		output, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": taskID})
 		if outputErr != nil {
-			t.Fatalf("taskOutput failed: %v", outputErr)
+			t.Fatalf("taskOutput failed before auto cleanup: %v", outputErr)
 		}
-		if output["status"].(string) != "running" {
-			if output["flow_id"] != "demo-flow" || output["session_id"] != "session-ctx" || output["run_id"] != "run-ctx" {
-				t.Fatalf("expected context identifiers in task output, got %#v", output)
-			}
-			if output["source_skill"] != "wan-video" {
-				t.Fatalf("expected source_skill in task output, got %#v", output)
-			}
-			if strings.TrimSpace(stringValue(output["stdout"])) != "secret-from-context" {
-				t.Fatalf("expected context source skill env injection, got %#v", output)
-			}
+		if output["flow_id"] != "demo-flow" || output["session_id"] != "session-ctx" || output["run_id"] != "run-ctx" {
+			t.Fatalf("expected context identifiers in task output, got %#v", output)
+		}
+		if output["source_skill"] != "wan-video" {
+			t.Fatalf("expected source_skill in task output, got %#v", output)
+		}
+		if strings.TrimSpace(stringValue(output["stdout"])) == "secret-from-context" {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("expected background task to finish and preserve context identifiers")
+	t.Fatal("expected running task output to preserve context identifiers and injected env")
 }
 
 func TestExecuteClientToolPayloadShellExecDefaultsToClientContextDir(t *testing.T) {
@@ -575,7 +546,7 @@ func TestTerminalCaptureReturnsCombinedOutput(t *testing.T) {
 	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
 
 	result, err := runtimeClient.shellExec(context.Background(), configValue, map[string]any{
-		"raw_command": "printf 'capture out\\n'; printf 'capture err\\n' 1>&2",
+		"raw_command": "printf 'capture out\\n'; printf 'capture err\\n' 1>&2; sleep 0.5",
 		"background":  true,
 		"task_name":   "capture-task",
 	})
@@ -583,27 +554,6 @@ func TestTerminalCaptureReturnsCombinedOutput(t *testing.T) {
 		t.Fatalf("shellExec background failed: %v", err)
 	}
 	taskID := result["task_id"].(string)
-	t.Cleanup(func() {
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			output, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": taskID})
-			if outputErr == nil && output["status"] != "running" {
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		if _, deleteErr := runtimeClient.taskDelete(configValue, map[string]any{"task_id": taskID}); deleteErr != nil {
-			output, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": taskID})
-			if outputErr == nil && output["status"] == "running" {
-				if _, stopErr := runtimeClient.taskStop(configValue, map[string]any{"task_id": taskID}); stopErr != nil {
-					t.Fatalf("cleanup taskStop failed: %v", stopErr)
-				}
-			}
-			if _, retryErr := runtimeClient.taskDelete(configValue, map[string]any{"task_id": taskID}); retryErr != nil {
-				t.Fatalf("cleanup taskDelete failed: %v", retryErr)
-			}
-		}
-	})
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -623,7 +573,7 @@ func TestTerminalCaptureReturnsCombinedOutput(t *testing.T) {
 	t.Fatal("expected terminal_capture to include stdout and stderr")
 }
 
-func TestTaskDeleteRemovesPersistedFilesAndListEntry(t *testing.T) {
+func TestTaskDeleteRejectsRunningTask(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell test uses POSIX shell")
 	}
@@ -632,7 +582,7 @@ func TestTaskDeleteRemovesPersistedFilesAndListEntry(t *testing.T) {
 	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
 
 	result, err := runtimeClient.shellExec(context.Background(), configValue, map[string]any{
-		"raw_command": "printf 'delete task\\n'",
+		"raw_command": "while true; do echo keep; sleep 1; done",
 		"background":  true,
 		"task_name":   "delete-task",
 	})
@@ -640,39 +590,14 @@ func TestTaskDeleteRemovesPersistedFilesAndListEntry(t *testing.T) {
 		t.Fatalf("shellExec background failed: %v", err)
 	}
 	taskID := result["task_id"].(string)
+	defer ShutdownLocalTasks()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		output, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": taskID})
-		if outputErr != nil {
-			t.Fatalf("taskOutput failed: %v", outputErr)
-		}
-		if output["status"] != "running" {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	deleted, err := runtimeClient.taskDelete(configValue, map[string]any{"task_id": taskID})
-	if err != nil {
-		t.Fatalf("taskDelete failed: %v", err)
-	}
-	if deleted["deleted"] != true {
-		t.Fatalf("expected deleted flag, got %#v", deleted)
-	}
-	if _, err := runtimeClient.taskOutput(configValue, map[string]any{"task_id": taskID}); err == nil {
-		t.Fatal("expected deleted task to be unavailable")
-	}
-	listResult, err := runtimeClient.taskList(configValue)
-	if err != nil {
-		t.Fatalf("taskList failed: %v", err)
-	}
-	if listResult["count"].(int) != 0 {
-		t.Fatalf("expected deleted task to disappear from list, got %#v", listResult)
+	if _, err := runtimeClient.taskDelete(configValue, map[string]any{"task_id": taskID}); err == nil {
+		t.Fatal("expected running task delete to be rejected")
 	}
 }
 
-func TestTaskCleanupRemovesCompletedTasksAndKeepsRunningTasks(t *testing.T) {
+func TestTaskCleanupSkipsAutoClearedCompletedTasksAndKeepsRunningTasks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell test uses POSIX shell")
 	}
@@ -700,11 +625,7 @@ func TestTaskCleanupRemovesCompletedTasksAndKeepsRunningTasks(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		output, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": completedResult["task_id"].(string)})
-		if outputErr != nil {
-			t.Fatalf("taskOutput failed: %v", outputErr)
-		}
-		if output["status"] != "running" {
+		if _, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": completedResult["task_id"].(string)}); outputErr != nil {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -714,8 +635,8 @@ func TestTaskCleanupRemovesCompletedTasksAndKeepsRunningTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("taskCleanup failed: %v", err)
 	}
-	if cleaned["deleted_count"] != 1 {
-		t.Fatalf("expected one deleted task, got %#v", cleaned)
+	if cleaned["deleted_count"] != 0 {
+		t.Fatalf("expected completed task to auto clear before cleanup, got %#v", cleaned)
 	}
 	if cleaned["running_count"] != 1 {
 		t.Fatalf("expected one running task kept, got %#v", cleaned)
@@ -732,16 +653,49 @@ func TestTaskCleanupRemovesCompletedTasksAndKeepsRunningTasks(t *testing.T) {
 	}
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		output, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": runningTaskID})
-		if outputErr != nil {
-			t.Fatalf("taskOutput after stop failed: %v", outputErr)
-		}
-		if output["status"] == "cancelled" {
+		if _, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": runningTaskID}); outputErr != nil {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("expected cleanup test running task to become cancelled")
+	t.Fatal("expected cleanup test running task to be auto cleaned after stop")
+}
+
+func TestShutdownLocalTasksStopsRunningTasksAndClearsStore(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell test uses POSIX shell")
+	}
+	t.Setenv(config.RootDirEnvName(), t.TempDir())
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
+	result, err := runtimeClient.shellExec(context.Background(), configValue, map[string]any{
+		"raw_command": "while true; do echo keep; sleep 1; done",
+		"background":  true,
+		"task_name":   "shutdown-task",
+	})
+	if err != nil {
+		t.Fatalf("shellExec background failed: %v", err)
+	}
+	taskID := result["task_id"].(string)
+	storeDir, err := defaultTaskStoreDir()
+	if err != nil {
+		t.Fatalf("defaultTaskStoreDir failed: %v", err)
+	}
+
+	ShutdownLocalTasks()
+
+	if _, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": taskID}); outputErr == nil {
+		t.Fatalf("expected shutdown to remove task %s", taskID)
+	}
+	entries, readErr := os.ReadDir(storeDir)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatalf("read task store failed: %v", readErr)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), taskID) {
+			t.Fatalf("expected shutdown to clear persisted task files, found %s", entry.Name())
+		}
+	}
 }
 
 func TestSkillReturnsInvocationPayload(t *testing.T) {

@@ -2102,14 +2102,14 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 			Title:   "后台任务列表",
 			Summary: fmt.Sprintf("task_list %d 个任务", len(tasks)),
 			Body:    strings.Join(lines, "\n\n"),
-			Hint:    "可根据 task_id 继续读取输出、停止任务或删除已结束任务，也可用 /tasks cleanup 批量清理已结束任务。",
+			Hint:    "列表仅显示当前仍在运行的任务；任务结束或停止后会自动从列表移除。",
 		}
 	case "task_delete":
 		return &tui.ToolPanel{
 			Title:   "后台任务删除",
 			Summary: fmt.Sprintf("%s · %s", fallbackString(stringMapValue(resultMap, "task_id"), "<unknown>"), fallbackString(stringMapValue(resultMap, "status"), "unknown")),
-			Body:    "任务及其持久化输出已删除。",
-			Hint:    "再次查看时，该任务不会出现在 /tasks list 中。",
+			Body:    "任务及其临时输出已删除。",
+			Hint:    "再次查看时，该任务不会出现在 /tasks 列表中。",
 		}
 	case "task_cleanup":
 		deletedCount := intMapValue(resultMap, "deleted_count")
@@ -2126,7 +2126,7 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 			Title:   "后台任务清理",
 			Summary: fmt.Sprintf("已清理 %d 个任务", deletedCount),
 			Body:    body,
-			Hint:    "该操作只会删除已结束任务；运行中的任务会被保留。",
+			Hint:    "该操作只会清理当前会话仍残留的已结束任务；运行中的任务会被保留。",
 		}
 	case "todo_write":
 		items := mapSliceValue(resultMap, "items")
@@ -4730,7 +4730,7 @@ func buildTUITasksPicker(ctx context.Context, config internalconfig.Config) (*tu
 	resultMap, _ := result.(map[string]any)
 	tasks := mapSliceValue(resultMap, "tasks")
 	if len(tasks) == 0 {
-		return nil, "当前没有后台任务。", nil
+		return nil, "当前没有正在运行的后台任务。", nil
 	}
 	items := make([]tui.TaskItem, 0, len(tasks))
 	for _, item := range tasks {
@@ -4752,7 +4752,7 @@ func buildTUITasksPicker(ctx context.Context, config internalconfig.Config) (*tu
 	}
 	return &tui.TasksPickerState{
 		Title: "后台任务(tasks)",
-		Hint:  "使用方向键选择任务，Enter 打开操作菜单，Esc 关闭。",
+		Hint:  "列表仅显示当前仍在运行的任务；任务结束后会自动移除。",
 		Items: items,
 	}, "", nil
 }

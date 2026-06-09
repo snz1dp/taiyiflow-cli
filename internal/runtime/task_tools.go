@@ -48,6 +48,7 @@ type localTask struct {
 	stderrTruncated bool
 	lastError       string
 	cancel          context.CancelFunc
+	done            chan struct{}
 	mu              sync.RWMutex
 }
 
@@ -58,6 +59,70 @@ type taskStreamWriter struct {
 
 func newLocalTaskManager() *localTaskManager {
 	return &localTaskManager{tasks: map[string]*localTask{}, loadedRoots: map[string]bool{}}
+}
+
+func ShutdownLocalTasks() {
+	sharedLocalTaskManager.shutdown()
+}
+
+func CleanupFinishedLocalTasks() {
+	sharedLocalTaskManager.cleanupFinished()
+}
+
+func (m *localTaskManager) shutdown() {
+	tasks := m.snapshotTasks()
+	for _, task := range tasks {
+		task.mu.RLock()
+		cancel := task.cancel
+		done := task.done
+		task.mu.RUnlock()
+		if cancel != nil {
+			cancel()
+		}
+		if done != nil {
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+			}
+		}
+		_ = m.deleteTask(task)
+	}
+	storeDirs := m.loadedStoreDirs()
+	if len(storeDirs) == 0 {
+		if storeDir, err := defaultTaskStoreDir(); err == nil {
+			storeDirs = append(storeDirs, storeDir)
+		}
+	}
+	for _, storeDir := range storeDirs {
+		_ = clearPersistedTaskStore(storeDir)
+	}
+	m.resetLoadedRoots()
+}
+
+func (m *localTaskManager) cleanupFinished() {
+	tasks := m.snapshotTasks()
+	for _, task := range tasks {
+		task.mu.RLock()
+		status := task.status
+		task.mu.RUnlock()
+		if status == "running" {
+			continue
+		}
+		_ = m.deleteTask(task)
+	}
+	for _, storeDir := range m.loadedStoreDirs() {
+		_ = clearPersistedTaskStore(storeDir)
+	}
+}
+
+func (m *localTaskManager) snapshotTasks() []*localTask {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	tasks := make([]*localTask, 0, len(m.tasks))
+	for _, task := range m.tasks {
+		tasks = append(tasks, task)
+	}
+	return tasks
 }
 
 func (r *ClientRuntime) shellExec(
@@ -187,6 +252,7 @@ func (m *localTaskManager) startTask(
 		startedAt:       time.Now(),
 		status:          "running",
 		cancel:          cancel,
+		done:            make(chan struct{}),
 	}
 
 	m.mu.Lock()
@@ -221,6 +287,14 @@ func (m *localTaskManager) waitTask(
 	stderrPipe io.ReadCloser,
 	config internalconfig.Config,
 ) {
+	done := task.done
+	defer func() {
+		_ = m.deleteTask(task)
+		if done != nil {
+			close(done)
+		}
+	}()
+
 	var copyGroup sync.WaitGroup
 	copyGroup.Add(2)
 	go func() {
@@ -325,6 +399,12 @@ func (m *localTaskManager) taskStop(
 	}
 	if status == "running" && cancel != nil {
 		cancel()
+		result := taskSummary(task)
+		result["status"] = "stopping"
+		result["stop_requested"] = true
+		runtimeClient.writeStreamEventf(runtimeClient.stdout, "[本地工具] task_stop %s (%s)\n", task.id, "stopping")
+		_ = appendAuditLog(config, "task_stop", map[string]any{"task_id": task.id, "status": "stopping"})
+		return result, nil
 	}
 	result := taskDetails(task, maxReadBytesDefault)
 	runtimeClient.writeStreamEventf(runtimeClient.stdout, "[本地工具] task_stop %s (%s)\n", task.id, taskStatusValue(task))

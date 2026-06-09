@@ -313,7 +313,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "task_list",
-			"description":          "列出当前本地任务存储中已知的后台任务。",
+			"description":          "列出当前会话仍在运行的本地后台任务。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type":                 "object",
@@ -322,7 +322,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "task_delete",
-			"description":          "删除已完成、失败或已取消的后台任务及其持久化输出。",
+			"description":          "删除当前会话内仍保留的已结束后台任务及其临时输出。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -335,7 +335,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "task_cleanup",
-			"description":          "批量清理所有已结束的后台任务及其持久化输出，保留运行中的任务。",
+			"description":          "批量清理当前会话内尚未释放的已结束后台任务，保留运行中的任务。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type":                 "object",
