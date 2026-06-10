@@ -23,34 +23,21 @@ import (
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 )
 
-func isBenignCollaborationSocketErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
-		return true
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "connection reset by peer") ||
-		strings.Contains(message, "use of closed network connection") ||
-		strings.Contains(message, "broken pipe")
-}
-
 func TestSelfTargetRunSubtaskUsesOnlineWorkerOnlyOnceEndToEnd(t *testing.T) {
 	tempDir := t.TempDir()
 	const (
-		accessToken      = "access-1"
-		clientID         = "cli-123"
-		deviceID         = "device-456"
-		parentFlowID     = "flow-parent-e2e"
-		workerFlowID     = "flow-worker-e2e"
-		childSessionID   = "child-session-e2e"
-		parentSessionID  = "parent-session-e2e"
-		parentRunID      = "parent-run-e2e"
-		parentMessageID  = "parent-message-e2e"
-		childMessageID   = "child-message-e2e"
-		collaborationID  = "collab-e2e-1"
-		workerSessionID  = "worker-session-e2e"
+		accessToken     = "access-1"
+		clientID        = "cli-123"
+		deviceID        = "device-456"
+		parentFlowID    = "flow-parent-e2e"
+		workerFlowID    = "flow-worker-e2e"
+		childSessionID  = "child-session-e2e"
+		parentSessionID = "parent-session-e2e"
+		parentRunID     = "parent-run-e2e"
+		parentMessageID = "parent-message-e2e"
+		childMessageID  = "child-message-e2e"
+		collaborationID = "collab-e2e-1"
+		workerSessionID = "worker-session-e2e"
 	)
 
 	var (
@@ -341,7 +328,7 @@ func TestSelfTargetRunSubtaskUsesOnlineWorkerOnlyOnceEndToEnd(t *testing.T) {
 		"function": map[string]any{
 			"name": "run_subtask",
 			"arguments": map[string]any{
-				"prompt": "请总结当前协同执行",
+				"prompt":  "请总结当前协同执行",
 				"flow_id": workerFlowID,
 			},
 		},
@@ -388,17 +375,17 @@ func TestSelfTargetRunSubtaskUsesOnlineWorkerOnlyOnceEndToEnd(t *testing.T) {
 func TestSelfTargetRunSubtaskFallsBackLocallyWithoutOnlineWorkerEndToEnd(t *testing.T) {
 	tempDir := t.TempDir()
 	const (
-		accessToken      = "access-local-1"
-		clientID         = "cli-local-123"
-		deviceID         = "device-local-456"
-		parentFlowID     = "flow-parent-local"
-		workerFlowID     = "flow-local-fallback"
-		childSessionID   = "child-session-local"
-		parentSessionID  = "parent-session-local"
-		parentRunID      = "parent-run-local"
-		parentMessageID  = "parent-message-local"
-		childMessageID   = "child-message-local"
-		collaborationID  = "collab-local-1"
+		accessToken     = "access-local-1"
+		clientID        = "cli-local-123"
+		deviceID        = "device-local-456"
+		parentFlowID    = "flow-parent-local"
+		workerFlowID    = "flow-local-fallback"
+		childSessionID  = "child-session-local"
+		parentSessionID = "parent-session-local"
+		parentRunID     = "parent-run-local"
+		parentMessageID = "parent-message-local"
+		childMessageID  = "child-message-local"
+		collaborationID = "collab-local-1"
 	)
 
 	var (
@@ -597,7 +584,7 @@ func TestSelfTargetRunSubtaskFallsBackLocallyWithoutOnlineWorkerEndToEnd(t *test
 		"function": map[string]any{
 			"name": "run_subtask",
 			"arguments": map[string]any{
-				"prompt": "请总结当前本地回退执行",
+				"prompt":  "请总结当前本地回退执行",
 				"flow_id": workerFlowID,
 			},
 		},

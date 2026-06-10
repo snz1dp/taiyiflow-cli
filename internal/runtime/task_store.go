@@ -88,39 +88,6 @@ func clearPersistedTaskStore(storeDir string) error {
 	return nil
 }
 
-func loadPersistedTask(metadataPath string, storeDir string) (*localTask, error) {
-	content, err := os.ReadFile(metadataPath)
-	if err != nil {
-		return nil, fmt.Errorf("读取任务元数据失败: %w", err)
-	}
-	var state persistedTaskState
-	if err := json.Unmarshal(content, &state); err != nil {
-		return nil, fmt.Errorf("解析任务元数据失败: %w", err)
-	}
-	stdoutPath, stderrPath := strings.TrimSuffix(metadataPath, ".json")+".stdout", strings.TrimSuffix(metadataPath, ".json")+".stderr"
-	return &localTask{
-		id:              strings.TrimSpace(state.TaskID),
-		name:            strings.TrimSpace(state.TaskName),
-		preview:         strings.TrimSpace(state.Command),
-		cwd:             strings.TrimSpace(state.CWD),
-		sourceSkill:     strings.TrimSpace(state.SourceSkill),
-		flowID:          strings.TrimSpace(state.FlowID),
-		sessionID:       strings.TrimSpace(state.SessionID),
-		runID:           strings.TrimSpace(state.RunID),
-		injectedEnvKeys: append([]string(nil), state.InjectedEnvKeys...),
-		startedAt:       state.StartedAt,
-		completedAt:     state.CompletedAt,
-		status:          strings.TrimSpace(state.Status),
-		exitCode:        state.ExitCode,
-		hasExitCode:     state.HasExitCode,
-		lastError:       strings.TrimSpace(state.LastError),
-		storeDir:        storeDir,
-		metadataPath:    metadataPath,
-		stdoutPath:      stdoutPath,
-		stderrPath:      stderrPath,
-	}, nil
-}
-
 func (m *localTaskManager) persistTask(task *localTask) error {
 	task.mu.RLock()
 	state := persistedTaskState{
