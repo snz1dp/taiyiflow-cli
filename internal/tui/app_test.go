@@ -2286,7 +2286,7 @@ func TestInterruptRequestRemovesStreamingIndicator(t *testing.T) {
 	}
 }
 
-func TestCompressionProgressNoteRendersInFooterInsteadOfTransientStatus(t *testing.T) {
+func TestCompressionProgressNoteRendersInFooterAndActivityHint(t *testing.T) {
 	model := model{
 		snapshot:     Snapshot{BackendAvailable: true, RequestMode: "agent", ApprovalMode: "confirm"},
 		state:        newProgressState(progressStreaming),
@@ -2300,6 +2300,9 @@ func TestCompressionProgressNoteRendersInFooterInsteadOfTransientStatus(t *testi
 	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "压缩中") {
 		t.Fatalf("expected compact compression start footer status, got %q", got)
 	}
+	if got := strings.TrimSpace(model.activityHint); got != "正在压缩上下文..." {
+		t.Fatalf("expected compression start activity hint, got %q", got)
+	}
 	if got := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(got, "开始进行上下文压缩") {
 		t.Fatalf("expected verbose compression start copy removed from footer, got %q", got)
 	}
@@ -2308,6 +2311,9 @@ func TestCompressionProgressNoteRendersInFooterInsteadOfTransientStatus(t *testi
 
 	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "320→160") {
 		t.Fatalf("expected compact compression progress in footer status bar, got %q", got)
+	}
+	if got := strings.TrimSpace(model.activityHint); got != "上下文已压缩，继续生成..." {
+		t.Fatalf("expected compression completion activity hint, got %q", got)
 	}
 	if got := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(got, "压缩320→160") {
 		t.Fatalf("expected footer completion copy to stay minimal, got %q", got)

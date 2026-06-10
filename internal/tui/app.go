@@ -3263,6 +3263,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		if strings.TrimSpace(event.Text) != "" {
 			if event.EventType == "compression_progress" {
 				m.footerHint = formatCompressionFooterHint(event.Text)
+				m.activityHint = formatCompressionActivityHint(event.Text)
 				break
 			}
 			m.activityHint = strings.TrimSpace(event.Text)
@@ -9182,6 +9183,22 @@ func formatCompressionFooterHint(text string) string {
 		return "压缩完成"
 	}
 	return normalized
+}
+
+func formatCompressionActivityHint(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.Contains(trimmed, "开始进行上下文压缩") || strings.HasPrefix(trimmed, "正在进行上下文压缩") {
+		return "正在压缩上下文..."
+	}
+	normalized := strings.ReplaceAll(trimmed, " -> ", "→")
+	normalized = strings.ReplaceAll(normalized, "->", "→")
+	if strings.HasPrefix(normalized, "上下文压缩完成") {
+		return "上下文已压缩，继续生成..."
+	}
+	return trimmed
 }
 
 func resolveContextAvailableTokens(contextWindow *ContextWindow) int {
