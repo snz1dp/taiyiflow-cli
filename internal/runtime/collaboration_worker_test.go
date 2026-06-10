@@ -577,18 +577,23 @@ func TestSelfTargetRunSubtaskFallsBackLocallyWithoutOnlineWorkerEndToEnd(t *test
 	config.Workdir = tempDir
 	config.ApprovalMode = "auto"
 
-	toolName, resultAny, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerClient, config, map[string]any{
-		"flow_id": parentFlowID,
-		"server":  map[string]any{"name": "local"},
-		"context": map[string]any{"session_id": parentSessionID, "run_id": parentRunID, "message_id": parentMessageID},
-		"function": map[string]any{
-			"name": "run_subtask",
-			"arguments": map[string]any{
-				"prompt":  "请总结当前本地回退执行",
-				"flow_id": workerFlowID,
+	toolName, resultAny, err := runtimeClient.ExecuteClientToolPayloadWithProvider(
+		context.Background(), providerClient, config, map[string]any{
+			"flow_id": parentFlowID,
+			"server":  map[string]any{"name": "local"},
+			"context": map[string]any{
+				"session_id": parentSessionID,
+				"run_id":     parentRunID,
+				"message_id": parentMessageID,
 			},
-		},
-	})
+			"function": map[string]any{
+				"name": "run_subtask",
+				"arguments": map[string]any{
+					"prompt":  "请总结当前本地回退执行",
+					"flow_id": workerFlowID,
+				},
+			},
+		})
 	if err != nil {
 		t.Fatalf("expected run_subtask local fallback to succeed, got %v", err)
 	}
