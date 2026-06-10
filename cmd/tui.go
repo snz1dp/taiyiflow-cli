@@ -297,16 +297,16 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					if metrics := buildTUIStreamStatsMetrics(event.Data); metrics != nil {
 						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
 					}
-					if !modeAllowsBuiltIn(request.RequestMode) {
-						emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝本地命令执行：当前为%s。", requestModeLabel(request.RequestMode))})
-						if err := submitClientCallFailure(runCtx, callbackProvider, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(request.RequestMode))); err != nil {
-							return err
-						}
-						continue
-					}
 					localConfig, configErr := a.configManager.Load()
 					if configErr != nil {
 						return configErr
+					}
+					if !modeAllowsBuiltIn(request.RequestMode) {
+						emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝本地命令执行：当前为%s。", requestModeLabel(request.RequestMode))})
+						if err := submitClientCallFailure(runCtx, callbackProvider, localConfig, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(request.RequestMode))); err != nil {
+							return err
+						}
+						continue
 					}
 					localConfig = applyEffectiveSandboxEscapePolicy(localConfig, sessionState.SandboxEscapePolicyOverride, "")
 					emit(tui.Event{Kind: tui.EventBuiltInCall, Text: previewBuiltInCommand(event.Data)})
@@ -315,7 +315,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						approved := confirm(buildTUIConfirmRequest(event.Data))
 						if !approved {
 							emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端命令执行。"})
-							if err := submitClientCallFailure(runCtx, callbackProvider, event.Data, "用户拒绝执行客户端命令"); err != nil {
+							if err := submitClientCallFailure(runCtx, callbackProvider, localConfig, event.Data, "用户拒绝执行客户端命令"); err != nil {
 								return err
 							}
 							continue
@@ -339,7 +339,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					toolName := nestedStringValue(event.Data, "function", "name")
 					if !modeAllowsClientTool(request.RequestMode, toolName) {
 						emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝客户端工具 %s：当前为%s。", toolName, requestModeLabel(request.RequestMode))})
-						if err := submitClientCallFailure(runCtx, callbackProvider, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(request.RequestMode), toolName)); err != nil {
+						if err := submitClientCallFailure(runCtx, callbackProvider, configRef.value, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(request.RequestMode), toolName)); err != nil {
 							return err
 						}
 						continue
@@ -363,7 +363,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						approved := confirm(buildTUIClientToolConfirmRequest(localConfig, sessionState.ContextDir, event.Data, persistApprovedSkillReview, persistSkillReviewAllowAll, persistBrowserToolAlwaysAllow, persistComputerToolAlwaysAllow))
 						if !approved {
 							emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端工具执行。"})
-							if err := submitClientCallFailure(runCtx, callbackProvider, event.Data, "用户拒绝执行客户端工具"); err != nil {
+							if err := submitClientCallFailure(runCtx, callbackProvider, localConfig, event.Data, "用户拒绝执行客户端工具"); err != nil {
 								return err
 							}
 							continue
@@ -371,14 +371,14 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						execConfig := approvedClientToolExecutionConfig(localConfig, toolName)
 						toolName, result, toolErr := runtimeClient.ExecuteClientToolPayloadWithProvider(runCtx, callbackProvider, execConfig, event.Data)
 						emitTUIClientToolResultEvents(emit, execConfig, toolName, result, toolErr)
-						if err := runtimeClient.SubmitClientToolCallback(runCtx, callbackProvider, event.Data, result, toolErr); err != nil {
+						if err := runtimeClient.SubmitClientToolCallback(runCtx, callbackProvider, localConfig, event.Data, result, toolErr); err != nil {
 							return err
 						}
 						continue
 					}
 					toolName, result, toolErr := runtimeClient.ExecuteClientToolPayloadWithProvider(runCtx, callbackProvider, localConfig, event.Data)
 					emitTUIClientToolResultEvents(emit, localConfig, toolName, result, toolErr)
-					if err := runtimeClient.SubmitClientToolCallback(runCtx, callbackProvider, event.Data, result, toolErr); err != nil {
+					if err := runtimeClient.SubmitClientToolCallback(runCtx, callbackProvider, localConfig, event.Data, result, toolErr); err != nil {
 						return err
 					}
 				case provider.EventError:

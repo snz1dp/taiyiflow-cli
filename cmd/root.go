@@ -1037,7 +1037,7 @@ func (a *App) streamTaskWithSkillRetry(
 		case provider.EventBuiltIn:
 			clearRenderedStreamingSuffix()
 			if !modeAllowsBuiltIn(sessionState.RequestMode) {
-				if err := submitClientCallFailure(ctx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(sessionState.RequestMode))); err != nil {
+				if err := submitClientCallFailure(ctx, providerClient, runtimeConfig, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(sessionState.RequestMode))); err != nil {
 					return sessionState, err
 				}
 				if showStreamEvents {
@@ -1052,7 +1052,7 @@ func (a *App) streamTaskWithSkillRetry(
 			clearRenderedStreamingSuffix()
 			toolName := nestedStringValue(event.Data, "function", "name")
 			if !modeAllowsClientTool(sessionState.RequestMode, toolName) {
-				if err := submitClientCallFailure(ctx, providerClient, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(sessionState.RequestMode), toolName)); err != nil {
+				if err := submitClientCallFailure(ctx, providerClient, runtimeConfig, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(sessionState.RequestMode), toolName)); err != nil {
 					return sessionState, err
 				}
 				if showStreamEvents {

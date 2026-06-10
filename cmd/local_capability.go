@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
@@ -358,6 +359,7 @@ func modeAllowsClientTool(mode string, toolName string) bool {
 func submitClientCallFailure(
 	ctx context.Context,
 	providerClient provider.Provider,
+	config internalconfig.Config,
 	payload map[string]any,
 	errorMessage string,
 ) error {
@@ -373,5 +375,9 @@ func submitClientCallFailure(
 	if result.FlowID == "" || result.RunID == "" || result.CallID == "" {
 		return fmt.Errorf("客户端回调缺少关键字段")
 	}
-	return providerClient.SubmitClientCallResult(ctx, result)
+	// 使用独立上下文提交失败回调，避免父上下文已取消时出现 "context deadline exceeded"。
+	// 超时时间使用系统配置中的 HTTP 请求超时设定。
+	callbackCtx, cancel := clientruntime.DetachedCallbackContext(ctx, time.Duration(config.HTTPTimeoutSeconds)*time.Second)
+	defer cancel()
+	return providerClient.SubmitClientCallResult(callbackCtx, result)
 }

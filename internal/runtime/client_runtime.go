@@ -27,6 +27,19 @@ const (
 	localToolServerName = "local"
 )
 
+// DetachedCallbackContext 创建一个脱离父上下文生命周期的独立上下文，
+// 仅保留父上下文中携带的 Value（如认证信息），不受父上下文的取消或超时影响。
+// 用于回调结果提交、协同任务回报等关键操作，确保即使流处理已结束或 WebSocket 断连，
+// 结果仍能通过 HTTP 提交到服务端。timeout 为超时时间，若 <= 0 则使用系统默认 HTTP 超时配置。
+// 调用方必须在使用完毕后调用返回的 cancel 函数。
+func DetachedCallbackContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx := context.WithoutCancel(parent)
+	if timeout <= 0 {
+		timeout = time.Duration(internalconfig.DefaultHTTPTimeoutSeconds) * time.Second
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
 var windowsShellBuiltins = map[string]struct{}{
 	"assoc": {}, "break": {}, "call": {}, "cd": {}, "chdir": {}, "cls": {}, "color": {},
 	"copy": {}, "date": {}, "del": {}, "dir": {}, "echo": {}, "endlocal": {}, "erase": {},
@@ -211,7 +224,7 @@ func (r *ClientRuntime) HandleBuiltInEvent(
 	}()
 	if serverName != "built_in_command" || commandName != "run_command_via_client" {
 		toolErr = fmt.Errorf("不支持的内置调用: %s/%s", serverName, commandName)
-		returnErr = r.submitCallback(ctx, providerClient, payload, false, nil, toolErr.Error())
+		returnErr = r.submitCallback(ctx, providerClient, config, payload, false, nil, toolErr.Error())
 		return returnErr
 	}
 
@@ -220,22 +233,22 @@ func (r *ClientRuntime) HandleBuiltInEvent(
 		approved, err := r.confirmCommand(arguments, config)
 		if err != nil {
 			toolErr = err
-			returnErr = r.submitCallback(ctx, providerClient, payload, false, nil, err.Error())
+			returnErr = r.submitCallback(ctx, providerClient, config, payload, false, nil, err.Error())
 			return returnErr
 		}
 		if !approved {
 			toolErr = fmt.Errorf("用户拒绝执行客户端命令")
-			returnErr = r.submitCallback(ctx, providerClient, payload, false, nil, "用户拒绝执行客户端命令。")
+			returnErr = r.submitCallback(ctx, providerClient, config, payload, false, nil, "用户拒绝执行客户端命令。")
 			return returnErr
 		}
 	}
 
 	toolResult, toolErr = r.runCommand(ctx, config, arguments)
 	if toolErr != nil {
-		returnErr = r.submitCallback(ctx, providerClient, payload, false, nil, toolErr.Error())
+		returnErr = r.submitCallback(ctx, providerClient, config, payload, false, nil, toolErr.Error())
 		return returnErr
 	}
-	returnErr = r.submitCallback(ctx, providerClient, payload, true, toolResult, "")
+	returnErr = r.submitCallback(ctx, providerClient, config, payload, true, toolResult, "")
 	return returnErr
 }
 
@@ -246,7 +259,7 @@ func (r *ClientRuntime) HandleClientToolEvent(
 	payload map[string]any,
 ) error {
 	_, result, err := r.ExecuteClientToolPayloadWithProvider(ctx, providerClient, config, payload)
-	return r.SubmitClientToolCallback(ctx, providerClient, payload, result, err)
+	return r.SubmitClientToolCallback(ctx, providerClient, config, payload, result, err)
 }
 
 func (r *ClientRuntime) ExecuteClientToolPayload(
@@ -390,14 +403,15 @@ func enrichToolArgumentsWithContext(arguments map[string]any, payload map[string
 func (r *ClientRuntime) SubmitClientToolCallback(
 	ctx context.Context,
 	providerClient provider.Provider,
+	config internalconfig.Config,
 	payload map[string]any,
 	result any,
 	err error,
 ) error {
 	if err != nil {
-		return r.submitCallback(ctx, providerClient, payload, false, result, err.Error())
+		return r.submitCallback(ctx, providerClient, config, payload, false, result, err.Error())
 	}
-	return r.submitCallback(ctx, providerClient, payload, true, result, "")
+	return r.submitCallback(ctx, providerClient, config, payload, true, result, "")
 }
 
 func (r *ClientRuntime) ExecuteShellCommand(
@@ -682,6 +696,7 @@ func matchAskUserOption(answer string, options []AskUserOption) (AskUserOption, 
 func (r *ClientRuntime) submitCallback(
 	ctx context.Context,
 	providerClient provider.Provider,
+	config internalconfig.Config,
 	payload map[string]any,
 	success bool,
 	result any,
@@ -700,7 +715,11 @@ func (r *ClientRuntime) submitCallback(
 	if callback.FlowID == "" || callback.RunID == "" || callback.CallID == "" {
 		return fmt.Errorf("客户端回调缺少关键字段")
 	}
-	return providerClient.SubmitClientCallResult(ctx, callback)
+	// 使用独立上下文提交回调结果，避免父上下文已取消时出现 "context deadline exceeded"。
+	// 超时时间使用系统配置中的 HTTP 请求超时设定。
+	callbackCtx, cancel := DetachedCallbackContext(ctx, time.Duration(config.HTTPTimeoutSeconds)*time.Second)
+	defer cancel()
+	return providerClient.SubmitClientCallResult(callbackCtx, callback)
 }
 
 func (r *ClientRuntime) confirmCommand(arguments map[string]any, config internalconfig.Config) (bool, error) {

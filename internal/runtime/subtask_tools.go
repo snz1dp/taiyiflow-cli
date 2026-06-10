@@ -98,7 +98,6 @@ func (r *ClientRuntime) runSubtask(
 	return r.executeManagedSubtaskRequests(ctx, providerClient, config, requests, maxParallelism), nil
 }
 
-
 func (r *ClientRuntime) executeManagedSubtaskRequest(
 	ctx context.Context,
 	providerClient provider.Provider,
@@ -415,7 +414,7 @@ func (r *ClientRuntime) executeLocalSubtask(
 		RequestedSkillNames:       r.subtaskRequestedSkillNames,
 		ClientMCPServers:          r.ClientMCPServersForMode(request.RequestMode, config),
 		ClientSkillPackages:       r.subtaskSkillPackages,
-		ParentSessionID:           request.ParentSessionID,
+		ParentID:                  request.ParentRunID,
 	})
 	if err != nil {
 		return subtaskExecutionResult{}, newToolError("EXECUTION_FAILED", "执行子任务流失败: %v", err)
