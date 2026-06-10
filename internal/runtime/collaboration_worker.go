@@ -32,6 +32,7 @@ const (
 	collaborationEventTaskError               = "task.error"
 	collaborationEventTasksFetchRecent        = "tasks.fetch_recent"
 	collaborationEventTasksRecent             = "tasks.recent"
+	defaultWorkerRequestTimeout               = 5 * time.Minute
 	defaultWorkerReconnectDelay               = 3 * time.Second
 	defaultWorkerPingInterval                 = 45 * time.Second
 	defaultWorkerRecentTaskLimit              = 20
@@ -433,7 +434,12 @@ func (w *collaborationWorker) updateTaskFallback(ctx context.Context, taskID str
 	// 使用独立上下文执行 HTTP 回退更新，避免父上下文（WebSocket 连接上下文）已取消时
 	// 出现 "context deadline exceeded"，确保协同任务状态能可靠回报到服务端。
 	// 超时时间使用系统配置中的 HTTP 请求超时设定。
-	callbackCtx, cancel := DetachedCallbackContext(ctx, time.Duration(w.config.HTTPTimeoutSeconds)*time.Second)
+	timeout := time.Duration(defaultWorkerRequestTimeout)
+	if w.config != nil {
+		timeout = time.Duration(w.config.HTTPTimeoutSeconds) * time.Second
+	}
+
+	callbackCtx, cancel := DetachedCallbackContext(ctx, timeout)
 	defer cancel()
 	if _, err := w.provider.UpdateClientCollaboration(callbackCtx, taskID, request); err != nil {
 		w.logf("协同任务接口回退更新失败: task_id=%s err=%v", taskID, err)
