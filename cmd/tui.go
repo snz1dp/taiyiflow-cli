@@ -249,6 +249,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					}
 					primaryClient.UpdateSession(sessionState.SessionID)
 				}
+				localConfig, configErr := a.configManager.Load()
+				if configErr != nil {
+					return configErr
+				}
 				switch event.Type {
 				case provider.EventMessage:
 					if metrics := buildTUIStreamStatsMetrics(event.Data); metrics != nil {
@@ -297,10 +301,6 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					if metrics := buildTUIStreamStatsMetrics(event.Data); metrics != nil {
 						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
 					}
-					localConfig, configErr := a.configManager.Load()
-					if configErr != nil {
-						return configErr
-					}
 					if !modeAllowsBuiltIn(request.RequestMode) {
 						emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝本地命令执行：当前为%s。", requestModeLabel(request.RequestMode))})
 						if err := submitClientCallFailure(runCtx, callbackProvider, localConfig, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(request.RequestMode))); err != nil {
@@ -339,7 +339,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					toolName := nestedStringValue(event.Data, "function", "name")
 					if !modeAllowsClientTool(request.RequestMode, toolName) {
 						emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝客户端工具 %s：当前为%s。", toolName, requestModeLabel(request.RequestMode))})
-						if err := submitClientCallFailure(runCtx, callbackProvider, configRef.value, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(request.RequestMode), toolName)); err != nil {
+						if err := submitClientCallFailure(runCtx, callbackProvider, localConfig, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(request.RequestMode), toolName)); err != nil {
 							return err
 						}
 						continue
