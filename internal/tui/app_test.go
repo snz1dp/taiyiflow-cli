@@ -4534,3 +4534,61 @@ func TestApplyEventWritesToolCallPromptIntoTimeline(t *testing.T) {
 		t.Fatalf("unexpected client tool note: %#v", m.entries[2])
 	}
 }
+
+func TestIsMarkdownTableRow(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{"| a | b | c |", true},
+		{"|---|---|---|", true},
+		{"| 列1 | 列2 | 列3 |", true},
+		{"  | indented | table |  ", true},
+		{"| single |", true},
+		{"|", false},
+		{"", false},
+		{"not a table", false},
+		{"| incomplete", false},
+		{"incomplete |", false},
+		{"hello | world", false},
+	}
+	for _, tc := range cases {
+		got := isMarkdownTableRow(tc.line)
+		if got != tc.want {
+			t.Errorf("isMarkdownTableRow(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}
+
+func TestHardWrapTextPreservesMarkdownTableRows(t *testing.T) {
+	tableContent := "| 名称 | 状态 | 详细描述信息 |\n|------|------|-------------|\n| 项目A | 运行中 | 这是一个很长的描述内容 |\n| 项目B | 已停止 | 另一个很长的描述内容 |"
+
+	// Wrap at a narrow width that would normally break table rows.
+	wrapped := hardWrapText(tableContent, 20)
+	lines := strings.Split(wrapped, "\n")
+
+	// Each table row should be preserved intact, not split.
+	expectedRows := []string{
+		"| 名称 | 状态 | 详细描述信息 |",
+		"|------|------|-------------|",
+		"| 项目A | 运行中 | 这是一个很长的描述内容 |",
+		"| 项目B | 已停止 | 另一个很长的描述内容 |",
+	}
+	if len(lines) != len(expectedRows) {
+		t.Fatalf("expected %d lines, got %d: %q", len(expectedRows), len(lines), wrapped)
+	}
+	for i, expected := range expectedRows {
+		if lines[i] != expected {
+			t.Errorf("line %d: got %q, want %q", i, lines[i], expected)
+		}
+	}
+}
+
+func TestHardWrapTextStillWrapsNonTableContent(t *testing.T) {
+	content := "这是一段很长的普通文本内容需要被换行处理"
+	wrapped := hardWrapText(content, 10)
+	lines := strings.Split(wrapped, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected non-table content to be wrapped into multiple lines, got %d lines: %q", len(lines), wrapped)
+	}
+}

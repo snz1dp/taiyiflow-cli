@@ -6128,6 +6128,23 @@ func sanitizeTerminalText(content string) string {
 	return watermarkCharReplacer.Replace(cleaned)
 }
 
+func isMarkdownTableRow(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	if !strings.HasPrefix(trimmed, "|") {
+		return false
+	}
+	if !strings.HasSuffix(trimmed, "|") {
+		return false
+	}
+	// Must have at least two pipe characters to be a valid table row.
+	first := strings.Index(trimmed, "|")
+	last := strings.LastIndex(trimmed, "|")
+	return first != last
+}
+
 func hardWrapText(content string, width int) string {
 	if width <= 0 {
 		return content
@@ -6137,6 +6154,15 @@ func hardWrapText(content string, width int) string {
 	for _, line := range lines {
 		if line == "" {
 			wrapped = append(wrapped, "")
+			continue
+		}
+
+		// Skip wrapping for Markdown table rows so that glamour can
+		// render them correctly.  Breaking a table row mid-cell would
+		// destroy the table structure and cause the last cell's content
+		// to appear in the first cell of the next row.
+		if isMarkdownTableRow(line) {
+			wrapped = append(wrapped, line)
 			continue
 		}
 
