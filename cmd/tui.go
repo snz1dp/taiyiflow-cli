@@ -243,7 +243,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			assistantRenderState := tuiAssistantRenderState{}
 		eventLoop:
 			for event := range stream {
-				if updateSessionLineageFromEvent(&sessionState, event) {
+				if updateSessionLineageFromEvent(&sessionState, event, request.RunID) {
 					if err := saveSessionStateIfReady(a.sessionStore, sessionState); err != nil {
 						return err
 					}

@@ -40,22 +40,28 @@ func applySessionRequestLineage(state *agent.SessionState, flowID string, workdi
 	return changed
 }
 
-func updateSessionLineageFromEvent(state *agent.SessionState, event provider.StreamEvent) bool {
-	return updateSessionLineageFromPayload(state, event.Data)
+func updateSessionLineageFromEvent(state *agent.SessionState, event provider.StreamEvent, currentRunID string) bool {
+	return updateSessionLineageFromPayload(state, event.Data, currentRunID)
 }
 
-func updateSessionLineageFromPayload(state *agent.SessionState, payload map[string]any) bool {
+func updateSessionLineageFromPayload(state *agent.SessionState, payload map[string]any, currentRunID string) bool {
 	if state == nil || len(payload) == 0 {
 		return false
 	}
 	changed := false
-	if runID := resolveLineageRunID(payload); runID != "" && strings.TrimSpace(state.LastRunID) != runID {
-		state.LastRunID = runID
-		changed = true
-	}
-	if messageID := resolveLineageMessageID(payload); messageID != "" && strings.TrimSpace(state.LastMessageID) != messageID {
-		state.LastMessageID = messageID
-		changed = true
+	eventRunID := resolveLineageRunID(payload)
+	// 仅当事件属于当前请求的 run 时才更新 LastRunID/LastMessageID，
+	// 防止子智能体的 run_id/message_id 污染父会话的 session state 文件。
+	runIDMatches := strings.TrimSpace(currentRunID) == "" || eventRunID == "" || strings.TrimSpace(eventRunID) == strings.TrimSpace(currentRunID)
+	if runIDMatches {
+		if eventRunID != "" && strings.TrimSpace(state.LastRunID) != eventRunID {
+			state.LastRunID = eventRunID
+			changed = true
+		}
+		if messageID := resolveLineageMessageID(payload); messageID != "" && strings.TrimSpace(state.LastMessageID) != messageID {
+			state.LastMessageID = messageID
+			changed = true
+		}
 	}
 	return changed
 }

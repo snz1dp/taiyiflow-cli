@@ -902,7 +902,7 @@ func (a *App) streamTaskWithSkillRetry(
 	}
 
 	for event := range stream {
-		if updateSessionLineageFromEvent(&sessionState, event) {
+		if updateSessionLineageFromEvent(&sessionState, event, requestRunID) {
 			if err := saveSessionStateIfReady(a.sessionStore, sessionState); err != nil {
 				return sessionState, err
 			}
