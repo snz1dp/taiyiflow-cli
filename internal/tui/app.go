@@ -751,6 +751,7 @@ type model struct {
 	lastAssistantMessageID     string
 	currentStreamingEntryIndex int
 	todoPanelHidden            bool
+	todoPanelForceShow         bool
 	manualSnapshotRefresh      bool
 	historyLoading             bool
 }
@@ -3270,8 +3271,6 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 				m.activityHint = formatCompressionActivityHint(event.Text)
 				if strings.Contains(event.Text, "开始进行上下文压缩") || strings.HasPrefix(event.Text, "正在进行上下文压缩") {
 					m.compressionInProgress = true
-				} else if strings.HasPrefix(event.Text, "上下文压缩完成") {
-					m.compressionInProgress = false
 				}
 				break
 			}
@@ -3845,7 +3844,10 @@ func (m model) mainPaneWidth() int {
 }
 
 func (m model) todoPaneWidth() int {
-	if !m.hasTodoSidebarContent() || m.todoPanelHidden {
+	if m.todoPanelHidden {
+		return 0
+	}
+	if !m.hasTodoSidebarContent() && !m.todoPanelForceShow {
 		return 0
 	}
 	available := m.mainPaneWidth()
@@ -3871,7 +3873,7 @@ func (m model) hasTodoSidebarContent() bool {
 }
 
 func (m model) todoPaneLines(width int) []string {
-	if !m.hasTodoSidebarContent() {
+	if !m.hasTodoSidebarContent() && !m.todoPanelForceShow {
 		return nil
 	}
 	items := m.snapshot.TodoItems
@@ -6404,29 +6406,34 @@ func (m *model) handleTodoSlashCommand(command string) tea.Cmd {
 	switch action {
 	case "show":
 		m.todoPanelHidden = false
+		m.todoPanelForceShow = true
 	case "hide":
 		m.todoPanelHidden = true
+		m.todoPanelForceShow = false
 	case "toggle":
-		if hasActiveItems {
+		if hasActiveItems || m.todoPanelForceShow {
 			m.todoPanelHidden = !m.todoPanelHidden
 		}
 	case "status":
 	}
-	if !hasActiveItems {
+	if !hasActiveItems && !m.todoPanelForceShow {
 		m.todoPanelHidden = false
 	}
-	m.entries = append(m.entries, entry{role: "system", content: todoPanelStatusText(m.todoPanelHidden, m.snapshot.TodoItems)})
+	m.entries = append(m.entries, entry{role: "system", content: todoPanelStatusText(m.todoPanelHidden, m.todoPanelForceShow, m.snapshot.TodoItems)})
 	m.refreshLayoutAfterStateChange()
 	return nil
 }
 
-func todoPanelStatusText(hidden bool, items []TodoItem) string {
+func todoPanelStatusText(hidden bool, forceShow bool, items []TodoItem) string {
 	total := len(items)
 	active := countActiveTodoItems(items)
 	if total == 0 {
 		return "当前会话没有待办，右侧待办栏保持隐藏。"
 	}
 	if active == 0 {
+		if forceShow && !hidden {
+			return fmt.Sprintf("当前待办共 %d 项，已全部完成，右侧待办栏已显示。", total)
+		}
 		return fmt.Sprintf("当前待办共 %d 项，已全部完成，右侧待办栏已自动隐藏。", total)
 	}
 	if hidden {
@@ -6608,7 +6615,9 @@ func (m *model) syncTodoPanelVisibility(previousItems []TodoItem, currentItems [
 	previousActive := countActiveTodoItems(previousItems) > 0
 	currentActive := countActiveTodoItems(currentItems) > 0
 	if !currentActive || (!previousActive && currentActive) {
-		m.todoPanelHidden = false
+		if !m.todoPanelForceShow {
+			m.todoPanelHidden = false
+		}
 	}
 }
 
@@ -9067,6 +9076,9 @@ func (m *model) clampFlowCursor() {
 }
 
 func (m model) contextUsageGrid() string {
+	if m.compressionInProgress {
+		return ""
+	}
 	usage := m.requestStats.TokenUsage
 	if usage == nil || usage.ContextWindow == nil {
 		return ""
@@ -9110,7 +9122,7 @@ func formatContextUsageGrid(currentTokens int, maxTokens int, cellCount int) str
 
 func (m model) inputContextUsageHint() string {
 	if m.compressionInProgress {
-		return "正在压缩上下文..."
+		return "上下文压缩中"
 	}
 	usage := m.requestStats.TokenUsage
 	compressionHint := formatCompressionStatusHint(m.requestStats.Compression)
@@ -9210,13 +9222,6 @@ func formatCompressionFooterHint(text string) string {
 	normalized := strings.ReplaceAll(trimmed, " -> ", "→")
 	normalized = strings.ReplaceAll(normalized, "->", "→")
 	if strings.HasPrefix(normalized, "上下文压缩完成：") {
-		summary := strings.TrimSpace(strings.TrimPrefix(normalized, "上下文压缩完成："))
-		if markerIndex := strings.Index(summary, "（"); markerIndex >= 0 {
-			summary = strings.TrimSpace(summary[:markerIndex])
-		}
-		if summary != "" {
-			return summary
-		}
 		return "压缩完成"
 	}
 	if strings.HasPrefix(normalized, "上下文压缩完成") {

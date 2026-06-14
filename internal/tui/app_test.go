@@ -2309,14 +2309,14 @@ func TestCompressionProgressNoteRendersInFooterAndActivityHint(t *testing.T) {
 
 	model.applyEvent(Event{Kind: EventProgressNote, Text: "上下文压缩完成：320 -> 160", EventType: "compression_progress"})
 
-	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "320→160") {
-		t.Fatalf("expected compact compression progress in footer status bar, got %q", got)
+	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "压缩完成") {
+		t.Fatalf("expected compression completion status in footer, got %q", got)
 	}
 	if got := strings.TrimSpace(model.activityHint); got != "上下文已压缩，继续生成..." {
 		t.Fatalf("expected compression completion activity hint, got %q", got)
 	}
-	if got := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(got, "压缩320→160") {
-		t.Fatalf("expected footer completion copy to stay minimal, got %q", got)
+	if got := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(got, "320→160") {
+		t.Fatalf("expected token ratio to not appear in footer (should be in context hint via stats), got %q", got)
 	}
 	if got := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(got, "上下文压缩完成：320 -> 160") {
 		t.Fatalf("expected verbose compression completion copy removed from footer, got %q", got)

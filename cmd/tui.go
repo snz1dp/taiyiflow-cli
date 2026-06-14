@@ -192,7 +192,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			)
 			stream, streamSession, streamErr := callbackProvider.Stream(runCtx, provider.StreamRequest{
 				FlowID:                    currentFlow,
-				Input:                     strings.TrimSpace(request.Input),
+				Input:                     buildStreamInputWithTodoContext(sessionState.TodoItems, request.Input),
 				InputType:                 "any",
 				Tweaks:                    buildTaskTweaks(config, clientContextDir, commandExecutionTarget),
 				InputFiles:                append([]string(nil), request.InputFiles...),
@@ -279,9 +279,11 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
 					}
 				case provider.EventCompressionStart:
-					if text := buildTUICompressionProgressText(event.Data); text != "" {
-						emit(tui.Event{Kind: tui.EventProgressNote, Text: text, EventType: "compression_progress"})
+					text := buildTUICompressionProgressText(event.Data)
+					if text == "" {
+						text = "开始进行上下文压缩"
 					}
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: text, EventType: "compression_progress"})
 					if metrics := buildTUICompressionMetrics(event.Data); metrics != nil {
 						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
 					}
@@ -1991,6 +1993,60 @@ func buildTUITodoItemsFromResult(resultMap map[string]any) []tui.TodoItem {
 		})
 	}
 	return result
+}
+
+func buildTodoContextHint(items []agent.TodoItem) string {
+	if len(items) == 0 {
+		return ""
+	}
+	type activeItem struct {
+		index  int
+		title  string
+		status string
+		notes  string
+	}
+	var active []activeItem
+	for i, item := range items {
+		status := strings.ToLower(strings.TrimSpace(item.Status))
+		status = strings.ReplaceAll(status, "-", "_")
+		status = strings.ReplaceAll(status, " ", "_")
+		if status == "completed" || status == "done" {
+			continue
+		}
+		active = append(active, activeItem{
+			index:  i + 1,
+			title:  strings.TrimSpace(item.Title),
+			status: status,
+			notes:  strings.TrimSpace(item.Notes),
+		})
+	}
+	if len(active) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("<todo_reminder>\n")
+	sb.WriteString(fmt.Sprintf("你当前有 %d 项未完成的会话待办，请在本次回复中继续关注并推进：\n", len(active)))
+	for _, item := range active {
+		sb.WriteString(fmt.Sprintf("%d. [%s] %s", item.index, item.status, item.title))
+		if item.notes != "" {
+			sb.WriteString(fmt.Sprintf("\n   %s", item.notes))
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("</todo_reminder>")
+	return sb.String()
+}
+
+func buildStreamInputWithTodoContext(todoItems []agent.TodoItem, input string) string {
+	hint := buildTodoContextHint(todoItems)
+	trimmed := strings.TrimSpace(input)
+	if hint == "" {
+		return trimmed
+	}
+	if trimmed == "" {
+		return hint
+	}
+	return hint + "\n\n" + trimmed
 }
 
 func buildTodoUpdateEventText(items []tui.TodoItem) string {
