@@ -9122,7 +9122,7 @@ func formatContextUsageGrid(currentTokens int, maxTokens int, cellCount int) str
 
 func (m model) inputContextUsageHint() string {
 	if m.compressionInProgress {
-		return "上下文压缩中"
+		return "上下文压缩中..."
 	}
 	usage := m.requestStats.TokenUsage
 	compressionHint := formatCompressionStatusHint(m.requestStats.Compression)
@@ -9217,15 +9217,15 @@ func formatCompressionFooterHint(text string) string {
 		return ""
 	}
 	if strings.Contains(trimmed, "开始进行上下文压缩") {
-		return "压缩中"
+		return ""
 	}
 	normalized := strings.ReplaceAll(trimmed, " -> ", "→")
 	normalized = strings.ReplaceAll(normalized, "->", "→")
 	if strings.HasPrefix(normalized, "上下文压缩完成：") {
-		return "压缩完成"
+		return ""
 	}
 	if strings.HasPrefix(normalized, "上下文压缩完成") {
-		return "压缩完成"
+		return ""
 	}
 	return normalized
 }
