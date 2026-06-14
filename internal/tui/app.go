@@ -707,6 +707,7 @@ type model struct {
 	streamingIndicatorFrame    int
 	streamingIndicatorActive   bool
 	activityHint               string
+	compressionInProgress      bool
 	footerHint                 string
 	currentToolLabel           string
 	latestToolSummary          string
@@ -1309,6 +1310,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.finishRequestStats()
 		m.resetAssistantChunkState()
 		m.activityHint = ""
+		m.compressionInProgress = false
 		m.currentToolLabel = ""
 		m.requestCancel = nil
 		m.retryAvailable = false
@@ -3220,6 +3222,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 			break
 		}
 		m.activityHint = ""
+		m.compressionInProgress = false
 		if m.state.phase != progressStreaming {
 			cmd = m.transitionProgress(progressStreaming)
 		}
@@ -3250,6 +3253,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 			break
 		}
 		m.activityHint = ""
+		m.compressionInProgress = false
 		if m.state.phase != progressStreaming {
 			cmd = m.transitionProgress(progressStreaming)
 		}
@@ -3264,6 +3268,11 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 			if event.EventType == "compression_progress" {
 				m.footerHint = formatCompressionFooterHint(event.Text)
 				m.activityHint = formatCompressionActivityHint(event.Text)
+				if strings.Contains(event.Text, "开始进行上下文压缩") || strings.HasPrefix(event.Text, "正在进行上下文压缩") {
+					m.compressionInProgress = true
+				} else if strings.HasPrefix(event.Text, "上下文压缩完成") {
+					m.compressionInProgress = false
+				}
 				break
 			}
 			m.activityHint = strings.TrimSpace(event.Text)
@@ -3395,6 +3404,7 @@ func (m *model) completeInterruptedRequest() tea.Cmd {
 	m.finishRequestStats()
 	m.resetAssistantChunkState()
 	m.activityHint = ""
+	m.compressionInProgress = false
 	m.currentToolLabel = ""
 	m.requestCancel = nil
 	m.interrupting = false
@@ -3424,6 +3434,7 @@ func (m *model) startRequest(request Request, appendUserEntry bool) tea.Cmd {
 		m.entries = append(m.entries, entry{role: "user", content: request.Input})
 	}
 	m.activityHint = ""
+	m.compressionInProgress = false
 	m.currentToolLabel = ""
 	m.interrupting = false
 	m.retryAvailable = false
@@ -9098,6 +9109,9 @@ func formatContextUsageGrid(currentTokens int, maxTokens int, cellCount int) str
 }
 
 func (m model) inputContextUsageHint() string {
+	if m.compressionInProgress {
+		return "正在压缩上下文..."
+	}
 	usage := m.requestStats.TokenUsage
 	compressionHint := formatCompressionStatusHint(m.requestStats.Compression)
 	if usage == nil || usage.ContextWindow == nil {
