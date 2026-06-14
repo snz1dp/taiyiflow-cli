@@ -1376,7 +1376,7 @@ func TestExecuteTUIInternetCommandTogglesState(t *testing.T) {
 	}
 }
 
-func TestEmitTUIClientToolResultEventsEmitsStatusNoteBeforePanel(t *testing.T) {
+func TestEmitTUIClientToolResultEventsEmitsStatusNoteWithoutPanel(t *testing.T) {
 	events := []internaltui.Event{}
 	emitTUIClientToolResultEvents(func(event internaltui.Event) {
 		events = append(events, event)
@@ -1386,14 +1386,11 @@ func TestEmitTUIClientToolResultEventsEmitsStatusNoteBeforePanel(t *testing.T) {
 			map[string]any{"name": "symbol", "path": "internal/tui/app.go"},
 		},
 	}, nil)
-	if len(events) != 2 {
-		t.Fatalf("expected status note and panel, got %#v", events)
+	if len(events) != 1 {
+		t.Fatalf("expected status note only, got %#v", events)
 	}
 	if events[0].Kind != internaltui.EventSystemNote || !strings.Contains(events[0].Text, "结果已生成") {
-		t.Fatalf("expected system note before panel, got %#v", events)
-	}
-	if events[1].Kind != internaltui.EventToolPanel || events[1].Panel == nil {
-		t.Fatalf("expected tool panel after note, got %#v", events)
+		t.Fatalf("expected system note, got %#v", events)
 	}
 }
 
@@ -1558,7 +1555,7 @@ func TestEmitTUIClientToolResultEventsSkipsTaskInfoPanel(t *testing.T) {
 	}
 }
 
-func TestEmitTUIClientToolResultEventsKeepsFileEditFailurePanelInDirectMode(t *testing.T) {
+func TestEmitTUIClientToolResultEventsSkipsFileEditFailurePanel(t *testing.T) {
 	config := internalconfig.Default()
 	config.WriteConfirmationPolicy = internalconfig.WriteConfirmationPolicyDirect
 	events := []internaltui.Event{}
@@ -1569,17 +1566,14 @@ func TestEmitTUIClientToolResultEventsKeepsFileEditFailurePanelInDirectMode(t *t
 		"status":        "patch_conflict",
 		"sha256_before": "old-hash",
 	}, errors.New("PATCH_CONFLICT"))
-	if len(events) != 3 {
-		t.Fatalf("expected error note, status note and panel for direct file_edit failure, got %#v", events)
+	if len(events) != 2 {
+		t.Fatalf("expected error note and status note only for file_edit failure, got %#v", events)
 	}
 	if events[0].Kind != internaltui.EventErrorNote {
 		t.Fatalf("expected error note first, got %#v", events)
 	}
 	if events[1].Kind != internaltui.EventSystemNote {
 		t.Fatalf("expected status note second, got %#v", events)
-	}
-	if events[2].Kind != internaltui.EventToolPanel || events[2].Panel == nil {
-		t.Fatalf("expected failure panel to remain available, got %#v", events)
 	}
 }
 

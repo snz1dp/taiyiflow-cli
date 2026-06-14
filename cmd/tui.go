@@ -1946,17 +1946,7 @@ func emitTUIClientToolResultEvents(emit func(tui.Event), config internalconfig.C
 }
 
 func shouldOpenTUIClientToolPanel(config internalconfig.Config, toolName string, toolErr error) bool {
-	if toolErr != nil {
-		return true
-	}
-	switch strings.TrimSpace(toolName) {
-	case "file_edit", "write_file":
-		return internalconfig.NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy) != internalconfig.WriteConfirmationPolicyDirect
-	case "task_output", "terminal_capture", "task_list", "task_delete", "task_cleanup":
-		return false
-	default:
-		return !isBrowserToolName(toolName) && !isComputerToolName(toolName)
-	}
+	return false
 }
 
 func buildToolPanelStatusText(panel *tui.ToolPanel, fallback string) string {
