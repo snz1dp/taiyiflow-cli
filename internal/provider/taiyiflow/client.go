@@ -1342,12 +1342,12 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 
 	content, err := json.Marshal(body)
 	if err != nil {
-		return nil, nil, fmt.Errorf("序列化 stream 请求失败: %w", err)
+		return nil, nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL.String(), bytes.NewReader(content))
 	if err != nil {
-		return nil, nil, fmt.Errorf("创建 stream 请求失败: %w", err)
+		return nil, nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "text/event-stream")
