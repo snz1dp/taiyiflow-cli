@@ -23,6 +23,7 @@ import (
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/textsanitize"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/workspaceinstance"
 )
 
@@ -850,8 +851,8 @@ func (a *App) streamTaskWithSkillRetry(
 		RunID:                     requestRunID,
 		RequestType:               normalizeRequestMode(sessionState.RequestMode),
 		ReasoningEnabled:          resolveReasoningEnabled(config, sessionState.ReasoningOverride),
-		AgentAutoLoopEnabled:      resolveAgentAutoLoopEnabled(config, sessionState, sessionState.RequestMode),
-		AgentAutoLoopMaxRounds:    resolveAgentAutoLoopMaxRounds(config, sessionState, sessionState.RequestMode),
+		AgentAutoLoopEnabled:      resolveAgentAutoLoopEnabled(config, sessionState, sessionState.RequestMode, nil),
+		AgentAutoLoopMaxRounds:    resolveAgentAutoLoopMaxRounds(config, sessionState, sessionState.RequestMode, nil),
 		CrossSessionMemoryEnabled: boolPtr(config.CrossSessionMemoryEnabled),
 		ClientType:                provider.ClientTypeCLI,
 		ClientID:                  config.ClientID,
@@ -1260,7 +1261,8 @@ func sanitizeCLIStreamText(content string) string {
 	}
 	cleaned := cmdANSIOSCRegexp.ReplaceAllString(content, "")
 	cleaned = cmdANSICSIRegexp.ReplaceAllString(cleaned, "")
-	return strings.ReplaceAll(cleaned, "\x1b", "")
+	cleaned = strings.ReplaceAll(cleaned, "\x1b", "")
+	return textsanitize.StripWatermarkCharacters(cleaned)
 }
 
 func stripThinkControlTags(content string) string {

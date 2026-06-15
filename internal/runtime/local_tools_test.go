@@ -157,10 +157,18 @@ func TestSelectImageUnderstandingTextOnlyUsesTextOutputContract(t *testing.T) {
 		{
 			name: "fallback raw output",
 			result: &provider.ImageUnderstandingResult{
-				Output: "直接文本输出",
+				Output: "直接\u200b文本\u206a输出",
 				Text:   "",
 			},
 			want: "直接文本输出",
+		},
+		{
+			name: "sanitize text output",
+			result: &provider.ImageUnderstandingResult{
+				Output: "原始文本",
+				Text:   "提取后\u200b的纯\u206a文本",
+			},
+			want: "提取后的纯文本",
 		},
 		{
 			name: "empty text returns empty string",
@@ -177,6 +185,25 @@ func TestSelectImageUnderstandingTextOnlyUsesTextOutputContract(t *testing.T) {
 				t.Fatalf("expected %q, got %q", tc.want, got)
 			}
 		})
+	}
+}
+
+func TestParseDocumentUnstructuredOutputStripsWatermarkCharacters(t *testing.T) {
+	parsed, ok := parseDocumentUnstructuredOutput("\u200b{\"items\":[{\"text\":\"结\u200b果\"}]}\u206a")
+	if !ok {
+		t.Fatalf("expected parseDocumentUnstructuredOutput to succeed")
+	}
+	decoded, mapOK := parsed.(map[string]any)
+	if !mapOK {
+		t.Fatalf("expected parsed output map, got %#v", parsed)
+	}
+	items, itemsOK := decoded["items"].([]any)
+	if !itemsOK || len(items) != 1 {
+		t.Fatalf("expected parsed items, got %#v", decoded)
+	}
+	firstItem, itemOK := items[0].(map[string]any)
+	if !itemOK || firstItem["text"] != "结果" {
+		t.Fatalf("expected sanitized parsed text, got %#v", items)
 	}
 }
 
@@ -1162,7 +1189,7 @@ func TestHandleClientToolEventSubmitsDocumentUnstructuredCallback(t *testing.T) 
 	}
 	providerStub := &documentToolProviderStub{
 		serviceConfig: &provider.ServiceConfig{DocUnstructuredFlowID: "doc-flow", DocExts: []string{"pdf"}},
-		runResult:     &provider.DocumentUnstructuredResult{SessionID: "session-1", MediaType: "text/plain", Output: "plain text"},
+		runResult:     &provider.DocumentUnstructuredResult{SessionID: "session-1", MediaType: "text/plain", Output: "pla\u200bin te\u206axt"},
 	}
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	err := runtimeClient.HandleClientToolEvent(context.Background(), providerStub, internalconfig.Config{

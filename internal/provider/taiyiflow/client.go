@@ -948,6 +948,26 @@ func (c *Client) runSimpleFlowRequest(
 	return output, mediaType, firstNonEmpty(strings.TrimSpace(resp.Header.Get(SessionHeader)), trimmedSessionID), nil
 }
 
+func (c *Client) RunFlow(ctx context.Context, request provider.RunFlowRequest) (*provider.RunFlowResult, error) {
+	body := streamRequestBody{
+		InputValue: request.Input,
+		InputType:  firstNonEmpty(strings.TrimSpace(request.InputType), "any"),
+		Tweaks:     cloneTweaks(request.Tweaks),
+		SessionID:  strings.TrimSpace(request.SessionID),
+	}
+
+	output, mediaType, sessionID, err := c.runSimpleFlowRequest(ctx, request.FlowID, request.SessionID, body, "流程执行")
+	if err != nil {
+		return nil, err
+	}
+
+	return &provider.RunFlowResult{
+		Output:    string(output),
+		MediaType: mediaType,
+		SessionID: sessionID,
+	}, nil
+}
+
 func (c *Client) RunDocumentUnstructured(ctx context.Context, request provider.DocumentUnstructuredRequest) (*provider.DocumentUnstructuredResult, error) {
 	body := streamRequestBody{
 		InputValue: request.Input,
@@ -994,15 +1014,19 @@ func (c *Client) RunImageUnderstanding(ctx context.Context, request provider.Ima
 	}, nil
 }
 
-func mergeImageUnderstandingTweaks(request provider.ImageUnderstandingRequest) map[string]any {
-	if len(request.Tweaks) == 0 {
+func cloneTweaks(source map[string]any) map[string]any {
+	if len(source) == 0 {
 		return nil
 	}
-	tweaks := make(map[string]any, len(request.Tweaks))
-	for key, value := range request.Tweaks {
-		tweaks[key] = value
+	cloned := make(map[string]any, len(source))
+	for key, value := range source {
+		cloned[key] = value
 	}
-	return tweaks
+	return cloned
+}
+
+func mergeImageUnderstandingTweaks(request provider.ImageUnderstandingRequest) map[string]any {
+	return cloneTweaks(request.Tweaks)
 }
 
 func (c *Client) ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*provider.SessionMessageList, error) {
@@ -1185,12 +1209,15 @@ func (c *Client) GetServiceConfig(ctx context.Context) (*provider.ServiceConfig,
 			SpeechToText:    payload.FeatureFlags.SpeechToText,
 			HumanAIDialogue: payload.FeatureFlags.HumanAIDialogue,
 		},
-		MaxFileSizeUpload:     payload.MaxFileSizeUpload,
-		DocExts:               docExts,
-		MilvusEnabled:         payload.MilvusEnabled,
-		DefaultFlowID:         strings.TrimSpace(payload.DefaultFlowID),
-		ImageFlowID:           strings.TrimSpace(payload.ImageFlowID),
-		DocUnstructuredFlowID: strings.TrimSpace(payload.DocUnstructuredFlowID),
+		MaxFileSizeUpload:      payload.MaxFileSizeUpload,
+		DocExts:                docExts,
+		MilvusEnabled:          payload.MilvusEnabled,
+		DefaultFlowID:          strings.TrimSpace(payload.DefaultFlowID),
+		ImageFlowID:            strings.TrimSpace(payload.ImageFlowID),
+		DocUnstructuredFlowID:  strings.TrimSpace(payload.DocUnstructuredFlowID),
+		AgentAutoLoopEnabled:   payload.AgentAutoLoopEnabled,
+		AgentAutoLoopMaxRounds: payload.AgentAutoLoopMaxRounds,
+		LoopDecideFlowID:       strings.TrimSpace(payload.LoopDecideFlowID),
 	}, nil
 }
 

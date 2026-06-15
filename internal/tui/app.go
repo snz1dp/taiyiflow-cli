@@ -28,6 +28,7 @@ import (
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/loginprompt"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/textsanitize"
 )
 
 type Snapshot struct {
@@ -708,6 +709,7 @@ type model struct {
 	streamingIndicatorActive   bool
 	activityHint               string
 	compressionInProgress      bool
+	compressionProgressSettled bool
 	footerHint                 string
 	currentToolLabel           string
 	latestToolSummary          string
@@ -893,31 +895,11 @@ const (
 )
 
 var (
-	ansiCSIRegexp         = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
-	ansiOSCRegexp         = regexp.MustCompile(`\x1b\][^\a]*(\a|\x1b\\)`)
-	ansiAPCRegexp         = regexp.MustCompile(`(?s)\x1b_G.*?\x1b\\`)
-	ansiTmuxDCSRegexp     = regexp.MustCompile(`(?s)\x1bPtmux;.*?\x1b\\`)
-	overlayFocusMarker    = "<<overlay-focus>>"
-	watermarkCharReplacer = strings.NewReplacer(
-		"\u200b", "",
-		"\u200c", "",
-		"\u200d", "",
-		"\u2060", "",
-		"\ufeff", "",
-		"\u2061", "",
-		"\u2062", "",
-		"\u2063", "",
-		"\u2064", "",
-		"\u180e", "",
-		"\u200e", "",
-		"\u200f", "",
-		"\u202a", "",
-		"\u202b", "",
-		"\u202c", "",
-		"\u202d", "",
-		"\u206a", "",
-		"\u206b", "",
-	)
+	ansiCSIRegexp      = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+	ansiOSCRegexp      = regexp.MustCompile(`\x1b\][^\a]*(\a|\x1b\\)`)
+	ansiAPCRegexp      = regexp.MustCompile(`(?s)\x1b_G.*?\x1b\\`)
+	ansiTmuxDCSRegexp  = regexp.MustCompile(`(?s)\x1bPtmux;.*?\x1b\\`)
+	overlayFocusMarker = "<<overlay-focus>>"
 
 	overlayStyle = lipgloss.NewStyle().
 			Border(lipgloss.ThickBorder()).
@@ -1288,6 +1270,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.finishRequestStats()
 		m.resetAssistantChunkState()
 		m.activityHint = ""
+		m.compressionInProgress = false
+		m.compressionProgressSettled = false
 		m.currentToolLabel = ""
 		m.requestCancel = nil
 		m.retryAvailable = m.lastRetryableRequest != nil
@@ -1312,6 +1296,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resetAssistantChunkState()
 		m.activityHint = ""
 		m.compressionInProgress = false
+		m.compressionProgressSettled = false
 		m.currentToolLabel = ""
 		m.requestCancel = nil
 		m.retryAvailable = false
@@ -3222,6 +3207,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 			}
 			break
 		}
+		m.releaseCompressionProgress()
 		m.activityHint = ""
 		if m.state.phase != progressStreaming {
 			cmd = m.transitionProgress(progressStreaming)
@@ -3252,6 +3238,7 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		if chunk == "" {
 			break
 		}
+		m.releaseCompressionProgress()
 		m.activityHint = ""
 		if m.state.phase != progressStreaming {
 			cmd = m.transitionProgress(progressStreaming)
@@ -3265,13 +3252,12 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 	case EventProgressNote:
 		if strings.TrimSpace(event.Text) != "" {
 			if event.EventType == "compression_progress" {
+				if m.compressionProgressSettled {
+					break
+				}
 				m.footerHint = formatCompressionFooterHint(event.Text)
 				m.activityHint = formatCompressionActivityHint(event.Text)
-				if strings.Contains(event.Text, "开始进行上下文压缩") || strings.HasPrefix(event.Text, "正在进行上下文压缩") {
-					m.compressionInProgress = true
-				} else if strings.Contains(event.Text, "上下文压缩完成") {
-					m.compressionInProgress = false
-				}
+				m.compressionInProgress = true
 				break
 			}
 			m.activityHint = strings.TrimSpace(event.Text)
@@ -3404,6 +3390,7 @@ func (m *model) completeInterruptedRequest() tea.Cmd {
 	m.resetAssistantChunkState()
 	m.activityHint = ""
 	m.compressionInProgress = false
+	m.compressionProgressSettled = false
 	m.currentToolLabel = ""
 	m.requestCancel = nil
 	m.interrupting = false
@@ -3429,11 +3416,13 @@ func (m *model) startRequest(request Request, appendUserEntry bool) tea.Cmd {
 	if strings.TrimSpace(request.RunID) == "" {
 		request.RunID = newRequestRunID()
 	}
+	assumeCompressionFromHistory := m.hasConversationHistory()
 	if appendUserEntry {
 		m.entries = append(m.entries, entry{role: "user", content: request.Input})
 	}
 	m.activityHint = ""
-	m.compressionInProgress = false
+	m.compressionInProgress = assumeCompressionFromHistory
+	m.compressionProgressSettled = false
 	m.currentToolLabel = ""
 	m.interrupting = false
 	m.retryAvailable = false
@@ -6150,7 +6139,7 @@ func sanitizeTerminalText(content string) string {
 	cleaned = strings.ReplaceAll(cleaned, "\x1b", "")
 	cleaned = strings.ReplaceAll(cleaned, "<think>", "")
 	cleaned = strings.ReplaceAll(cleaned, "</think>", "")
-	return watermarkCharReplacer.Replace(cleaned)
+	return textsanitize.StripWatermarkCharacters(cleaned)
 }
 
 func isMarkdownTableRow(line string) bool {
@@ -8935,6 +8924,26 @@ func (m *model) startRequestStats(input string, runID string) {
 	}
 }
 
+func (m *model) releaseCompressionProgress() {
+	if !m.compressionInProgress {
+		return
+	}
+	m.compressionInProgress = false
+	m.compressionProgressSettled = true
+}
+
+func (m model) hasConversationHistory() bool {
+	for _, item := range m.entries {
+		switch item.role {
+		case "user", "assistant", "reasoning":
+			if strings.TrimSpace(item.content) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (m *model) resetAssistantChunkState() {
 	m.splitNextAssistant = false
 	m.lastAssistantMessageID = ""
@@ -9217,15 +9226,7 @@ func formatCompressionActivityHint(text string) string {
 	if trimmed == "" {
 		return ""
 	}
-	if strings.Contains(trimmed, "开始进行上下文压缩") || strings.HasPrefix(trimmed, "正在进行上下文压缩") {
-		return "正在压缩上下文..."
-	}
-	normalized := strings.ReplaceAll(trimmed, " -> ", "→")
-	normalized = strings.ReplaceAll(normalized, "->", "→")
-	if strings.HasPrefix(normalized, "上下文压缩完成") {
-		return "上下文已压缩，继续生成..."
-	}
-	return trimmed
+	return "正在压缩上下文..."
 }
 
 func resolveContextAvailableTokens(contextWindow *ContextWindow) int {

@@ -571,7 +571,7 @@ func TestMaybeLoadOlderHistoryPrependsEntriesWithoutJumpingViewport(t *testing.T
 			HistoryLoadedCount: 1,
 			HistoryTotal:       2,
 		},
-		input: textarea.New(),
+		input:    textarea.New(),
 		viewport: viewport.New(0, 0),
 		entries:  []entry{{role: "assistant", content: "当前历史回答"}},
 		historyLoad: func(ctx context.Context, snapshot Snapshot) (HistoryLoadResult, error) {
@@ -2310,24 +2310,34 @@ func TestCompressionProgressNoteRendersInFooterAndActivityHint(t *testing.T) {
 	if got := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(got, "开始进行上下文压缩") {
 		t.Fatalf("expected verbose compression start copy removed from footer, got %q", got)
 	}
+	model.applyEvent(Event{Kind: EventStatsUpdate, Stats: &RequestMetrics{TokenUsage: &TokenUsage{ContextWindow: &ContextWindow{
+		MaxInputTokens:           8192,
+		CurrentRoundInputTokens:  2048,
+		NextRoundAvailableTokens: 6144,
+		ContextUsageTokens:       3072,
+		DirectMessageTokens:      2048,
+		CompressedHistoryTokens:  1024,
+	}}, Compression: &CompressionStats{Count: 1, BeforeTokens: 320, AfterTokens: 160, RemainingTokens: 8032, CompressionRatio: 0.5}}})
 
 	model.applyEvent(Event{Kind: EventProgressNote, Text: "上下文压缩完成：320 -> 160", EventType: "compression_progress"})
 
-	// formatCompressionFooterHint 对 "上下文压缩完成：..." 返回空字符串，
-	// formatCompressionActivityHint 返回 "上下文已压缩，继续生成..."
-	// 状态栏右侧显示 inputContextUsageHint()，当 compressionInProgress 为 false 时
-	// 返回默认的上下文窗口提示，而非 activityHint
-	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "上下文窗口") {
-		t.Fatalf("expected default context usage hint in footer after compression completes, got %q", got)
+	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "正在压缩上下文") {
+		t.Fatalf("expected compression hint to stay locked before first assistant chunk, got %q", got)
 	}
-	if got := strings.TrimSpace(model.activityHint); got != "上下文已压缩，继续生成..." {
-		t.Fatalf("expected compression completion activity hint, got %q", got)
+	if got := strings.TrimSpace(model.activityHint); got != "正在压缩上下文..." {
+		t.Fatalf("expected repeated compression messages to keep the same activity hint, got %q", got)
 	}
-	if got := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(got, "320→160") {
-		t.Fatalf("expected token ratio to not appear in footer (should be in context hint via stats), got %q", got)
+
+	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "已恢复输出", MessageID: "msg-1"})
+
+	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "2K/8K") {
+		t.Fatalf("expected context usage hint to return after first assistant chunk, got %q", got)
 	}
-	if got := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(got, "上下文压缩完成：320 -> 160") {
-		t.Fatalf("expected verbose compression completion copy removed from footer, got %q", got)
+	if got := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(got, "正在压缩上下文") {
+		t.Fatalf("expected compression hint cleared after first assistant chunk, got %q", got)
+	}
+	if model.requestStats.Compression == nil || model.requestStats.Compression.AfterTokens != 160 {
+		t.Fatalf("expected final compression stats to stay recorded, got %#v", model.requestStats.Compression)
 	}
 }
 
@@ -4103,13 +4113,57 @@ func TestRenderStatusBarShowsContextGrid(t *testing.T) {
 }
 
 func TestAssistantChunkClearsCompressionFooterHint(t *testing.T) {
-	model := model{width: 120, contentWidth: 120}
+	model := model{
+		width:        120,
+		contentWidth: 120,
+		requestStats: RequestMetrics{TokenUsage: &TokenUsage{ContextWindow: &ContextWindow{
+			MaxInputTokens:           8192,
+			CurrentRoundInputTokens:  2048,
+			NextRoundAvailableTokens: 6144,
+		}}},
+	}
 
 	model.applyEvent(Event{Kind: EventProgressNote, Text: "开始进行上下文压缩", EventType: "compression_progress"})
 	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "已恢复输出", MessageID: "msg-1"})
 
 	if strings.TrimSpace(model.footerHint) != "" {
 		t.Fatalf("expected assistant chunk to clear footer compression hint, got %q", model.footerHint)
+	}
+	if model.compressionInProgress {
+		t.Fatalf("expected assistant chunk to release compression lock")
+	}
+	model.applyEvent(Event{Kind: EventProgressNote, Text: "上下文压缩完成：320 -> 160", EventType: "compression_progress"})
+	if model.compressionInProgress {
+		t.Fatalf("expected later compression messages to be ignored after first assistant chunk")
+	}
+	if got := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(got, "正在压缩上下文") {
+		t.Fatalf("expected compression hint to stay cleared after later compression messages, got %q", got)
+	}
+}
+
+func TestReasoningChunkClearsCompressionFooterHint(t *testing.T) {
+	model := model{
+		width:        120,
+		contentWidth: 120,
+		requestStats: RequestMetrics{TokenUsage: &TokenUsage{ContextWindow: &ContextWindow{
+			MaxInputTokens:           8192,
+			CurrentRoundInputTokens:  2048,
+			NextRoundAvailableTokens: 6144,
+		}}},
+	}
+
+	model.applyEvent(Event{Kind: EventProgressNote, Text: "开始进行上下文压缩", EventType: "compression_progress"})
+	model.applyEvent(Event{Kind: EventReasoningChunk, Text: "先分析一下", MessageID: "msg-1"})
+
+	if model.compressionInProgress {
+		t.Fatalf("expected reasoning chunk to release compression lock")
+	}
+	model.applyEvent(Event{Kind: EventProgressNote, Text: "上下文压缩完成：320 -> 160", EventType: "compression_progress"})
+	if model.compressionInProgress {
+		t.Fatalf("expected later compression messages to be ignored after first reasoning chunk")
+	}
+	if got := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(got, "正在压缩上下文") {
+		t.Fatalf("expected compression hint cleared after reasoning chunk, got %q", got)
 	}
 }
 
@@ -4362,6 +4416,32 @@ func TestStartRequestStatsPreservesKnownContextAndCompressionHints(t *testing.T)
 	}
 	if strings.Contains(got, "余2K") {
 		t.Fatalf("expected remaining token suffix removed from compression hint, got %q", got)
+	}
+}
+
+func TestStartRequestAssumesCompressionWhenConversationHistoryExists(t *testing.T) {
+	model := model{
+		ctx:      context.Background(),
+		snapshot: Snapshot{SessionID: "session-123"},
+		entries: []entry{
+			{role: "welcome", content: "欢迎"},
+			{role: "user", content: "之前的问题"},
+			{role: "assistant", content: "之前的回答"},
+		},
+		requestStats: RequestMetrics{TokenUsage: &TokenUsage{ContextWindow: &ContextWindow{
+			MaxInputTokens:           8192,
+			CurrentRoundInputTokens:  2048,
+			NextRoundAvailableTokens: 6144,
+		}}},
+	}
+
+	model.startRequest(Request{Input: "新的问题", RunID: "run-1"}, true)
+
+	if !model.compressionInProgress {
+		t.Fatalf("expected existing conversation history to assume compression in progress")
+	}
+	if got := model.inputContextUsageHint(); got != "正在压缩上下文..." {
+		t.Fatalf("expected compression hint before first chunk, got %q", got)
 	}
 }
 

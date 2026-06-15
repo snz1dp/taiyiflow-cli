@@ -161,6 +161,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		runtimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
 		quietRuntimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
 		skillRetryCount := 0
+		autoLoopCurrentRound := 0
+		originalUserInput := request.Input
 		callbackProvider := a.providerWithCallbackAuthRefresh(providerClient, &config)
 		for {
 			resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
@@ -204,8 +206,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				RunID:                     request.RunID,
 				RequestType:               normalizeRequestMode(request.RequestMode),
 				ReasoningEnabled:          request.ReasoningEnabled,
-				AgentAutoLoopEnabled:      resolveAgentAutoLoopEnabled(config, sessionState, request.RequestMode),
-				AgentAutoLoopMaxRounds:    resolveAgentAutoLoopMaxRounds(config, sessionState, request.RequestMode),
+				AgentAutoLoopEnabled:      resolveAgentAutoLoopEnabled(config, sessionState, request.RequestMode, serviceConfig),
+				AgentAutoLoopMaxRounds:    resolveAgentAutoLoopMaxRounds(config, sessionState, request.RequestMode, serviceConfig),
 				CrossSessionMemoryEnabled: boolPtr(config.CrossSessionMemoryEnabled),
 				ClientType:                provider.ClientTypeCLI,
 				ClientID:                  config.ClientID,
@@ -241,6 +243,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 
 			retryRequested := false
 			assistantRenderState := tuiAssistantRenderState{}
+			var latestAssistantOutput strings.Builder
 		eventLoop:
 			for event := range stream {
 				if updateSessionLineageFromEvent(&sessionState, event, request.RunID) {
@@ -268,7 +271,13 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						emit(tui.Event{Kind: tui.EventSessionUpdate, SessionID: sessionState.SessionID, SessionTitle: resolveSessionTitle(sessionState)})
 					}
 					if assistantChunkEvent, ok := buildTUIAssistantChunkEvent(event.Data); ok {
-						emitTUIAssistantChunk(emit, &assistantRenderState, assistantChunkEvent)
+						segments := emitTUIAssistantChunk(emit, &assistantRenderState, assistantChunkEvent)
+						for _, segment := range segments {
+							if segment.Reasoning {
+								continue
+							}
+							latestAssistantOutput.WriteString(segment.Text)
+						}
 						continue
 					}
 					if message, ok := event.Data["message"].(string); ok && strings.TrimSpace(message) != "" {
@@ -276,9 +285,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					}
 				case provider.EventCompression:
 					compressionText := buildTUICompressionProgressText(event.Data)
-					if compressionText != "" {
-						emit(tui.Event{Kind: tui.EventProgressNote, Text: compressionText, EventType: "compression_progress"})
+					if compressionText == "" {
+						compressionText = "正在进行上下文压缩"
 					}
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: compressionText, EventType: "compression_progress"})
 					if metrics := buildTUICompressionMetrics(event.Data); metrics != nil {
 						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
 					}
@@ -443,6 +453,37 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if retryRequested {
 				continue
 			}
+
+			// 自动续跑判定：检查是否需要调用 loop_decide_flow_id
+			maxRounds := resolveAgentAutoLoopMaxRounds(config, sessionState, request.RequestMode, serviceConfig)
+			loopDecideFlowID := resolveLoopDecideFlowID(config, serviceConfig)
+
+			if shouldAutoLoop(maxRounds > 0, loopDecideFlowID, autoLoopCurrentRound, maxRounds) {
+				autoLoopCurrentRound++
+				emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("正在判定是否需要自动续跑（第 %d/%d 轮）...", autoLoopCurrentRound, maxRounds)})
+
+				decideResult, decideErr := callLoopDecide(runCtx, callbackProvider, loopDecideFlowID, originalUserInput, latestAssistantOutput.String())
+				if decideErr != nil {
+					break
+				}
+
+				if decideResult.IsNeedRerun && strings.TrimSpace(decideResult.NextPrompt) != "" {
+					reason := strings.TrimSpace(decideResult.Reason)
+					if reason == "" {
+						reason = "需要继续执行"
+					}
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("自动续跑: %s", reason)})
+					request.Input = decideResult.NextPrompt
+					continue
+				}
+
+				// 不需要续跑，任务已闭环
+				reason := strings.TrimSpace(decideResult.Reason)
+				if reason != "" {
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("任务已闭环: %s", reason)})
+				}
+			}
+
 			break
 		}
 
@@ -3369,11 +3410,11 @@ func resolveReasoningEnabled(config internalconfig.Config, override string) bool
 	}
 }
 
-func resolveAgentAutoLoopEnabled(config internalconfig.Config, state agent.SessionState, requestMode string) *bool {
+func resolveAgentAutoLoopEnabled(config internalconfig.Config, state agent.SessionState, requestMode string, serviceConfig *provider.ServiceConfig) *bool {
 	if normalizeRequestMode(requestMode) != provider.RequestTypeAgent {
 		return nil
 	}
-	value := resolveAgentAutoLoopMaxRounds(config, state, requestMode) > 0
+	value := resolveAgentAutoLoopMaxRounds(config, state, requestMode, serviceConfig) > 0
 	return &value
 }
 
@@ -3393,14 +3434,33 @@ func approvedClientToolExecutionConfig(config internalconfig.Config, toolName st
 	return execConfig
 }
 
-func resolveAgentAutoLoopMaxRounds(config internalconfig.Config, state agent.SessionState, requestMode string) int {
+func resolveAgentAutoLoopMaxRounds(config internalconfig.Config, state agent.SessionState, requestMode string, serviceConfig *provider.ServiceConfig) int {
 	if normalizeRequestMode(requestMode) != provider.RequestTypeAgent {
 		return 0
 	}
+	// 优先级：会话级覆盖 > CLI 配置 > 服务端配置
 	if state.AgentAutoLoopMaxRoundsOverride != nil {
 		return internalconfig.NormalizeAgentAutoLoopMaxRounds(*state.AgentAutoLoopMaxRoundsOverride)
 	}
-	return internalconfig.NormalizeAgentAutoLoopMaxRounds(config.AgentAutoLoopMaxRounds)
+	if config.AgentAutoLoopMaxRounds > 0 {
+		return internalconfig.NormalizeAgentAutoLoopMaxRounds(config.AgentAutoLoopMaxRounds)
+	}
+	// 使用服务端配置作为默认值
+	if serviceConfig != nil && serviceConfig.AgentAutoLoopMaxRounds > 0 {
+		return internalconfig.NormalizeAgentAutoLoopMaxRounds(serviceConfig.AgentAutoLoopMaxRounds)
+	}
+	return 0
+}
+
+func resolveLoopDecideFlowID(config internalconfig.Config, serviceConfig *provider.ServiceConfig) string {
+	// 优先级：CLI 配置 > 服务端配置
+	if config.LoopDecideFlowID != "" {
+		return config.LoopDecideFlowID
+	}
+	if serviceConfig != nil && serviceConfig.LoopDecideFlowID != "" {
+		return serviceConfig.LoopDecideFlowID
+	}
+	return ""
 }
 
 func reasoningStatusText(enabled bool) string {
@@ -3692,9 +3752,9 @@ type tuiAssistantRenderState struct {
 	controlResidue streamControlResidueState
 }
 
-func emitTUIAssistantChunk(emit func(tui.Event), state *tuiAssistantRenderState, assistantChunkEvent tui.Event) {
+func emitTUIAssistantChunk(emit func(tui.Event), state *tuiAssistantRenderState, assistantChunkEvent tui.Event) []tuiRenderedSegment {
 	if state == nil {
-		return
+		return nil
 	}
 	segments := state.consume(assistantChunkEvent.Text)
 	emitted := false
@@ -3713,6 +3773,7 @@ func emitTUIAssistantChunk(emit func(tui.Event), state *tuiAssistantRenderState,
 		boundaryEvent.Text = ""
 		emit(boundaryEvent)
 	}
+	return segments
 }
 
 func (s *tuiAssistantRenderState) consume(chunk string) []tuiRenderedSegment {

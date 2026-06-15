@@ -141,13 +141,16 @@ type ServiceFeatureFlags struct {
 }
 
 type ServiceConfig struct {
-	FeatureFlags          ServiceFeatureFlags
-	MaxFileSizeUpload     int
-	DocExts               []string
-	MilvusEnabled         bool
-	DefaultFlowID         string
-	ImageFlowID           string
-	DocUnstructuredFlowID string
+	FeatureFlags           ServiceFeatureFlags
+	MaxFileSizeUpload      int
+	DocExts                []string
+	MilvusEnabled          bool
+	DefaultFlowID          string
+	ImageFlowID            string
+	DocUnstructuredFlowID  string
+	AgentAutoLoopEnabled   bool
+	AgentAutoLoopMaxRounds int
+	LoopDecideFlowID       string
 }
 
 type KnowledgeBaseSummary struct {
@@ -466,6 +469,20 @@ type ClientCallResult struct {
 	ErrorMessage string
 }
 
+type RunFlowRequest struct {
+	FlowID    string
+	SessionID string
+	Input     string
+	InputType string
+	Tweaks    map[string]any
+}
+
+type RunFlowResult struct {
+	Output    string
+	MediaType string
+	SessionID string
+}
+
 type ClientCollaborationCreateRequest struct {
 	TaskKind        string
 	TargetClientID  string
@@ -520,6 +537,7 @@ type Provider interface {
 	CreateSessionID(ctx context.Context) (string, error)
 	UploadFile(ctx context.Context, flowID string, sessionID string, localPath string, remotePath string) (*UploadResult, error)
 	RunDocumentUnstructured(ctx context.Context, request DocumentUnstructuredRequest) (*DocumentUnstructuredResult, error)
+	RunFlow(ctx context.Context, request RunFlowRequest) (*RunFlowResult, error)
 	GetVersionInfo(ctx context.Context) (*ServiceVersion, error)
 	GetServiceConfig(ctx context.Context) (*ServiceConfig, error)
 	GetCurrentUserInfo(ctx context.Context) (*CurrentUser, error)

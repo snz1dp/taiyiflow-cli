@@ -131,6 +131,18 @@ func (p *callbackAuthRefreshProvider) RunDocumentUnstructured(ctx context.Contex
 	return p.Provider.RunDocumentUnstructured(ctx, request)
 }
 
+func (p *callbackAuthRefreshProvider) RunFlow(ctx context.Context, request provider.RunFlowRequest) (*provider.RunFlowResult, error) {
+	result, err := p.Provider.RunFlow(ctx, request)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return result, err
+	}
+	return p.Provider.RunFlow(ctx, request)
+}
+
 func (p *callbackAuthRefreshProvider) RunImageUnderstanding(ctx context.Context, request provider.ImageUnderstandingRequest) (*provider.ImageUnderstandingResult, error) {
 	runner, ok := p.Provider.(provider.ImageUnderstandingRunner)
 	if !ok {

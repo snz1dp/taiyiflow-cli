@@ -40,6 +40,9 @@ type stubProvider struct {
 	uploadResult       *provider.UploadResult
 	uploadErr          error
 	uploadHook         func(context.Context, string, string, string, string) (*provider.UploadResult, error)
+	runFlowResult      *provider.RunFlowResult
+	runFlowErr         error
+	runFlowHook        func(context.Context, provider.RunFlowRequest) (*provider.RunFlowResult, error)
 	lastRequest        provider.StreamRequest
 	lastResolveRequest provider.SkillResolveRequest
 	submitResults      *[]provider.ClientCallResult
@@ -120,6 +123,16 @@ func (s stubProvider) RunDocumentUnstructured(context.Context, provider.Document
 	return &provider.DocumentUnstructuredResult{}, nil
 }
 
+func (s stubProvider) RunFlow(ctx context.Context, request provider.RunFlowRequest) (*provider.RunFlowResult, error) {
+	if s.runFlowHook != nil {
+		return s.runFlowHook(ctx, request)
+	}
+	if s.runFlowResult != nil || s.runFlowErr != nil {
+		return s.runFlowResult, s.runFlowErr
+	}
+	return &provider.RunFlowResult{}, nil
+}
+
 func (s stubProvider) GetVersionInfo(context.Context) (*provider.ServiceVersion, error) {
 	return nil, nil
 }
@@ -173,6 +186,62 @@ func (s stubProvider) SubmitClientCallResult(_ context.Context, result provider.
 		*s.submitResults = append(*s.submitResults, result)
 	}
 	return nil
+}
+
+func TestCallLoopDecideUsesOriginalInputAndTaskResultWithoutSession(t *testing.T) {
+	var captured provider.RunFlowRequest
+	client := &stubProvider{runFlowHook: func(_ context.Context, request provider.RunFlowRequest) (*provider.RunFlowResult, error) {
+		captured = request
+		return &provider.RunFlowResult{Output: `{"is_need_rerun":false,"reason":"done"}`}, nil
+	}}
+
+	result, err := callLoopDecide(context.Background(), client, "loop-flow", "请总结这个任务", "最终输出内容")
+	if err != nil {
+		t.Fatalf("expected callLoopDecide to succeed, got %v", err)
+	}
+	if result == nil || result.IsNeedRerun {
+		t.Fatalf("expected no rerun result, got %#v", result)
+	}
+	if captured.FlowID != "loop-flow" {
+		t.Fatalf("expected loop decide flow id, got %#v", captured)
+	}
+	if captured.SessionID != "" {
+		t.Fatalf("expected loop decide request to omit session id, got %#v", captured)
+	}
+	if captured.Input != "请总结这个任务" {
+		t.Fatalf("expected original input to be forwarded, got %#v", captured)
+	}
+	if captured.InputType != "any" {
+		t.Fatalf("expected input type any, got %#v", captured)
+	}
+	if captured.Tweaks["task_result"] != "最终输出内容" {
+		t.Fatalf("expected task_result tweak, got %#v", captured.Tweaks)
+	}
+}
+
+func TestCallLoopDecideStripsWatermarkCharactersFromModelOutput(t *testing.T) {
+	var captured provider.RunFlowRequest
+	client := &stubProvider{runFlowHook: func(_ context.Context, request provider.RunFlowRequest) (*provider.RunFlowResult, error) {
+		captured = request
+		return &provider.RunFlowResult{Output: "\u200b```json\n{\"is_need_rerun\":true,\"reason\":\"需\u206a继续\",\"next_prompt\":\"下\u200b一条指令\"}\n```\u206b"}, nil
+	}}
+
+	result, err := callLoopDecide(context.Background(), client, "loop-flow", "请总结这个任务", "最\u200b终\u206a输出内容")
+	if err != nil {
+		t.Fatalf("expected callLoopDecide to succeed, got %v", err)
+	}
+	if result == nil || !result.IsNeedRerun {
+		t.Fatalf("expected rerun result, got %#v", result)
+	}
+	if captured.Tweaks["task_result"] != "最终输出内容" {
+		t.Fatalf("expected sanitized task_result tweak, got %#v", captured.Tweaks)
+	}
+	if result.Reason != "需继续" {
+		t.Fatalf("expected sanitized reason, got %#v", result)
+	}
+	if result.NextPrompt != "下一条指令" {
+		t.Fatalf("expected sanitized next prompt, got %#v", result)
+	}
 }
 
 func (s stubProvider) CreateClientCollaboration(context.Context, provider.ClientCollaborationCreateRequest) (*provider.ClientCollaborationTask, error) {
@@ -1506,7 +1575,7 @@ func TestResolveAgentAutoLoopEnabledDerivedFromMaxRounds(t *testing.T) {
 	config := internalconfig.Default()
 	config.AgentAutoLoopMaxRounds = 5
 	zero := 0
-	resolved := resolveAgentAutoLoopEnabled(config, agent.SessionState{AgentAutoLoopMaxRoundsOverride: &zero}, provider.RequestTypeAgent)
+	resolved := resolveAgentAutoLoopEnabled(config, agent.SessionState{AgentAutoLoopMaxRoundsOverride: &zero}, provider.RequestTypeAgent, nil)
 	if resolved == nil {
 		t.Fatal("expected explicit auto loop state to be sent")
 	}
@@ -2358,6 +2427,13 @@ func TestStripThinkControlTagsRemovesMarkers(t *testing.T) {
 	}
 	if !strings.Contains(got, "回答前缀") || !strings.Contains(got, "正在执行服务端工具调用") {
 		t.Fatalf("expected visible text to remain after stripping think tags, got %q", got)
+	}
+}
+
+func TestSanitizeCLIStreamTextStripsWatermarkCharacters(t *testing.T) {
+	input := "可见内容\u206a\u200b保留正文\u206b"
+	if got := sanitizeCLIStreamText(input); got != "可见内容保留正文" {
+		t.Fatalf("expected watermark characters stripped, got %q", got)
 	}
 }
 

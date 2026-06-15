@@ -8,6 +8,7 @@ import (
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/textsanitize"
 )
 
 func (r *ClientRuntime) documentUnstructured(
@@ -120,8 +121,9 @@ func (r *ClientRuntime) documentUnstructured(
 	if result == nil {
 		return nil, newToolError("EXECUTION_FAILED", "服务端文档结构化流程未返回结果")
 	}
-	parsedOutput, parsed := parseDocumentUnstructuredOutput(result.Output)
-	items := documentUnstructuredItems(result.Output, parsedOutput, parsed)
+	sanitizedOutput := textsanitize.StripWatermarkCharacters(result.Output)
+	parsedOutput, parsed := parseDocumentUnstructuredOutput(sanitizedOutput)
+	items := documentUnstructuredItems(sanitizedOutput, parsedOutput, parsed)
 	response := map[string]any{
 		"count":          len(items),
 		"items":          items,
@@ -132,7 +134,7 @@ func (r *ClientRuntime) documentUnstructured(
 	if parsed && includeParsedDocumentOutput(parsedOutput) {
 		response["parsed_output"] = parsedOutput
 	} else if !parsed {
-		if rawOutput := strings.TrimSpace(result.Output); rawOutput != "" {
+		if rawOutput := strings.TrimSpace(sanitizedOutput); rawOutput != "" {
 			response["raw_output"] = rawOutput
 		}
 	}
@@ -169,7 +171,7 @@ func normalizeDocumentExtension(extension string) string {
 }
 
 func parseDocumentUnstructuredOutput(raw string) (any, bool) {
-	trimmed := strings.TrimSpace(raw)
+	trimmed := strings.TrimSpace(textsanitize.StripWatermarkCharacters(raw))
 	if trimmed == "" {
 		return nil, false
 	}
@@ -181,6 +183,7 @@ func parseDocumentUnstructuredOutput(raw string) (any, bool) {
 }
 
 func documentUnstructuredItems(raw string, parsed any, parsedOK bool) []any {
+	raw = textsanitize.StripWatermarkCharacters(raw)
 	if parsedOK {
 		switch typed := parsed.(type) {
 		case []any:

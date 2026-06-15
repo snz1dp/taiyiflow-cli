@@ -786,6 +786,57 @@ func TestRunDocumentUnstructuredReturnsHTTPError(t *testing.T) {
 	}
 }
 
+func TestRunFlowPostsTweaksWithoutSessionID(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != backendAPIPath("/run/loop-flow") {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.Method != http.MethodPost {
+			t.Fatalf("expected POST request, got %s", request.Method)
+		}
+		if got := request.URL.Query().Get("session_id"); got != "" {
+			t.Fatalf("expected empty session_id query, got %q", got)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request body failed: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+		fmt.Fprint(writer, `{"is_need_rerun":false}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	result, err := client.RunFlow(context.Background(), provider.RunFlowRequest{
+		FlowID:    "loop-flow",
+		Input:     "原始用户输入",
+		InputType: "any",
+		Tweaks: map[string]any{
+			"task_result": "最终输出",
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected RunFlow to succeed, got %v", err)
+	}
+	if result == nil || result.Output != `{"is_need_rerun":false}` {
+		t.Fatalf("expected raw output body to be preserved, got %#v", result)
+	}
+	if captured["input_value"] != "原始用户输入" {
+		t.Fatalf("expected input_value to be forwarded, got %#v", captured)
+	}
+	if _, exists := captured["session_id"]; exists {
+		t.Fatalf("expected session_id to be omitted from body, got %#v", captured)
+	}
+	tweaks, ok := captured["tweaks"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tweaks payload, got %#v", captured)
+	}
+	if tweaks["task_result"] != "最终输出" {
+		t.Fatalf("expected task_result tweak, got %#v", tweaks)
+	}
+}
+
 func TestRunImageUnderstandingPostsSimplifiedRequestAndPreservesTextResponse(t *testing.T) {
 	var captured map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

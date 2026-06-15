@@ -125,6 +125,7 @@ type Config struct {
 	QRWaitTimeoutSeconds      int              `yaml:"qr_wait_timeout_seconds,omitempty"`
 	AgentAutoLoopEnabled      bool             `yaml:"agent_auto_loop_enabled,omitempty"`
 	AgentAutoLoopMaxRounds    int              `yaml:"agent_auto_loop_max_rounds,omitempty"`
+	LoopDecideFlowID          string           `yaml:"loop_decide_flow_id,omitempty"`
 	CrossSessionMemoryEnabled bool             `yaml:"cross_session_memory_enabled,omitempty"`
 	OutputLanguage            string           `yaml:"output_language"`
 	AuditEnabled              bool             `yaml:"audit_enabled,omitempty"`

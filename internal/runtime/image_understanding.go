@@ -9,6 +9,7 @@ import (
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/textsanitize"
 )
 
 const (
@@ -295,10 +296,10 @@ func selectImageUnderstandingText(result *provider.ImageUnderstandingResult) str
 	if result == nil {
 		return ""
 	}
-	if trimmed := strings.TrimSpace(result.Text); trimmed != "" {
+	if trimmed := strings.TrimSpace(textsanitize.StripWatermarkCharacters(result.Text)); trimmed != "" {
 		return trimmed
 	}
-	return strings.TrimSpace(result.Output)
+	return strings.TrimSpace(textsanitize.StripWatermarkCharacters(result.Output))
 }
 
 func buildScreenshotImageUnderstandingTweaks() map[string]any {
