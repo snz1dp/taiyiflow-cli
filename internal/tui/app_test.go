@@ -2341,6 +2341,50 @@ func TestCompressionProgressNoteRendersInFooterAndActivityHint(t *testing.T) {
 	}
 }
 
+func TestFollowupRequestRestoresCompressionHintUntilNextChunk(t *testing.T) {
+	model := model{
+		width:        120,
+		contentWidth: 120,
+		requestStats: RequestMetrics{TokenUsage: &TokenUsage{ContextWindow: &ContextWindow{
+			MaxInputTokens:           8192,
+			CurrentRoundInputTokens:  2048,
+			NextRoundAvailableTokens: 6144,
+		}}},
+	}
+
+	model.applyEvent(Event{Kind: EventProgressNote, Text: "开始进行上下文压缩", EventType: "compression_progress"})
+	model.applyEvent(Event{Kind: EventAssistantChunk, Text: "首轮输出", MessageID: "msg-1"})
+
+	if model.compressionInProgress {
+		t.Fatalf("expected first request chunk to release compression lock")
+	}
+
+	model.applyEvent(Event{Kind: EventProgressNote, Text: "自动续跑: 需要继续执行"})
+	model.applyEvent(Event{Kind: EventFollowupRequest})
+
+	if !model.compressionInProgress {
+		t.Fatalf("expected followup request to restore compression lock")
+	}
+	if got := model.inputContextUsageHint(); got != "正在压缩上下文..." {
+		t.Fatalf("expected followup request to restore compression hint, got %q", got)
+	}
+	if got := strings.TrimSpace(model.activityHint); got != "自动续跑: 需要继续执行" {
+		t.Fatalf("expected followup request note preserved, got %q", got)
+	}
+
+	model.applyEvent(Event{Kind: EventReasoningChunk, Text: "继续分析", MessageID: "msg-2"})
+
+	if model.compressionInProgress {
+		t.Fatalf("expected followup request chunk to release compression lock")
+	}
+	if got := sanitizeTerminalText(model.renderStatusBar()); strings.Contains(got, "正在压缩上下文") {
+		t.Fatalf("expected compression hint cleared after followup request chunk, got %q", got)
+	}
+	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "2K/8K") {
+		t.Fatalf("expected context usage hint restored after followup request chunk, got %q", got)
+	}
+}
+
 func TestHandleConfirmKeySupportsSkillSpecificAndGlobalApproval(t *testing.T) {
 	t.Run("approve current skill", func(t *testing.T) {
 		approvedCh := make(chan bool, 1)

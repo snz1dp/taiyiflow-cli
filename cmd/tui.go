@@ -17,6 +17,7 @@ import (
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/instructions"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
@@ -172,6 +173,11 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				return skillErr
 			}
 			clientContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
+			// Load project-level instruction files (CLAUDE.md, AGENT.md, etc.)
+			var clientInstructions any
+			if instrResult, instrErr := instructions.Load(resolvedContextDir); instrErr == nil && instrResult != nil {
+				clientInstructions = instrResult.ToPackage()
+			}
 			commandExecutionTarget := "client"
 			ensuredSessionID, ensureErr := clientruntime.EnsureSessionID(runCtx, callbackProvider, sessionState.SessionID)
 			if ensureErr != nil {
@@ -218,6 +224,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				RequestedSkillNames:       requestedSkillNames,
 				ClientMCPServers:          quietRuntimeClient.ClientMCPServersForMode(request.RequestMode, config),
 				ClientSkillPackages:       clientSkillPackages,
+				ClientInstructions:        clientInstructions,
 			})
 			if streamErr != nil {
 				return fmt.Errorf("%s", explainBackendFailure(streamErr))
@@ -473,6 +480,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						reason = "需要继续执行"
 					}
 					emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("自动续跑: %s", reason)})
+					emit(tui.Event{Kind: tui.EventFollowupRequest})
 					request.Input = decideResult.NextPrompt
 					continue
 				}

@@ -394,6 +394,10 @@ func (r *ClientRuntime) executeLocalSubtask(
 	config internalconfig.Config,
 	request subtaskExecutionRequest,
 ) (subtaskExecutionResult, error) {
+	// NOTE: ClientInstructions is intentionally not passed to subtasks.
+	// Subtasks receive their instructions from the parent task's prompt.
+	// Passing ClientInstructions here would cause double-injection of
+	// project-level instruction files (CLAUDE.md, AGENT.md, etc.).
 	stream, streamSession, err := providerClient.Stream(ctx, provider.StreamRequest{
 		FlowID:                    request.FlowID,
 		Input:                     request.Prompt,

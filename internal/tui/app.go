@@ -374,19 +374,20 @@ type slashCommand struct {
 type EventKind string
 
 const (
-	EventAssistantChunk EventKind = "assistant_chunk"
-	EventReasoningChunk EventKind = "reasoning_chunk"
-	EventProgressNote   EventKind = "progress_note"
-	EventSystemNote     EventKind = "system_note"
-	EventErrorNote      EventKind = "error_note"
-	EventToolSummary    EventKind = "tool_summary"
-	EventToolPanel      EventKind = "tool_panel"
-	EventTodoUpdate     EventKind = "todo_update"
-	EventSessionUpdate  EventKind = "session_update"
-	EventToolCall       EventKind = "tool_call"
-	EventBuiltInCall    EventKind = "built_in_call"
-	EventClientToolCall EventKind = "client_tool_call"
-	EventStatsUpdate    EventKind = "stats_update"
+	EventAssistantChunk  EventKind = "assistant_chunk"
+	EventReasoningChunk  EventKind = "reasoning_chunk"
+	EventFollowupRequest EventKind = "followup_request"
+	EventProgressNote    EventKind = "progress_note"
+	EventSystemNote      EventKind = "system_note"
+	EventErrorNote       EventKind = "error_note"
+	EventToolSummary     EventKind = "tool_summary"
+	EventToolPanel       EventKind = "tool_panel"
+	EventTodoUpdate      EventKind = "todo_update"
+	EventSessionUpdate   EventKind = "session_update"
+	EventToolCall        EventKind = "tool_call"
+	EventBuiltInCall     EventKind = "built_in_call"
+	EventClientToolCall  EventKind = "client_tool_call"
+	EventStatsUpdate     EventKind = "stats_update"
 )
 
 type Event struct {
@@ -3249,6 +3250,9 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 			m.entries[len(m.entries)-1].content += chunk
 		}
 		m.currentStreamingEntryIndex = len(m.entries) - 1
+	case EventFollowupRequest:
+		m.compressionInProgress = true
+		m.compressionProgressSettled = false
 	case EventProgressNote:
 		if strings.TrimSpace(event.Text) != "" {
 			if event.EventType == "compression_progress" {

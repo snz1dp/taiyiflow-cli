@@ -20,6 +20,7 @@ import (
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/instructions"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
@@ -819,6 +820,13 @@ func (a *App) streamTaskWithSkillRetry(
 		return sessionState, err
 	}
 	clientContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir))
+	// Load project-level instruction files (CLAUDE.md, AGENT.md, etc.)
+	var clientInstructions any
+	if instrResult, instrErr := instructions.Load(resolvedContextDir); instrErr == nil && instrResult != nil {
+		clientInstructions = instrResult.ToPackage()
+	} else if instrErr != nil {
+		fmt.Fprintf(a.stderr, "警告: 加载项目指令文件失败: %v\n", instrErr)
+	}
 	commandExecutionTarget := "client"
 	requestRunID := newRequestRunID()
 	ensuredSessionID, err := clientruntime.EnsureSessionID(ctx, providerClient, sessionState.SessionID)
@@ -863,6 +871,7 @@ func (a *App) streamTaskWithSkillRetry(
 		RequestedSkillNames:       requestedSkillNames,
 		ClientMCPServers:          a.runtime.ClientMCPServersForMode(sessionState.RequestMode, runtimeConfig),
 		ClientSkillPackages:       clientSkillPackages,
+		ClientInstructions:        clientInstructions,
 	})
 	if err != nil {
 		return sessionState, err

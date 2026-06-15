@@ -422,6 +422,7 @@ type streamRequestBody struct {
 	AvailableTools            []any          `json:"available_tools,omitempty"`
 	ClientMCPServers          map[string]any `json:"client_mcp_servers,omitempty"`
 	ClientSkillPackages       any            `json:"client_skill_packages,omitempty"`
+	ClientInstructions        any            `json:"client_instructions,omitempty"`
 	ParentID                  string         `json:"parent_id,omitempty"`
 }
 
@@ -1367,6 +1368,7 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 		AvailableTools:            request.AvailableTools,
 		ClientMCPServers:          request.ClientMCPServers,
 		ClientSkillPackages:       request.ClientSkillPackages,
+		ClientInstructions:        request.ClientInstructions,
 		ParentID:                  request.ParentID,
 	}
 

@@ -1325,7 +1325,7 @@ func writeFileAtomically(path string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	temporaryFile, err := os.CreateTemp(filepath.Dir(path), ".taiyiflow-*")
+	temporaryFile, err := os.CreateTemp(filepath.Dir(path), ".snz1dp-*")
 	if err != nil {
 		return err
 	}

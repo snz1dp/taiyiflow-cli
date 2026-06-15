@@ -68,5 +68,5 @@
 
 **Further Considerations**
 1. Patch 格式选择：Option A unified diff 子集；Option B 自定义 patch DSL。推荐 A（兼容现有研发习惯）。
-2. skill 存储：Option A ~/.snz1dp/skills；Option B 仓库内 .taiyiflow/skills。推荐 A，全局可复用。
+2. skill 存储：Option A ~/.snz1dp/skills；Option B 仓库内 .snz1dp/skills。推荐 A，全局可复用。
 3. Busy 输入策略：Option A 默认“排队”；Option B 默认“中断”。推荐 A，减少误中断。
