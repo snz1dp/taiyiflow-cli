@@ -75,7 +75,6 @@ func TestBuildTUISkillsPickerLoadsRemoteItems(t *testing.T) {
 		_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"远程技能摘要","popularity":4.8,"downloads":12345,"version":"1.2.3","updatedAt":1710000000}]}`))
 	}))
 	defer registry.Close()
-
 	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
 	config := internalconfig.Default()
 	config.Skills.RegistryURL = registry.URL
@@ -98,6 +97,43 @@ func TestBuildTUISkillsPickerLoadsRemoteItems(t *testing.T) {
 	}
 	if picker.RemoteQuery != "remote" {
 		t.Fatalf("expected remote query to persist, got %#v", picker)
+	}
+}
+
+func TestPrepareTUIFollowupRequestRefreshesRunID(t *testing.T) {
+	original := internaltui.Request{
+		Input:            "第一轮问题",
+		InputFiles:       []string{"a.txt"},
+		FlowID:           "flow-1",
+		InternetSearch:   true,
+		KnowledgeScopes:  []string{"all"},
+		KnowledgeDocs:    []string{"doc-1"},
+		RunID:            "run-old",
+		ReasoningEnabled: true,
+	}
+
+	updated := prepareTUIFollowupRequest(original, "第二轮问题")
+
+	if updated.Input != "第二轮问题" {
+		t.Fatalf("expected followup input updated, got %q", updated.Input)
+	}
+	if updated.RunID == "" || updated.RunID == original.RunID {
+		t.Fatalf("expected followup request to use a new run id, got %q", updated.RunID)
+	}
+	if updated.FlowID != original.FlowID || updated.RequestMode != original.RequestMode || updated.ReasoningEnabled != original.ReasoningEnabled {
+		t.Fatalf("expected followup request to preserve execution context, got %#v", updated)
+	}
+	if len(updated.InputFiles) != 1 || updated.InputFiles[0] != "a.txt" {
+		t.Fatalf("expected followup request to preserve input files, got %#v", updated.InputFiles)
+	}
+	if len(updated.KnowledgeScopes) != 1 || updated.KnowledgeScopes[0] != "all" {
+		t.Fatalf("expected followup request to preserve knowledge scopes, got %#v", updated.KnowledgeScopes)
+	}
+	if len(updated.KnowledgeDocs) != 1 || updated.KnowledgeDocs[0] != "doc-1" {
+		t.Fatalf("expected followup request to preserve knowledge docs, got %#v", updated.KnowledgeDocs)
+	}
+	if !updated.InternetSearch {
+		t.Fatal("expected followup request to preserve internet search flag")
 	}
 }
 

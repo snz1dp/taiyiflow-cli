@@ -481,7 +481,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					}
 					emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("自动续跑: %s", reason)})
 					emit(tui.Event{Kind: tui.EventFollowupRequest})
-					request.Input = decideResult.NextPrompt
+					request = prepareTUIFollowupRequest(request, decideResult.NextPrompt)
 					continue
 				}
 
@@ -3469,6 +3469,12 @@ func resolveLoopDecideFlowID(config internalconfig.Config, serviceConfig *provid
 		return serviceConfig.LoopDecideFlowID
 	}
 	return ""
+}
+
+func prepareTUIFollowupRequest(request tui.Request, nextPrompt string) tui.Request {
+	request.Input = nextPrompt
+	request.RunID = newRequestRunID()
+	return request
 }
 
 func reasoningStatusText(enabled bool) string {
