@@ -243,13 +243,13 @@ func (r *ClientRuntime) parseSubtaskExecutionRequest(
 		TargetDeviceID:    firstNonEmptySubtask(strings.TrimSpace(argumentString(arguments, "target_device_id", "targetDeviceID")), strings.TrimSpace(config.DeviceID)),
 		DeliveryPolicy:    firstNonEmptySubtask(strings.TrimSpace(argumentString(arguments, "delivery_policy", "deliveryPolicy")), "fail_if_offline"),
 		WaitForCompletion: waitForCompletion,
-		TimeoutSeconds:    argumentInt(arguments, defaultSubtaskTimeoutSeconds, "timeout_seconds", "timeoutSeconds"),
+		TimeoutSeconds:    argumentInt(arguments, config.SubtaskTimeoutSeconds, "timeout_seconds", "timeoutSeconds"),
 		ParentSessionID:   firstNonEmptySubtask(strings.TrimSpace(argumentString(arguments, "session_id", "sessionId")), strings.TrimSpace(nestedString(payload, "context", "session_id"))),
 		ParentRunID:       firstNonEmptySubtask(strings.TrimSpace(argumentString(arguments, "run_id", "runId")), strings.TrimSpace(nestedString(payload, "context", "run_id"))),
 		ParentMessageID:   firstNonEmptySubtask(strings.TrimSpace(argumentString(arguments, "message_id", "messageId")), strings.TrimSpace(nestedString(payload, "context", "message_id"))),
 	}
 	if request.TimeoutSeconds < 1 {
-		request.TimeoutSeconds = defaultSubtaskTimeoutSeconds
+		request.TimeoutSeconds = config.SubtaskTimeoutSeconds
 	}
 	if request.TargetClientID == "" && request.TargetDeviceID == "" {
 		return subtaskExecutionRequest{}, newToolError("PARAM_ERROR", "run_subtask 缺少 target_client_id 或 target_device_id，且当前配置也未提供 client_id/device_id")
