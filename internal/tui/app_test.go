@@ -409,8 +409,12 @@ func TestRetryLastFailedRequestReusesInputWithNewRunID(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected retry command")
 	}
-	if len(model.entries) != 1 || model.entries[0].role != "user" || model.entries[0].content != request.Input {
+	// startRequest 会添加 user 条目和空的 assistant 占位条目（用于立即显示 ... 动画）
+	if len(model.entries) != 2 || model.entries[0].role != "user" || model.entries[0].content != request.Input {
 		t.Fatalf("expected retry to append user entry, got %#v", model.entries)
+	}
+	if model.entries[1].role != "assistant" || model.entries[1].content != "" {
+		t.Fatalf("expected retry to append empty assistant placeholder, got %#v", model.entries[1])
 	}
 	if model.lastRetryableRequest == nil || model.lastRetryableRequest.Input != request.Input || model.lastRetryableRequest.FlowID != request.FlowID {
 		t.Fatalf("expected retry to keep retryable request content, got %#v", model.lastRetryableRequest)
@@ -2297,7 +2301,7 @@ func TestCompressionProgressNoteRendersInFooterAndActivityHint(t *testing.T) {
 
 	model.applyEvent(Event{Kind: EventProgressNote, Text: "开始进行上下文压缩：history_trim / history_message_limit", EventType: "compression_progress"})
 
-	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "压缩中") {
+	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "正在压缩上下文") {
 		t.Fatalf("expected compact compression start footer status, got %q", got)
 	}
 	if got := strings.TrimSpace(model.activityHint); got != "正在压缩上下文..." {
@@ -2309,8 +2313,12 @@ func TestCompressionProgressNoteRendersInFooterAndActivityHint(t *testing.T) {
 
 	model.applyEvent(Event{Kind: EventProgressNote, Text: "上下文压缩完成：320 -> 160", EventType: "compression_progress"})
 
-	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "压缩完成") {
-		t.Fatalf("expected compression completion status in footer, got %q", got)
+	// formatCompressionFooterHint 对 "上下文压缩完成：..." 返回空字符串，
+	// formatCompressionActivityHint 返回 "上下文已压缩，继续生成..."
+	// 状态栏右侧显示 inputContextUsageHint()，当 compressionInProgress 为 false 时
+	// 返回默认的上下文窗口提示，而非 activityHint
+	if got := sanitizeTerminalText(model.renderStatusBar()); !strings.Contains(got, "上下文窗口") {
+		t.Fatalf("expected default context usage hint in footer after compression completes, got %q", got)
 	}
 	if got := strings.TrimSpace(model.activityHint); got != "上下文已压缩，继续生成..." {
 		t.Fatalf("expected compression completion activity hint, got %q", got)
@@ -4347,8 +4355,10 @@ func TestStartRequestStatsPreservesKnownContextAndCompressionHints(t *testing.T)
 	if !strings.Contains(got, "2K/8K") {
 		t.Fatalf("expected preserved context availability hint, got %q", got)
 	}
-	if !strings.Contains(got, "压9K→6K") {
-		t.Fatalf("expected preserved compression hint, got %q", got)
+	// 压缩统计信息不再持久显示在 inputContextUsageHint 中，
+	// 压缩后的上下文用量通过 contextUsageGrid 和正常的上下文提示反映。
+	if strings.Contains(got, "压9K→6K") {
+		t.Fatalf("expected compression hint to not appear persistently in inputContextUsageHint, got %q", got)
 	}
 	if strings.Contains(got, "余2K") {
 		t.Fatalf("expected remaining token suffix removed from compression hint, got %q", got)

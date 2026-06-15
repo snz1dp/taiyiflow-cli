@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,15 +21,16 @@ import (
 
 type callbackProviderStub struct {
 	provider.Provider
-	mu              sync.Mutex
-	callback        provider.ClientCallResult
-	callbackCalled  bool
-	callbackCtxDone bool
-	callbackErr     error
-	updateCalled    bool
-	updateTaskID    string
-	updateRequest   provider.ClientCollaborationUpdateRequest
-	updateErr       error
+	mu                sync.Mutex
+	callback          provider.ClientCallResult
+	callbackCalled    bool
+	callbackCallCount int
+	callbackCtxDone   bool
+	callbackErr       error
+	updateCalled      bool
+	updateTaskID      string
+	updateRequest     provider.ClientCollaborationUpdateRequest
+	updateErr         error
 }
 
 func (s *callbackProviderStub) SubmitClientCallResult(ctx context.Context, result provider.ClientCallResult) error {
@@ -36,6 +38,7 @@ func (s *callbackProviderStub) SubmitClientCallResult(ctx context.Context, resul
 	defer s.mu.Unlock()
 	s.callback = result
 	s.callbackCalled = true
+	s.callbackCallCount++
 	s.callbackCtxDone = ctx.Err() != nil
 	return s.callbackErr
 }
@@ -50,6 +53,30 @@ func (s *callbackProviderStub) UpdateClientCollaboration(_ context.Context, task
 		return nil, s.updateErr
 	}
 	return &provider.ClientCollaborationTask{ID: taskID, Status: request.Status}, nil
+}
+
+// ---------------------------------------------------------------------------
+// transientFailStub: 前 failCount 次调用返回错误，之后成功。用于测试重试行为。
+// ---------------------------------------------------------------------------
+
+type transientFailStub struct {
+	provider.Provider
+	mu         sync.Mutex
+	failCount  int
+	callCount  int
+	failErr    error
+	lastResult provider.ClientCallResult
+}
+
+func (s *transientFailStub) SubmitClientCallResult(_ context.Context, result provider.ClientCallResult) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.callCount++
+	s.lastResult = result
+	if s.callCount <= s.failCount {
+		return s.failErr
+	}
+	return nil
 }
 
 // validCallbackPayload 构造合法的回调 payload
@@ -401,6 +428,7 @@ func TestSubmitCallback_Failure(t *testing.T) {
 
 func TestSubmitCallback_ProviderReturnsError(t *testing.T) {
 	rt := NewClientRuntime(nil, nil, nil)
+	rt.SetCallbackRetryDelay(time.Millisecond, 3)
 	stub := &callbackProviderStub{callbackErr: fmt.Errorf("network error")}
 	config := internalconfig.Config{HTTPTimeoutSeconds: 30}
 
@@ -408,8 +436,8 @@ func TestSubmitCallback_ProviderReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("Provider 返回错误时应向上传播")
 	}
-	if err.Error() != "network error" {
-		t.Fatalf("错误应为 'network error'，实际: %v", err)
+	if !strings.Contains(err.Error(), "network error") {
+		t.Fatalf("错误应包含 'network error'，实际: %v", err)
 	}
 }
 
@@ -855,6 +883,7 @@ func TestUpdateTaskFallback_WithConfigTimeout(t *testing.T) {
 
 func TestSubmitCallback_ConcurrentSubmissions(t *testing.T) {
 	rt := NewClientRuntime(nil, nil, nil)
+	rt.SetCallbackRetryDelay(time.Millisecond, 3)
 	stub := &callbackProviderStub{}
 	config := internalconfig.Config{HTTPTimeoutSeconds: 30}
 
@@ -888,5 +917,98 @@ func TestSubmitCallback_ConcurrentSubmissions(t *testing.T) {
 
 	for err := range errCh {
 		t.Fatalf("并发提交不应返回错误，实际: %v", err)
+	}
+}
+
+// ===========================================================================
+// 回调重试行为测试
+// ===========================================================================
+
+func TestSubmitCallback_RetrySucceedsAfterTransientFailure(t *testing.T) {
+	rt := NewClientRuntime(nil, nil, nil)
+	rt.SetCallbackRetryDelay(time.Millisecond, 3)
+	stub := &transientFailStub{failCount: 2, failErr: fmt.Errorf("transient error")}
+	config := internalconfig.Config{HTTPTimeoutSeconds: 30}
+
+	err := rt.submitCallback(context.Background(), stub, config, validCallbackPayload(), true, nil, "")
+	if err != nil {
+		t.Fatalf("重试后应成功，实际: %v", err)
+	}
+	if stub.callCount != 3 {
+		t.Fatalf("应在第 3 次调用时成功，实际调用 %d 次", stub.callCount)
+	}
+}
+
+func TestSubmitCallback_RetryExhaustedReturnsError(t *testing.T) {
+	rt := NewClientRuntime(nil, nil, nil)
+	rt.SetCallbackRetryDelay(time.Millisecond, 3)
+	stub := &callbackProviderStub{callbackErr: fmt.Errorf("persistent error")}
+	config := internalconfig.Config{HTTPTimeoutSeconds: 30}
+
+	err := rt.submitCallback(context.Background(), stub, config, validCallbackPayload(), true, nil, "")
+	if err == nil {
+		t.Fatal("重试耗尽后应返回错误")
+	}
+	if !strings.Contains(err.Error(), "persistent error") {
+		t.Fatalf("错误应包含原始错误信息，实际: %v", err)
+	}
+	if !strings.Contains(err.Error(), "已重试") {
+		t.Fatalf("错误应包含重试次数信息，实际: %v", err)
+	}
+	// 1 次初始 + 3 次重试 = 4 次调用
+	if stub.callbackCallCount != 4 {
+		t.Fatalf("应调用 4 次（1+3），实际 %d 次", stub.callbackCallCount)
+	}
+}
+
+func TestSubmitCallback_RetryRespectsCustomMaxRetries(t *testing.T) {
+	rt := NewClientRuntime(nil, nil, nil)
+	rt.SetCallbackRetryDelay(time.Millisecond, 1)
+	stub := &callbackProviderStub{callbackErr: fmt.Errorf("always fail")}
+	config := internalconfig.Config{HTTPTimeoutSeconds: 30}
+
+	err := rt.submitCallback(context.Background(), stub, config, validCallbackPayload(), true, nil, "")
+	if err == nil {
+		t.Fatal("应返回错误")
+	}
+	// 1 次初始 + 1 次重试 = 2 次调用
+	if stub.callbackCallCount != 2 {
+		t.Fatalf("maxRetries=1 时应调用 2 次（1+1），实际 %d 次", stub.callbackCallCount)
+	}
+}
+
+func TestSubmitCallback_RetryDelayCausesMeasurableWait(t *testing.T) {
+	rt := NewClientRuntime(nil, nil, nil)
+	rt.SetCallbackRetryDelay(50*time.Millisecond, 2)
+	stub := &callbackProviderStub{callbackErr: fmt.Errorf("fail")}
+	config := internalconfig.Config{HTTPTimeoutSeconds: 30}
+
+	start := time.Now()
+	_ = rt.submitCallback(context.Background(), stub, config, validCallbackPayload(), true, nil, "")
+	elapsed := time.Since(start)
+
+	// 2 次重试间隔 × 50ms = 至少 100ms
+	if elapsed < 90*time.Millisecond {
+		t.Fatalf("重试间隔应至少 90ms，实际 %v", elapsed)
+	}
+	// 1 次初始 + 2 次重试 = 3 次调用
+	if stub.callbackCallCount != 3 {
+		t.Fatalf("应调用 3 次（1+2），实际 %d 次", stub.callbackCallCount)
+	}
+}
+
+func TestSubmitCallback_RetrySucceedsOnLastAttempt(t *testing.T) {
+	rt := NewClientRuntime(nil, nil, nil)
+	rt.SetCallbackRetryDelay(time.Millisecond, 3)
+	// 前 3 次失败，第 4 次成功（刚好在最后一次重试时恢复）
+	stub := &transientFailStub{failCount: 3, failErr: fmt.Errorf("temporary")}
+	config := internalconfig.Config{HTTPTimeoutSeconds: 30}
+
+	err := rt.submitCallback(context.Background(), stub, config, validCallbackPayload(), true, nil, "")
+	if err != nil {
+		t.Fatalf("最后一次重试应成功，实际: %v", err)
+	}
+	if stub.callCount != 4 {
+		t.Fatalf("应在第 4 次调用时成功，实际调用 %d 次", stub.callCount)
 	}
 }

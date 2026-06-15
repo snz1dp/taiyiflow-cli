@@ -3223,7 +3223,6 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 			break
 		}
 		m.activityHint = ""
-		m.compressionInProgress = false
 		if m.state.phase != progressStreaming {
 			cmd = m.transitionProgress(progressStreaming)
 		}
@@ -3254,7 +3253,6 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 			break
 		}
 		m.activityHint = ""
-		m.compressionInProgress = false
 		if m.state.phase != progressStreaming {
 			cmd = m.transitionProgress(progressStreaming)
 		}
@@ -3271,6 +3269,8 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 				m.activityHint = formatCompressionActivityHint(event.Text)
 				if strings.Contains(event.Text, "开始进行上下文压缩") || strings.HasPrefix(event.Text, "正在进行上下文压缩") {
 					m.compressionInProgress = true
+				} else if strings.Contains(event.Text, "上下文压缩完成") {
+					m.compressionInProgress = false
 				}
 				break
 			}
@@ -3439,10 +3439,17 @@ func (m *model) startRequest(request Request, appendUserEntry bool) tea.Cmd {
 	m.retryAvailable = false
 	m.lastRetryableRequest = cloneRequest(request)
 	m.startRequestStats(request.Input, request.RunID)
+	// 添加空的 assistant 占位条目，使流式指示器（...动画）在请求发出后立即显示，
+	// 而不是等到第一个响应 chunk 到达后才显示。当真实 chunk 到达时，内容会被追加到此条目。
+	// 如果请求在收到任何 chunk 前结束（错误/中断），resetAssistantChunkState 会清理此占位条目。
+	m.entries = append(m.entries, entry{role: "assistant", content: ""})
+	m.currentStreamingEntryIndex = len(m.entries) - 1
+	// 先切换进度状态（激活 streamingIndicator），再刷新视口，确保首帧就渲染 ... 动画
+	progressCmd := m.transitionProgress(progressSending)
 	m.syncViewport()
 	requestCtx, cancel := context.WithCancel(m.ctx)
 	m.requestCancel = cancel
-	return tea.Batch(m.transitionProgress(progressSending), startStream(requestCtx, request, m.runner, m.eventCh))
+	return tea.Batch(progressCmd, startStream(requestCtx, request, m.runner, m.eventCh))
 }
 
 func cloneRequest(request Request) *Request {
@@ -6048,6 +6055,11 @@ func renderEntry(item entry, width int, height int, renderer *glamour.TermRender
 	case "user":
 		return userMessageStyle.Render(wrapped)
 	case "assistant":
+		// 空占位条目（仅含流式动画后缀）不使用 assistantMessageStyle 边框，
+		// 避免在收到首个响应 chunk 前产生多余的空白行。
+		if strings.TrimSpace(item.content) == "" {
+			return content
+		}
 		rendered := renderMarkdown(hardWrapText(content, textWidth), renderer)
 		return assistantMessageStyle.Render(rendered)
 	case "reasoning":
@@ -8926,6 +8938,14 @@ func (m *model) startRequestStats(input string, runID string) {
 func (m *model) resetAssistantChunkState() {
 	m.splitNextAssistant = false
 	m.lastAssistantMessageID = ""
+	// 清理空的 assistant 占位条目：如果 currentStreamingEntryIndex 指向的条目仍然是空的
+	// （即没有收到任何真实 chunk），说明请求在收到响应前就结束了，需要移除占位条目。
+	if m.currentStreamingEntryIndex >= 0 && m.currentStreamingEntryIndex < len(m.entries) {
+		e := m.entries[m.currentStreamingEntryIndex]
+		if e.role == "assistant" && e.content == "" {
+			m.entries = append(m.entries[:m.currentStreamingEntryIndex], m.entries[m.currentStreamingEntryIndex+1:]...)
+		}
+	}
 	m.currentStreamingEntryIndex = -1
 }
 
@@ -9122,14 +9142,10 @@ func formatContextUsageGrid(currentTokens int, maxTokens int, cellCount int) str
 
 func (m model) inputContextUsageHint() string {
 	if m.compressionInProgress {
-		return "上下文压缩中..."
+		return "正在压缩上下文..."
 	}
 	usage := m.requestStats.TokenUsage
-	compressionHint := formatCompressionStatusHint(m.requestStats.Compression)
 	if usage == nil || usage.ContextWindow == nil {
-		if compressionHint != "" {
-			return compressionHint
-		}
 		return m.defaultInputContextUsageHint()
 	}
 	contextWindow := usage.ContextWindow
@@ -9144,9 +9160,6 @@ func (m model) inputContextUsageHint() string {
 	}
 	if historyUsage := formatContextHistoryUsage(contextWindow); historyUsage != "" {
 		parts = append(parts, historyUsage)
-	}
-	if compressionHint != "" {
-		parts = append(parts, compressionHint)
 	}
 	if len(parts) > 0 {
 		return strings.Join(parts, " · ")
@@ -9192,42 +9205,11 @@ func formatContextHistoryUsage(contextWindow *ContextWindow) string {
 	return formatCompactInt(contextWindow.ContextUsageTokens)
 }
 
-func formatCompressionStatusHint(compression *CompressionStats) string {
-	if compression == nil {
-		return ""
-	}
-	parts := []string{}
-	if compression.BeforeTokens > 0 && compression.AfterTokens > 0 {
-		parts = append(parts, fmt.Sprintf("压%s→%s", formatCompactInt(compression.BeforeTokens), formatCompactInt(compression.AfterTokens)))
-	} else if compression.AfterTokens > 0 {
-		parts = append(parts, "压后"+formatCompactInt(compression.AfterTokens))
-	}
-	if len(parts) > 0 {
-		return strings.Join(parts, " ")
-	}
-	if compression.Count > 0 {
-		return fmt.Sprintf("压缩%d次", compression.Count)
-	}
-	return ""
-}
-
 func formatCompressionFooterHint(text string) string {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return ""
-	}
-	if strings.Contains(trimmed, "开始进行上下文压缩") {
-		return ""
-	}
-	normalized := strings.ReplaceAll(trimmed, " -> ", "→")
-	normalized = strings.ReplaceAll(normalized, "->", "→")
-	if strings.HasPrefix(normalized, "上下文压缩完成：") {
-		return ""
-	}
-	if strings.HasPrefix(normalized, "上下文压缩完成") {
-		return ""
-	}
-	return normalized
+	// 所有 compression_progress 事件都不在 footerHint 中显示原始文本。
+	// 压缩期间由 inputContextUsageHint() 统一显示"上下文压缩中..."，
+	// 压缩完成后由 contextUsageGrid 和 inputContextUsageHint 显示更新后的上下文用量。
+	return ""
 }
 
 func formatCompressionActivityHint(text string) string {

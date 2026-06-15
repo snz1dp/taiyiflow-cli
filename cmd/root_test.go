@@ -2300,7 +2300,8 @@ func TestStreamTaskShowsAndClearsStreamingEllipsisInCLI(t *testing.T) {
 		t.Fatalf("streamTask failed: %v", err)
 	}
 
-	want := "答案 [联网#2]...\b\b\b   \b\b\b\n"
+	// 事件循环前先显示 ...，第一个 chunk 到达时清除，然后输出内容，最后再显示 ...
+	want := "...\b\b\b   \b\b\b答案 [联网#2]...\b\b\b   \b\b\b\n"
 	if got := stdout.String(); got != want {
 		t.Fatalf("expected citation rewrite and trailing ellipsis cleanup, got %q want %q", got, want)
 	}
@@ -2341,7 +2342,8 @@ func TestStreamTaskClearsStreamingEllipsisOnCanceledError(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
-	want := "答案...\b\b\b   \b\b\b"
+	// 事件循环前先显示 ...，第一个 chunk 到达时清除，然后输出内容，最后再显示 ...
+	want := "...\b\b\b   \b\b\b答案...\b\b\b   \b\b\b"
 	if got := stdout.String(); got != want {
 		t.Fatalf("expected canceled stream to clear trailing ellipsis, got %q want %q", got, want)
 	}

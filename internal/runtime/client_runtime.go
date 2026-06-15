@@ -95,6 +95,11 @@ type ClientRuntime struct {
 	streamEventLogsEnabled      bool
 	interactivePromptsEnabled   bool
 	hookHandlers                []HookHandler
+	// callbackRetryDelay 控制回调提交失败后的重试间隔。
+	// 默认 3 秒，测试中可通过 SetCallbackRetryDelay 缩短。
+	callbackRetryDelay time.Duration
+	// callbackMaxRetries 控制回调提交失败后的最大重试次数，默认 3。
+	callbackMaxRetries int
 	// 子任务能力继承字段：由 cmd 层在发起 Stream 前注入，子任务执行时复用。
 	subtaskSkillPackages       any
 	subtaskRequestedSkillNames []string
@@ -125,6 +130,13 @@ func (r *ClientRuntime) SetStreamEventLogsEnabled(enabled bool) {
 
 func (r *ClientRuntime) SetInteractivePromptsEnabled(enabled bool) {
 	r.interactivePromptsEnabled = enabled
+}
+
+// SetCallbackRetryDelay 设置回调提交失败后的重试间隔和最大重试次数。
+// 默认行为：重试 3 次，每次间隔 3 秒。测试中可缩短延迟避免等待。
+func (r *ClientRuntime) SetCallbackRetryDelay(delay time.Duration, maxRetries int) {
+	r.callbackRetryDelay = delay
+	r.callbackMaxRetries = maxRetries
 }
 
 func (r *ClientRuntime) InteractivePromptsEnabled() bool {
@@ -715,11 +727,33 @@ func (r *ClientRuntime) submitCallback(
 	if callback.FlowID == "" || callback.RunID == "" || callback.CallID == "" {
 		return fmt.Errorf("客户端回调缺少关键字段")
 	}
+
+	retryDelay := r.callbackRetryDelay
+	if retryDelay <= 0 {
+		retryDelay = 3 * time.Second
+	}
+	maxRetries := r.callbackMaxRetries
+	if maxRetries <= 0 {
+		maxRetries = 3
+	}
+
 	// 使用独立上下文提交回调结果，避免父上下文已取消时出现 "context deadline exceeded"。
 	// 超时时间使用系统配置中的 HTTP 请求超时设定。
 	callbackCtx, cancel := DetachedCallbackContext(ctx, time.Duration(config.HTTPTimeoutSeconds)*time.Second)
 	defer cancel()
-	return providerClient.SubmitClientCallResult(callbackCtx, callback)
+
+	// 首次尝试 + 最多 maxRetries 次重试，失败后返回错误以终止当前 SSE 请求，避免会话卡住。
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		lastErr = providerClient.SubmitClientCallResult(callbackCtx, callback)
+		if lastErr == nil {
+			return nil
+		}
+		if attempt < maxRetries {
+			time.Sleep(retryDelay)
+		}
+	}
+	return fmt.Errorf("回调提交失败（已重试 %d 次）: %w", maxRetries, lastErr)
 }
 
 func (r *ClientRuntime) confirmCommand(arguments map[string]any, config internalconfig.Config) (bool, error) {
@@ -1184,9 +1218,55 @@ func normalizeStructuredCommandField(commandName string, args []string, goos str
 		return "", args, ""
 	}
 	if !isLikelyEnvAssignment(trimmed) && !isShellBuiltinOnly(trimmed, goos) {
+		if argsContainShellSyntax(args, goos) {
+			return "", nil, joinShellCommand(trimmed, args, goos)
+		}
 		return trimmed, args, ""
 	}
 	return "", nil, joinShellCommand(trimmed, args, goos)
+}
+
+// argsContainShellSyntax 检测 args 中是否包含明确的 shell 操作符。
+// 只检测 |、&、;、<、> 等作为独立参数时几乎不可能是程序参数的字符，
+// 避免将 (、)、$、* 等可能是合法程序参数（如 Python 代码）的字符误判为 shell 语法。
+func argsContainShellSyntax(args []string, goos string) bool {
+	for _, arg := range args {
+		if isShellOperatorArg(arg, goos) {
+			return true
+		}
+	}
+	return false
+}
+
+// isShellOperatorArg 判断一个参数是否是 shell 操作符。
+// 匹配独立的管道符、逻辑运算符、命令分隔符和重定向符号。
+func isShellOperatorArg(arg string, goos string) bool {
+	trimmed := strings.TrimSpace(arg)
+	if trimmed == "" {
+		return false
+	}
+	switch trimmed {
+	case "|", "||", "&&", "&", ";", ";;", "|&":
+		return true
+	}
+	if goos == "windows" {
+		return false
+	}
+	// POSIX: 检测重定向操作符（<, >, >>, <<, <<<, 2>, 2>>, &>, etc.）
+	if containsRedirection(trimmed) {
+		return true
+	}
+	return false
+}
+
+func containsRedirection(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '<' || c == '>' {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultCommandTimeoutSeconds(config internalconfig.Config) int {
@@ -1402,7 +1482,11 @@ func joinShellCommand(commandName string, args []string, goos string) string {
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, quoteShellToken(commandName, goos))
 	for _, arg := range args {
-		parts = append(parts, quoteShellToken(arg, goos))
+		if isShellOperatorArg(arg, goos) {
+			parts = append(parts, arg)
+		} else {
+			parts = append(parts, quoteShellToken(arg, goos))
+		}
 	}
 	return strings.Join(parts, " ")
 }

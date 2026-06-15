@@ -132,6 +132,116 @@ func TestNormalizeCommandArgumentsKeepsShellSyntaxAsRawCommand(t *testing.T) {
 	}
 }
 
+func TestNormalizeStructuredCommandArgsDegradesToShellForPipeInArgs(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir()}
+
+	payload, err := runtimeClient.normalizeCommandArguments(map[string]any{
+		"command": "git",
+		"args":    []any{"status", "|", "cat"},
+	}, configValue)
+	if err != nil {
+		t.Fatalf("normalizeCommandArguments failed: %v", err)
+	}
+	if payload.Mode != "shell" {
+		t.Fatalf("expected shell mode for pipe in args, got %#v", payload)
+	}
+	if payload.Command != "" || payload.Args != nil {
+		t.Fatalf("expected exec fields cleared, got command=%q args=%#v", payload.Command, payload.Args)
+	}
+}
+
+func TestNormalizeStructuredCommandArgsDegradesToShellForRedirectionInArgs(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir()}
+
+	payload, err := runtimeClient.normalizeCommandArguments(map[string]any{
+		"command": "echo",
+		"args":    []any{"hello", ">", "output.txt"},
+	}, configValue)
+	if err != nil {
+		t.Fatalf("normalizeCommandArguments failed: %v", err)
+	}
+	if payload.Mode != "shell" {
+		t.Fatalf("expected shell mode for redirection in args, got %#v", payload)
+	}
+}
+
+func TestNormalizeStructuredCommandArgsDegradesToShellForLogicalOpsInArgs(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir()}
+
+	payload, err := runtimeClient.normalizeCommandArguments(map[string]any{
+		"command": "make",
+		"args":    []any{"build", "&&", "make", "test"},
+	}, configValue)
+	if err != nil {
+		t.Fatalf("normalizeCommandArguments failed: %v", err)
+	}
+	if payload.Mode != "shell" {
+		t.Fatalf("expected shell mode for && in args, got %#v", payload)
+	}
+}
+
+func TestNormalizeStructuredCommandArgsKeepsExecForNormalArgs(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir()}
+
+	payload, err := runtimeClient.normalizeCommandArguments(map[string]any{
+		"command": "grep",
+		"args":    []any{"-r", "func.*main", "--include=*.go", "."},
+	}, configValue)
+	if err != nil {
+		t.Fatalf("normalizeCommandArguments failed: %v", err)
+	}
+	if payload.Mode != "exec" {
+		t.Fatalf("expected exec mode for normal args, got %#v", payload)
+	}
+	if payload.Command != "grep" {
+		t.Fatalf("expected grep command, got %q", payload.Command)
+	}
+}
+
+func TestShellExecStructuredPipeEndToEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pipe test uses POSIX shell")
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
+
+	result, err := runtimeClient.shellExec(context.Background(), configValue, map[string]any{
+		"command": "echo",
+		"args":    []any{"hello world", "|", "wc", "-w"},
+	})
+	if err != nil {
+		t.Fatalf("shellExec failed: %v", err)
+	}
+	stdout := strings.TrimSpace(stringValue(result["stdout"]))
+	if stdout != "2" {
+		t.Fatalf("expected '2' from 'echo hello world | wc -w', got %q", stdout)
+	}
+}
+
+func TestShellExecStructuredPipeWithGrep(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pipe test uses POSIX shell")
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	configValue := internalconfig.Config{Workdir: t.TempDir(), ApprovalMode: "auto"}
+
+	result, err := runtimeClient.shellExec(context.Background(), configValue, map[string]any{
+		"command": "printf",
+		"args":    []any{"foo\\nbar\\nbaz\\n", "|", "grep", "ba"},
+	})
+	if err != nil {
+		t.Fatalf("shellExec failed: %v", err)
+	}
+	stdout := strings.TrimSpace(stringValue(result["stdout"]))
+	if stdout != "bar\nbaz" {
+		t.Fatalf("expected 'bar\\nbaz' from pipe+grep, got %q", stdout)
+	}
+}
+
 func TestNormalizeCommandArgumentsUsesShellForStructuredBuiltinCommand(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("builtin test uses POSIX export")

@@ -275,22 +275,36 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						emit(tui.Event{Kind: tui.EventProgressNote, Text: message})
 					}
 				case provider.EventCompression:
+					compressionText := buildTUICompressionProgressText(event.Data)
+					if compressionText != "" {
+						emit(tui.Event{Kind: tui.EventProgressNote, Text: compressionText, EventType: "compression_progress"})
+					}
 					if metrics := buildTUICompressionMetrics(event.Data); metrics != nil {
 						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
 					}
 				case provider.EventCompressionStart:
-					text := buildTUICompressionProgressText(event.Data)
-					if text == "" {
-						text = "开始进行上下文压缩"
+					startText := buildTUICompressionProgressText(event.Data)
+					if startText == "" || !strings.Contains(startText, "开始进行上下文压缩") {
+						if startText != "" && !strings.Contains(startText, "上下文压缩完成") {
+							startText = "开始进行上下文压缩（" + startText + "）"
+						} else {
+							startText = "开始进行上下文压缩"
+						}
 					}
-					emit(tui.Event{Kind: tui.EventProgressNote, Text: text, EventType: "compression_progress"})
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: startText, EventType: "compression_progress"})
 					if metrics := buildTUICompressionMetrics(event.Data); metrics != nil {
 						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
 					}
 				case provider.EventCompressionEnd:
-					if text := buildTUICompressionProgressText(event.Data); text != "" {
-						emit(tui.Event{Kind: tui.EventProgressNote, Text: text, EventType: "compression_progress"})
+					endText := buildTUICompressionProgressText(event.Data)
+					if !strings.Contains(endText, "上下文压缩完成") {
+						if endText != "" {
+							endText = "上下文压缩完成（" + endText + "）"
+						} else {
+							endText = "上下文压缩完成"
+						}
 					}
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: endText, EventType: "compression_progress"})
 					if metrics := buildTUICompressionMetrics(event.Data); metrics != nil {
 						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
 					}
@@ -3111,6 +3125,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			HTTPTimeoutSeconds:        strconv.Itoa(config.HTTPTimeoutSeconds),
 			CommandTimeoutSeconds:     strconv.Itoa(config.CommandTimeoutSeconds),
 			StreamIdleTimeoutSeconds:  strconv.Itoa(config.StreamIdleTimeoutSeconds),
+			SubtaskTimeoutSeconds:     strconv.Itoa(config.SubtaskTimeoutSeconds),
 			CrossSessionMemoryEnabled: config.CrossSessionMemoryEnabled,
 			QRWaitTimeoutSeconds:      strconv.Itoa(config.QRWaitTimeoutSeconds),
 			AgentAutoLoopMaxRounds:    strconv.Itoa(config.AgentAutoLoopMaxRounds),

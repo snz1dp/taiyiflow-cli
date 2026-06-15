@@ -164,13 +164,16 @@ type serviceFeatureFlagsResponse struct {
 }
 
 type serviceConfigResponse struct {
-	FeatureFlags          serviceFeatureFlagsResponse `json:"feature_flags"`
-	MaxFileSizeUpload     int                         `json:"max_file_size_upload"`
-	DocExts               []string                    `json:"doc_exts"`
-	MilvusEnabled         bool                        `json:"milvus_enabled"`
-	DefaultFlowID         string                      `json:"default_flow_id"`
-	ImageFlowID           string                      `json:"image_flow_id"`
-	DocUnstructuredFlowID string                      `json:"doc_unstructured_flow_id"`
+	FeatureFlags           serviceFeatureFlagsResponse `json:"feature_flags"`
+	MaxFileSizeUpload      int                         `json:"max_file_size_upload"`
+	DocExts                []string                    `json:"doc_exts"`
+	MilvusEnabled          bool                        `json:"milvus_enabled"`
+	DefaultFlowID          string                      `json:"default_flow_id"`
+	ImageFlowID            string                      `json:"image_flow_id"`
+	DocUnstructuredFlowID  string                      `json:"doc_unstructured_flow_id"`
+	AgentAutoLoopEnabled   bool                        `json:"agent_auto_loop_enabled"`
+	AgentAutoLoopMaxRounds int                         `json:"agent_auto_loop_max_rounds"`
+	LoopDecideFlowID       string                      `json:"loop_decide_flow_id"`
 }
 
 type versionInfoResponse struct {

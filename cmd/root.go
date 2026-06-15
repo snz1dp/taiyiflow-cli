@@ -884,6 +884,11 @@ func (a *App) streamTaskWithSkillRetry(
 		}
 	}
 	defer clearRenderedStreamingSuffix()
+	// 在事件循环开始前立即显示 ... 动画，让用户在请求发出后就能感知到正在等待响应，
+	// 而不是等到第一个响应 chunk 到达后才显示。
+	if renderStreamingSuffix {
+		fmt.Fprint(a.stdout, renderState.showStreamingSuffix())
+	}
 
 	if streamSession != nil && streamSession.SessionID != "" {
 		sessionState.SessionID = streamSession.SessionID
@@ -935,7 +940,8 @@ func (a *App) streamTaskWithSkillRetry(
 					clearIndicator = renderState.clearStreamingSuffix()
 				}
 				if !hasVisibleOutput {
-					clearIndicator = ""
+					// 不再强制清除 clearIndicator：事件循环前已显示 ... 后缀，
+					// 需要保留清除序列以正确擦除。仅修剪首 chunk 的前导空白。
 					chunk = strings.TrimLeft(chunk, "\r\n")
 					if chunk == "" {
 						continue
