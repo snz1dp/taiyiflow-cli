@@ -14,9 +14,10 @@ import (
 
 type callbackAuthRefreshProvider struct {
 	provider.Provider
-	app    *App
-	client *providerclient.Client
-	config *internalconfig.Config
+	app           *App
+	client        *providerclient.Client
+	config        *internalconfig.Config
+	serviceConfig *provider.ServiceConfig
 }
 
 func (p *callbackAuthRefreshProvider) shouldRetryAfterAuthRefresh(ctx context.Context, err error) (bool, error) {
@@ -31,6 +32,10 @@ func (p *callbackAuthRefreshProvider) shouldRetryAfterAuthRefresh(ctx context.Co
 	*p.config = updatedConfig
 	if strings.TrimSpace(updatedConfig.AccessToken) == "" {
 		return false, nil
+	}
+	// 登录成功后刷新 serviceConfig，确保后续请求能拿到服务端配置
+	if sc, scErr := p.Provider.GetServiceConfig(ctx); scErr == nil && sc != nil {
+		p.serviceConfig = sc
 	}
 	return true, nil
 }
@@ -350,6 +355,15 @@ func (a *App) providerWithCallbackAuthRefresh(providerClient provider.Provider, 
 		return providerClient
 	}
 	return &callbackAuthRefreshProvider{Provider: providerClient, app: a, client: client, config: config}
+}
+
+// extractServiceConfig 从 provider 中提取 callbackAuthRefreshProvider 上缓存的 serviceConfig。
+// 当登录成功后，serviceConfig 会被自动刷新，因此应优先使用此函数获取最新值。
+func extractServiceConfig(p provider.Provider) *provider.ServiceConfig {
+	if cp, ok := p.(*callbackAuthRefreshProvider); ok {
+		return cp.serviceConfig
+	}
+	return nil
 }
 
 func modeAllowsBuiltIn(mode string) bool {

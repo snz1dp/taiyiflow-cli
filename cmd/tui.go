@@ -166,6 +166,12 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		originalUserInput := request.Input
 		callbackProvider := a.providerWithCallbackAuthRefresh(providerClient, &config)
 		for {
+			// 优先使用 callbackProvider 上缓存的 serviceConfig（登录成功后会自动刷新），
+			// fallback 到启动时获取的值
+			effectiveServiceConfig := extractServiceConfig(callbackProvider)
+			if effectiveServiceConfig == nil {
+				effectiveServiceConfig = serviceConfig
+			}
 			resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
 			skillConfig := a.resolveEffectiveSkillConfig(config, resolvedContextDir)
 			requestedSkillNames, clientSkillPackages, skillErr := loadSkillPayloadWithConfig(skillConfig, request.RequestMode)
@@ -212,8 +218,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				RunID:                     request.RunID,
 				RequestType:               normalizeRequestMode(request.RequestMode),
 				ReasoningEnabled:          request.ReasoningEnabled,
-				AgentAutoLoopEnabled:      resolveAgentAutoLoopEnabled(config, sessionState, request.RequestMode, serviceConfig),
-				AgentAutoLoopMaxRounds:    resolveAgentAutoLoopMaxRounds(config, sessionState, request.RequestMode, serviceConfig),
+				AgentAutoLoopEnabled:      resolveAgentAutoLoopEnabled(config, sessionState, request.RequestMode, effectiveServiceConfig),
+				AgentAutoLoopMaxRounds:    resolveAgentAutoLoopMaxRounds(config, sessionState, request.RequestMode, effectiveServiceConfig),
 				CrossSessionMemoryEnabled: boolPtr(config.CrossSessionMemoryEnabled),
 				ClientType:                provider.ClientTypeCLI,
 				ClientID:                  config.ClientID,
@@ -462,8 +468,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			}
 
 			// 自动续跑判定：检查是否需要调用 loop_decide_flow_id
-			maxRounds := resolveAgentAutoLoopMaxRounds(config, sessionState, request.RequestMode, serviceConfig)
-			loopDecideFlowID := resolveLoopDecideFlowID(config, serviceConfig)
+			maxRounds := resolveAgentAutoLoopMaxRounds(config, sessionState, request.RequestMode, effectiveServiceConfig)
+			loopDecideFlowID := resolveLoopDecideFlowID(config, effectiveServiceConfig)
 
 			if shouldAutoLoop(maxRounds > 0, loopDecideFlowID, autoLoopCurrentRound, maxRounds) {
 				autoLoopCurrentRound++
@@ -528,6 +534,12 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}
 
 		refreshedProvider := a.providerWithCallbackAuthRefresh(refreshedClient, &updatedConfig)
+		// 同步刷新 provider 上的 serviceConfig，确保后续 runner 迭代能拿到最新值
+		if sc, scErr := refreshedProvider.GetServiceConfig(refreshCtx); scErr == nil && sc != nil {
+			if cp, ok := refreshedProvider.(*callbackAuthRefreshProvider); ok {
+				cp.serviceConfig = sc
+			}
+		}
 		flowID := strings.TrimSpace(firstNonEmpty(updatedConfig.DefaultFlow, current.DefaultFlow))
 		snapshot, err := a.buildTUISnapshot(refreshCtx, refreshedProvider, updatedConfig, flowID, backend)
 		if err != nil {
