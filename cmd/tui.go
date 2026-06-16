@@ -1438,14 +1438,6 @@ func loadRecentSessionHistoryPage(ctx context.Context, providerClient provider.P
 	return loadSessionHistoryPage(ctx, providerClient, flowID, sessionID, 0, sessionHistoryPageSize)
 }
 
-func loadRecentSessionHistory(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string) []tui.HistoryEntry {
-	page, err := loadRecentSessionHistoryPage(ctx, providerClient, flowID, sessionID)
-	if err != nil {
-		return nil
-	}
-	return page.Entries
-}
-
 func loadSessionHistoryPage(ctx context.Context, providerClient provider.Provider, flowID string, sessionID string, offset int, limit int) (sessionHistoryPage, error) {
 	trimmedFlowID := strings.TrimSpace(flowID)
 	trimmedSessionID := strings.TrimSpace(sessionID)
