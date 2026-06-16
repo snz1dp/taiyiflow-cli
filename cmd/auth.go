@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
@@ -19,12 +20,28 @@ import (
 )
 
 var (
-	deviceIDHostname   = os.Hostname
-	deviceIDInterfaces = net.Interfaces
-	deviceIDReadFile   = os.ReadFile
-	deviceIDRandomRead = cryptorand.Read
-	clientIDRandomRead = cryptorand.Read
+	deviceIDHostname     = os.Hostname
+	deviceIDInterfaces   = net.Interfaces
+	deviceIDReadFile     = os.ReadFile
+	deviceIDRandomRead   = cryptorand.Read
+	clientIDRandomRead   = cryptorand.Read
+	deviceIDPlatformUUID func() string // 测试用 mock；生产环境由平台文件实现
+
+	// 进程级缓存：确保同一进程内多次调用 readPlatformUUIDSeed / readMachineIDSeed
+	// 返回完全一致的结果，防止 ioreg 间歇性失败等瞬态问题导致 seed 变化。
+	deviceIDPlatformUUIDOnce  sync.Once
+	deviceIDPlatformUUIDCache string
+	deviceIDMachineIDOnce     sync.Once
+	deviceIDMachineIDCache    string
 )
+
+// resetDeviceIDCaches 清空设备标识相关的进程级缓存，仅供测试使用。
+func resetDeviceIDCaches() {
+	deviceIDPlatformUUIDOnce = sync.Once{}
+	deviceIDPlatformUUIDCache = ""
+	deviceIDMachineIDOnce = sync.Once{}
+	deviceIDMachineIDCache = ""
+}
 
 var deviceIDMachineIDPaths = []string{
 	"/etc/machine-id",
@@ -218,10 +235,24 @@ func generateDeviceID() (string, error) {
 }
 
 func collectDeviceIDSeed() (string, error) {
-	seedParts := make([]string, 0, 5)
-	if machineID := readMachineIDSeed(); machineID != "" {
-		seedParts = append(seedParts, "machine_id="+machineID)
+	goParts := []string{"goos=" + runtime.GOOS, "goarch=" + runtime.GOARCH}
+
+	// 优先级 1：平台硬件标识（IOPlatformUUID / DMI Product UUID / MachineGuid）。
+	// 这些是主板或系统级别的唯一标识，不会因网络环境、主机名变更而改变。
+	// 一旦可用，直接使用它 + goos/goarch，不再混入易变的 hostname 和 MAC 地址。
+	if platformUUID := readPlatformUUIDSeed(); platformUUID != "" {
+		return strings.Join(append([]string{"platform_uuid=" + platformUUID}, goParts...), "|"), nil
 	}
+
+	// 优先级 2：machine-id（Linux 的 /etc/machine-id 等）。
+	// 由系统在首次安装时生成，重装前不变，同样独立于网络环境。
+	if machineID := readMachineIDSeed(); machineID != "" {
+		return strings.Join(append([]string{"machine_id=" + machineID}, goParts...), "|"), nil
+	}
+
+	// 优先级 3：hostname + MAC 地址组合（降级方案）。
+	// 这些标识可能变化，但在没有更稳定标识时作为最佳可用指纹。
+	seedParts := make([]string, 0, 6)
 	if hostname, err := deviceIDHostname(); err == nil {
 		trimmedHostname := strings.TrimSpace(hostname)
 		if trimmedHostname != "" {
@@ -231,7 +262,9 @@ func collectDeviceIDSeed() (string, error) {
 	if macAddresses, err := readMACAddressSeed(); err == nil && len(macAddresses) > 0 {
 		seedParts = append(seedParts, "macs="+strings.Join(macAddresses, ","))
 	}
-	seedParts = append(seedParts, "goos="+runtime.GOOS, "goarch="+runtime.GOARCH)
+	seedParts = append(seedParts, goParts...)
+
+	// 优先级 4：完全无标识可用时，使用随机值（每次不同，但会被持久化到配置文件）。
 	if len(seedParts) == 2 {
 		raw := make([]byte, 16)
 		if _, err := deviceIDRandomRead(raw); err != nil {
@@ -243,17 +276,20 @@ func collectDeviceIDSeed() (string, error) {
 }
 
 func readMachineIDSeed() string {
-	for _, path := range deviceIDMachineIDPaths {
-		payload, err := deviceIDReadFile(path)
-		if err != nil {
-			continue
+	deviceIDMachineIDOnce.Do(func() {
+		for _, path := range deviceIDMachineIDPaths {
+			payload, err := deviceIDReadFile(path)
+			if err != nil {
+				continue
+			}
+			trimmedPayload := strings.TrimSpace(string(payload))
+			if trimmedPayload != "" {
+				deviceIDMachineIDCache = trimmedPayload
+				return
+			}
 		}
-		trimmedPayload := strings.TrimSpace(string(payload))
-		if trimmedPayload != "" {
-			return trimmedPayload
-		}
-	}
-	return ""
+	})
+	return deviceIDMachineIDCache
 }
 
 func readMACAddressSeed() ([]string, error) {

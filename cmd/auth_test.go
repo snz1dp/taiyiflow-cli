@@ -99,13 +99,18 @@ func TestGenerateDeviceIDUsesMachineFingerprintSeed(t *testing.T) {
 	originalInterfaces := deviceIDInterfaces
 	originalReadFile := deviceIDReadFile
 	originalRandomRead := deviceIDRandomRead
+	originalPlatformUUID := deviceIDPlatformUUID
+	resetDeviceIDCaches()
 	t.Cleanup(func() {
 		deviceIDHostname = originalHostname
 		deviceIDInterfaces = originalInterfaces
 		deviceIDReadFile = originalReadFile
 		deviceIDRandomRead = originalRandomRead
+		deviceIDPlatformUUID = originalPlatformUUID
+		resetDeviceIDCaches()
 	})
 
+	deviceIDPlatformUUID = func() string { return "" }
 	deviceIDHostname = func() (string, error) {
 		return "taiyi-host", nil
 	}
@@ -130,16 +135,164 @@ func TestGenerateDeviceIDUsesMachineFingerprintSeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateDeviceID failed: %v", err)
 	}
+	// machine_id 可用时，只使用 machine_id + goos/goarch，不混入 hostname 和 MAC。
 	wantSeed := strings.Join([]string{
 		"machine_id=machine-123",
-		"hostname=taiyi-host",
-		"macs=00:11:22:33:44:55",
 		"goos=" + runtime.GOOS,
 		"goarch=" + runtime.GOARCH,
 	}, "|")
 	want := buildDeviceIDFromSeed(wantSeed)
 	if got != want {
 		t.Fatalf("expected deterministic device id %q, got %q", want, got)
+	}
+}
+
+func TestGenerateDeviceIDPrefersPlatformUUIDOverMachineID(t *testing.T) {
+	originalHostname := deviceIDHostname
+	originalInterfaces := deviceIDInterfaces
+	originalReadFile := deviceIDReadFile
+	originalRandomRead := deviceIDRandomRead
+	originalPlatformUUID := deviceIDPlatformUUID
+	resetDeviceIDCaches()
+	t.Cleanup(func() {
+		deviceIDHostname = originalHostname
+		deviceIDInterfaces = originalInterfaces
+		deviceIDReadFile = originalReadFile
+		deviceIDRandomRead = originalRandomRead
+		deviceIDPlatformUUID = originalPlatformUUID
+		resetDeviceIDCaches()
+	})
+
+	deviceIDPlatformUUID = func() string { return "12345678-ABCD-EFGH-1234-123456789ABC" }
+	deviceIDHostname = func() (string, error) {
+		return "mac-host", nil
+	}
+	deviceIDInterfaces = func() ([]net.Interface, error) {
+		return []net.Interface{
+			{Flags: net.FlagUp, HardwareAddr: net.HardwareAddr{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}},
+		}, nil
+	}
+	deviceIDReadFile = func(path string) ([]byte, error) {
+		if path == deviceIDMachineIDPaths[0] {
+			return []byte("machine-123\n"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	deviceIDRandomRead = func(_ []byte) (int, error) {
+		t.Fatal("expected platform UUID path without random fallback")
+		return 0, nil
+	}
+
+	got, err := generateDeviceID()
+	if err != nil {
+		t.Fatalf("generateDeviceID failed: %v", err)
+	}
+	// platform_uuid 可用时，只使用 platform_uuid + goos/goarch，忽略 machine_id / hostname / macs。
+	wantSeed := strings.Join([]string{
+		"platform_uuid=12345678-ABCD-EFGH-1234-123456789ABC",
+		"goos=" + runtime.GOOS,
+		"goarch=" + runtime.GOARCH,
+	}, "|")
+	want := buildDeviceIDFromSeed(wantSeed)
+	if got != want {
+		t.Fatalf("expected deterministic device id %q, got %q", want, got)
+	}
+}
+
+func TestGenerateDeviceIDUsesPlatformUUIDAloneOnMacOS(t *testing.T) {
+	originalHostname := deviceIDHostname
+	originalInterfaces := deviceIDInterfaces
+	originalReadFile := deviceIDReadFile
+	originalRandomRead := deviceIDRandomRead
+	originalPlatformUUID := deviceIDPlatformUUID
+	resetDeviceIDCaches()
+	t.Cleanup(func() {
+		deviceIDHostname = originalHostname
+		deviceIDInterfaces = originalInterfaces
+		deviceIDReadFile = originalReadFile
+		deviceIDRandomRead = originalRandomRead
+		deviceIDPlatformUUID = originalPlatformUUID
+		resetDeviceIDCaches()
+	})
+
+	deviceIDPlatformUUID = func() string { return "MACOS-UUID-1234" }
+	deviceIDHostname = func() (string, error) {
+		return "", fmt.Errorf("hostname unavailable")
+	}
+	deviceIDInterfaces = func() ([]net.Interface, error) {
+		return nil, fmt.Errorf("interfaces unavailable")
+	}
+	deviceIDReadFile = func(path string) ([]byte, error) {
+		return nil, os.ErrNotExist
+	}
+	deviceIDRandomRead = func(_ []byte) (int, error) {
+		t.Fatal("expected platform UUID path without random fallback")
+		return 0, nil
+	}
+
+	got, err := generateDeviceID()
+	if err != nil {
+		t.Fatalf("generateDeviceID failed: %v", err)
+	}
+	wantSeed := strings.Join([]string{
+		"platform_uuid=MACOS-UUID-1234",
+		"goos=" + runtime.GOOS,
+		"goarch=" + runtime.GOARCH,
+	}, "|")
+	want := buildDeviceIDFromSeed(wantSeed)
+	if got != want {
+		t.Fatalf("expected deterministic device id %q, got %q", want, got)
+	}
+}
+
+func TestGenerateDeviceIDIsStableAcrossHostnameAndMACChanges(t *testing.T) {
+	originalHostname := deviceIDHostname
+	originalInterfaces := deviceIDInterfaces
+	originalReadFile := deviceIDReadFile
+	originalRandomRead := deviceIDRandomRead
+	originalPlatformUUID := deviceIDPlatformUUID
+	t.Cleanup(func() {
+		deviceIDHostname = originalHostname
+		deviceIDInterfaces = originalInterfaces
+		deviceIDReadFile = originalReadFile
+		deviceIDRandomRead = originalRandomRead
+		deviceIDPlatformUUID = originalPlatformUUID
+	})
+
+	deviceIDPlatformUUID = func() string { return "STABLE-UUID-9999" }
+	deviceIDReadFile = func(_ string) ([]byte, error) { return nil, os.ErrNotExist }
+	deviceIDRandomRead = func(_ []byte) (int, error) {
+		t.Fatal("expected platform UUID path without random fallback")
+		return 0, nil
+	}
+
+	// 第一次：原始 hostname 和 MAC
+	deviceIDHostname = func() (string, error) { return "old-host", nil }
+	deviceIDInterfaces = func() ([]net.Interface, error) {
+		return []net.Interface{
+			{Flags: net.FlagUp, HardwareAddr: net.HardwareAddr{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}},
+		}, nil
+	}
+	first, err := generateDeviceID()
+	if err != nil {
+		t.Fatalf("first generateDeviceID failed: %v", err)
+	}
+
+	// 第二次：hostname 和 MAC 都变了
+	deviceIDHostname = func() (string, error) { return "new-host", nil }
+	deviceIDInterfaces = func() ([]net.Interface, error) {
+		return []net.Interface{
+			{Flags: net.FlagUp, HardwareAddr: net.HardwareAddr{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}},
+			{Flags: net.FlagUp, HardwareAddr: net.HardwareAddr{0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC}},
+		}, nil
+	}
+	second, err := generateDeviceID()
+	if err != nil {
+		t.Fatalf("second generateDeviceID failed: %v", err)
+	}
+
+	if first != second {
+		t.Fatalf("device_id must be stable when platform_uuid is available: first=%q second=%q", first, second)
 	}
 }
 

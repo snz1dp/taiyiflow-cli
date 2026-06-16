@@ -412,7 +412,7 @@ type streamRequestBody struct {
 	MaxIterations             int            `json:"max_iterations,omitempty"`
 	AgentContinueWindows      int            `json:"agent_continue_windows,omitempty"`
 	AgentAutoLoopEnabled      *bool          `json:"agent_auto_loop_enabled,omitempty"`
-	AgentAutoLoopMaxRounds    int            `json:"agent_auto_loop_max_rounds,omitempty"`
+	AgentAutoLoopMaxRounds    int            `json:"agent_auto_loop_max_rounds"`
 	CrossSessionMemoryEnabled *bool          `json:"cross_session_memory_enabled,omitempty"`
 	MessageID                 string         `json:"message_id,omitempty"`
 	RequestedSkillNames       []string       `json:"requested_skill_names,omitempty"`

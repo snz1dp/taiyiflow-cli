@@ -3448,14 +3448,31 @@ func resolveAgentAutoLoopMaxRounds(config internalconfig.Config, state agent.Ses
 	}
 	// 优先级：会话级覆盖 > CLI 配置 > 服务端配置
 	if state.AgentAutoLoopMaxRoundsOverride != nil {
-		return internalconfig.NormalizeAgentAutoLoopMaxRounds(*state.AgentAutoLoopMaxRoundsOverride)
+		auto_loop := config.AgentAutoLoopEnabled
+		if state.AgentAutoLoopEnabledOverride != "" {
+			override_loop := strings.ToLower(strings.TrimSpace(state.AgentAutoLoopEnabledOverride))
+			auto_loop = override_loop == "on" || override_loop == "true" || override_loop == "yes"
+		}
+		if auto_loop {
+			return internalconfig.NormalizeAgentAutoLoopMaxRounds(*state.AgentAutoLoopMaxRoundsOverride)
+		} else {
+			return 0
+		}
 	}
 	if config.AgentAutoLoopMaxRounds > 0 {
-		return internalconfig.NormalizeAgentAutoLoopMaxRounds(config.AgentAutoLoopMaxRounds)
+		if config.AgentAutoLoopEnabled {
+			return internalconfig.NormalizeAgentAutoLoopMaxRounds(config.AgentAutoLoopMaxRounds)
+		} else {
+			return 0
+		}
 	}
 	// 使用服务端配置作为默认值
 	if serviceConfig != nil && serviceConfig.AgentAutoLoopMaxRounds > 0 {
-		return internalconfig.NormalizeAgentAutoLoopMaxRounds(serviceConfig.AgentAutoLoopMaxRounds)
+		if serviceConfig.AgentAutoLoopEnabled {
+			return internalconfig.NormalizeAgentAutoLoopMaxRounds(serviceConfig.AgentAutoLoopMaxRounds)
+		} else {
+			return 0
+		}
 	}
 	return 0
 }
