@@ -978,12 +978,20 @@ func (r *ClientRuntime) searchFilesLocal(_ context.Context, config internalconfi
 	results := []map[string]any{}
 	fileCounts := map[string]int{}
 	stopSearch := errors.New("search_limit_reached")
+	excludeDirs := config.FileSearchExcludeDirs
+	if len(excludeDirs) == 0 {
+		excludeDirs = internalconfig.DefaultFileSearchExcludeDirs()
+	}
 	err = filepath.WalkDir(baseDir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.IsDir() {
 			if path != baseDir {
+				dirName := entry.Name()
+				if shouldSkipDir(dirName, excludeDirs) {
+					return filepath.SkipDir
+				}
 				relativePath, _ := filepath.Rel(baseDir, path)
 				if isHiddenPath(relativePath) && !includeHidden {
 					return filepath.SkipDir

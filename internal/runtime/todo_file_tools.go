@@ -36,12 +36,19 @@ func (r *ClientRuntime) globFiles(config internalconfig.Config, arguments map[st
 		maxResults = 1000
 	}
 	items := []map[string]any{}
+	excludeDirs := config.FileSearchExcludeDirs
+	if len(excludeDirs) == 0 {
+		excludeDirs = internalconfig.DefaultFileSearchExcludeDirs()
+	}
 	err = filepath.WalkDir(baseDir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if path == baseDir {
 			return nil
+		}
+		if entry.IsDir() && shouldSkipDir(entry.Name(), excludeDirs) {
+			return filepath.SkipDir
 		}
 		relPath, relErr := filepath.Rel(baseDir, path)
 		if relErr != nil {

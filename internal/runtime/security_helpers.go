@@ -572,3 +572,12 @@ func isHiddenPath(path string) bool {
 	}
 	return false
 }
+
+func shouldSkipDir(name string, excludeDirs []string) bool {
+	for _, dir := range excludeDirs {
+		if strings.EqualFold(name, dir) {
+			return true
+		}
+	}
+	return false
+}

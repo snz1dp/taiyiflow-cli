@@ -62,6 +62,7 @@ func (a *App) showConfigHelp() error {
 		"  computer_enabled              桌面操作开关；可选 true、false。",
 		"  computer_permission_mode      桌面操作变更工具审批；可选 ask、follow_a_plan、skip_all_permission_checks。",
 		"  doc_unstructured_exts         逗号分隔扩展名；未配置时使用内置默认值，可用自定义列表覆盖。",
+		"  file_search_exclude_dirs      文件搜索排除目录（逗号分隔）；未配置时使用内置默认值，可用自定义列表覆盖。",
 		"  skills_auto_install_policy    技能自动补装策略；可选 off、confirm、allow。",
 		"  cross_session_memory_enabled  跨会话记忆开关；可选 true、false。",
 		"",
@@ -72,7 +73,9 @@ func (a *App) showConfigHelp() error {
 		"  taiyiflow-cli config set computer_enabled false",
 		"  taiyiflow-cli config set browser_remote_debugging_url http://127.0.0.1:9222",
 		"  taiyiflow-cli config set doc_unstructured_exts pdf,docx",
+		"  taiyiflow-cli config set file_search_exclude_dirs node_modules,.git,vendor,dist",
 		"  taiyiflow-cli config unset doc_unstructured_exts",
+		"  taiyiflow-cli config unset file_search_exclude_dirs",
 		"",
 		"提示: 可先执行 taiyiflow-cli config show 查看当前 YAML 配置。",
 	}
@@ -378,6 +381,12 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("sandbox_roots（可访问外部资源目录）不能为空，如需清空请使用 taiyiflow-cli config unset sandbox_roots")
 		}
 		config.SandboxRoots = splitConfigCSV(trimmedValue)
+	case "file_search_exclude_dirs":
+		normalizedDirs := internalconfig.NormalizeFileSearchExcludeDirs(splitConfigCSV(trimmedValue))
+		if len(normalizedDirs) == 0 {
+			return fmt.Errorf("file_search_exclude_dirs 不能为空；如需恢复内置默认值请使用 taiyiflow-cli config unset file_search_exclude_dirs")
+		}
+		config.FileSearchExcludeDirs = normalizedDirs
 	default:
 		return fmt.Errorf("不支持的配置项: %s", normalizedKey)
 	}
@@ -464,6 +473,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.Skills.RegistryURL = defaults.Skills.RegistryURL
 	case "sandbox_roots":
 		config.SandboxRoots = nil
+	case "file_search_exclude_dirs":
+		config.FileSearchExcludeDirs = nil
 	default:
 		return fmt.Errorf("不支持的配置项: %s", normalizeConfigKey(key))
 	}
@@ -531,6 +542,8 @@ func normalizeConfigKey(key string) string {
 		return "skills_free_text_search"
 	case "doc_unstructured_extensions", "document_unstructured_exts", "document_unstructured_extensions", "document_parse_exts":
 		return "doc_unstructured_exts"
+	case "file_search_exclude", "file_exclude_dirs", "search_exclude_dirs", "exclude_dirs":
+		return "file_search_exclude_dirs"
 	default:
 		return normalized
 	}
@@ -585,6 +598,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("技能仓库: %s", fallbackConfigValue(config.Skills.RegistryURL, internalconfig.Default().Skills.RegistryURL)),
 		fmt.Sprintf("文档服务端解析类型: %s", fallbackConfigValue(strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "), strings.Join(prefixDocumentExts(internalconfig.Default().DocUnstructuredExts), ", "))),
 		fmt.Sprintf("可访问外部资源目录: %s", fallbackConfigValue(strings.Join(config.SandboxRoots, ", "), "<仅当前工作目录>")),
+		fmt.Sprintf("文件搜索排除目录: %d 个（未配置时使用内置默认值）", len(config.FileSearchExcludeDirs)),
 	}
 	if internalconfig.BrowserEnabled(config.Browser) {
 		browserLines := []string{

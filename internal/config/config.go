@@ -28,7 +28,7 @@ const (
 	DefaultCommandTimeoutSeconds     = 3000
 	MaxHTTPTimeoutSeconds            = 2000
 	MaxCommandTimeoutSeconds         = 6000
-	DefaultSubtaskTimeoutSeconds     = 300
+	DefaultSubtaskTimeoutSeconds     = 600
 	MaxSubtaskTimeoutSeconds         = 6000
 	DefaultStreamIdleTimeoutSeconds  = 1200
 	DefaultQRWaitTimeoutSeconds      = 120
@@ -91,6 +91,45 @@ var defaultDocUnstructuredExts = []string{
 	"pptx",
 }
 
+var defaultFileSearchExcludeDirs = []string{
+	// 版本控制
+	".git", ".svn", ".hg",
+	// 依赖 / 包管理
+	"node_modules", "vendor", "bower_components", ".pnpm-store",
+	"venv", ".venv", "env", "__pypackages__", ".bundle", "Pods",
+	// 构建产物
+	"dist", "build", "out", "target", "bin", "obj",
+	".next", ".nuxt", ".output", ".turbo", ".quasar",
+	// IDE / 编辑器
+	".idea", ".vscode", ".vs", ".eclipse", ".settings",
+	// 缓存 / 临时
+	".cache", "__pycache__", ".parcel-cache", ".pytest_cache",
+	".mypy_cache", ".ruff_cache", ".tox", ".nox",
+	"tmp", "temp", ".tmp",
+	// 测试 / 覆盖率
+	"coverage", ".nyc_output", "htmlcov",
+	// 容器 / 基础设施
+	".docker", ".terraform", ".serverless",
+	// 操作系统
+	".DS_Store", "Thumbs.db", "desktop.ini",
+	// Java / JVM
+	".gradle", ".m2",
+	// iOS / macOS
+	".cocoapods",
+	// Dart / Flutter
+	".dart_tool", ".pub-cache",
+	// 前端框架
+	".angular", ".svelte-kit", ".astro",
+	// 工具 / 平台
+	".snz1dp", ".serverless",
+	// Python
+	".eggs", "*.egg-info",
+	// Go
+	".gotestcache",
+	// Node.js
+	".tap", ".nyc_output",
+}
+
 var imageUnderstandingExtSet = map[string]struct{}{
 	"jpg":  {},
 	"jpeg": {},
@@ -132,6 +171,7 @@ type Config struct {
 	SkillReviewPolicy         string           `yaml:"skill_review_policy,omitempty"`
 	WriteConfirmationPolicy   string           `yaml:"write_confirmation_policy,omitempty"`
 	SandboxRoots              []string         `yaml:"sandbox_roots,omitempty"`
+	FileSearchExcludeDirs     []string         `yaml:"file_search_exclude_dirs,omitempty"`
 	PermissionRules           []PermissionRule `yaml:"permission_rules,omitempty"`
 	Browser                   BrowserConfig    `yaml:"browser,omitempty"`
 	Computer                  ComputerConfig   `yaml:"computer,omitempty"`
@@ -205,6 +245,7 @@ func Default() Config {
 		AuditEnabled:              false,
 		SkillReviewPolicy:         SkillReviewPolicyConfirm,
 		WriteConfirmationPolicy:   WriteConfirmationPolicyConfirm,
+		FileSearchExcludeDirs:     append([]string(nil), defaultFileSearchExcludeDirs...),
 		Browser: BrowserConfig{
 			Mode:                  BrowserModeChromeSession,
 			PermissionMode:        BrowserPermissionModeAsk,
@@ -429,6 +470,29 @@ func NormalizeWriteConfirmationPolicy(value string) string {
 	}
 }
 
+// DefaultFileSearchExcludeDirs 返回文件搜索排除目录的默认值副本。
+func DefaultFileSearchExcludeDirs() []string {
+	return append([]string(nil), defaultFileSearchExcludeDirs...)
+}
+
+func NormalizeFileSearchExcludeDirs(dirs []string) []string {
+	seen := map[string]struct{}{}
+	result := []string{}
+	for _, dir := range dirs {
+		trimmed := strings.TrimSpace(dir)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
+}
+
 func NormalizeDocUnstructuredExts(values []string) []string {
 	result := make([]string, 0, len(values))
 	seen := map[string]struct{}{}
@@ -632,12 +696,14 @@ func (m *Manager) Load() (Config, error) {
 	if strings.TrimSpace(config.Skills.RegistryURL) == "" {
 		config.Skills.RegistryURL = Default().Skills.RegistryURL
 	}
+	config.FileSearchExcludeDirs = NormalizeFileSearchExcludeDirs(config.FileSearchExcludeDirs)
 	config.PermissionRules = NormalizePermissionRules(config.PermissionRules)
 	return config, nil
 }
 
 func (m *Manager) Save(config Config) error {
 	config.DocUnstructuredExts = NormalizeDocUnstructuredExts(config.DocUnstructuredExts)
+	config.FileSearchExcludeDirs = NormalizeFileSearchExcludeDirs(config.FileSearchExcludeDirs)
 	config.PermissionRules = NormalizePermissionRules(config.PermissionRules)
 	config.Browser = NormalizeBrowserConfig(config.Browser)
 	config.Computer = NormalizeComputerConfig(config.Computer)
