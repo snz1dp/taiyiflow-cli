@@ -16,6 +16,16 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"golang.org/x/net/html/charset"
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/encoding/korean"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/encoding/traditionalchinese"
+	unicodeenc "golang.org/x/text/encoding/unicode"
+	"golang.org/x/text/transform"
+
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
@@ -810,11 +820,17 @@ func (r *ClientRuntime) readFile(config internalconfig.Config, arguments map[str
 			"content_type": "binary",
 		}, nil
 	}
+	// 非 UTF-8 文本文件（GBK、Big5、Shift-JIS 等）自动转码为 UTF-8
+	textContent := string(content)
+	contentEncoding := "utf-8"
+	if !utf8.Valid(content) {
+		textContent, contentEncoding = decodeNonUTF8ToUTF8(content)
+	}
 	startLine := intValue(arguments["start_line"], 1)
 	if startLine < 1 {
 		startLine = 1
 	}
-	lines := splitLines(string(content))
+	lines := splitLines(textContent)
 	endLine := intValue(arguments["end_line"], len(lines))
 	if endLine < startLine {
 		endLine = startLine
@@ -838,7 +854,7 @@ func (r *ClientRuntime) readFile(config internalconfig.Config, arguments map[str
 	}
 	truncated, wasTruncated := truncateUTF8(selected, maxBytes)
 	r.writeStreamEventf(r.stdout, "[本地工具] read_file %s 行 %d-%d\n", resolvedPath, startLine, endLine)
-	_ = appendAuditLog(config, "read_file", map[string]any{"path": resolvedPath, "start_line": startLine, "end_line": endLine})
+	_ = appendAuditLog(config, "read_file", map[string]any{"path": resolvedPath, "start_line": startLine, "end_line": endLine, "encoding": contentEncoding})
 	return map[string]any{
 		"path":         resolvedPath,
 		"content":      truncated,
@@ -849,6 +865,7 @@ func (r *ClientRuntime) readFile(config internalconfig.Config, arguments map[str
 		"total_lines":  len(lines),
 		"total_bytes":  len(content),
 		"content_type": "text/utf-8",
+		"encoding":     contentEncoding,
 	}, nil
 }
 
@@ -985,7 +1002,12 @@ func (r *ClientRuntime) searchFilesLocal(_ context.Context, config internalconfi
 		if readErr != nil || looksBinaryContent(content) {
 			return nil
 		}
-		for lineNumber, line := range splitLines(string(content)) {
+		// 非 UTF-8 文本文件（GBK、Big5、Shift-JIS 等）自动转码为 UTF-8 后再搜索
+		textContent := string(content)
+		if !utf8.Valid(content) {
+			textContent, _ = decodeNonUTF8ToUTF8(content)
+		}
+		for lineNumber, line := range splitLines(textContent) {
 			if !matcher(line) {
 				continue
 			}
@@ -1278,6 +1300,14 @@ func truncateUTF8(content string, maxBytes int) (string, bool) {
 	return truncated, true
 }
 
+// looksBinaryContent 判断文件内容是否为二进制（非文本）。
+// 采用多层检测策略，兼容 UTF-8、UTF-16（含无 BOM）、GBK、Big5、Shift-JIS 等编码的文本文件：
+//  1. BOM 正向识别（UTF-8 BOM / UTF-16 LE/BE BOM）
+//  2. UTF-8 有效性检查
+//  3. UTF-16 无 BOM 启发式检测（交替 null 字节 + ASCII 字节模式）
+//  4. 多编码尝试解码（GBK/Big5/Shift-JIS 等，放在 null 字节检查之前避免误判）
+//  5. Null 字节比例检测（仅对无法被任何编码识别的内容生效）
+//  6. 控制字符比例检测
 func looksBinaryContent(content []byte) bool {
 	if len(content) == 0 {
 		return false
@@ -1287,38 +1317,393 @@ func looksBinaryContent(content []byte) bool {
 		limit = 8192
 	}
 	sample := content[:limit]
-	if bytes.IndexByte(sample, 0) >= 0 {
-		return true
-	}
-	return !utf8.Valid(sample)
-}
 
-func looksBinaryEditableContent(content []byte) bool {
-	if len(content) == 0 {
+	// 0. 截断边界修正：当 sample 是从更大文件中截取的固定长度样本时，
+	// 末尾可能恰好落在一个 UTF-8 多字节字符的中间（如 0xe5 是 3 字节序列的首字节）。
+	// 这会导致 utf8.Valid(sample) 返回 false，进而触发后续编码检测的误判。
+	// 去除末尾不完整的 UTF-8 字节序列，确保后续 UTF-8 有效性检查的准确性。
+	sample = trimTrailingIncompleteUTF8(sample)
+
+	// 1. BOM 检测：有 BOM 的内容一定是文本
+	if len(sample) >= 3 && sample[0] == 0xEF && sample[1] == 0xBB && sample[2] == 0xBF {
+		return false // UTF-8 BOM
+	}
+	if len(sample) >= 2 {
+		if (sample[0] == 0xFF && sample[1] == 0xFE) || (sample[0] == 0xFE && sample[1] == 0xFF) {
+			return false // UTF-16 LE/BE BOM
+		}
+	}
+
+	// 2. UTF-16 无 BOM 启发式检测：
+	// UTF-16LE 的 ASCII 字符编码为 [byte, 0x00]，UTF-16BE 为 [0x00, byte]，
+	// 导致约 50% 的 null 字节。必须在 null 字节比例检查之前识别，否则会被误判为二进制。
+	if looksLikeUTF16LENoBOM(sample) || looksLikeUTF16BENoBOM(sample) {
 		return false
 	}
-	limit := len(content)
-	if limit > 8192 {
-		limit = 8192
-	}
-	sample := content[:limit]
-	if bytes.IndexByte(sample, 0) >= 0 {
+
+	// 3. Null 字节比例检测：真正的二进制文件（PNG/JPEG/ELF/ZIP 等）通常含有大量 null 字节，
+	// 而 GBK/Big5/Shift-JIS 等文本编码极少包含 null 字节。
+	// 阈值设为 10%：足以过滤二进制文件，同时不会误判偶尔包含 null 字节的文本文件。
+	// （UTF-16 已在步骤 2 被识别，此处不会再误判）
+	// 关键：必须在 utf8.Valid 之前执行，因为 null 字节（0x00）是有效 UTF-8（ASCII NUL），
+	// utf8.Valid 会对全 null 或高 null 比例的二进制内容返回 true，导致误判为文本。
+	nullCount := bytes.Count(sample, []byte{0})
+	if nullCount > 0 && nullCount*10 > len(sample) {
 		return true
 	}
-	if utf8.Valid(sample) {
-		return false
-	}
+
+	// 4. 控制字符比例检测（排除常见文本控制字符 \n \r \t \f）
+	// 同样必须在 utf8.Valid 之前执行，原因同上：控制字符（如 0x01-0x1F）也是有效 UTF-8。
 	controlCount := 0
-	for _, value := range sample {
-		switch value {
+	for _, b := range sample {
+		switch b {
 		case '\n', '\r', '\t', '\f':
 			continue
 		}
-		if value < 0x20 || value == 0x7f {
+		if b < 0x20 || b == 0x7f {
 			controlCount++
 		}
 	}
-	return controlCount > 0 && controlCount*10 > len(sample)
+	if controlCount > 0 && controlCount*10 > len(sample) {
+		return true
+	}
+
+	// 5. 有效 UTF-8 一定是文本
+	if utf8.Valid(sample) {
+		return false
+	}
+
+	// 6. 多编码尝试解码：如果能被已知编码成功解码且替换字符极少，则认定为文本。
+	// 此时 null 字节和控制字符比例均正常，可以安全地尝试编码解码。
+	if tryDecodeAsText(sample) {
+		return false
+	}
+
+	// 所有检查均未判定为二进制，视为文本
+	return false
+}
+
+// tryDecodeAsText 尝试用常见非 UTF-8 编码解码样本内容，判断是否为可读文本。
+// 注意：ISO-8859-1 和 Windows-1252 可以解码任意字节序列（替换字符恒为 0），
+// 因此必须额外检查可打印字符比例，避免把二进制内容误判为文本。
+func tryDecodeAsText(sample []byte) bool {
+	// CJK 编码：这些编码有明确的无效字节序列，替换字符比例可以有效区分文本和二进制。
+	// 必须在 charset.DetermineEncoding 之前尝试，因为 charset 对 CJK 内容可能返回 windows-1252。
+	cjkCandidates := []encoding.Encoding{
+		simplifiedchinese.GBK,
+		simplifiedchinese.GB18030,
+		traditionalchinese.Big5,
+		japanese.ShiftJIS,
+		japanese.EUCJP,
+		korean.EUCKR,
+	}
+	for _, enc := range cjkCandidates {
+		if enc == nil {
+			continue
+		}
+		if decoded, err := decodeWithEncoding(enc, sample); err == nil && replacementRatio(decoded) < 0.02 {
+			return true
+		}
+	}
+	// charset.DetermineEncoding（基于字节频率分析）：
+	// 可能返回 windows-1252 等"万能解码器"，必须额外检查可打印字符比例。
+	if enc, _, _ := charset.DetermineEncoding(sample, ""); enc != nil {
+		if decoded, err := decodeWithEncoding(enc, sample); err == nil &&
+			replacementRatio(decoded) < 0.05 && printableRatio(decoded) > 0.80 {
+			return true
+		}
+	}
+	// Western 编码：ISO-8859-1/Windows-1252 可以解码任意字节（替换字符恒为 0），
+	// 必须额外检查可打印字符比例，避免把二进制内容误判为 Western 文本。
+	westernCandidates := []encoding.Encoding{
+		charmap.ISO8859_1,
+		charmap.Windows1252,
+	}
+	for _, enc := range westernCandidates {
+		if enc == nil {
+			continue
+		}
+		if decoded, err := decodeWithEncoding(enc, sample); err == nil &&
+			replacementRatio(decoded) < 0.02 && printableRatio(decoded) > 0.80 {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeUTF16LENoBOM 启发式检测无 BOM 的 UTF-16LE 编码内容。
+// UTF-16LE 的 ASCII 字符编码为 [byte, 0x00]，因此偶数位为可打印字节、奇数位为 null 字节。
+// 关键：必须同时要求 null 字节和可打印字节成对出现，
+// 避免把"大量 null 字节的二进制文件"误判为 UTF-16LE 文本。
+func looksLikeUTF16LENoBOM(sample []byte) bool {
+	if len(sample) < 4 {
+		return false
+	}
+	pairs := len(sample) / 2
+	nullPrintablePairs := 0 // 奇数位为 null 且偶数位为可打印 ASCII 的配对数
+	for i := 0; i < pairs; i++ {
+		even := sample[i*2]
+		odd := sample[i*2+1]
+		if odd == 0x00 && (even >= 0x20 && even <= 0x7E || even == '\n' || even == '\r' || even == '\t') {
+			nullPrintablePairs++
+		}
+	}
+	// 至少 60% 的配对满足 [可打印, null] 模式，才能认定为 UTF-16LE
+	return nullPrintablePairs > pairs*6/10
+}
+
+// looksLikeUTF16BENoBOM 启发式检测无 BOM 的 UTF-16BE 编码内容。
+// UTF-16BE 的 ASCII 字符编码为 [0x00, byte]，因此偶数位为 null 字节、奇数位为可打印字节。
+func looksLikeUTF16BENoBOM(sample []byte) bool {
+	if len(sample) < 4 {
+		return false
+	}
+	pairs := len(sample) / 2
+	nullPrintablePairs := 0 // 偶数位为 null 且奇数位为可打印 ASCII 的配对数
+	for i := 0; i < pairs; i++ {
+		even := sample[i*2]
+		odd := sample[i*2+1]
+		if even == 0x00 && (odd >= 0x20 && odd <= 0x7E || odd == '\n' || odd == '\r' || odd == '\t') {
+			nullPrintablePairs++
+		}
+	}
+	return nullPrintablePairs > pairs*6/10
+}
+
+// printableRatio 计算字符串中可打印字符（含常见空白符）的占比。
+// 用于防止 ISO-8859-1/Windows-1252 等"万能解码器"把二进制内容误判为文本。
+func printableRatio(s string) float64 {
+	if len(s) == 0 {
+		return 0
+	}
+	printable := 0
+	total := 0
+	for _, r := range s {
+		total++
+		if (r >= 0x20 && r <= 0x7E) || r == '\n' || r == '\r' || r == '\t' || r == '\f' || r > 0xA0 {
+			printable++
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return float64(printable) / float64(total)
+}
+
+// decodeNonUTF8ToUTF8 尝试将非 UTF-8 编码的字节内容转换为 UTF-8 字符串。
+// 检测顺序：UTF-16 BOM → UTF-16 无 BOM 启发式 → charset 自动检测 → CJK 编码 → Western 编码。
+// 返回 UTF-8 字符串和检测到的编码名称；若内容已是有效 UTF-8 则编码名称为 "utf-8"。
+// 若所有编码尝试均失败，返回原始字节的 lossy UTF-8 转换和 "unknown"。
+func decodeNonUTF8ToUTF8(content []byte) (string, string) {
+	// 1. UTF-16 BOM 检测：必须在 utf8.Valid 之前，因为 UTF-16 BOM 字节本身也是合法 UTF-8
+	if len(content) >= 2 {
+		if content[0] == 0xFF && content[1] == 0xFE {
+			dec := unicodeenc.UTF16(unicodeenc.LittleEndian, unicodeenc.UseBOM).NewDecoder()
+			if decoded, err := dec.Bytes(content); err == nil && replacementRatio(string(decoded)) < 0.05 {
+				return string(decoded), "utf-16le"
+			}
+		} else if content[0] == 0xFE && content[1] == 0xFF {
+			dec := unicodeenc.UTF16(unicodeenc.BigEndian, unicodeenc.UseBOM).NewDecoder()
+			if decoded, err := dec.Bytes(content); err == nil && replacementRatio(string(decoded)) < 0.05 {
+				return string(decoded), "utf-16be"
+			}
+		}
+	}
+	// 2. UTF-16 无 BOM 启发式检测：必须在 utf8.Valid 之前，
+	// 因为 UTF-16LE 编码的 ASCII 文本（如 H\x00e\x00l\x00）是合法 UTF-8（null 是有效码点），
+	// utf8.Valid 会返回 true 导致跳过 UTF-16 解码。
+	if decoded, name, ok := tryDecodeAsUTF16NoBOM(content); ok {
+		return decoded, name
+	}
+	// 3. 有效 UTF-8 检查（在 UTF-16 检测之后）
+	if utf8.Valid(content) {
+		return string(content), "utf-8"
+	}
+	// 4. charset.DetermineEncoding 优先检测 CJK 编码
+	// 基于字节频率分析，能更好地区分 GBK/Shift_JIS/EUC-JP 等 CJK 编码。
+	// 仅信任 CJK 编码结果；非 CJK 结果（如 windows-1252）在后续步骤中作为回退。
+	if enc, name, _ := charset.DetermineEncoding(content, ""); enc != nil && isCJKEncodingName(name) {
+		decoded, decErr := decodeWithEncoding(enc, content)
+		if decErr == nil && replacementRatio(decoded) < 0.02 {
+			return decoded, normalizeCharsetName(name)
+		}
+	}
+	// 5. 常见 CJK 编码逐个尝试（回退方案）
+	// 必须在 charset.DetermineEncoding 的非 CJK 结果之前，
+	// 因为 charset 对 CJK 内容可能返回 windows-1252 等"万能解码器"导致乱码
+	cjkCandidates := []struct {
+		enc  encoding.Encoding
+		name string
+	}{
+		{simplifiedchinese.GBK, "gbk"},
+		{simplifiedchinese.GB18030, "gb18030"},
+		{traditionalchinese.Big5, "big5"},
+		{japanese.ShiftJIS, "shift_jis"},
+		{japanese.EUCJP, "euc-jp"},
+		{korean.EUCKR, "euc-kr"},
+	}
+	for _, candidate := range cjkCandidates {
+		if candidate.enc == nil {
+			continue
+		}
+		decoded, decErr := decodeWithEncoding(candidate.enc, content)
+		if decErr == nil && replacementRatio(decoded) < 0.02 {
+			return decoded, candidate.name
+		}
+	}
+	// 6. charset 自动检测（非 CJK 结果）
+	// 可能返回 windows-1252 等"万能解码器"，需额外验证可打印字符比例。
+	if enc, name, _ := charset.DetermineEncoding(content, ""); enc != nil {
+		decoded, decErr := decodeWithEncoding(enc, content)
+		if decErr == nil && replacementRatio(decoded) < 0.05 && printableRatio(decoded) > 0.80 {
+			return decoded, name
+		}
+	}
+	// 6. Western 编码回退（ISO-8859-1/Windows-1252 可解码任意字节，需额外验证可打印字符比例）
+	westernCandidates := []struct {
+		enc  encoding.Encoding
+		name string
+	}{
+		{charmap.ISO8859_1, "iso-8859-1"},
+		{charmap.Windows1252, "windows-1252"},
+	}
+	for _, candidate := range westernCandidates {
+		if candidate.enc == nil {
+			continue
+		}
+		decoded, decErr := decodeWithEncoding(candidate.enc, content)
+		if decErr == nil && replacementRatio(decoded) < 0.02 && printableRatio(decoded) > 0.80 {
+			return decoded, candidate.name
+		}
+	}
+	// 7. 最终回退：使用 charset 检测结果做 lossy 转换（仅在替换字符比例可接受时使用）
+	if enc, name, _ := charset.DetermineEncoding(content, ""); enc != nil {
+		decoded, decErr := decodeWithEncoding(enc, content)
+		if decErr == nil && replacementRatio(decoded) < 0.10 {
+			return decoded, name
+		}
+	}
+	return string(content), "unknown"
+}
+
+// tryDecodeAsUTF16NoBOM 尝试将无 BOM 的 UTF-16 内容解码为 UTF-8。
+// 依次尝试 UTF-16LE 和 UTF-16BE，返回解码结果、编码名称和是否成功。
+func tryDecodeAsUTF16NoBOM(content []byte) (string, string, bool) {
+	if len(content) < 4 {
+		return "", "", false
+	}
+	// 尝试 UTF-16LE（无 BOM）
+	if looksLikeUTF16LENoBOM(content[:min(len(content), 8192)]) {
+		dec := unicodeenc.UTF16(unicodeenc.LittleEndian, unicodeenc.IgnoreBOM).NewDecoder()
+		if decoded, err := dec.Bytes(content); err == nil && replacementRatio(string(decoded)) < 0.05 {
+			return string(decoded), "utf-16le", true
+		}
+	}
+	// 尝试 UTF-16BE（无 BOM）
+	if looksLikeUTF16BENoBOM(content[:min(len(content), 8192)]) {
+		dec := unicodeenc.UTF16(unicodeenc.BigEndian, unicodeenc.IgnoreBOM).NewDecoder()
+		if decoded, err := dec.Bytes(content); err == nil && replacementRatio(string(decoded)) < 0.05 {
+			return string(decoded), "utf-16be", true
+		}
+	}
+	return "", "", false
+}
+
+// trimTrailingIncompleteUTF8 去除字节切片末尾不完整的 UTF-8 字节序列。
+// 当从文件中截取固定长度的样本时，末尾可能恰好落在一个多字节 UTF-8 字符的中间，
+// 导致 utf8.Valid 返回 false。此函数确保返回的切片以完整的 UTF-8 字符结尾。
+func trimTrailingIncompleteUTF8(b []byte) []byte {
+	if len(b) == 0 {
+		return b
+	}
+	// 从末尾向前检查最多 3 个字节（UTF-8 最长 4 字节）
+	for i := 1; i <= 3 && i <= len(b); i++ {
+		lastByte := b[len(b)-i]
+		if lastByte < 0x80 {
+			// ASCII 字节，完整
+			return b
+		}
+		if lastByte >= 0xC0 {
+			// 这是多字节序列的首字节，检查序列是否完整
+			var expectedLen int
+			switch {
+			case lastByte < 0xE0:
+				expectedLen = 2
+			case lastByte < 0xF0:
+				expectedLen = 3
+			default:
+				expectedLen = 4
+			}
+			if i < expectedLen {
+				// 序列不完整，截断
+				return b[:len(b)-i]
+			}
+			// 序列完整
+			return b
+		}
+		// lastByte 在 0x80-0xBF 之间，是延续字节，继续向前检查
+	}
+	return b
+}
+
+// decodeWithEncoding 使用指定编码将字节切片解码为 UTF-8 字符串。
+func decodeWithEncoding(enc encoding.Encoding, content []byte) (string, error) {
+	reader := transform.NewReader(bytes.NewReader(content), enc.NewDecoder())
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		return "", err
+	}
+	return string(decoded), nil
+}
+
+// replacementRatio 计算字符串中 Unicode 替换字符（U+FFFD）的占比。
+func replacementRatio(s string) float64 {
+	if len(s) == 0 {
+		return 0
+	}
+	count := strings.Count(s, "\ufffd")
+	return float64(count) / float64(utf8.RuneCountInString(s))
+}
+
+// isCJKEncodingName 判断编码名称是否为 CJK 编码。
+// 用于在 charset.DetermineEncoding 返回结果时，优先信任 CJK 编码的检测结果。
+func isCJKEncodingName(name string) bool {
+	name = strings.ToLower(name)
+	cjkNames := []string{"gbk", "gb2312", "gb18030", "big5", "shift_jis", "sjis", "windows-31j", "euc-jp", "euc-kr", "euc-cn", "iso-2022-jp"}
+	for _, cjk := range cjkNames {
+		if strings.Contains(name, cjk) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeCharsetName 标准化编码名称。
+// charset.DetermineEncoding 可能返回多种变体名称（如 "shift_jis", "sjis", "windows-31j"），
+// 此函数将它们统一为标准名称，便于后续处理和测试验证。
+func normalizeCharsetName(name string) string {
+	name = strings.ToLower(name)
+	switch {
+	case strings.Contains(name, "shift_jis") || strings.Contains(name, "sjis") || strings.Contains(name, "windows-31j"):
+		return "shift_jis"
+	case strings.Contains(name, "euc-jp"):
+		return "euc-jp"
+	case strings.Contains(name, "euc-kr"):
+		return "euc-kr"
+	case strings.Contains(name, "gb18030"):
+		return "gb18030"
+	case strings.Contains(name, "gbk") || strings.Contains(name, "gb2312"):
+		return "gbk"
+	case strings.Contains(name, "big5"):
+		return "big5"
+	}
+	return name
+}
+
+// looksBinaryEditableContent 判断文件内容是否为不可编辑的二进制文件。
+// 复用 looksBinaryContent 的多层检测策略，确保与 readFile 的二进制判定逻辑一致。
+func looksBinaryEditableContent(content []byte) bool {
+	return looksBinaryContent(content)
 }
 
 func writeFileAtomically(path string, content []byte) error {
