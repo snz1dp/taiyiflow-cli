@@ -1916,8 +1916,7 @@ func (c *Client) SubmitClientCallResult(ctx context.Context, result provider.Cli
 }
 
 func readSSE(reader io.Reader, output chan<- provider.StreamEvent) {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	bufReader := bufio.NewReader(reader)
 
 	var eventName string
 	var dataLines []string
@@ -1939,37 +1938,39 @@ func readSSE(reader io.Reader, output chan<- provider.StreamEvent) {
 		dataLines = nil
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		rawLine, err := bufReader.ReadString('\n')
+		line := strings.TrimRight(rawLine, "\r\n")
+
 		if line == "" {
 			flush()
-			continue
-		}
-		if strings.HasPrefix(line, "event:") {
+		} else if strings.HasPrefix(line, "event:") {
 			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			continue
-		}
-		if strings.HasPrefix(line, "data:") {
+		} else if strings.HasPrefix(line, "data:") {
 			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+
+		if err != nil {
+			if err != io.EOF {
+				flush()
+				var idleTimeoutErr streamIdleTimeoutError
+				if errors.As(err, &idleTimeoutErr) {
+					output <- provider.StreamEvent{
+						Type: provider.EventError,
+						Data: map[string]any{"error": fmt.Sprintf("读取流失败: %s", idleTimeoutErr.Error())},
+					}
+					return
+				}
+				output <- provider.StreamEvent{
+					Type: provider.EventError,
+					Data: map[string]any{"error": fmt.Sprintf("读取流失败: %v", err)},
+				}
+			}
+			break
 		}
 	}
 
 	flush()
-
-	if err := scanner.Err(); err != nil {
-		var idleTimeoutErr streamIdleTimeoutError
-		if errors.As(err, &idleTimeoutErr) {
-			output <- provider.StreamEvent{
-				Type: provider.EventError,
-				Data: map[string]any{"error": fmt.Sprintf("读取流失败: %s", idleTimeoutErr.Error())},
-			}
-			return
-		}
-		output <- provider.StreamEvent{
-			Type: provider.EventError,
-			Data: map[string]any{"error": fmt.Sprintf("读取流失败: %v", err)},
-		}
-	}
 }
 
 func readHTTPError(prefix string, response *http.Response) error {
