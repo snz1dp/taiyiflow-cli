@@ -416,7 +416,7 @@ func (r *ClientRuntime) executeLocalSubtask(
 		ClientContextDir:          request.WorkingDirectory,
 		CommandExecutionTarget:    "client",
 		RequestedSkillNames:       r.subtaskRequestedSkillNames,
-		ClientMCPServers:          r.ClientMCPServersForMode(request.RequestMode, config),
+		ClientMCPServers:          filterSubtaskExcludedTools(r.ClientMCPServersForMode(request.RequestMode, config)),
 		ClientSkillPackages:       r.subtaskSkillPackages,
 		ParentID:                  request.ParentRunID,
 	})
@@ -795,6 +795,38 @@ func newSubtaskRunID() string {
 	raw[6] = (raw[6] & 0x0f) | 0x40
 	raw[8] = (raw[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
+}
+
+// subtaskExcludedTools 列出子智能体不允许使用的工具名称。
+// 子智能体执行时不应再调用 run_subtask，防止无限嵌套。
+var subtaskExcludedTools = map[string]bool{
+	"run_subtask": true,
+}
+
+// filterSubtaskExcludedTools 从 MCP servers 工具定义中移除子智能体不允许使用的工具，
+// 防止子智能体在执行时再次调用 run_subtask 产生无限嵌套。
+func filterSubtaskExcludedTools(servers map[string]any) map[string]any {
+	if len(servers) == 0 {
+		return servers
+	}
+	filtered := make(map[string]any, len(servers))
+	for serverName, tools := range servers {
+		definitions, ok := tools.([]map[string]any)
+		if !ok {
+			filtered[serverName] = tools
+			continue
+		}
+		cleaned := make([]map[string]any, 0, len(definitions))
+		for _, def := range definitions {
+			name := strings.TrimSpace(stringValue(def["name"]))
+			if subtaskExcludedTools[name] {
+				continue
+			}
+			cleaned = append(cleaned, def)
+		}
+		filtered[serverName] = cleaned
+	}
+	return filtered
 }
 
 // splitThinkingContent 从文本中提取 <think> 标签内容和剩余文本

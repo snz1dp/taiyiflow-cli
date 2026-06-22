@@ -406,6 +406,121 @@ func TestExecuteClientToolPayloadRunSubtaskAggregatesParallelResults(t *testing.
 	}
 }
 
+func TestFilterSubtaskExcludedToolsRemovesRunSubtask(t *testing.T) {
+	servers := map[string]any{
+		"local": []map[string]any{
+			{"name": "shell_exec", "description": "execute shell"},
+			{"name": "run_subtask", "description": "create subtask"},
+			{"name": "read_file", "description": "read file"},
+		},
+	}
+	filtered := filterSubtaskExcludedTools(servers)
+	definitions, ok := filtered["local"].([]map[string]any)
+	if !ok {
+		t.Fatalf("expected filtered definitions, got %#v", filtered["local"])
+	}
+	if len(definitions) != 2 {
+		t.Fatalf("expected 2 tools after filtering run_subtask, got %d", len(definitions))
+	}
+	for _, def := range definitions {
+		name := stringValue(def["name"])
+		if name == "run_subtask" {
+			t.Fatalf("run_subtask should have been filtered out, got %#v", definitions)
+		}
+	}
+}
+
+func TestFilterSubtaskExcludedToolsPreservesOtherServers(t *testing.T) {
+	servers := map[string]any{
+		"local": []map[string]any{
+			{"name": "run_subtask", "description": "create subtask"},
+			{"name": "shell_exec", "description": "execute shell"},
+		},
+		"other": []map[string]any{
+			{"name": "custom_tool", "description": "custom"},
+		},
+	}
+	filtered := filterSubtaskExcludedTools(servers)
+	localDefs, ok := filtered["local"].([]map[string]any)
+	if !ok || len(localDefs) != 1 {
+		t.Fatalf("expected 1 local tool after filtering, got %#v", filtered["local"])
+	}
+	if stringValue(localDefs[0]["name"]) != "shell_exec" {
+		t.Fatalf("expected shell_exec to remain, got %#v", localDefs)
+	}
+	otherDefs, ok := filtered["other"].([]map[string]any)
+	if !ok || len(otherDefs) != 1 {
+		t.Fatalf("expected other server tools to be preserved, got %#v", filtered["other"])
+	}
+}
+
+func TestFilterSubtaskExcludedToolsHandlesEmptyInput(t *testing.T) {
+	if result := filterSubtaskExcludedTools(nil); result != nil {
+		t.Fatalf("expected nil for nil input, got %#v", result)
+	}
+	if result := filterSubtaskExcludedTools(map[string]any{}); len(result) != 0 {
+		t.Fatalf("expected empty map for empty input, got %#v", result)
+	}
+}
+
+func TestFilterSubtaskExcludedToolsHandlesNonDefinitionValues(t *testing.T) {
+	servers := map[string]any{
+		"local":   []map[string]any{{"name": "run_subtask"}},
+		"unknown": "not-a-definition-list",
+	}
+	filtered := filterSubtaskExcludedTools(servers)
+	if filtered["unknown"] != "not-a-definition-list" {
+		t.Fatalf("expected non-definition values to pass through, got %#v", filtered["unknown"])
+	}
+	localDefs, ok := filtered["local"].([]map[string]any)
+	if !ok || len(localDefs) != 0 {
+		t.Fatalf("expected empty local tools after filtering, got %#v", filtered["local"])
+	}
+}
+
+func TestExecuteLocalSubtaskStreamRequestExcludesRunSubtask(t *testing.T) {
+	tempDir := t.TempDir()
+	providerStub := &subtaskProviderStub{
+		createdSessionID: "child-session-1",
+		stream: streamWithEvents(
+			provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"chunk": "done", "message_id": "msg-1"}},
+			provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{}},
+		),
+		streamSession: &provider.StreamSession{SessionID: "child-session-1"},
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+
+	_, _, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		ClientID:     "cli-123",
+		DeviceID:     "device-456",
+	}, map[string]any{
+		"flow_id": "parent-flow",
+		"server":  map[string]any{"name": "local"},
+		"context": map[string]any{"session_id": "parent-session-1", "run_id": "parent-run-1", "message_id": "parent-message-1"},
+		"function": map[string]any{
+			"name":      "run_subtask",
+			"arguments": map[string]any{"prompt": "test"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected run_subtask to succeed, got %v", err)
+	}
+
+	// 验证传给子任务的 ClientMCPServers 中不包含 run_subtask
+	mcpServers := providerStub.lastStream.ClientMCPServers
+	localDefs, ok := mcpServers["local"].([]map[string]any)
+	if !ok {
+		t.Fatalf("expected local tool definitions, got %#v", mcpServers["local"])
+	}
+	for _, def := range localDefs {
+		if name := stringValue(def["name"]); name == "run_subtask" {
+			t.Fatalf("subtask stream request should not include run_subtask tool, but found it in %#v", localDefs)
+		}
+	}
+}
+
 func TestExecuteClientToolPayloadRunSubtaskParallelAggregatesFailuresWithoutError(t *testing.T) {
 	tempDir := t.TempDir()
 	providerStub := &subtaskProviderStub{
