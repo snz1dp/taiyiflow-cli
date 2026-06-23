@@ -171,6 +171,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return errors.New("`tui` 子命令已移除，请直接执行 `taiyiflow-cli`")
 	case "version":
 		return a.runVersion(args[1:])
+	case "upgrade":
+		return a.runUpgrade(ctx, args[1:])
 	case "help", "--help", "-h":
 		a.printRootUsage()
 		return nil
@@ -1411,6 +1413,7 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli agents [list|current|use] [参数]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli memory [status|trigger] [flow=<智能体>] [参数]")
 	fmt.Fprintf(a.stdout, "  %s\n", skillsCommandSynopsis())
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli upgrade [--force] [--manifest-url URL]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli about")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli version")
