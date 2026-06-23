@@ -57,6 +57,7 @@ type InstallResult struct {
 	ManifestPath      string
 	ManifestPaths     []string
 	LauncherPath      string
+	RegistryRegistered bool
 	StatePath         string
 	SocketPath        string
 	ExtensionID       string
@@ -73,6 +74,8 @@ type NativeMessagingStatus struct {
 	ManifestInstalled   bool
 	LauncherPath        string
 	LauncherInstalled   bool
+	RegistryRegistered  bool
+	RegistryPath        string
 	StatePath           string
 	StateDetected       bool
 	SocketPath          string
@@ -233,13 +236,18 @@ func InstallNativeMessagingHost(config internalconfig.BrowserConfig, binaryPath 
 		LauncherInstalled: true,
 		UpdatedAt:         time.Now().Format(time.RFC3339Nano),
 	}
+	registryErr := registerNativeMessagingHostForPlatform(config.Channel, paths.ManifestPath)
+	if registryErr != nil {
+		return InstallResult{}, fmt.Errorf("注册 Windows 本地消息宿主清单失败: %w", registryErr)
+	}
 	_ = writeNativeHostState(paths.StatePath, state)
 	return InstallResult{
-		Channel:           normalizedBrowserChannel(config.Channel),
-		HostName:          paths.HostName,
-		ManifestPath:      paths.ManifestPath,
-		ManifestPaths:     append([]string(nil), manifestPaths...),
-		LauncherPath:      paths.LauncherPath,
+		Channel:            normalizedBrowserChannel(config.Channel),
+		HostName:           paths.HostName,
+		ManifestPath:       paths.ManifestPath,
+		ManifestPaths:      append([]string(nil), manifestPaths...),
+		LauncherPath:       paths.LauncherPath,
+		RegistryRegistered: true,
 		StatePath:         paths.StatePath,
 		SocketPath:        paths.SocketPath,
 		ExtensionID:       paths.ExtensionID,
@@ -292,6 +300,7 @@ func DiagnoseNativeMessaging(config internalconfig.BrowserConfig, extensionProje
 			}
 		}
 	}
+	status.RegistryRegistered, status.RegistryPath = diagnoseNativeMessagingRegistry(config.Channel, paths.ManifestPath)
 	status.Message = buildNativeMessagingStatusMessage(status)
 	return status
 }
@@ -477,6 +486,13 @@ func buildNativeMessagingStatusMessage(status NativeMessagingStatus) string {
 		parts = append(parts, "启动脚本: 已安装")
 	} else {
 		parts = append(parts, "启动脚本: 未安装")
+	}
+	if runtime.GOOS == "windows" {
+		if status.RegistryRegistered {
+			parts = append(parts, "注册表: 已注册")
+		} else {
+			parts = append(parts, "注册表: 未注册")
+		}
 	}
 	if status.ExtensionConnected {
 		parts = append(parts, "扩展连接: 已连接")

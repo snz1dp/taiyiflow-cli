@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/browserbridge"
@@ -124,6 +125,13 @@ func (a *App) runBrowserInstall(args []string) error {
 		fmt.Fprintf(a.stdout, "- 兼容清单文件: %s\n", manifestPath)
 	}
 	fmt.Fprintf(a.stdout, "- 启动脚本路径: %s\n", result.LauncherPath)
+	if runtime.GOOS == "windows" {
+		if result.RegistryRegistered {
+			fmt.Fprintln(a.stdout, "- 注册表: 已注册")
+		} else {
+			fmt.Fprintln(a.stdout, "- 注册表: 未注册")
+		}
+	}
 	fmt.Fprintf(a.stdout, "- 状态文件: %s\n", result.StatePath)
 	fmt.Fprintf(a.stdout, "- 扩展标识: %s\n", result.ExtensionID)
 	if strings.TrimSpace(result.SocketPath) != "" {
