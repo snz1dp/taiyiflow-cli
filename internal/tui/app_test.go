@@ -4537,7 +4537,7 @@ func TestUpdateEndToEndToolCallAndAssistantSplitChain(t *testing.T) {
 	}
 }
 
-func TestUpdateStreamDoneCleansFinishedTasks(t *testing.T) {
+func TestUpdateStreamDoneDoesNotCleanFinishedTasks(t *testing.T) {
 	originalCleanup := cleanupFinishedLocalTasks
 	cleanupCalls := 0
 	cleanupFinishedLocalTasks = func() {
@@ -4559,11 +4559,12 @@ func TestUpdateStreamDoneCleansFinishedTasks(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected model type after stream done, got %T", updated)
 	}
-	if cleanupCalls != 1 {
-		t.Fatalf("expected stream done to cleanup finished tasks once, got %d", cleanupCalls)
+	// stream done 不再触发清理，任务保留供智能体查询
+	if cleanupCalls != 0 {
+		t.Fatalf("expected stream done to NOT cleanup finished tasks, got %d calls", cleanupCalls)
 	}
 	if typed.state.phase != progressIdle {
-		t.Fatalf("expected progress idle after stream done cleanup, got %s", typed.state.phase)
+		t.Fatalf("expected progress idle after stream done, got %s", typed.state.phase)
 	}
 }
 
@@ -4620,8 +4621,8 @@ func TestUpdateStreamFailedResetsAssistantSplitState(t *testing.T) {
 	if typed.lastAssistantMessageID != "" {
 		t.Fatalf("expected message id reset after stream failed, got %q", typed.lastAssistantMessageID)
 	}
-	if cleanupCalls != 1 {
-		t.Fatalf("expected stream failed to cleanup finished tasks once, got %d", cleanupCalls)
+	if cleanupCalls != 0 {
+		t.Fatalf("expected stream failed to NOT cleanup finished tasks, got %d calls", cleanupCalls)
 	}
 }
 

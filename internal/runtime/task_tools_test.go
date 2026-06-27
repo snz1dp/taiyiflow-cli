@@ -60,21 +60,40 @@ func TestShellExecBackgroundAndTaskOutput(t *testing.T) {
 
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err = runtimeClient.taskOutput(config, map[string]any{"task_id": taskID}); err != nil {
+		output, outputErr := runtimeClient.taskOutput(config, map[string]any{"task_id": taskID})
+		if outputErr != nil {
+			if seenStdout {
+				break
+			}
+			t.Fatalf("taskOutput failed before completion: %v", outputErr)
+		}
+		if strings.Contains(stringValue(output["stdout"]), "hello from task") {
+			seenStdout = true
+		}
+		if seenStdout && stringValue(output["status"]) != "running" {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err == nil {
-		t.Fatalf("expected completed task %s to be auto cleaned", taskID)
+	if !seenStdout {
+		t.Fatal("expected taskOutput to expose running task stdout before completion")
+	}
+
+	// 任务完成后仍应可查询（不再自动清理）
+	finalOutput, err := runtimeClient.taskOutput(config, map[string]any{"task_id": taskID})
+	if err != nil {
+		t.Fatalf("expected completed task to remain queryable, got error: %v", err)
+	}
+	if stringValue(finalOutput["status"]) == "running" {
+		t.Fatal("expected task to have completed")
 	}
 
 	listed, err := runtimeClient.taskList(config)
 	if err != nil {
 		t.Fatalf("taskList failed: %v", err)
 	}
-	if listed["count"].(int) != 0 {
-		t.Fatalf("expected completed task to disappear from list, got %#v", listed)
+	if listed["count"].(int) != 1 {
+		t.Fatalf("expected completed task to remain in list, got count %v", listed["count"])
 	}
 }
 
@@ -457,12 +476,14 @@ func TestShellExecBackgroundSupportsStructuredBuiltinCommand(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": taskID}); outputErr != nil {
+		output, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": taskID})
+		if outputErr == nil && stringValue(output["status"]) != "running" {
+			// 任务完成后仍可查询，不再自动清理
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("expected structured builtin background task to auto clean after finish")
+	t.Fatal("expected structured builtin background task to complete and remain queryable")
 }
 
 func TestTaskStopCancelsBackgroundCommand(t *testing.T) {
@@ -487,14 +508,17 @@ func TestTaskStopCancelsBackgroundCommand(t *testing.T) {
 		t.Fatalf("taskStop failed: %v", err)
 	}
 
+	// 等待任务状态变为 cancelled
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := runtimeClient.taskOutput(config, map[string]any{"task_id": taskID}); err != nil {
+		output, outputErr := runtimeClient.taskOutput(config, map[string]any{"task_id": taskID})
+		if outputErr == nil && stringValue(output["status"]) == "cancelled" {
+			// 任务停止后仍应可查询（不再自动清理）
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("expected task %s to be auto cleaned after stop", taskID)
+	t.Fatalf("expected task %s to be cancelled and still queryable", taskID)
 }
 
 func TestTaskManagerDoesNotRestorePersistedTaskAcrossManagerInstances(t *testing.T) {
@@ -735,7 +759,8 @@ func TestTaskCleanupSkipsAutoClearedCompletedTasksAndKeepsRunningTasks(t *testin
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": completedResult["task_id"].(string)}); outputErr != nil {
+		output, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": completedResult["task_id"].(string)})
+		if outputErr == nil && stringValue(output["status"]) != "running" {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -745,10 +770,11 @@ func TestTaskCleanupSkipsAutoClearedCompletedTasksAndKeepsRunningTasks(t *testin
 	if err != nil {
 		t.Fatalf("taskCleanup failed: %v", err)
 	}
-	if cleaned["deleted_count"] != 0 {
-		t.Fatalf("expected completed task to auto clear before cleanup, got %#v", cleaned)
+	// 已完成任务不再自动清理，需要 taskCleanup 显式清理
+	if cleaned["deleted_count"].(int) != 1 {
+		t.Fatalf("expected one completed task to be cleaned by taskCleanup, got %#v", cleaned)
 	}
-	if cleaned["running_count"] != 1 {
+	if cleaned["running_count"].(int) != 1 {
 		t.Fatalf("expected one running task kept, got %#v", cleaned)
 	}
 	listResult, err := runtimeClient.taskList(configValue)
@@ -761,14 +787,16 @@ func TestTaskCleanupSkipsAutoClearedCompletedTasksAndKeepsRunningTasks(t *testin
 	if _, err := runtimeClient.taskStop(configValue, map[string]any{"task_id": runningTaskID}); err != nil {
 		t.Fatalf("taskStop failed: %v", err)
 	}
+	// 停止后任务仍保留，不再自动清理
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": runningTaskID}); outputErr != nil {
+		output, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": runningTaskID})
+		if outputErr == nil && stringValue(output["status"]) == "cancelled" {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("expected cleanup test running task to be auto cleaned after stop")
+	t.Fatal("expected stopped running task to be cancelled and still queryable")
 }
 
 func TestShutdownLocalTasksStopsRunningTasksAndClearsStore(t *testing.T) {

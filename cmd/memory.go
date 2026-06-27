@@ -111,8 +111,13 @@ func (a *App) executeMemoryArgsCommand(
 
 	switch action {
 	case memoryCommandTrigger:
+		ownerAppID, ownerErr := resolveOwnerAppID(ctx, providerClient, options.FlowID)
+		if ownerErr != nil {
+			return "", nil, fmt.Errorf("获取 owner_appid 失败: %w", ownerErr)
+		}
 		result, err := providerClient.TriggerMemoryConsolidation(ctx, provider.MemoryConsolidationTriggerRequest{
 			FlowID:         options.FlowID,
+			OwnerAppID:     ownerAppID,
 			MinHours:       options.MinHours,
 			MinSessions:    options.MinSessions,
 			ExecuteEnabled: options.ExecuteEnabled,

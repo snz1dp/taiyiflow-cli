@@ -255,12 +255,12 @@ func TestExecuteTasksSlashCommandCleanup(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		output, panel, commandErr := app.executeTasksSlashCommand(context.Background(), configValue, "/tasks cleanup")
-		if commandErr == nil && panel != nil && strings.Contains(output, "已清理 0 个任务") {
+		if commandErr == nil && panel != nil && strings.Contains(output, "已清理 1 个任务") {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("expected /tasks cleanup to observe auto-cleaned completed tasks")
+	t.Fatal("expected /tasks cleanup to clean one completed task")
 }
 
 func TestParseTasksCommandAcceptsTasksOnly(t *testing.T) {

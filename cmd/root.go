@@ -240,6 +240,7 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 
 func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	a.disableCLIFocusReporting()
+	defer clientruntime.ShutdownLocalTasks()
 
 	config, err := a.configManager.Load()
 	if err != nil {
@@ -607,6 +608,7 @@ func (a *App) clearInteractiveScreen() {
 
 func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string) error {
 	a.disableCLIFocusReporting()
+	defer clientruntime.ShutdownLocalTasks()
 	if a.runtime != nil {
 		previousInteractivePromptsEnabled := a.runtime.InteractivePromptsEnabled()
 		a.runtime.SetInteractivePromptsEnabled(false)

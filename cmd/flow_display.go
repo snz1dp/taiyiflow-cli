@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
@@ -39,6 +40,27 @@ func (a *App) resolveFlowDisplayName(ctx context.Context, client provider.Provid
 	}
 
 	return sanitizeFlowDisplay(trimmed)
+}
+
+// resolveOwnerAppID 通过 GET /agents/flows/{flow_id} 获取智能体的 owner_appid。
+// 如果获取失败或 owner_appid 为空，返回错误，调用方应将此视为服务端不可用。
+func resolveOwnerAppID(ctx context.Context, client provider.Provider, flowID string) (string, error) {
+	flowID = strings.TrimSpace(flowID)
+	if flowID == "" {
+		return "", fmt.Errorf("flowID 为空，无法获取 owner_appid")
+	}
+	if client == nil {
+		return "", fmt.Errorf("provider 为空，无法获取 owner_appid")
+	}
+	flow, err := client.GetFlow(ctx, flowID)
+	if err != nil {
+		return "", fmt.Errorf("获取智能体 owner_appid 失败，服务端可能不可用: %w", err)
+	}
+	ownerAppID := strings.TrimSpace(flow.OwnerAppID)
+	if ownerAppID == "" {
+		return "", fmt.Errorf("智能体 owner_appid 为空，服务端可能不可用")
+	}
+	return ownerAppID, nil
 }
 
 func (a *App) resolveFlowIdentifier(ctx context.Context, client provider.Provider, flowIDOrName string) string {

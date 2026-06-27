@@ -684,21 +684,20 @@ func TestExecuteTUILocalShellCommandAutoBackgroundsTailFollow(t *testing.T) {
 	if _, _, stopErr := runLocalUserTool(context.Background(), config, "task_stop", map[string]any{"task_id": taskID}); stopErr != nil {
 		t.Fatalf("expected task_stop to succeed, got %v", stopErr)
 	}
+	// 任务停止后仍保留，不再自动清理
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, _, detailsErr := runLocalReadTool(context.Background(), config, "task_output", map[string]any{"task_id": taskID}); detailsErr != nil {
-			output, refreshedPanel, outputErr := app.executeTasksSlashCommand(context.Background(), config, "/tasks")
-			if outputErr != nil {
-				t.Fatalf("expected /tasks refresh to succeed, got %v", outputErr)
+		_, detailsAny, detailsErr := runLocalReadTool(context.Background(), config, "task_output", map[string]any{"task_id": taskID})
+		if detailsErr == nil {
+			if details, ok := detailsAny.(map[string]any); ok {
+				if status, _ := details["status"].(string); status == "cancelled" {
+					return
+				}
 			}
-			if refreshedPanel != nil && strings.Contains(refreshedPanel.Body, taskID) {
-				t.Fatalf("expected auto cleaned task %q to disappear from /tasks, output=%q panel=%#v", taskID, output, refreshedPanel)
-			}
-			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("expected background task %s to auto clean after stop", taskID)
+	t.Fatalf("expected background task %s to be cancelled and still queryable", taskID)
 }
 
 func TestExecuteTUILocalShellCommandRejectsInteractiveTTYCommand(t *testing.T) {
@@ -852,11 +851,15 @@ func (s stubSnapshotProvider) GetServiceConfig(context.Context) (*provider.Servi
 	return s.stubProvider.GetServiceConfig(context.Background())
 }
 
-func (s stubSnapshotProvider) ListKnowledgeBases(context.Context, string, int, int) (*provider.KnowledgeBaseList, error) {
+func (s stubSnapshotProvider) ListKnowledgeBases(context.Context, string, string, int, int) (*provider.KnowledgeBaseList, error) {
 	if s.knowledgeBases != nil || s.knowledgeErr != nil {
 		return s.knowledgeBases, s.knowledgeErr
 	}
-	return s.stubProvider.ListKnowledgeBases(context.Background(), "", 0, 0)
+	return s.stubProvider.ListKnowledgeBases(context.Background(), "", "", 0, 0)
+}
+
+func (s stubSnapshotProvider) GetFlow(context.Context, string) (*provider.FlowSummary, error) {
+	return s.stubProvider.GetFlow(context.Background(), "")
 }
 
 func TestBuildTUISnapshotMarksAuthRequired(t *testing.T) {

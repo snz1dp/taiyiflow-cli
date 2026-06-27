@@ -86,7 +86,11 @@ func (s stubProvider) ListFlows(context.Context, string, string, int, int) (*pro
 	return &provider.FlowList{}, nil
 }
 
-func (s stubProvider) ListKnowledgeBases(context.Context, string, int, int) (*provider.KnowledgeBaseList, error) {
+func (s stubProvider) GetFlow(context.Context, string) (*provider.FlowSummary, error) {
+	return &provider.FlowSummary{OwnerAppID: "test-app-id"}, nil
+}
+
+func (s stubProvider) ListKnowledgeBases(context.Context, string, string, int, int) (*provider.KnowledgeBaseList, error) {
 	return &provider.KnowledgeBaseList{}, nil
 }
 

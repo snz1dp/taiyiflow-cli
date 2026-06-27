@@ -194,6 +194,7 @@ type flowItemResponse struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Type        string `json:"type"`
+	OwnerAppID  string `json:"owner_appid"`
 }
 
 type flowListResponse struct {
@@ -593,6 +594,7 @@ func (c *Client) ListFlows(ctx context.Context, filter string, agentType string,
 			Name:        item.Name,
 			Description: item.Description,
 			Type:        item.Type,
+			OwnerAppID:  strings.TrimSpace(item.OwnerAppID),
 		})
 	}
 
@@ -600,6 +602,43 @@ func (c *Client) ListFlows(ctx context.Context, filter string, agentType string,
 		Total:  payload.Total,
 		Offset: payload.Offset,
 		Items:  items,
+	}, nil
+}
+
+func (c *Client) GetFlow(ctx context.Context, flowID string) (*provider.FlowSummary, error) {
+	flowID = strings.TrimSpace(flowID)
+	if flowID == "" {
+		return nil, fmt.Errorf("获取智能体信息失败: 智能体不能为空")
+	}
+
+	endpoint := c.apiURL(fmt.Sprintf("/agents/flows/%s", url.PathEscape(flowID)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("获取智能体信息失败", resp)
+	}
+
+	var payload flowItemResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析智能体信息响应失败: %w", err)
+	}
+
+	return &provider.FlowSummary{
+		ID:          strings.TrimSpace(payload.ID),
+		Name:        strings.TrimSpace(payload.Name),
+		Description: strings.TrimSpace(payload.Description),
+		Type:        strings.TrimSpace(payload.Type),
+		OwnerAppID:  strings.TrimSpace(payload.OwnerAppID),
 	}, nil
 }
 
@@ -719,13 +758,16 @@ func (c *Client) UpdateSessionTitle(ctx context.Context, flowID string, sessionI
 	return trimmedSessionTitle, nil
 }
 
-func (c *Client) ListKnowledgeBases(ctx context.Context, filter string, offset, limit int) (*provider.KnowledgeBaseList, error) {
+func (c *Client) ListKnowledgeBases(ctx context.Context, appid string, filter string, offset, limit int) (*provider.KnowledgeBaseList, error) {
 	endpoint, err := url.Parse(c.apiURL("/agents/knowledge/bases"))
 	if err != nil {
 		return nil, fmt.Errorf("构造 knowledge bases 请求地址失败: %w", err)
 	}
 
 	query := endpoint.Query()
+	if strings.TrimSpace(appid) != "" {
+		query.Set("appid", strings.TrimSpace(appid))
+	}
 	if strings.TrimSpace(filter) != "" {
 		query.Set("filter", strings.TrimSpace(filter))
 	}

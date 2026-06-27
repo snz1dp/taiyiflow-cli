@@ -27,6 +27,10 @@ func (s *memoryProviderStub) ListFlows(context.Context, string, string, int, int
 	return s.stubProvider.ListFlows(context.Background(), "", "", 0, 0)
 }
 
+func (s *memoryProviderStub) GetFlow(context.Context, string) (*provider.FlowSummary, error) {
+	return s.stubProvider.GetFlow(context.Background(), "")
+}
+
 func (s *memoryProviderStub) GetMetadata(context.Context, string) (*provider.Metadata, error) {
 	if s.metadata != nil {
 		return s.metadata, nil

@@ -52,8 +52,20 @@ func (p *callbackAuthRefreshProvider) ListFlows(ctx context.Context, filter stri
 	return p.Provider.ListFlows(ctx, filter, agentType, offset, limit)
 }
 
-func (p *callbackAuthRefreshProvider) ListKnowledgeBases(ctx context.Context, filter string, offset, limit int) (*provider.KnowledgeBaseList, error) {
-	knowledgeBases, err := p.Provider.ListKnowledgeBases(ctx, filter, offset, limit)
+func (p *callbackAuthRefreshProvider) GetFlow(ctx context.Context, flowID string) (*provider.FlowSummary, error) {
+	flow, err := p.Provider.GetFlow(ctx, flowID)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return flow, err
+	}
+	return p.Provider.GetFlow(ctx, flowID)
+}
+
+func (p *callbackAuthRefreshProvider) ListKnowledgeBases(ctx context.Context, appid string, filter string, offset, limit int) (*provider.KnowledgeBaseList, error) {
+	knowledgeBases, err := p.Provider.ListKnowledgeBases(ctx, appid, filter, offset, limit)
 	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
 	if refreshErr != nil {
 		return nil, refreshErr
@@ -61,7 +73,7 @@ func (p *callbackAuthRefreshProvider) ListKnowledgeBases(ctx context.Context, fi
 	if !retry {
 		return knowledgeBases, err
 	}
-	return p.Provider.ListKnowledgeBases(ctx, filter, offset, limit)
+	return p.Provider.ListKnowledgeBases(ctx, appid, filter, offset, limit)
 }
 
 func (p *callbackAuthRefreshProvider) ListSessions(ctx context.Context, flowID string, offset, limit int) (*provider.SessionList, error) {

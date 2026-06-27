@@ -1154,7 +1154,11 @@ func (a *App) buildTUISnapshot(
 			sessionState.FlowDisplayName = strings.TrimSpace(metadata.Name)
 		}
 		if snapshot.KnowledgeSearchSupported {
-			if knowledgeBases, listErr := providerClient.ListKnowledgeBases(ctx, "", 0, 100); listErr == nil {
+			ownerAppID, ownerErr := resolveOwnerAppID(ctx, providerClient, flowID)
+			if ownerErr != nil {
+				return tui.Snapshot{}, ownerErr
+			}
+			if knowledgeBases, listErr := providerClient.ListKnowledgeBases(ctx, ownerAppID, "", 0, 100); listErr == nil {
 				snapshot.KnowledgeBases = buildTUIKnowledgeBaseItems(knowledgeBases, nil)
 			}
 		}

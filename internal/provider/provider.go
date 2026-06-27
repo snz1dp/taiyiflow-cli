@@ -357,6 +357,7 @@ type FlowSummary struct {
 	Name        string
 	Description string
 	Type        string
+	OwnerAppID  string
 }
 
 type FlowList struct {
@@ -531,7 +532,8 @@ type ClientCollaborationTask struct {
 type Provider interface {
 	Name() string
 	ListFlows(ctx context.Context, filter string, agentType string, offset, limit int) (*FlowList, error)
-	ListKnowledgeBases(ctx context.Context, filter string, offset, limit int) (*KnowledgeBaseList, error)
+	GetFlow(ctx context.Context, flowID string) (*FlowSummary, error)
+	ListKnowledgeBases(ctx context.Context, appid string, filter string, offset, limit int) (*KnowledgeBaseList, error)
 	ListSessions(ctx context.Context, flowID string, offset, limit int) (*SessionList, error)
 	UpdateSessionTitle(ctx context.Context, flowID string, sessionID string, sessionTitle string) (string, error)
 	ListSessionMessages(ctx context.Context, flowID string, sessionID string, offset, limit int) (*SessionMessageList, error)

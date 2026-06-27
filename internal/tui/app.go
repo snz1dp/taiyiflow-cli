@@ -1276,7 +1276,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentToolLabel = ""
 		m.requestCancel = nil
 		m.retryAvailable = m.lastRetryableRequest != nil
-		cleanupFinishedLocalTasks()
 		m.syncViewport()
 		m.input.Focus()
 		if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
@@ -1301,7 +1300,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentToolLabel = ""
 		m.requestCancel = nil
 		m.retryAvailable = false
-		cleanupFinishedLocalTasks()
 		m.input.Focus()
 		if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
 			return m, tea.Batch(queuedCmd, m.maybeRefreshSessionSnapshot())
@@ -4959,12 +4957,12 @@ func loginVerificationImageHint(state *loginFormState) string {
 		return "当前使用 iTerm2 终端图片协议显示图形验证码。"
 	default:
 		if canRenderANSIColorVerificationImage(state.verifyImagePNGBase64) {
-			return "当前终端未启用专用图片协议，已回退为 ANSI 彩色块预览。"
+			return "当前终端未启用专用图片协议，已回退为色块预览（建议眯着眼看）。"
 		}
 		if strings.TrimSpace(state.verifyImageASCII) == "" {
 			return ""
 		}
-		return "当前终端未启用图片协议，已回退为 ASCII 图形验证码。"
+		return "当前终端未启用图片协议，已回退为色块预览（建议眯着眼看）。"
 	}
 }
 

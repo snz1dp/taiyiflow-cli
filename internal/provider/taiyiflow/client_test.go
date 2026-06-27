@@ -598,7 +598,7 @@ func TestListKnowledgeBasesParsesResponse(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, "")
-	list, err := client.ListKnowledgeBases(context.Background(), "demo", 0, 20)
+	list, err := client.ListKnowledgeBases(context.Background(), "", "demo", 0, 20)
 	if err != nil {
 		t.Fatalf("expected ListKnowledgeBases to succeed, got %v", err)
 	}

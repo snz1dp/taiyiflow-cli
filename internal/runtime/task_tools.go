@@ -289,7 +289,8 @@ func (m *localTaskManager) waitTask(
 ) {
 	done := task.done
 	defer func() {
-		_ = m.deleteTask(task)
+		// 不再在任务完成时立即删除，保留任务记录供智能体查询输出。
+		// 清理统一在进程退出时由 ShutdownLocalTasks() 执行。
 		if done != nil {
 			close(done)
 		}
