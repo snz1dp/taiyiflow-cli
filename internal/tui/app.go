@@ -3609,12 +3609,20 @@ func (m model) useMinimalChrome() bool {
 func (m *model) syncViewport() {
 	content, updatedEntries := renderEntries(m.entries, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot, m.streamingIndicatorSuffix(), m.streamingIndicatorTargetIndex())
 	m.entries = updatedEntries
+	// 在 SetContent 前记录滚动位置：如果用户已上翻查看历史，不强制拉回底部。
+	wasAtBottom := m.viewport.AtBottom()
+	prevYOffset := m.viewport.YOffset
 	m.viewport.SetContent(content)
 	if m.shouldPinHistoryTop() {
 		m.viewport.GotoTop()
 		return
 	}
-	m.viewport.GotoBottom()
+	if wasAtBottom {
+		m.viewport.GotoBottom()
+	} else if m.viewport.YOffset != prevYOffset {
+		// SetContent 可能重置了 YOffset，恢复用户原来的滚动位置
+		m.viewport.SetYOffset(prevYOffset)
+	}
 }
 
 func (m *model) refreshLayoutAfterStateChange() {
