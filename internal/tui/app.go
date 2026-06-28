@@ -6514,9 +6514,13 @@ func (m *model) handleLocalSlashCommand(command string) (bool, tea.Cmd) {
 	if m.localCommand == nil {
 		return false, nil
 	}
-	// ! 命令使用流式执行路径：先即时显示命令文本，再异步流式输出结果。
-	if strings.HasPrefix(command, "!") && m.localShellStream != nil {
-		return m.handleLocalShellStream(command)
+	// ! 命令使用异步非流式执行路径：命令执行完毕后一次性显示全部输出，不阻塞 TUI。
+	if strings.HasPrefix(command, "!") {
+		m.input.SetValue("")
+		return true, tea.Batch(
+			m.transitionProgress(progressExecuting),
+			executeLocalCommandCmd(m.ctx, m.snapshot, command, m.localCommand),
+		)
 	}
 	result, err := m.localCommand(m.ctx, command, m.snapshot)
 	m.input.SetValue("")
@@ -6550,7 +6554,6 @@ func (m *model) handleLocalShellStream(command string) (bool, tea.Cmd) {
 	return true, tea.Batch(
 		m.transitionProgress(progressExecuting),
 		startLocalShellStream(m.ctx, m.snapshot, rawCommand, m.localShellStream, m.eventCh),
-		waitForStream(m.eventCh),
 	)
 }
 
@@ -6842,6 +6845,11 @@ func drainEventCh(eventCh chan tea.Msg) tea.Msg {
 	}
 	events := []Event{firstEvent.event}
 	var pending tea.Msg
+	// 短时间窗口（8ms）内收集更多事件，用于区分高速/低速场景。
+	// 高速场景（窗口内收集到多个事件）：批量处理，减少视口刷新次数。
+	// 低速场景（窗口内仅 1 个事件）：直接返回，实现实时逐字输出。
+	timer := time.NewTimer(8 * time.Millisecond)
+	defer timer.Stop()
 drain:
 	for len(events) < 256 {
 		select {
@@ -6852,7 +6860,7 @@ drain:
 				break drain
 			}
 			events = append(events, evt.event)
-		default:
+		case <-timer.C:
 			break drain
 		}
 	}
