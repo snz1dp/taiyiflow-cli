@@ -2318,7 +2318,7 @@ func (m *model) prependHistoryEntries(history []HistoryEntry) {
 		if strings.TrimSpace(item.Content) == "" {
 			continue
 		}
-		prepended = append(prepended, entry{role: item.Role, content: item.Content})
+		prepended = append(prepended, entry{role: item.Role, content: sanitizeHistoryContent(item.Content)})
 	}
 	m.snapshot.History = append(append([]HistoryEntry(nil), history...), m.snapshot.History...)
 	if len(prepended) == 0 {
@@ -2327,11 +2327,13 @@ func (m *model) prependHistoryEntries(history []HistoryEntry) {
 	previousOffset := m.viewport.YOffset
 	lineShift := 0
 	if m.viewport.Width > 0 && m.viewport.Height > 0 {
-		prefixContent, _ := renderEntries(prepended, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot, "", -1)
+		// 保留首次渲染结果，避免第二次 renderEntries 重复执行 glamour 渲染
+		prefixContent, renderedPrepended := renderEntries(prepended, m.viewport.Width, m.viewport.Height, m.markdown, m.snapshot, "", -1)
 		lineShift = lipgloss.Height(prefixContent)
 		if len(m.entries) > 0 && lineShift > 0 {
 			lineShift++
 		}
+		prepended = renderedPrepended
 	}
 	m.entries = append(prepended, m.entries...)
 	if m.viewport.Width <= 0 || m.viewport.Height <= 0 {
@@ -6217,6 +6219,17 @@ func sanitizeTerminalText(content string) string {
 	return textsanitize.StripWatermarkCharacters(cleaned)
 }
 
+// sanitizeHistoryContent 在历史消息入库时做一次清洗，
+// 移除服务端水印字符和不可见格式控制符，避免它们影响后续的文本换行计算和终端渲染。
+func sanitizeHistoryContent(content string) string {
+	if content == "" {
+		return ""
+	}
+	cleaned := strings.ReplaceAll(content, "<think>", "")
+	cleaned = strings.ReplaceAll(cleaned, "</think>", "")
+	return textsanitize.StripWatermarkCharacters(cleaned)
+}
+
 func isMarkdownTableRow(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
@@ -8862,7 +8875,7 @@ func buildInitialEntries(snapshot Snapshot) []entry {
 		if strings.TrimSpace(item.Content) == "" {
 			continue
 		}
-		entries = append(entries, entry{role: item.Role, content: item.Content})
+		entries = append(entries, entry{role: item.Role, content: sanitizeHistoryContent(item.Content)})
 	}
 	if len(entries) == 0 {
 		entries = append(entries, entry{role: "welcome", content: buildWelcomeContent(snapshot)})
