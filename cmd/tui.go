@@ -3862,6 +3862,7 @@ func emitTUIAssistantChunk(emit func(tui.Event), state *tuiAssistantRenderState,
 }
 
 func (s *tuiAssistantRenderState) consume(chunk string) []tuiRenderedSegment {
+	chunk = stripInvisibleFormatChars(chunk)
 	if chunk == "" {
 		return nil
 	}

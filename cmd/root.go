@@ -1242,6 +1242,7 @@ func (s *cliStreamRenderState) flush(showThinking bool) string {
 }
 
 func (s *cliStreamRenderState) renderVisibleChunk(chunk string) string {
+	chunk = stripInvisibleFormatChars(chunk)
 	return s.controlResidue.consume(s.rewriteCitationChunk(chunk))
 }
 
