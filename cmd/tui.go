@@ -956,7 +956,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}, nil
 	}
 
-	return tui.Run(ctx, snapshot, flowItems, runner, refreshSnapshot, flowChange, sessionChange, approvalChange, configFormSubmit, loginFormSubmit, localCommand, historyLoad, startupCommand, primaryDispatchCh)
+	return tui.Run(ctx, snapshot, flowItems, runner, refreshSnapshot, flowChange, sessionChange, approvalChange, configFormSubmit, loginFormSubmit, localCommand, a.localShellStreamHandler, historyLoad, startupCommand, primaryDispatchCh)
 }
 
 func (a *App) buildInitialTUISnapshot(
@@ -1249,6 +1249,52 @@ func (a *App) executeTUILocalShellCommand(ctx context.Context, command string, s
 		}
 		return tui.LocalCommandResult{Handled: true, Events: buildLocalShellCommandEvents(rawCommand, result)}, nil
 	}
+}
+
+func (a *App) localShellStreamHandler(ctx context.Context, rawCommand string, snapshot tui.Snapshot, emit func(output string, isError bool)) (int, error) {
+	localConfig, err := a.configManager.Load()
+	if err != nil {
+		return -1, err
+	}
+	effectiveConfig := localConfig
+	if flowID := strings.TrimSpace(snapshot.DefaultFlow); flowID != "" {
+		sessionState, sessionErr := a.prepareSession(flowID, false, snapshot.Workdir, snapshot.RequestMode)
+		if sessionErr == nil {
+			effectiveConfig = applyEffectiveSandboxEscapePolicy(localConfig, sessionState.SandboxEscapePolicyOverride, "")
+		}
+	}
+	mode, detail := classifyTUILocalShellCommand(rawCommand)
+	if mode == tuiLocalShellModeUnsupported {
+		emit(detail+"\n", true)
+		return 1, nil
+	}
+	if mode == tuiLocalShellModeBackground {
+		// 后台任务模式不支持流式输出，回退到同步路径
+		result, bgErr := executeTUILocalShellTask(ctx, effectiveConfig, rawCommand, "background")
+		if bgErr != nil {
+			return -1, bgErr
+		}
+		for _, ev := range result.Events {
+			if strings.TrimSpace(ev.Text) != "" {
+				emit(ev.Text+"\n", ev.Kind == tui.EventErrorNote)
+			}
+		}
+		return 0, nil
+	}
+	if strings.TrimSpace(effectiveConfig.ApprovalMode) == "readonly" {
+		return -1, fmt.Errorf("当前审批模式为只读，不能执行本地命令")
+	}
+	runtimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), io.Discard, io.Discard)
+	runtimeClient.SetStreamCallback(emit)
+	result, execErr := runtimeClient.ExecuteShellCommand(ctx, effectiveConfig, rawCommand)
+	if execErr != nil {
+		return -1, execErr
+	}
+	exitCode := 0
+	if code, ok := result["exit_code"].(int); ok {
+		exitCode = code
+	}
+	return exitCode, nil
 }
 
 type tuiLocalShellMode string

@@ -493,6 +493,7 @@ func NewClient(baseURL, apiKey string) *Client {
 	streamTransport.IdleConnTimeout = 600 * time.Second
 	streamTransport.TLSHandshakeTimeout = 30 * time.Second
 	streamTransport.ExpectContinueTimeout = time.Second
+	streamTransport.DisableCompression = true
 
 	return &Client{
 		baseURL:                 strings.TrimRight(baseURL, "/"),
@@ -1438,7 +1439,7 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 	}
 
 	streamSession := &provider.StreamSession{SessionID: resp.Header.Get(SessionHeader)}
-	stream := make(chan provider.StreamEvent)
+	stream := make(chan provider.StreamEvent, 64)
 
 	go func() {
 		defer close(stream)

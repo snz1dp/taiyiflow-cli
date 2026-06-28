@@ -544,6 +544,11 @@ type LoginFormSubmitHandler func(ctx context.Context, snapshot Snapshot, submiss
 
 type LocalCommandHandler func(ctx context.Context, command string, snapshot Snapshot) (LocalCommandResult, error)
 
+// LocalShellStreamHandler 用于以流式方式执行本地 ! 命令。
+// emit 回调在命令产生 stdout/stderr 输出时被调用。
+// 返回退出码和可能的错误。
+type LocalShellStreamHandler func(ctx context.Context, rawCommand string, snapshot Snapshot, emit func(output string, isError bool)) (int, error)
+
 type HistoryLoadResult struct {
 	Entries     []HistoryEntry
 	LoadedCount int
@@ -576,6 +581,11 @@ type confirmOption struct {
 
 type streamEventMsg struct {
 	event Event
+}
+
+type streamEventBatchMsg struct {
+	events  []Event
+	pending tea.Msg
 }
 
 type streamDoneMsg struct{}
@@ -637,6 +647,16 @@ type localCommandExecutedMsg struct {
 	err    error
 }
 
+type localShellChunkMsg struct {
+	output  string
+	isError bool
+}
+
+type localShellDoneMsg struct {
+	exitCode int
+	err      error
+}
+
 type historyLoadedMsg struct {
 	result              HistoryLoadResult
 	flowID              string
@@ -696,6 +716,9 @@ type model struct {
 	configFormSubmit           ConfigFormSubmitHandler
 	loginFormSubmit            LoginFormSubmitHandler
 	localCommand               LocalCommandHandler
+	localShellStream           LocalShellStreamHandler
+	localShellOutputIndex      int
+	localShellActive           bool
 	historyLoad                HistoryLoadHandler
 	eventCh                    chan tea.Msg
 	entries                    []entry
@@ -1057,7 +1080,7 @@ var slashCommands = []slashCommand{
 
 var cleanupFinishedLocalTasks = clientruntime.CleanupFinishedLocalTasks
 
-func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, refreshSnapshot SnapshotRefreshHandler, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, configFormSubmit ConfigFormSubmitHandler, loginFormSubmit LoginFormSubmitHandler, localCommand LocalCommandHandler, historyLoad HistoryLoadHandler, startupCommand string, externalQueuedInputs <-chan string) error {
+func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner, refreshSnapshot SnapshotRefreshHandler, flowChange FlowChangeHandler, sessionChange SessionChangeHandler, approvalChange ApprovalChangeHandler, configFormSubmit ConfigFormSubmitHandler, loginFormSubmit LoginFormSubmitHandler, localCommand LocalCommandHandler, localShellStream LocalShellStreamHandler, historyLoad HistoryLoadHandler, startupCommand string, externalQueuedInputs <-chan string) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer clientruntime.ShutdownLocalTasks()
@@ -1096,7 +1119,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 
 	initialEntries := buildInitialEntries(snapshot)
 	initialRequestStats := cloneRequestMetrics(snapshot.RequestStats)
-	eventCh := make(chan tea.Msg)
+	eventCh := make(chan tea.Msg, 128)
 	if externalQueuedInputs != nil {
 		go relayExternalQueuedInputs(runCtx, eventCh, externalQueuedInputs)
 	}
@@ -1113,6 +1136,8 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 		configFormSubmit:           configFormSubmit,
 		loginFormSubmit:            loginFormSubmit,
 		localCommand:               localCommand,
+		localShellStream:           localShellStream,
+		localShellOutputIndex:      -1,
 		historyLoad:                historyLoad,
 		eventCh:                    eventCh,
 		entries:                    initialEntries,
@@ -1258,6 +1283,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmd, waitForStream(m.eventCh))
 		}
 		return m, cmd
+	case streamEventBatchMsg:
+		var lastCmd tea.Cmd
+		for _, event := range typed.events {
+			lastCmd = m.applyEvent(event)
+		}
+		if typed.pending != nil {
+			pendingMsg := typed.pending
+			pendingCmd := func() tea.Msg { return pendingMsg }
+			if m.isBusy() {
+				return m, tea.Batch(lastCmd, pendingCmd, waitForStream(m.eventCh))
+			}
+			return m, tea.Batch(lastCmd, pendingCmd)
+		}
+		if m.isBusy() {
+			return m, tea.Batch(lastCmd, waitForStream(m.eventCh))
+		}
+		return m, lastCmd
 	case streamFailedMsg:
 		if m.interrupting || errors.Is(typed.err, context.Canceled) {
 			progressCmd := m.completeInterruptedRequest()
@@ -1437,6 +1479,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmd, textinput.Blink)
 		}
 		return m.continueQRCodeWaitIfNeeded()
+	case localShellChunkMsg:
+		if m.localShellActive && m.localShellOutputIndex >= 0 && m.localShellOutputIndex < len(m.entries) {
+			m.entries[m.localShellOutputIndex].content += typed.output
+			m.syncViewport()
+		}
+		return m, waitForStream(m.eventCh)
+	case localShellDoneMsg:
+		m.localShellActive = false
+		if m.localShellOutputIndex >= 0 && m.localShellOutputIndex < len(m.entries) {
+			m.entries[m.localShellOutputIndex].content = strings.TrimRight(m.entries[m.localShellOutputIndex].content, "\n")
+			if m.entries[m.localShellOutputIndex].content == "" {
+				// 输出为空时移除占位条目
+				m.entries = append(m.entries[:m.localShellOutputIndex], m.entries[m.localShellOutputIndex+1:]...)
+			}
+		}
+		m.localShellOutputIndex = -1
+		if typed.err != nil {
+			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
+		} else if typed.exitCode != 0 {
+			m.entries = append(m.entries, entry{role: "error", content: fmt.Sprintf("退出码: %d", typed.exitCode)})
+		}
+		m.syncViewport()
+		return m, tea.Batch(m.transitionProgress(progressIdle), textinput.Blink)
 	case historyLoadedMsg:
 		if strings.TrimSpace(m.snapshot.DefaultFlow) != typed.flowID || strings.TrimSpace(m.snapshot.SessionID) != typed.sessionID || m.snapshot.HistoryLoadedCount != typed.expectedLoadedCount {
 			return m, nil
@@ -6246,7 +6311,7 @@ func startStream(ctx context.Context, request Request, runner Runner, eventCh ch
 			}
 			eventCh <- streamDoneMsg{}
 		}()
-		return <-eventCh
+		return drainEventCh(eventCh)
 	}
 }
 
@@ -6449,6 +6514,10 @@ func (m *model) handleLocalSlashCommand(command string) (bool, tea.Cmd) {
 	if m.localCommand == nil {
 		return false, nil
 	}
+	// ! 命令使用流式执行路径：先即时显示命令文本，再异步流式输出结果。
+	if strings.HasPrefix(command, "!") && m.localShellStream != nil {
+		return m.handleLocalShellStream(command)
+	}
 	result, err := m.localCommand(m.ctx, command, m.snapshot)
 	m.input.SetValue("")
 	if err != nil {
@@ -6461,6 +6530,28 @@ func (m *model) handleLocalSlashCommand(command string) (bool, tea.Cmd) {
 		return false, nil
 	}
 	return true, m.applyLocalCommandResult(result)
+}
+
+func (m *model) handleLocalShellStream(command string) (bool, tea.Cmd) {
+	rawCommand := strings.TrimSpace(strings.TrimPrefix(command, "!"))
+	m.input.SetValue("")
+	if rawCommand == "" {
+		m.entries = append(m.entries, entry{role: "error", content: "! 用法: !<shell 命令>"})
+		m.syncViewport()
+		return true, nil
+	}
+	// 即时显示命令文本
+	m.entries = append(m.entries, entry{role: "system", content: "! " + rawCommand})
+	// 添加占位条目，后续流式输出追加到此条目
+	m.entries = append(m.entries, entry{role: "system", content: ""})
+	m.localShellOutputIndex = len(m.entries) - 1
+	m.localShellActive = true
+	m.syncViewport()
+	return true, tea.Batch(
+		m.transitionProgress(progressExecuting),
+		startLocalShellStream(m.ctx, m.snapshot, rawCommand, m.localShellStream, m.eventCh),
+		waitForStream(m.eventCh),
+	)
 }
 
 func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
@@ -6739,8 +6830,33 @@ func (m model) buildRequest(input string, runID string) Request {
 
 func waitForStream(eventCh chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		return <-eventCh
+		return drainEventCh(eventCh)
 	}
+}
+
+func drainEventCh(eventCh chan tea.Msg) tea.Msg {
+	first := <-eventCh
+	firstEvent, ok := first.(streamEventMsg)
+	if !ok {
+		return first
+	}
+	events := []Event{firstEvent.event}
+	var pending tea.Msg
+drain:
+	for len(events) < 256 {
+		select {
+		case msg := <-eventCh:
+			evt, ok := msg.(streamEventMsg)
+			if !ok {
+				pending = msg
+				break drain
+			}
+			events = append(events, evt.event)
+		default:
+			break drain
+		}
+	}
+	return streamEventBatchMsg{events: events, pending: pending}
 }
 
 func refreshSnapshotCmd(ctx context.Context, snapshot Snapshot, handler SnapshotRefreshHandler) tea.Cmd {
@@ -6794,6 +6910,21 @@ func executeLocalCommandCmd(ctx context.Context, snapshot Snapshot, command stri
 	return func() tea.Msg {
 		result, err := handler(ctx, command, snapshot)
 		return localCommandExecutedMsg{result: result, err: err}
+	}
+}
+
+func startLocalShellStream(ctx context.Context, snapshot Snapshot, rawCommand string, handler LocalShellStreamHandler, eventCh chan tea.Msg) tea.Cmd {
+	if handler == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		go func() {
+			exitCode, err := handler(ctx, rawCommand, snapshot, func(output string, isError bool) {
+				eventCh <- localShellChunkMsg{output: output, isError: isError}
+			})
+			eventCh <- localShellDoneMsg{exitCode: exitCode, err: err}
+		}()
+		return drainEventCh(eventCh)
 	}
 }
 

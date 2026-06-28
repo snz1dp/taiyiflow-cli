@@ -95,6 +95,9 @@ type ClientRuntime struct {
 	streamEventLogsEnabled      bool
 	interactivePromptsEnabled   bool
 	hookHandlers                []HookHandler
+	// streamCallback 非 nil 时，runCommand 会将 stdout/stderr 实时转发给回调，
+	// 同时跳过 [执行客户端命令] 等事件日志头，适用于 TUI 流式输出场景。
+	streamCallback              func(text string, isError bool)
 	// callbackRetryDelay 控制回调提交失败后的重试间隔。
 	// 默认 3 秒，测试中可通过 SetCallbackRetryDelay 缩短。
 	callbackRetryDelay time.Duration
@@ -126,6 +129,10 @@ func (r *ClientRuntime) SetSandboxEscapePolicyOverride(policy string) {
 
 func (r *ClientRuntime) SetStreamEventLogsEnabled(enabled bool) {
 	r.streamEventLogsEnabled = enabled
+}
+
+func (r *ClientRuntime) SetStreamCallback(cb func(text string, isError bool)) {
+	r.streamCallback = cb
 }
 
 func (r *ClientRuntime) SetInteractivePromptsEnabled(enabled bool) {
@@ -172,6 +179,7 @@ func (r *ClientRuntime) cloneRuntime() *ClientRuntime {
 		streamEventLogsEnabled:      r.streamEventLogsEnabled,
 		interactivePromptsEnabled:   r.interactivePromptsEnabled,
 		hookHandlers:                append([]HookHandler(nil), r.hookHandlers...),
+		streamCallback:              r.streamCallback,
 		subtaskSkillPackages:        r.subtaskSkillPackages,
 		subtaskRequestedSkillNames:  append([]string(nil), r.subtaskRequestedSkillNames...),
 		subtaskReasoningEnabled:     r.subtaskReasoningEnabled,
@@ -849,14 +857,19 @@ func (r *ClientRuntime) runCommand(
 		return nil, fmt.Errorf("启动命令失败: %w", err)
 	}
 
-	r.writeStreamEventf(r.stdout, "\n[执行客户端命令] %s\n", commandPreview(arguments))
+	if r.streamCallback == nil {
+		r.writeStreamEventf(r.stdout, "\n[执行客户端命令] %s\n", commandPreview(arguments))
+	}
 	startedAt := time.Now()
 
 	var stdoutBuffer bytes.Buffer
 	var stderrBuffer bytes.Buffer
 	stdoutTarget := io.Writer(&stdoutBuffer)
 	stderrTarget := io.Writer(&stderrBuffer)
-	if r.streamEventLogsEnabled {
+	if r.streamCallback != nil {
+		stdoutTarget = io.MultiWriter(&stdoutBuffer, &streamCallbackWriter{callback: r.streamCallback, isError: false})
+		stderrTarget = io.MultiWriter(&stderrBuffer, &streamCallbackWriter{callback: r.streamCallback, isError: true})
+	} else if r.streamEventLogsEnabled {
 		stdoutTarget = io.MultiWriter(&stdoutBuffer, r.stdout)
 		stderrTarget = io.MultiWriter(&stderrBuffer, r.stderr)
 	}
@@ -890,7 +903,9 @@ func (r *ClientRuntime) runCommand(
 	}
 
 	if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
-		r.writeStreamEventf(r.stdout, "[本地命令] %s（超时，>%ds）\n", commandPreview(arguments), payload.Timeout)
+		if r.streamCallback == nil {
+			r.writeStreamEventf(r.stdout, "[本地命令] %s（超时，>%ds）\n", commandPreview(arguments), payload.Timeout)
+		}
 		return nil, fmt.Errorf("命令执行超时，超过 %d 秒", payload.Timeout)
 	}
 	if waitErr != nil {
@@ -914,7 +929,9 @@ func (r *ClientRuntime) runCommand(
 			failureAudit["injected_env_keys"] = append([]string(nil), payload.InjectedEnvKeys...)
 		}
 		_ = appendAuditLog(config, "run_command_failed", failureAudit)
-		r.writeStreamEventf(r.stdout, "[本地命令] %s（失败，%s，退出码 %d）\n", commandPreview(arguments), formatCommandDuration(time.Since(startedAt)), command.ProcessState.ExitCode())
+		if r.streamCallback == nil {
+			r.writeStreamEventf(r.stdout, "[本地命令] %s（失败，%s，退出码 %d）\n", commandPreview(arguments), formatCommandDuration(time.Since(startedAt)), command.ProcessState.ExitCode())
+		}
 		return nil, fmt.Errorf("命令执行失败: %s", message)
 	}
 
@@ -926,10 +943,10 @@ func (r *ClientRuntime) runCommand(
 		result["json"] = decoded
 	}
 
-	if r.streamEventLogsEnabled && stdout != "" && !strings.HasSuffix(stdout, "\n") {
+	if r.streamCallback == nil && r.streamEventLogsEnabled && stdout != "" && !strings.HasSuffix(stdout, "\n") {
 		fmt.Fprintln(r.stdout)
 	}
-	if r.streamEventLogsEnabled && stderr != "" && !strings.HasSuffix(stderr, "\n") {
+	if r.streamCallback == nil && r.streamEventLogsEnabled && stderr != "" && !strings.HasSuffix(stderr, "\n") {
 		fmt.Fprintln(r.stderr)
 	}
 	successAudit := map[string]any{
@@ -944,7 +961,9 @@ func (r *ClientRuntime) runCommand(
 		successAudit["injected_env_keys"] = append([]string(nil), payload.InjectedEnvKeys...)
 	}
 	_ = appendAuditLog(config, "run_command_succeeded", successAudit)
-	r.writeStreamEventf(r.stdout, "[本地命令] %s（成功，%s，退出码 %d）\n", commandPreview(arguments), formatCommandDuration(time.Since(startedAt)), command.ProcessState.ExitCode())
+	if r.streamCallback == nil {
+		r.writeStreamEventf(r.stdout, "[本地命令] %s（成功，%s，退出码 %d）\n", commandPreview(arguments), formatCommandDuration(time.Since(startedAt)), command.ProcessState.ExitCode())
+	}
 
 	return result, nil
 }
@@ -1750,4 +1769,15 @@ func stringSlice(value any) []string {
 	default:
 		return nil
 	}
+}
+
+// streamCallbackWriter 将写入的数据实时转发给 streamCallback。
+type streamCallbackWriter struct {
+	callback func(text string, isError bool)
+	isError  bool
+}
+
+func (w *streamCallbackWriter) Write(p []byte) (int, error) {
+	w.callback(string(p), w.isError)
+	return len(p), nil
 }
