@@ -1644,8 +1644,8 @@ func TestRenderLoginFormShowsCaptchaStepWhenTicketPresent(t *testing.T) {
 	if !strings.Contains(rendered, "图形验证码(image)") {
 		t.Fatalf("expected captcha step to show captcha type and image, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "已回退为 ANSI 彩色块预览") {
-		t.Fatalf("expected captcha step to explain ansi color fallback, got %q", rendered)
+	if !strings.Contains(rendered, "已回退为色块预览") {
+		t.Fatalf("expected captcha step to explain color block fallback, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "已将图形验证码保存到本地图片，并尝试用系统预览打开") {
 		t.Fatalf("expected captcha step to show preview path hint, got %q", rendered)
@@ -1797,8 +1797,8 @@ func TestRenderLoginFormHidesImageURLWithoutPreviewPathInPlainTerminal(t *testin
 	if strings.Contains(rendered, "本地路径(image_path):") {
 		t.Fatalf("expected plain terminal captcha step to hide local image path, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "已回退为 ANSI 彩色块预览") {
-		t.Fatalf("expected plain terminal captcha step to mention ansi color preview, got %q", rendered)
+	if !strings.Contains(rendered, "已回退为色块预览") {
+		t.Fatalf("expected plain terminal captcha step to mention color block preview, got %q", rendered)
 	}
 }
 
