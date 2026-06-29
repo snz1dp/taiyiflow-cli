@@ -780,6 +780,7 @@ type model struct {
 	todoPanelForceShow         bool
 	manualSnapshotRefresh      bool
 	historyLoading             bool
+	skipSyncViewport           bool
 }
 
 type configFormState struct {
@@ -1284,10 +1285,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	case streamEventBatchMsg:
+		m.skipSyncViewport = true
 		var lastCmd tea.Cmd
 		for _, event := range typed.events {
 			lastCmd = m.applyEvent(event)
 		}
+		m.skipSyncViewport = false
+		m.syncViewport()
 		if typed.pending != nil {
 			pendingMsg := typed.pending
 			pendingCmd := func() tea.Msg { return pendingMsg }
@@ -3416,7 +3420,9 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		m.refreshLayoutAfterStateChange()
 		return cmd
 	}
-	m.syncViewport()
+	if !m.skipSyncViewport {
+		m.syncViewport()
+	}
 	return cmd
 }
 
@@ -6126,10 +6132,14 @@ func renderEntry(item entry, width int, height int, renderer *glamour.TermRender
 		if strings.TrimSpace(item.content) == "" {
 			return content
 		}
-		rendered := renderMarkdown(hardWrapText(content, textWidth), renderer)
+		// 不在 renderMarkdown 前调用 hardWrapText：
+		// hardWrapText 会在任意 rune 边界断行，可能切断 Markdown 语法结构
+		// （如 _emphasis_ 标记），导致 glamour 解析器错误重排文本片段。
+		// glamour 自身已通过 WithWordWrap 配置了自动换行。
+		rendered := renderMarkdown(content, renderer)
 		return assistantMessageStyle.Render(rendered)
 	case "reasoning":
-		rendered := renderMarkdown(hardWrapText(content, textWidth), renderer)
+		rendered := renderMarkdown(content, renderer)
 		return reasoningMessageStyle.Render(rendered)
 	case "error":
 		return errorMessageStyle.Render(wrapped)
@@ -6282,18 +6292,21 @@ func hardWrapText(content string, width int) string {
 
 		runes := []rune(body)
 		segment := make([]rune, 0, len(runes))
+		segmentWidth := 0
 		for _, current := range runes {
-			candidate := string(append(segment, current))
-			if lipgloss.Width(candidate) > bodyWidth {
+			currentWidth := lipgloss.Width(string(current))
+			if segmentWidth+currentWidth > bodyWidth {
 				if len(segment) == 0 {
 					wrapped = append(wrapped, prefix+string(current))
 					continue
 				}
 				wrapped = append(wrapped, prefix+string(segment))
 				segment = []rune{current}
+				segmentWidth = currentWidth
 				continue
 			}
 			segment = append(segment, current)
+			segmentWidth += currentWidth
 		}
 		if len(segment) > 0 {
 			wrapped = append(wrapped, prefix+string(segment))
