@@ -22,6 +22,7 @@ import (
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/textsanitize"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/tui"
 )
 
@@ -3862,6 +3863,7 @@ func emitTUIAssistantChunk(emit func(tui.Event), state *tuiAssistantRenderState,
 }
 
 func (s *tuiAssistantRenderState) consume(chunk string) []tuiRenderedSegment {
+	chunk = textsanitize.StripWatermarkCharacters(chunk)
 	chunk = stripInvisibleFormatChars(chunk)
 	if chunk == "" {
 		return nil
