@@ -4417,6 +4417,80 @@ func TestStreamEventBatchWithPendingDoesNotStartCompetingWait(t *testing.T) {
 	}
 }
 
+func TestConfirmRequestDoesNotStartStreamWaitBeforeResponse(t *testing.T) {
+	model := model{
+		eventCh:  make(chan tea.Msg),
+		input:    textarea.New(),
+		progress: progress.New(progress.WithDefaultGradient()),
+		state:    newProgressState(progressStreaming),
+	}
+
+	_, cmd := model.Update(confirmRequestMsg{request: ConfirmRequest{Title: "确认"}, responseCh: make(chan bool, 1)})
+	if cmd == nil {
+		t.Fatal("expected command for progress transition")
+	}
+	if batch, ok := cmd().(tea.BatchMsg); ok && len(batch) > 1 {
+		t.Fatalf("expected no competing waitForStream while confirm blocks the runner, got %d commands", len(batch))
+	}
+}
+
+func TestAskUserRequestDoesNotStartStreamWaitBeforeResponse(t *testing.T) {
+	model := model{
+		eventCh:  make(chan tea.Msg),
+		input:    textarea.New(),
+		progress: progress.New(progress.WithDefaultGradient()),
+		state:    newProgressState(progressStreaming),
+	}
+
+	_, cmd := model.Update(askUserRequestMsg{
+		request:    clientruntime.AskUserRequest{Questions: []clientruntime.AskUserQuestion{{Name: "project", Label: "项目名称", InputFormat: "text"}}},
+		responseCh: make(chan askUserResult, 1),
+	})
+	if cmd == nil {
+		t.Fatal("expected command for progress transition and cursor blink")
+	}
+	if batch, ok := cmd().(tea.BatchMsg); ok && len(batch) > 2 {
+		t.Fatalf("expected no competing waitForStream while ask_user blocks the runner, got %d commands", len(batch))
+	}
+}
+
+func TestStaleStreamEventDoesNotAppendToCurrentRequest(t *testing.T) {
+	appModel := model{
+		eventCh:      make(chan tea.Msg),
+		state:        newProgressState(progressStreaming),
+		requestStats: RequestMetrics{RunID: "run-new"},
+		entries:      []entry{{role: "assistant", content: "当前输出", messageID: "msg-new"}},
+	}
+
+	updated, _ := appModel.Update(streamEventMsg{runID: "run-old", event: Event{Kind: EventAssistantChunk, Text: "旧输出", MessageID: "msg-old"}})
+	typed := updated.(model)
+
+	if len(typed.entries) != 1 || typed.entries[0].content != "当前输出" {
+		t.Fatalf("expected stale stream event to be ignored, got %#v", typed.entries)
+	}
+}
+
+func TestStaleStreamBatchReturnsPendingCurrentEvent(t *testing.T) {
+	appModel := model{
+		eventCh:      make(chan tea.Msg),
+		state:        newProgressState(progressStreaming),
+		requestStats: RequestMetrics{RunID: "run-new"},
+	}
+
+	_, cmd := appModel.Update(streamEventBatchMsg{
+		runID:   "run-old",
+		events:  []Event{{Kind: EventAssistantChunk, Text: "旧输出", MessageID: "msg-old"}},
+		pending: streamEventMsg{runID: "run-new", event: Event{Kind: EventAssistantChunk, Text: "当前输出", MessageID: "msg-new"}},
+	})
+	if cmd == nil {
+		t.Fatal("expected pending current stream event to be returned")
+	}
+	msg, ok := cmd().(streamEventMsg)
+	if !ok || msg.runID != "run-new" || msg.event.Text != "当前输出" {
+		t.Fatalf("expected pending current stream event, got %#v", msg)
+	}
+}
+
 func TestConfigFormValuesFromInputsIncludesHTTPTimeout(t *testing.T) {
 	state := newConfigFormState(ConfigFormState{})
 	state.inputs[10].SetValue("75")

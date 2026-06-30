@@ -582,21 +582,27 @@ type confirmOption struct {
 }
 
 type streamEventMsg struct {
+	runID string
 	event Event
 }
 
 type streamEventBatchMsg struct {
+	runID   string
 	events  []Event
 	pending tea.Msg
 }
 
-type streamDoneMsg struct{}
+type streamDoneMsg struct {
+	runID string
+}
 
 type streamFailedMsg struct {
-	err error
+	runID string
+	err   error
 }
 
 type confirmRequestMsg struct {
+	runID      string
 	request    ConfirmRequest
 	responseCh chan bool
 }
@@ -607,6 +613,7 @@ type askUserResult struct {
 }
 
 type askUserRequestMsg struct {
+	runID      string
 	request    clientruntime.AskUserRequest
 	responseCh chan askUserResult
 }
@@ -1281,12 +1288,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case streamEventMsg:
+		if !m.matchesStreamRun(typed.runID) {
+			if m.isBusy() {
+				return m, waitForStream(m.eventCh)
+			}
+			return m, nil
+		}
 		cmd := m.applyEvent(typed.event)
 		if m.isBusy() {
 			return m, tea.Batch(cmd, waitForStream(m.eventCh))
 		}
 		return m, cmd
 	case streamEventBatchMsg:
+		if !m.matchesStreamRun(typed.runID) {
+			if typed.pending != nil {
+				pendingMsg := typed.pending
+				return m, func() tea.Msg { return pendingMsg }
+			}
+			if m.isBusy() {
+				return m, waitForStream(m.eventCh)
+			}
+			return m, nil
+		}
 		m.skipSyncViewport = true
 		var lastCmd tea.Cmd
 		for _, event := range typed.events {
@@ -1304,6 +1327,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, lastCmd
 	case streamFailedMsg:
+		if !m.matchesStreamRun(typed.runID) {
+			if m.isBusy() {
+				return m, waitForStream(m.eventCh)
+			}
+			return m, nil
+		}
 		if m.interrupting || errors.Is(typed.err, context.Canceled) {
 			progressCmd := m.completeInterruptedRequest()
 			m.input.Focus()
@@ -1329,6 +1358,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		progressCmd := m.transitionProgress(progressFailed)
 		return m, tea.Batch(progressCmd, m.maybeRefreshSnapshot())
 	case streamDoneMsg:
+		if !m.matchesStreamRun(typed.runID) {
+			if m.isBusy() {
+				return m, waitForStream(m.eventCh)
+			}
+			return m, nil
+		}
 		if m.interrupting {
 			progressCmd := m.completeInterruptedRequest()
 			m.input.Focus()
@@ -1352,15 +1387,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		progressCmd := m.transitionProgress(progressIdle)
 		return m, tea.Batch(progressCmd, m.maybeRefreshSessionSnapshot())
 	case confirmRequestMsg:
+		if !m.matchesStreamRun(typed.runID) {
+			typed.responseCh <- false
+			close(typed.responseCh)
+			if m.isBusy() {
+				return m, waitForStream(m.eventCh)
+			}
+			return m, nil
+		}
 		m.pendingConfirm = &confirmState{request: typed.request, responseCh: typed.responseCh, cursor: 0}
 		m.resetOverlayScroll()
 		m.input.Blur()
-		return m, tea.Batch(m.transitionProgress(progressConfirming), waitForStream(m.eventCh))
+		return m, m.transitionProgress(progressConfirming)
 	case askUserRequestMsg:
+		if !m.matchesStreamRun(typed.runID) {
+			typed.responseCh <- askUserResult{err: context.Canceled}
+			close(typed.responseCh)
+			if m.isBusy() {
+				return m, waitForStream(m.eventCh)
+			}
+			return m, nil
+		}
 		m.askUserForm = newAskUserFormState(typed.request, typed.responseCh)
 		m.resetOverlayScroll()
 		m.input.Blur()
-		return m, tea.Batch(m.transitionProgress(progressConfirming), waitForStream(m.eventCh), textinput.Blink)
+		return m, tea.Batch(m.transitionProgress(progressConfirming), textinput.Blink)
 	case flowChangedMsg:
 		if typed.err != nil {
 			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
@@ -6325,24 +6376,25 @@ func leadingIndent(line string) string {
 
 func startStream(ctx context.Context, request Request, runner Runner, eventCh chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
+		runID := strings.TrimSpace(request.RunID)
 		go func() {
 			err := runner(ctx, request, func(event Event) {
-				eventCh <- streamEventMsg{event: event}
+				eventCh <- streamEventMsg{runID: runID, event: event}
 			}, func(request ConfirmRequest) bool {
 				responseCh := make(chan bool, 1)
-				eventCh <- confirmRequestMsg{request: request, responseCh: responseCh}
+				eventCh <- confirmRequestMsg{runID: runID, request: request, responseCh: responseCh}
 				return <-responseCh
 			}, func(request clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error) {
 				responseCh := make(chan askUserResult, 1)
-				eventCh <- askUserRequestMsg{request: request, responseCh: responseCh}
+				eventCh <- askUserRequestMsg{runID: runID, request: request, responseCh: responseCh}
 				result := <-responseCh
 				return result.response, result.err
 			})
 			if err != nil && !errors.Is(err, context.Canceled) {
-				eventCh <- streamFailedMsg{err: err}
+				eventCh <- streamFailedMsg{runID: runID, err: err}
 				return
 			}
-			eventCh <- streamDoneMsg{}
+			eventCh <- streamDoneMsg{runID: runID}
 		}()
 		return drainEventCh(eventCh)
 	}
@@ -6876,6 +6928,7 @@ func drainEventCh(eventCh chan tea.Msg) tea.Msg {
 	if !ok {
 		return first
 	}
+	runID := strings.TrimSpace(firstEvent.runID)
 	events := []Event{firstEvent.event}
 	var pending tea.Msg
 	// 短时间窗口（8ms）内收集更多事件，用于区分高速/低速场景。
@@ -6892,12 +6945,16 @@ drain:
 				pending = msg
 				break drain
 			}
+			if strings.TrimSpace(evt.runID) != runID {
+				pending = msg
+				break drain
+			}
 			events = append(events, evt.event)
 		case <-timer.C:
 			break drain
 		}
 	}
-	return streamEventBatchMsg{events: events, pending: pending}
+	return streamEventBatchMsg{runID: runID, events: events, pending: pending}
 }
 
 func refreshSnapshotCmd(ctx context.Context, snapshot Snapshot, handler SnapshotRefreshHandler) tea.Cmd {
@@ -9075,6 +9132,15 @@ func (m model) maybeRefreshSessionSnapshot() tea.Cmd {
 		return nil
 	}
 	return refreshSnapshotCmd(m.ctx, m.snapshot, m.refreshSnapshot)
+}
+
+func (m model) matchesStreamRun(runID string) bool {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return true
+	}
+	currentRunID := strings.TrimSpace(m.requestStats.RunID)
+	return currentRunID == "" || currentRunID == runID
 }
 
 func (m model) isBusy() bool {
