@@ -390,6 +390,8 @@ const (
 	EventStatsUpdate     EventKind = "stats_update"
 )
 
+const streamBatchDrainWindow = 16 * time.Millisecond
+
 type Event struct {
 	Kind           EventKind
 	Text           string
@@ -6879,7 +6881,7 @@ func drainEventCh(eventCh chan tea.Msg) tea.Msg {
 	// 短时间窗口（8ms）内收集更多事件，用于区分高速/低速场景。
 	// 高速场景（窗口内收集到多个事件）：批量处理，减少视口刷新次数。
 	// 低速场景（窗口内仅 1 个事件）：直接返回，实现实时逐字输出。
-	timer := time.NewTimer(8 * time.Millisecond)
+	timer := time.NewTimer(streamBatchDrainWindow)
 	defer timer.Stop()
 drain:
 	for len(events) < 256 {
