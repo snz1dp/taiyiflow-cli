@@ -3835,6 +3835,7 @@ type tuiRenderedSegment struct {
 type tuiAssistantRenderState struct {
 	insideThink    bool
 	pending        string
+	pendingUTF8    string
 	controlResidue streamControlResidueState
 }
 
@@ -3863,8 +3864,20 @@ func emitTUIAssistantChunk(emit func(tui.Event), state *tuiAssistantRenderState,
 }
 
 func (s *tuiAssistantRenderState) consume(chunk string) []tuiRenderedSegment {
+	// 拼接上一个 chunk 末尾不完整的 UTF-8 字节，确保多字节字符完整后再清洗
+	if s.pendingUTF8 != "" {
+		chunk = s.pendingUTF8 + chunk
+		s.pendingUTF8 = ""
+	}
+	// 检测并暂存当前 chunk 末尾可能不完整的 UTF-8 序列，
+	// 防止水印字符在 SSE 分帧时被拆分到两个 chunk 导致逐 chunk 清洗失效
+	if incomplete := trailingIncompleteUTF8(chunk); incomplete != "" {
+		s.pendingUTF8 = incomplete
+		chunk = chunk[:len(chunk)-len(incomplete)]
+	}
 	chunk = textsanitize.StripWatermarkCharacters(chunk)
 	chunk = stripInvisibleFormatChars(chunk)
+	chunk = stripInvalidUTF8(chunk)
 	if chunk == "" {
 		return nil
 	}
@@ -3920,6 +3933,7 @@ func (s *tuiAssistantRenderState) consume(chunk string) []tuiRenderedSegment {
 
 func (s *tuiAssistantRenderState) flush() []tuiRenderedSegment {
 	s.pending = ""
+	s.pendingUTF8 = ""
 	s.controlResidue.flush()
 	return nil
 }

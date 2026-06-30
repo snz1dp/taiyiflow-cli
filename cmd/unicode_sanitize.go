@@ -1,6 +1,9 @@
 package cmd
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // stripInvisibleFormatChars 移除文本中不可见的 Unicode 格式控制字符。
 //
@@ -57,4 +60,74 @@ func isInvisibleFormatChar(r rune) bool {
 	default:
 		return false
 	}
+}
+
+// trailingIncompleteUTF8 返回字符串末尾不完整的 UTF-8 字节序列。
+//
+// 当服务端 SSE 分帧在水印字符的 UTF-8 编码中间截断时（例如 U+202E = 0xE2 0x80 0xAE，
+// chunk 在 0xE2 后截断），逐 chunk 清洗无法识别不完整的水印字符。
+// 本函数用于在清洗前检测并暂存尾部不完整字节，等下一个 chunk 到来后拼接成完整字符再处理。
+func trailingIncompleteUTF8(s string) string {
+	if len(s) == 0 {
+		return ""
+	}
+	// 从末尾向前跳过续字节（0x80-0xBF）
+	i := len(s)
+	for i > 0 && (s[i-1]&0xC0) == 0x80 {
+		i--
+	}
+	if i == 0 {
+		// 整个字符串都是续字节，无前导字节
+		return s
+	}
+	leading := s[i-1]
+	if leading < 0x80 {
+		// ASCII 字节，尾部无不完整序列
+		return ""
+	}
+	var expected int
+	switch {
+	case leading < 0xC0:
+		// 0x80-0xBF：孤立的续字节，非有效前导
+		return ""
+	case leading < 0xE0:
+		expected = 2
+	case leading < 0xF0:
+		expected = 3
+	case leading < 0xF8:
+		expected = 4
+	default:
+		// 无效前导字节
+		return ""
+	}
+	actual := len(s) - (i - 1)
+	if actual < expected {
+		return s[i-1:]
+	}
+	return ""
+}
+
+// stripInvalidUTF8 移除字符串中所有无效 UTF-8 字节。
+//
+// 在逐 chunk 清洗场景中，被拆分的水印字符可能留下孤立的续字节
+// （如 0x80 0xAE），这些字节无法被 StripWatermarkCharacters 识别，
+// 也无法被 trailingIncompleteUTF8 暂存（因为它们不是末尾的不完整序列）。
+// 本函数作为最后一道防线，确保输出到终端的文本始终是合法 UTF-8。
+func stripInvalidUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			// 跳过无效字节
+			i++
+			continue
+		}
+		b.WriteString(s[i : i+size])
+		i += size
+	}
+	return b.String()
 }

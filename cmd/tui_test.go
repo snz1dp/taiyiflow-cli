@@ -306,6 +306,116 @@ func TestEmitTUIAssistantChunkKeepsSplitMarkerButDropsClosingThinkTagText(t *tes
 	}
 }
 
+func TestConsumeHandlesWatermarkCharSplitAcrossChunks(t *testing.T) {
+	state := tuiAssistantRenderState{}
+
+	// U+202E (RLO) = 0xE2 0x80 0xAE，模拟 SSE 在第 1 字节后截断
+	// chunk1 = "文本" + 0xE2
+	chunk1 := "文本\xe2"
+	segments1 := state.consume(chunk1)
+	if len(segments1) != 1 || segments1[0].Text != "文本" {
+		t.Fatalf("chunk1: expected partial text without incomplete byte, got %#v", segments1)
+	}
+
+	// chunk2 = 0x80 0xAE + "更多文本"
+	// 拼接后 0xE2+0x80+0xAE = U+202E，应被 StripWatermarkCharacters 移除
+	chunk2 := "\x80\xae更多文本"
+	segments2 := state.consume(chunk2)
+	if len(segments2) != 1 || segments2[0].Text != "更多文本" {
+		t.Fatalf("chunk2: expected watermark stripped after reassembly, got %#v", segments2)
+	}
+}
+
+func TestConsumeHandlesMultipleWatermarkCharsSplitAcrossChunks(t *testing.T) {
+	state := tuiAssistantRenderState{}
+
+	// U+202E (RLO) = 0xE2 0x80 0xAE (3 bytes)
+	// U+200B (ZWSP) = 0xE2 0x80 0x8B (3 bytes)
+	// 模拟 chunk1 以两个水印字符的前 2 字节结尾
+	chunk1 := "前文\xe2\x80\xe2\x80"
+	segments1 := state.consume(chunk1)
+	if len(segments1) != 1 || segments1[0].Text != "前文" {
+		t.Fatalf("chunk1: expected partial text, got %#v", segments1)
+	}
+
+	// chunk2 补全两个水印字符的最后一字节 + 正常文本
+	chunk2 := "\xae\x8b后文"
+	segments2 := state.consume(chunk2)
+	if len(segments2) != 1 || segments2[0].Text != "后文" {
+		t.Fatalf("chunk2: expected both watermark chars stripped, got %#v", segments2)
+	}
+}
+
+func TestConsumePreservesNormalMultiByteCharAcrossChunks(t *testing.T) {
+	state := tuiAssistantRenderState{}
+
+	// "你" = U+4F60 = 0xE4 0xBD 0xA0 (3 bytes)
+	// 模拟 chunk1 在"你"的第 1 字节后截断
+	chunk1 := "hello\xe4"
+	segments1 := state.consume(chunk1)
+	if len(segments1) != 1 || segments1[0].Text != "hello" {
+		t.Fatalf("chunk1: expected partial text without incomplete byte, got %#v", segments1)
+	}
+
+	// chunk2 补全"你"的剩余字节
+	chunk2 := "\xbd\xa0world"
+	segments2 := state.consume(chunk2)
+	if len(segments2) != 1 || segments2[0].Text != "你world" {
+		t.Fatalf("chunk2: expected complete multi-byte char preserved, got %#v", segments2)
+	}
+}
+
+func TestConsumeHandlesEmptyChunkAfterPendingUTF8(t *testing.T) {
+	state := tuiAssistantRenderState{}
+
+	// chunk1 以不完整 UTF-8 结尾
+	chunk1 := "text\xe2"
+	segments1 := state.consume(chunk1)
+	if len(segments1) != 1 || segments1[0].Text != "text" {
+		t.Fatalf("chunk1: expected partial text, got %#v", segments1)
+	}
+
+	// chunk2 为空，不应崩溃，也不应输出
+	segments2 := state.consume("")
+	if segments2 != nil {
+		t.Fatalf("chunk2: expected nil for empty chunk, got %#v", segments2)
+	}
+
+	// chunk3 补全水印字符并带正常文本
+	segments3 := state.consume("\x80\xaeok")
+	if len(segments3) != 1 || segments3[0].Text != "ok" {
+		t.Fatalf("chunk3: expected watermark stripped, got %#v", segments3)
+	}
+}
+
+func TestTrailingIncompleteUTF8(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", ""},
+		{"ascii", "hello", ""},
+		{"complete_chinese", "你好", ""},
+		{"incomplete_3byte_1", "文本\xe2", "\xe2"},
+		{"incomplete_3byte_2", "文本\xe2\x80", "\xe2\x80"},
+		{"complete_3byte", "文本\xe2\x80\xae", ""},
+		{"incomplete_2byte_1", "text\xc2", "\xc2"},
+		{"incomplete_4byte_1", "text\xf0", "\xf0"},
+		{"incomplete_4byte_3", "text\xf0\x90\x80", "\xf0\x90\x80"},
+		{"all_continuation", "\x80\x80", "\x80\x80"},
+		{"ascii_then_incomplete", "abc\xe2\x80", "\xe2\x80"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := trailingIncompleteUTF8(tt.input)
+			if got != tt.want {
+				t.Errorf("trailingIncompleteUTF8(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadSessionHistoryPageTracksPaginationAndDisplayOrder(t *testing.T) {
 	providerClient := &pagedSessionMessageProvider{
 		responses: map[int]*provider.SessionMessageList{
