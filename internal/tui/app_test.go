@@ -4388,6 +4388,35 @@ func TestAssistantChunkSplitWhenBackendRequestsNewMessage(t *testing.T) {
 	}
 }
 
+func TestStreamEventBatchWithPendingDoesNotStartCompetingWait(t *testing.T) {
+	model := model{
+		eventCh:                    make(chan tea.Msg),
+		progress:                   progress.New(progress.WithDefaultGradient()),
+		state:                      newProgressState(progressExecuting),
+		viewport:                   viewport.Model{Width: 80, Height: 10},
+		currentStreamingEntryIndex: -1,
+	}
+
+	_, cmd := model.Update(streamEventBatchMsg{
+		events:  []Event{{Kind: EventAssistantChunk, Text: "最后一段", MessageID: "msg-1"}},
+		pending: streamDoneMsg{},
+	})
+
+	if cmd == nil {
+		t.Fatal("expected command for progress transition and pending stream completion")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", cmd())
+	}
+	if len(batch) != 2 {
+		t.Fatalf("expected only progress transition and pending message, got %d commands", len(batch))
+	}
+	if _, ok := batch[1]().(streamDoneMsg); !ok {
+		t.Fatalf("expected second command to deliver pending streamDoneMsg, got %T", batch[1]())
+	}
+}
+
 func TestConfigFormValuesFromInputsIncludesHTTPTimeout(t *testing.T) {
 	state := newConfigFormState(ConfigFormState{})
 	state.inputs[10].SetValue("75")

@@ -1295,9 +1295,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if typed.pending != nil {
 			pendingMsg := typed.pending
 			pendingCmd := func() tea.Msg { return pendingMsg }
-			if m.isBusy() {
-				return m, tea.Batch(lastCmd, pendingCmd, waitForStream(m.eventCh))
-			}
 			return m, tea.Batch(lastCmd, pendingCmd)
 		}
 		if m.isBusy() {
