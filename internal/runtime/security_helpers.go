@@ -272,6 +272,16 @@ func resolveSandboxRoots(config internalconfig.Config, baseDir string) ([]string
 			}
 		}
 	}
+	// 始终允许访问系统临时目录，无需审核。
+	// os.TempDir() 跨平台返回系统临时目录：
+	//   macOS: $TMPDIR（通常 /var/folders/...），回退 /tmp
+	//   Linux: /tmp
+	//   Windows: %TEMP%（通常 C:\Users\<user>\AppData\Local\Temp）
+	if tempDir := strings.TrimSpace(os.TempDir()); tempDir != "" {
+		if err := appendRoot(tempDir); err != nil {
+			return nil, err
+		}
+	}
 	return roots, nil
 }
 

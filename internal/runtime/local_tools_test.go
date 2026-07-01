@@ -301,12 +301,76 @@ func TestWriteAndReadFile(t *testing.T) {
 	}
 }
 
+// createNonTempDir creates a directory outside the system temp directory.
+// This is needed because os.TempDir() is always an allowed sandbox root,
+// so t.TempDir() (which lives inside os.TempDir()) cannot be used to test
+// sandbox escape rejection.
+func createNonTempDir(t *testing.T) string {
+	t.Helper()
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("get home dir failed: %v", err)
+	}
+	dir, err := os.MkdirTemp(homeDir, ".taiyiflow-test-*")
+	if err != nil {
+		t.Fatalf("create non-temp dir failed: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
 func TestResolveAllowedPathRejectsEscape(t *testing.T) {
 	tempDir := t.TempDir()
 	config := internalconfig.Config{Workdir: tempDir, ApprovalMode: "auto"}
-	outsidePath := filepath.Join(tempDir, "..", "outside.txt")
+	outsidePath := filepath.Join(createNonTempDir(t), "outside.txt")
 	if _, err := resolveAllowedPath(config, outsidePath, true); err == nil {
 		t.Fatal("expected resolveAllowedPath to reject sandbox escape")
+	}
+}
+
+func TestResolveAllowedPathAllowsSystemTempDir(t *testing.T) {
+	workdir := t.TempDir()
+	config := internalconfig.Config{Workdir: workdir, ApprovalMode: "auto"}
+	// Create a file inside the system temp directory (not the workdir).
+	tempFile := filepath.Join(os.TempDir(), "taiyiflow-test-allowed.txt")
+	if err := os.WriteFile(tempFile, []byte("ok"), 0o644); err != nil {
+		t.Fatalf("write temp file failed: %v", err)
+	}
+	defer os.Remove(tempFile)
+	// resolveAllowedPath should succeed without any sandbox escape error,
+	// even though tempFile is outside the workdir.
+	resolved, err := resolveAllowedPath(config, tempFile, false)
+	if err != nil {
+		t.Fatalf("expected system temp dir to be allowed, got: %v", err)
+	}
+	// On macOS, /var/folders/... is a symlink to /private/var/folders/...,
+	// so compare the evaluated paths rather than raw strings.
+	expectedResolved, evalErr := filepath.EvalSymlinks(tempFile)
+	if evalErr != nil {
+		expectedResolved = tempFile
+	}
+	if resolved != expectedResolved {
+		t.Fatalf("unexpected resolved path: got %s want %s", resolved, expectedResolved)
+	}
+}
+
+func TestResolveAllowedPathAllowsSystemTempDirWithPolicyDeny(t *testing.T) {
+	workdir := t.TempDir()
+	config := internalconfig.Config{
+		Workdir:             workdir,
+		ApprovalMode:        "auto",
+		SandboxEscapePolicy: internalconfig.SandboxEscapePolicyDeny,
+	}
+	tempFile := filepath.Join(os.TempDir(), "taiyiflow-test-deny-allowed.txt")
+	if err := os.WriteFile(tempFile, []byte("ok"), 0o644); err != nil {
+		t.Fatalf("write temp file failed: %v", err)
+	}
+	defer os.Remove(tempFile)
+	// Even with deny policy, system temp dir should be allowed without confirmation.
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	_, err := runtimeClient.resolveAllowedPathWithPolicy(config, tempFile, false)
+	if err != nil {
+		t.Fatalf("expected system temp dir to bypass deny policy, got: %v", err)
 	}
 }
 
@@ -341,7 +405,7 @@ func TestResolveAllowedPathExpandsTildeForRequestedPathAndSandboxRoot(t *testing
 
 func TestSandboxEscapePolicyDenyAllowConfirm(t *testing.T) {
 	tempDir := t.TempDir()
-	outsideDir := t.TempDir()
+	outsideDir := createNonTempDir(t)
 	outsidePath := filepath.Join(outsideDir, "outside.txt")
 
 	denyRuntime := NewClientRuntime(strings.NewReader("y\n"), io.Discard, io.Discard)
@@ -667,7 +731,7 @@ func TestExecuteClientToolPayloadRejectsBrowserToolWhenDisabled(t *testing.T) {
 
 func TestSandboxEscapeAlwaysApproveSkipsSubsequentConfirmations(t *testing.T) {
 	tempDir := t.TempDir()
-	outsideDir := t.TempDir()
+	outsideDir := createNonTempDir(t)
 	outsidePath := filepath.Join(outsideDir, "outside.txt")
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	confirmCalls := 0
@@ -694,7 +758,7 @@ func TestSandboxEscapeAlwaysApproveSkipsSubsequentConfirmations(t *testing.T) {
 
 func TestSandboxEscapePolicyUsesInjectedConfirmer(t *testing.T) {
 	tempDir := t.TempDir()
-	outsideDir := t.TempDir()
+	outsideDir := createNonTempDir(t)
 	outsidePath := filepath.Join(outsideDir, "outside.txt")
 	canonicalOutsideDir, err := filepath.EvalSymlinks(outsideDir)
 	if err != nil {
@@ -1524,7 +1588,7 @@ func TestExecuteClientToolPayloadRejectsConfirmationWhenInteractivePromptsDisabl
 
 func TestSandboxEscapeConfirmSkipsPromptWhenInteractivePromptsDisabled(t *testing.T) {
 	tempDir := t.TempDir()
-	outsideDir := t.TempDir()
+	outsideDir := createNonTempDir(t)
 	outsidePath := filepath.Join(outsideDir, "outside.txt")
 	stdout := &bytes.Buffer{}
 	runtimeClient := NewClientRuntime(strings.NewReader("y\n"), stdout, io.Discard)
