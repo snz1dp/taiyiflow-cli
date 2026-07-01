@@ -6621,27 +6621,6 @@ func (m *model) handleLocalSlashCommand(command string) (bool, tea.Cmd) {
 	return true, m.applyLocalCommandResult(result)
 }
 
-func (m *model) handleLocalShellStream(command string) (bool, tea.Cmd) {
-	rawCommand := strings.TrimSpace(strings.TrimPrefix(command, "!"))
-	m.input.SetValue("")
-	if rawCommand == "" {
-		m.entries = append(m.entries, entry{role: "error", content: "! 用法: !<shell 命令>"})
-		m.syncViewport()
-		return true, nil
-	}
-	// 即时显示命令文本
-	m.entries = append(m.entries, entry{role: "system", content: "! " + rawCommand})
-	// 添加占位条目，后续流式输出追加到此条目
-	m.entries = append(m.entries, entry{role: "system", content: ""})
-	m.localShellOutputIndex = len(m.entries) - 1
-	m.localShellActive = true
-	m.syncViewport()
-	return true, tea.Batch(
-		m.transitionProgress(progressExecuting),
-		startLocalShellStream(m.ctx, m.snapshot, rawCommand, m.localShellStream, m.eventCh),
-	)
-}
-
 func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 	if result.ClearHistory {
 		m.entries = buildWelcomeEntries(m.snapshot)
@@ -7008,21 +6987,6 @@ func executeLocalCommandCmd(ctx context.Context, snapshot Snapshot, command stri
 	return func() tea.Msg {
 		result, err := handler(ctx, command, snapshot)
 		return localCommandExecutedMsg{result: result, err: err}
-	}
-}
-
-func startLocalShellStream(ctx context.Context, snapshot Snapshot, rawCommand string, handler LocalShellStreamHandler, eventCh chan tea.Msg) tea.Cmd {
-	if handler == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		go func() {
-			exitCode, err := handler(ctx, rawCommand, snapshot, func(output string, isError bool) {
-				eventCh <- localShellChunkMsg{output: output, isError: isError}
-			})
-			eventCh <- localShellDoneMsg{exitCode: exitCode, err: err}
-		}()
-		return drainEventCh(eventCh)
 	}
 }
 
