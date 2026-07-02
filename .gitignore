@@ -4,4 +4,6 @@
 /taiyiflow-cli
 /build/
 *.test
-/taiyiflow
+/node22
+/python3.12
+
