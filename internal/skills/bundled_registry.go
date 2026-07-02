@@ -35,6 +35,10 @@ var bundledSkillDefinitions = []BundledSkillDefinition{
 	{Name: "taiyiflow-computer", RelativeDir: "taiyiflow-computer", Summary: "当需要与本机桌面环境交互时（截屏、窗口列表、焦点切换、键盘输入等），使用桌面操作工具族。", DefaultEnabled: true, RequestTypes: []string{"agent"}},
 	{Name: "taiyiflow-in-chrome", RelativeDir: "taiyiflow-in-chrome", Summary: "当需要与网页交互时（导航、点击、输入、截图、读取页面文本或控制台日志），使用浏览器自动化工具族。", DefaultEnabled: true, RequestTypes: []string{"agent"}},
 	{Name: "run-skill-generator", RelativeDir: "run-skill-generator", Summary: "当需要批量创建或调整技能文件时，先统一技能结构和元数据约定，再生成最小可维护的模板集合。", DefaultEnabled: true, RequestTypes: []string{"agent"}},
+	{Name: "docx", RelativeDir: "docx", Summary: "当用户需要创建、读取、编辑或操作 Word 文档（.docx 文件）时使用此技能。", DefaultEnabled: true, RequestTypes: []string{"ask", "plan", "agent"}},
+	{Name: "pdf", RelativeDir: "pdf", Summary: "当用户需要对 PDF 文件执行任何操作时使用此技能，包括读取、合并、拆分、表单填写、OCR 等。", DefaultEnabled: true, RequestTypes: []string{"ask", "plan", "agent"}},
+	{Name: "pptx", RelativeDir: "pptx", Summary: "当 .pptx 文件以任何方式涉及时使用此技能——创建、读取、编辑演示文稿。", DefaultEnabled: true, RequestTypes: []string{"ask", "plan", "agent"}},
+	{Name: "xlsx", RelativeDir: "xlsx", Summary: "当电子表格文件是主要输入或输出时使用此技能，包括读取、编辑、创建 .xlsx/.csv 文件。", DefaultEnabled: true, RequestTypes: []string{"ask", "plan", "agent"}},
 }
 
 func bundledSkillDefinitionByName(name string) (BundledSkillDefinition, bool) {
