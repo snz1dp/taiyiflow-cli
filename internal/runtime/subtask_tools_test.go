@@ -14,24 +14,24 @@ import (
 
 type subtaskProviderStub struct {
 	provider.Provider
-	mu               sync.Mutex
-	tasks            map[string]provider.ClientCollaborationTask
-	createdSessionID string
-	nextSessionID    int
-	createdTaskStatus string
+	mu                       sync.Mutex
+	tasks                    map[string]provider.ClientCollaborationTask
+	createdSessionID         string
+	nextSessionID            int
+	createdTaskStatus        string
 	createdTaskStatusPayload map[string]any
-	createdRequest   provider.ClientCollaborationCreateRequest
-	createdRequests  []provider.ClientCollaborationCreateRequest
-	getTaskIDs       []string
-	updatedTaskIDs   []string
-	updateRequests   []provider.ClientCollaborationUpdateRequest
-	stream           <-chan provider.StreamEvent
-	streams          []<-chan provider.StreamEvent
-	streamSession    *provider.StreamSession
-	streamSessions   []*provider.StreamSession
-	streamCalls      int
-	lastStream       provider.StreamRequest
-	currentTask      provider.ClientCollaborationTask
+	createdRequest           provider.ClientCollaborationCreateRequest
+	createdRequests          []provider.ClientCollaborationCreateRequest
+	getTaskIDs               []string
+	updatedTaskIDs           []string
+	updateRequests           []provider.ClientCollaborationUpdateRequest
+	stream                   <-chan provider.StreamEvent
+	streams                  []<-chan provider.StreamEvent
+	streamSession            *provider.StreamSession
+	streamSessions           []*provider.StreamSession
+	streamCalls              int
+	lastStream               provider.StreamRequest
+	currentTask              provider.ClientCollaborationTask
 }
 
 func (s *subtaskProviderStub) CreateSessionID(context.Context) (string, error) {
@@ -217,8 +217,8 @@ func TestExecuteClientToolPayloadRunSubtaskCreatesAndExecutesLocalCollaboration(
 func TestExecuteClientToolPayloadRunSubtaskSelfTargetPrefersDispatchedWorker(t *testing.T) {
 	tempDir := t.TempDir()
 	providerStub := &subtaskProviderStub{
-		createdSessionID:        "child-session-1",
-		createdTaskStatus:       "dispatched",
+		createdSessionID:         "child-session-1",
+		createdTaskStatus:        "dispatched",
 		createdTaskStatusPayload: map[string]any{"delivery_channel": "client_websocket"},
 	}
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
@@ -290,7 +290,7 @@ func TestExecuteClientCollaborationTaskReusesExistingChildLineage(t *testing.T) 
 		ChildSessionID:  "child-session-existing",
 		ChildRunID:      "child-run-existing",
 		TaskKind:        "dialogue_subtask",
-		DeliveryPolicy:  "fail_if_offline",
+		DeliveryPolicy:  "local_default",
 		CommandPayload: map[string]any{
 			"prompt":            "请检查当前变更",
 			"flow_id":           "flow-child",

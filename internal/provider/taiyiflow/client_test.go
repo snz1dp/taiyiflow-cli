@@ -413,7 +413,7 @@ func TestCreateClientCollaborationPostsRequestAndParsesResponse(t *testing.T) {
 		}
 		writer.Header().Set("Content-Type", "application/json")
 		writer.WriteHeader(http.StatusCreated)
-		fmt.Fprint(writer, `{"id":"collab-1","owner_user_id":"user-1","target_client_id":"cli-123","target_device_id":"device-456","source_session_id":"session-parent","source_run_id":"run-parent","source_message_id":"message-parent","child_session_id":"session-child","child_run_id":"run-child","task_kind":"dialogue_subtask","delivery_policy":"fail_if_offline","status":"pending","command_payload":{"prompt":"请总结变更"},"created_at":"2026-06-04T10:00:00Z","updated_at":"2026-06-04T10:00:00Z"}`)
+		fmt.Fprint(writer, `{"id":"collab-1","owner_user_id":"user-1","target_client_id":"cli-123","target_device_id":"device-456","source_session_id":"session-parent","source_run_id":"run-parent","source_message_id":"message-parent","child_session_id":"session-child","child_run_id":"run-child","task_kind":"dialogue_subtask","delivery_policy":"local_default","status":"pending","command_payload":{"prompt":"请总结变更"},"created_at":"2026-06-04T10:00:00Z","updated_at":"2026-06-04T10:00:00Z"}`)
 	}))
 	defer server.Close()
 
@@ -459,7 +459,7 @@ func TestUpdateClientCollaborationPatchesStatusAndParsesResponse(t *testing.T) {
 			t.Fatalf("decode request body failed: %v", err)
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(writer, `{"id":"collab-1","owner_user_id":"user-1","target_client_id":"cli-123","target_device_id":"device-456","source_session_id":"session-parent","source_run_id":"run-parent","source_message_id":"message-parent","child_session_id":"session-child","child_run_id":"run-child","task_kind":"dialogue_subtask","delivery_policy":"fail_if_offline","status":"success","command_payload":{"prompt":"请总结变更"},"result_payload":{"text":"子任务完成"},"finished_at":"2026-06-04T10:05:00Z","created_at":"2026-06-04T10:00:00Z","updated_at":"2026-06-04T10:05:00Z"}`)
+		fmt.Fprint(writer, `{"id":"collab-1","owner_user_id":"user-1","target_client_id":"cli-123","target_device_id":"device-456","source_session_id":"session-parent","source_run_id":"run-parent","source_message_id":"message-parent","child_session_id":"session-child","child_run_id":"run-child","task_kind":"dialogue_subtask","delivery_policy":"local_default","status":"success","command_payload":{"prompt":"请总结变更"},"result_payload":{"text":"子任务完成"},"finished_at":"2026-06-04T10:05:00Z","created_at":"2026-06-04T10:00:00Z","updated_at":"2026-06-04T10:05:00Z"}`)
 	}))
 	defer server.Close()
 

@@ -241,7 +241,7 @@ func (r *ClientRuntime) parseSubtaskExecutionRequest(
 		WorkingDirectory:  workingDirectory,
 		TargetClientID:    firstNonEmptySubtask(strings.TrimSpace(argumentString(arguments, "target_client_id", "targetClientID")), strings.TrimSpace(config.ClientID)),
 		TargetDeviceID:    firstNonEmptySubtask(strings.TrimSpace(argumentString(arguments, "target_device_id", "targetDeviceID")), strings.TrimSpace(config.DeviceID)),
-		DeliveryPolicy:    firstNonEmptySubtask(strings.TrimSpace(argumentString(arguments, "delivery_policy", "deliveryPolicy")), "fail_if_offline"),
+		DeliveryPolicy:    firstNonEmptySubtask(strings.TrimSpace(argumentString(arguments, "delivery_policy", "deliveryPolicy")), "local_default"),
 		WaitForCompletion: waitForCompletion,
 		TimeoutSeconds:    argumentInt(arguments, config.SubtaskTimeoutSeconds, "timeout_seconds", "timeoutSeconds"),
 		ParentSessionID:   firstNonEmptySubtask(strings.TrimSpace(argumentString(arguments, "session_id", "sessionId")), strings.TrimSpace(nestedString(payload, "context", "session_id"))),

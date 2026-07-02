@@ -1766,7 +1766,7 @@ func (c *Client) CreateClientCollaboration(ctx context.Context, request provider
 		TaskKind:        firstNonEmpty(strings.TrimSpace(request.TaskKind), "dialogue_subtask"),
 		TargetClientID:  strings.TrimSpace(request.TargetClientID),
 		TargetDeviceID:  strings.TrimSpace(request.TargetDeviceID),
-		DeliveryPolicy:  firstNonEmpty(strings.TrimSpace(request.DeliveryPolicy), "fail_if_offline"),
+		DeliveryPolicy:  firstNonEmpty(strings.TrimSpace(request.DeliveryPolicy), "local_default"),
 		CommandPayload:  request.CommandPayload,
 		SourceSessionID: strings.TrimSpace(request.SourceSessionID),
 		SourceRunID:     strings.TrimSpace(request.SourceRunID),
