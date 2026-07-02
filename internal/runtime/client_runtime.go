@@ -1002,6 +1002,7 @@ type commandArguments struct {
 	SourceSkill      string
 	InjectedEnvKeys  []string
 	ExpectJSON       bool
+	Sandbox          *shellSandboxConfig
 }
 
 func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, config internalconfig.Config) (commandArguments, error) {
@@ -1017,6 +1018,9 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 	if err != nil {
 		return commandArguments{}, err
 	}
+
+	// Resolve OS-level shell sandbox configuration.
+	sandbox := resolveShellSandbox(config, workingDirectory)
 
 	envOverrides := map[string]string{}
 	if rawEnv, ok := firstArgument(arguments, "env", "env_overrides"); ok {
@@ -1056,6 +1060,7 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 			SourceSkill:      sourceSkill,
 			InjectedEnvKeys:  injectedEnvKeys,
 			ExpectJSON:       argumentBool(arguments, "expectJson", "expect_json"),
+			Sandbox:          sandbox,
 		}, nil
 	}
 
@@ -1082,6 +1087,7 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 			SourceSkill:      sourceSkill,
 			InjectedEnvKeys:  injectedEnvKeys,
 			ExpectJSON:       argumentBool(arguments, "expectJson", "expect_json"),
+			Sandbox:          sandbox,
 		}, nil
 	}
 	return commandArguments{
@@ -1097,6 +1103,7 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 		SourceSkill:      sourceSkill,
 		InjectedEnvKeys:  injectedEnvKeys,
 		ExpectJSON:       argumentBool(arguments, "expectJson", "expect_json"),
+		Sandbox:          sandbox,
 	}, nil
 }
 
@@ -1579,14 +1586,10 @@ func isWindowsCommandSafeToken(token string) bool {
 	return true
 }
 
+// buildCommand 构建 *exec.Cmd，根据 payload.Sandbox 决定是否包装 OS 级沙盒。
+// 沙盒逻辑见 shell_sandbox.go 和平台特定文件（_darwin/_linux/_windows）。
 func buildCommand(ctx context.Context, payload commandArguments) (*exec.Cmd, error) {
-	if payload.Mode == "shell" {
-		if runtime.GOOS == "windows" {
-			return exec.CommandContext(ctx, "cmd", "/C", payload.RawCommand), nil
-		}
-		return exec.CommandContext(ctx, "sh", "-lc", payload.RawCommand), nil
-	}
-	return exec.CommandContext(ctx, payload.Command, payload.Args...), nil
+	return buildSandboxedCommand(ctx, payload)
 }
 
 func resolveBaseDirectory(defaultWorkdir string, requested string) (string, error) {

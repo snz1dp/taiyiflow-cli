@@ -271,6 +271,7 @@ type ConfigFormValues struct {
 	SkillsFreeTextSearch      bool
 	SkillsRegistryURL         string
 	DocUnstructuredExts       string
+	ShellSandboxMode          string
 }
 
 type ConfigChoice struct {
@@ -820,6 +821,7 @@ type configFormState struct {
 	skillsCursor             int
 	skillsAutoInstallCursor  int
 	skillsFreeTextCursor     int
+	shellSandboxCursor       int
 	fieldErrorKey            string
 	fieldErrorText           string
 }
@@ -909,6 +911,7 @@ const (
 	configFieldSkillsFreeTextSearch
 	configFieldSkillsRegistryURL
 	configFieldDocUnstructuredExts
+	configFieldShellSandboxMode
 	configFieldCount
 )
 
@@ -2530,6 +2533,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveConfigSkillsFreeTextCursor(-1)
 			return m, nil
 		}
+		if m.configForm.cursor == configFieldShellSandboxMode {
+			m.moveConfigShellSandboxCursor(-1)
+			return m, nil
+		}
 		if m.configForm.cursor == configFieldDefaultFlow {
 			m.moveConfigFlowCursor(-1)
 			return m, nil
@@ -2597,6 +2604,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldSkillsFreeTextSearch {
 			m.moveConfigSkillsFreeTextCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldShellSandboxMode {
+			m.moveConfigShellSandboxCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldDefaultFlow {
@@ -2680,6 +2691,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldSkillsFreeTextSearch {
 			m.moveConfigSkillsFreeTextCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldShellSandboxMode {
+			m.moveConfigShellSandboxCursor(1)
 			return m, nil
 		}
 	case "ctrl+s":
@@ -5217,6 +5232,8 @@ func (m model) renderConfigForm() string {
 			lines = append(lines, m.renderConfigSkillsAutoInstallField())
 		case configFieldSkillsFreeTextSearch:
 			lines = append(lines, m.renderConfigSkillsFreeTextSearchField())
+		case configFieldShellSandboxMode:
+			lines = append(lines, m.renderConfigShellSandboxField())
 		default:
 			lines = append(lines, m.configForm.inputs[index].View())
 		}
@@ -5541,6 +5558,29 @@ func (m model) renderConfigSkillsFreeTextSearchField() string {
 		}
 		item := marker + " " + option.Label
 		if m.configForm.cursor == configFieldSkillsFreeTextSearch && selected {
+			parts = append(parts, selectedFlowStyle.Render(item))
+		} else if selected {
+			parts = append(parts, valueStyle.Render(item))
+		} else {
+			parts = append(parts, commandHintStyle.Render(item))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m model) renderConfigShellSandboxField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(configShellSandboxChoices()))
+	for index, option := range configShellSandboxChoices() {
+		selected := index == m.configForm.shellSandboxCursor
+		marker := "( )"
+		if selected {
+			marker = "(*)"
+		}
+		item := marker + " " + option.Label
+		if m.configForm.cursor == configFieldShellSandboxMode && selected {
 			parts = append(parts, selectedFlowStyle.Render(item))
 		} else if selected {
 			parts = append(parts, valueStyle.Render(item))
@@ -7581,6 +7621,10 @@ func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
 	if m.configForm.skillsFreeTextCursor >= 0 && m.configForm.skillsFreeTextCursor < len(skillsFreeTextChoices) {
 		submission.Values.SkillsFreeTextSearch = strings.TrimSpace(skillsFreeTextChoices[m.configForm.skillsFreeTextCursor].Value) == "true"
 	}
+	shellSandboxChoices := configShellSandboxChoices()
+	if m.configForm.shellSandboxCursor >= 0 && m.configForm.shellSandboxCursor < len(shellSandboxChoices) {
+		submission.Values.ShellSandboxMode = strings.TrimSpace(shellSandboxChoices[m.configForm.shellSandboxCursor].Value)
+	}
 	return m, tea.Batch(m.transitionProgress(progressExecuting), submitConfigFormCmd(m.ctx, m.snapshot, submission, m.configFormSubmit))
 }
 
@@ -7676,6 +7720,7 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 		skillsCursor:             configChoiceIndex(configSkillsInstallScopeChoices(), values.SkillsInstallScope),
 		skillsAutoInstallCursor:  configChoiceIndex(configSkillsAutoInstallChoices(), values.SkillsAutoInstallPolicy),
 		skillsFreeTextCursor:     configChoiceIndex(configSkillsFreeTextSearchChoices(), boolChoiceValue(values.SkillsFreeTextSearch)),
+		shellSandboxCursor:       configChoiceIndex(configShellSandboxChoices(), values.ShellSandboxMode),
 	}
 }
 
@@ -8152,6 +8197,7 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "自由文本技能搜索", placeholder: "", description: "左右键或空格切换是否允许按任务文本搜索远程技能候选。"},
 		{label: "技能仓库地址", placeholder: "https://mirror-cn.clawhub.com", description: "远程技能搜索、详情和安装默认使用该镜像站。"},
 		{label: "服务端文档解析类型", placeholder: "pdf,wav,mp3", description: "留空表示恢复内置默认值；多个扩展名用逗号分隔，仅对配置列表中的扩展名启用服务端文档结构化解析。"},
+		{label: "Shell 沙盒模式", placeholder: "", description: "左右键或空格切换关闭(off)、自动(auto)、强制(enforce)。auto 在平台不支持时静默降级；enforce 在平台不支持时拒绝执行。"},
 	}
 }
 
@@ -8173,6 +8219,8 @@ func configFormFieldGroup(index int) string {
 		return "技能配置"
 	case configFieldDocUnstructuredExts:
 		return "文档工具"
+	case configFieldShellSandboxMode:
+		return "安全沙盒"
 	default:
 		return ""
 	}
@@ -8250,6 +8298,8 @@ func configFormFieldValue(index int, values ConfigFormValues) string {
 		return strings.TrimSpace(values.SkillsRegistryURL)
 	case configFieldDocUnstructuredExts:
 		return strings.TrimSpace(values.DocUnstructuredExts)
+	case configFieldShellSandboxMode:
+		return ""
 	default:
 		return ""
 	}
@@ -8413,6 +8463,8 @@ func configFieldKey(index int) string {
 		return "skills_registry_url"
 	case configFieldDocUnstructuredExts:
 		return "doc_unstructured_exts"
+	case configFieldShellSandboxMode:
+		return "shell_sandbox_mode"
 	default:
 		return ""
 	}
@@ -8673,6 +8725,20 @@ func (m *model) moveConfigSkillsFreeTextCursor(delta int) {
 	m.syncLayout()
 }
 
+func (m *model) moveConfigShellSandboxCursor(delta int) {
+	choices := configShellSandboxChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.shellSandboxCursor += delta
+	if m.configForm.shellSandboxCursor < 0 {
+		m.configForm.shellSandboxCursor = len(choices) - 1
+	} else if m.configForm.shellSandboxCursor >= len(choices) {
+		m.configForm.shellSandboxCursor = 0
+	}
+	m.syncLayout()
+}
+
 func configReasoningChoices() []ConfigChoice {
 	return []ConfigChoice{{Value: "off", Label: "关闭"}, {Value: "on", Label: "开启"}}
 }
@@ -8852,6 +8918,14 @@ func configSkillsInstallScopeChoices() []ConfigChoice {
 	return []ConfigChoice{
 		{Value: "user", Label: "用户目录", Description: "安装到 ~/.snz1dp/skills。"},
 		{Value: "workspace", Label: "工作区", Description: "安装到当前工作区的 .snz1dp/skills。"},
+	}
+}
+
+func configShellSandboxChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: internalconfig.ShellSandboxModeOff, Label: "关闭", Description: "不启用沙盒，命令在工作区内直接执行。"},
+		{Value: internalconfig.ShellSandboxModeAuto, Label: "自动", Description: "自动尝试启用 OS 级沙盒；平台不支持时静默降级。"},
+		{Value: internalconfig.ShellSandboxModeEnforce, Label: "强制", Description: "强制启用沙盒；平台不支持时拒绝执行命令。"},
 	}
 }
 

@@ -55,6 +55,9 @@ const (
 	ComputerPermissionModeAsk        = "ask"
 	ComputerPermissionModeFollowPlan = "follow_a_plan"
 	ComputerPermissionModeSkipAll    = "skip_all_permission_checks"
+	ShellSandboxModeOff              = "off"
+	ShellSandboxModeAuto             = "auto"
+	ShellSandboxModeEnforce          = "enforce"
 	BrowserChannelChrome             = "chrome"
 	BrowserChannelChromium           = "chromium"
 	BrowserChannelEdge               = "edge"
@@ -173,6 +176,7 @@ type Config struct {
 	SandboxRoots              []string         `yaml:"sandbox_roots,omitempty"`
 	FileSearchExcludeDirs     []string         `yaml:"file_search_exclude_dirs,omitempty"`
 	PermissionRules           []PermissionRule `yaml:"permission_rules,omitempty"`
+	ShellSandboxMode          string           `yaml:"shell_sandbox_mode,omitempty"`
 	Browser                   BrowserConfig    `yaml:"browser,omitempty"`
 	Computer                  ComputerConfig   `yaml:"computer,omitempty"`
 	Skills                    SkillConfig      `yaml:"skills,omitempty"`
@@ -245,6 +249,7 @@ func Default() Config {
 		AuditEnabled:              false,
 		SkillReviewPolicy:         SkillReviewPolicyConfirm,
 		WriteConfirmationPolicy:   WriteConfirmationPolicyConfirm,
+		ShellSandboxMode:          ShellSandboxModeOff,
 		FileSearchExcludeDirs:     append([]string(nil), defaultFileSearchExcludeDirs...),
 		Browser: BrowserConfig{
 			Mode:                  BrowserModeChromeSession,
@@ -533,6 +538,17 @@ func NormalizePermissionAction(value string) string {
 	}
 }
 
+func NormalizeShellSandboxMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case ShellSandboxModeAuto:
+		return ShellSandboxModeAuto
+	case ShellSandboxModeEnforce:
+		return ShellSandboxModeEnforce
+	default:
+		return ShellSandboxModeOff
+	}
+}
+
 func NormalizeSubtaskTimeoutSeconds(value int) int {
 	if value < 1 {
 		return DefaultSubtaskTimeoutSeconds
@@ -682,6 +698,7 @@ func (m *Manager) Load() (Config, error) {
 	config.SkillReviewPolicy = NormalizeSkillReviewPolicy(config.SkillReviewPolicy)
 	config.Skills.AutoInstallPolicy = NormalizeSkillAutoInstallPolicy(config.Skills.AutoInstallPolicy)
 	config.WriteConfirmationPolicy = NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy)
+	config.ShellSandboxMode = NormalizeShellSandboxMode(config.ShellSandboxMode)
 	config.HTTPTimeoutSeconds = NormalizeHTTPTimeoutSeconds(config.HTTPTimeoutSeconds)
 	config.CommandTimeoutSeconds = NormalizeCommandTimeoutSeconds(config.CommandTimeoutSeconds)
 	config.SubtaskTimeoutSeconds = NormalizeSubtaskTimeoutSeconds(config.SubtaskTimeoutSeconds)

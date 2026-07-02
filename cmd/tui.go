@@ -3251,6 +3251,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			SkillsFreeTextSearch:      config.Skills.FreeTextSearchEnabled,
 			SkillsRegistryURL:         strings.TrimSpace(config.Skills.RegistryURL),
 			DocUnstructuredExts:       strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "),
+		ShellSandboxMode:          strings.TrimSpace(config.ShellSandboxMode),
 		},
 	}, nil
 }
@@ -3453,6 +3454,12 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		config.Skills.RegistryURL = internalconfig.Default().Skills.RegistryURL
 	} else if err := assignConfigValue(&config, "skills_registry_url", submission.Values.SkillsRegistryURL); err != nil {
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "skills_registry_url", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.ShellSandboxMode) == "" {
+		config.ShellSandboxMode = internalconfig.Default().ShellSandboxMode
+	} else if err := assignConfigValue(&config, "shell_sandbox_mode", submission.Values.ShellSandboxMode); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "shell_sandbox_mode", Message: err.Error()}
 	}
 
 	if err := a.configManager.Save(config); err != nil {

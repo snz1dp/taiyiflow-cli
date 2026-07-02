@@ -387,6 +387,14 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("file_search_exclude_dirs 不能为空；如需恢复内置默认值请使用 taiyiflow-cli config unset file_search_exclude_dirs")
 		}
 		config.FileSearchExcludeDirs = normalizedDirs
+	case "shell_sandbox_mode":
+		normalizedMode := internalconfig.NormalizeShellSandboxMode(trimmedValue)
+		if normalizedMode != trimmedValue {
+			if strings.ToLower(trimmedValue) != normalizedMode {
+				return fmt.Errorf("shell_sandbox_mode 仅支持 off、auto、enforce")
+			}
+		}
+		config.ShellSandboxMode = normalizedMode
 	default:
 		return fmt.Errorf("不支持的配置项: %s", normalizedKey)
 	}
@@ -475,6 +483,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.SandboxRoots = nil
 	case "file_search_exclude_dirs":
 		config.FileSearchExcludeDirs = nil
+	case "shell_sandbox_mode":
+		config.ShellSandboxMode = defaults.ShellSandboxMode
 	default:
 		return fmt.Errorf("不支持的配置项: %s", normalizeConfigKey(key))
 	}
@@ -544,6 +554,8 @@ func normalizeConfigKey(key string) string {
 		return "doc_unstructured_exts"
 	case "file_search_exclude", "file_exclude_dirs", "search_exclude_dirs", "exclude_dirs":
 		return "file_search_exclude_dirs"
+	case "shell_sandbox", "shell_exec_sandbox_mode":
+		return "shell_sandbox_mode"
 	default:
 		return normalized
 	}
@@ -599,6 +611,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("文档服务端解析类型: %s", fallbackConfigValue(strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "), strings.Join(prefixDocumentExts(internalconfig.Default().DocUnstructuredExts), ", "))),
 		fmt.Sprintf("可访问外部资源目录: %s", fallbackConfigValue(strings.Join(config.SandboxRoots, ", "), "<仅当前工作目录>")),
 		fmt.Sprintf("文件搜索排除目录: %d 个（未配置时使用内置默认值）", len(config.FileSearchExcludeDirs)),
+		fmt.Sprintf("Shell 沙盒模式: %s", fallbackConfigValue(config.ShellSandboxMode, internalconfig.Default().ShellSandboxMode)),
 	}
 	if internalconfig.BrowserEnabled(config.Browser) {
 		browserLines := []string{
