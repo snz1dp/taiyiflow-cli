@@ -1,0 +1,99 @@
+package cmd
+
+import (
+	"testing"
+)
+
+func TestProbeRuntimeTools(t *testing.T) {
+	// probeRuntimeTools 是实际探测函数，在测试环境中至少能找到一些工具
+	results := probeRuntimeTools()
+
+	// 在开发环境中，通常 node、python3、rg 至少有一个可用
+	// 这里只验证探测不会 panic 且返回格式正确
+	for _, r := range results {
+		if r.label == "" {
+			t.Error("探测结果的 label 不应为空")
+		}
+		if r.command == "" {
+			t.Error("探测结果的 command 不应为空")
+		}
+	}
+}
+
+func TestDetectLocalRuntimeToolsSummary(t *testing.T) {
+	// 由于 detectLocalRuntimeToolsSummary 依赖全局缓存（sync.Once），
+	// 在测试中可能已经被前一个测试填充。这里只验证输出格式。
+	summary := detectLocalRuntimeToolsSummary()
+	if summary == "" {
+		t.Error("工具摘要不应为空（至少应返回 '未检测到'）")
+	}
+}
+
+func TestDetectLocalRuntimeToolsInline(t *testing.T) {
+	inline := detectLocalRuntimeToolsInline()
+	// 如果没有工具，返回空字符串是合理的
+	// 如果有工具，应该不包含括号格式（inline 格式与 summary 不同）
+	if inline != "" {
+		// 验证非空结果中至少包含一个已知工具名
+		knownTools := []string{"node22", "python3.12", "rg"}
+		found := false
+		for _, tool := range knownTools {
+			if contains(inline, tool) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("inline 结果 '%s' 不包含任何已知工具名", inline)
+		}
+	}
+}
+
+func TestProbeOneTool(t *testing.T) {
+	// 测试探测不存在的工具
+	cliDir := resolveCLIExecutableDir()
+	result := probeOneTool(runtimeToolProbe{
+		label:      "nonexistent_tool_xyz",
+		candidates: []string{"nonexistent_tool_xyz_12345"},
+		versionArg: "--version",
+	}, cliDir)
+	if result != nil {
+		t.Error("不存在的工具应返回 nil")
+	}
+}
+
+func TestRuntimeToolResultFormat(t *testing.T) {
+	// 验证结果格式
+	r := runtimeToolResult{label: "test", command: "/usr/bin/test", version: "1.0.0"}
+	if r.label != "test" {
+		t.Errorf("expected label 'test', got '%s'", r.label)
+	}
+	if r.command != "/usr/bin/test" {
+		t.Errorf("expected command '/usr/bin/test', got '%s'", r.command)
+	}
+	if r.version != "1.0.0" {
+		t.Errorf("expected version '1.0.0', got '%s'", r.version)
+	}
+}
+
+// contains 是测试辅助函数，检查字符串包含关系。
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && len(substr) > 0 && indexOfContains(s, substr) >= 0))
+}
+
+func indexOfContains(s, substr string) int {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		match := true
+		for j := 0; j < len(substr); j++ {
+			if s[i+j] != substr[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
+}

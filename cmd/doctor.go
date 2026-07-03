@@ -51,8 +51,9 @@ func (a *App) runDoctor(args []string) error {
 	fmt.Fprintln(a.stdout, "- 流异常自动重试: 1 次（仅连接中断/超时）")
 	fmt.Fprintf(a.stdout, "- 默认智能体: %s\n", flowDisplay)
 	fmt.Fprintf(a.stdout, "- 文件工具链: %s\n", detectLocalFileToolStatus())
+	fmt.Fprintf(a.stdout, "- 本地脚手架: %s\n", detectLocalRuntimeToolsSummary())
 	fmt.Fprintf(a.stdout, "- 浏览器自动化: %s\n", detectBrowserAutomationStatus(config))
-	fmt.Fprintf(a.stdout, "- 桌面操作: %s\n", detectComputerAutomationStatus(config))
+	fmt.Fprintf(a.stdout, "- 桌面自动化: %s\n", detectComputerAutomationStatus(config))
 	fmt.Fprintf(a.stdout, "- 浏览器扩展链路: %s\n", detectBrowserNativeMessagingStatus(config, cwd))
 	if skillItems, directory, skillErr := skills.Discover(config); skillErr == nil {
 		enabledCount := 0

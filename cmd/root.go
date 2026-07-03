@@ -1570,10 +1570,13 @@ func buildTaskEnvironmentHint(contextDir string, commandExecutionTarget string) 
 	}
 	lines := []string{
 		"<taiyiflow_environment>",
-		fmt.Sprintf("OS: %s", runtime.GOOS),
-		fmt.Sprintf("ARCH: %s", runtime.GOARCH),
+		fmt.Sprintf("操作系统: %s", runtime.GOOS),
+		fmt.Sprintf("CPU架构: %s", runtime.GOARCH),
 		fmt.Sprintf("工作目录: %s", resolvedContextDir),
-		fmt.Sprintf("命令执行目标: %s", resolvedTarget),
+		fmt.Sprintf("执行目标: %s", resolvedTarget),
+	}
+	if inline := detectLocalRuntimeToolsInline(); inline != "" {
+		lines = append(lines, fmt.Sprintf("可用工具: %s", inline))
 	}
 	lines = append(lines, "</taiyiflow_environment>")
 	return strings.Join(lines, "\n")
