@@ -52,7 +52,9 @@ func buildRawCommand(ctx context.Context, payload commandArguments) (*exec.Cmd, 
 		}
 		return exec.CommandContext(ctx, "sh", "-lc", payload.RawCommand), nil
 	}
-	return exec.CommandContext(ctx, payload.Command, payload.Args...), nil
+	// 结构化命令模式：优先从 CLI 二进制文件所在目录查找可执行文件
+	resolvedCommand := resolveCommandInCLIDir(payload.Command)
+	return exec.CommandContext(ctx, resolvedCommand, payload.Args...), nil
 }
 
 // resolveShellSandbox resolves the sandbox configuration from Config.

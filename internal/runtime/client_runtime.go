@@ -1648,12 +1648,32 @@ func mergeEnv(overrides map[string]string) []string {
 		}
 		merged[key] = value
 	}
+	// 将 CLI 二进制文件所在目录前置到 PATH，使 shell 模式命令也能优先找到 CLI 目录中的工具
+	prependCLIDirToPathInEnv(merged)
 	result := make([]string, 0, len(merged))
 	for key, value := range merged {
 		result = append(result, key+"="+value)
 	}
 	sort.Strings(result)
 	return result
+}
+
+// prependCLIDirToPathInEnv 将 CLI 二进制文件所在目录前置到环境变量 map 中的 PATH 值。
+// 兼容 Windows 下 PATH 变量名大小写差异。
+func prependCLIDirToPathInEnv(envMap map[string]string) {
+	// 查找 PATH 键（兼容 Windows 大小写）
+	pathKey := ""
+	for k := range envMap {
+		if strings.EqualFold(k, "PATH") {
+			pathKey = k
+			break
+		}
+	}
+	if pathKey == "" {
+		pathKey = "PATH"
+		envMap[pathKey] = ""
+	}
+	envMap[pathKey] = prependCLIDirToPath(envMap[pathKey])
 }
 
 func commandPreview(arguments map[string]any) string {
