@@ -862,9 +862,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			}, nil
 		case strings.HasPrefix(strings.ToLower(trimmed), "/config "):
 			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "TUI 中请直接输入 /config 打开弹窗表单。"}}}, nil
-		case trimmed == "!":
+		case trimmed == "!" || trimmed == "！":
 			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "! 用法: !<shell 命令>"}}}, nil
-		case strings.HasPrefix(trimmed, "!"):
+		case strings.HasPrefix(trimmed, "!") || strings.HasPrefix(trimmed, "！"):
 			return a.executeTUILocalShellCommand(commandCtx, trimmed, snapshot)
 		case trimmed == "/clear":
 			return tui.LocalCommandResult{Handled: true, ClearHistory: true}, nil
@@ -1221,7 +1221,14 @@ func buildLocalShellCommandEvents(command string, result map[string]any) []tui.E
 }
 
 func (a *App) executeTUILocalShellCommand(ctx context.Context, command string, snapshot tui.Snapshot) (tui.LocalCommandResult, error) {
-	rawCommand := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(command), "!"))
+	var rawCommand string
+	rawCommand = strings.TrimSpace(command)
+	if strings.HasPrefix(rawCommand, "！") {
+		rawCommand = strings.TrimPrefix(rawCommand, "！")
+	} else {
+		rawCommand = strings.TrimPrefix(rawCommand, "!")
+	}
+	rawCommand = strings.TrimSpace(rawCommand)
 	if rawCommand == "" {
 		return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "! 用法: !<shell 命令>"}}}, nil
 	}
@@ -3251,7 +3258,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			SkillsFreeTextSearch:      config.Skills.FreeTextSearchEnabled,
 			SkillsRegistryURL:         strings.TrimSpace(config.Skills.RegistryURL),
 			DocUnstructuredExts:       strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "),
-		ShellSandboxMode:          strings.TrimSpace(config.ShellSandboxMode),
+			ShellSandboxMode:          strings.TrimSpace(config.ShellSandboxMode),
 		},
 	}, nil
 }
