@@ -1533,8 +1533,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if typed.err != nil {
 			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
 			m.syncViewport()
-			if m.isBusy() {
-				// 任务执行中 ! 命令失败，不改变进度状态，仅显示错误
+			if m.requestCancel != nil {
+				// runner 正在运行，! 命令失败时不改变进度状态，仅显示错误
 				return m, textinput.Blink
 			}
 			return m, tea.Batch(m.transitionProgress(progressFailed), textinput.Blink)
@@ -1542,8 +1542,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd := m.applyLocalCommandResult(typed.result); cmd != nil {
 			return m, tea.Batch(cmd, textinput.Blink)
 		}
-		if m.isBusy() {
-			// 任务执行中 ! 命令完成，不改变进度状态，避免干扰正在运行的 runner
+		if m.requestCancel != nil {
+			// runner 正在运行，! 命令完成时不改变进度状态，避免干扰正在运行的 runner
 			return m, textinput.Blink
 		}
 		return m.continueQRCodeWaitIfNeeded()
