@@ -52,6 +52,15 @@ func detectLocalRuntimeTools() []runtimeToolResult {
 	return runtimeToolsCache
 }
 
+// toolDisplayName 返回工具的显示名称，优先使用实际命中的命令名（basename），
+// 命令路径为空时回退到 probe label。
+func toolDisplayName(r runtimeToolResult) string {
+	if r.command != "" {
+		return filepath.Base(r.command)
+	}
+	return r.label
+}
+
 // detectLocalRuntimeToolsSummary 返回可读的工具摘要字符串，用于 doctor 输出。
 func detectLocalRuntimeToolsSummary() string {
 	results := detectLocalRuntimeTools()
@@ -60,10 +69,11 @@ func detectLocalRuntimeToolsSummary() string {
 	}
 	parts := make([]string, 0, len(results))
 	for _, r := range results {
+		name := toolDisplayName(r)
 		if r.version != "" {
-			parts = append(parts, fmt.Sprintf("%s (%s)", r.label, r.version))
+			parts = append(parts, fmt.Sprintf("%s (%s)", name, r.version))
 		} else {
-			parts = append(parts, r.label)
+			parts = append(parts, name)
 		}
 	}
 	return strings.Join(parts, ", ")
@@ -77,10 +87,11 @@ func detectLocalRuntimeToolsInline() string {
 	}
 	parts := make([]string, 0, len(results))
 	for _, r := range results {
+		name := toolDisplayName(r)
 		if r.version != "" {
-			parts = append(parts, r.label+" "+r.version)
+			parts = append(parts, name+" "+r.version)
 		} else {
-			parts = append(parts, r.label)
+			parts = append(parts, name)
 		}
 	}
 	return strings.Join(parts, ", ")

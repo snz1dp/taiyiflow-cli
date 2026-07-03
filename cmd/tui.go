@@ -2063,9 +2063,6 @@ func emitTUIClientToolResultEvents(emit func(tui.Event), config internalconfig.C
 	}
 	panel := buildTUIClientToolPanel(toolName, result, toolErr)
 	if panel != nil {
-		if statusText := buildToolPanelStatusText(panel, ""); statusText != "" {
-			emit(tui.Event{Kind: tui.EventSystemNote, Text: statusText})
-		}
 		if shouldOpenTUIClientToolPanel(config, toolName, toolErr) {
 			emit(tui.Event{Kind: tui.EventToolPanel, Panel: panel})
 		}
@@ -2074,19 +2071,6 @@ func emitTUIClientToolResultEvents(emit func(tui.Event), config internalconfig.C
 
 func shouldOpenTUIClientToolPanel(config internalconfig.Config, toolName string, toolErr error) bool {
 	return false
-}
-
-func buildToolPanelStatusText(panel *tui.ToolPanel, fallback string) string {
-	if panel == nil {
-		return strings.TrimSpace(fallback)
-	}
-	if summary := strings.TrimSpace(panel.Summary); summary != "" {
-		return "结果已生成：" + summary
-	}
-	if title := strings.TrimSpace(panel.Title); title != "" {
-		return "结果已生成：" + title
-	}
-	return strings.TrimSpace(fallback)
 }
 
 func buildTUITodoItems(items []agent.TodoItem) []tui.TodoItem {

@@ -4752,24 +4752,18 @@ func TestUpdateSessionChangedResetsAssistantSplitState(t *testing.T) {
 	}
 }
 
-func TestApplyEventWritesToolCallPromptIntoTimeline(t *testing.T) {
+func TestApplyEventToolCallDoesNotInjectTimelineNote(t *testing.T) {
 	m := model{}
 
 	m.applyEvent(Event{Kind: EventToolCall, Text: "读取文件"})
 	m.applyEvent(Event{Kind: EventBuiltInCall, Text: "git status"})
 	m.applyEvent(Event{Kind: EventClientToolCall, Text: "read_file notes.txt"})
 
-	if len(m.entries) != 3 {
-		t.Fatalf("expected three timeline prompt entries, got %#v", m.entries)
+	if len(m.entries) != 0 {
+		t.Fatalf("expected no timeline entries for tool calls, got %#v", m.entries)
 	}
-	if !strings.Contains(m.entries[0].content, "正在执行服务端工具调用：读取文件") {
-		t.Fatalf("unexpected service tool note: %#v", m.entries[0])
-	}
-	if !strings.Contains(m.entries[1].content, "正在执行本地命令执行：git status") {
-		t.Fatalf("unexpected built-in note: %#v", m.entries[1])
-	}
-	if !strings.Contains(m.entries[2].content, "正在执行本地工具调用：read_file notes.txt") {
-		t.Fatalf("unexpected client tool note: %#v", m.entries[2])
+	if m.currentToolLabel == "" {
+		t.Fatal("expected currentToolLabel to be set for the last tool call")
 	}
 }
 

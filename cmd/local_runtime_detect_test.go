@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -35,10 +36,10 @@ func TestDetectLocalRuntimeToolsInline(t *testing.T) {
 	// 如果有工具，应该不包含括号格式（inline 格式与 summary 不同）
 	if inline != "" {
 		// 验证非空结果中至少包含一个已知工具名
-		knownTools := []string{"node22", "python3.12", "rg"}
+		knownTools := []string{"node22", "python3.12", "rg", "node", "python3", "python"}
 		found := false
 		for _, tool := range knownTools {
-			if contains(inline, tool) {
+			if strings.Contains(inline, tool) {
 				found = true
 				break
 			}
@@ -76,24 +77,4 @@ func TestRuntimeToolResultFormat(t *testing.T) {
 	}
 }
 
-// contains 是测试辅助函数，检查字符串包含关系。
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && indexOfContains(s, substr) >= 0))
-}
 
-func indexOfContains(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		match := true
-		for j := 0; j < len(substr); j++ {
-			if s[i+j] != substr[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return i
-		}
-	}
-	return -1
-}

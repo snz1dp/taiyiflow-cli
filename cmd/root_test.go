@@ -858,7 +858,7 @@ func TestStreamTaskSendsEnvironmentInTweaks(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected taiyiflow_environment tweak string, got %#v", providerStub.lastRequest.Tweaks)
 	}
-	for _, expected := range []string{"<taiyiflow_environment>", "OS:", "ARCH:", "工作目录:", workdir, "命令执行目标: client", "demo task"} {
+	for _, expected := range []string{"<taiyiflow_environment>", "操作系统:", "CPU架构:", "工作目录:", workdir, "执行目标: client", "demo task"} {
 		if expected == "demo task" {
 			continue
 		}

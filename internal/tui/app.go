@@ -3450,7 +3450,6 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 			m.latestToolSummary = summary
 			m.latestToolAt = time.Now()
 			m.currentToolLabel = ""
-			m.entries = append(m.entries, entry{role: "system", content: summary})
 		}
 	case EventToolPanel:
 		if event.Panel != nil {
@@ -3479,9 +3478,6 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 	case EventToolCall:
 		m.requestStats.ToolCallCount++
 		m.currentToolLabel = currentToolLabel(event.Text, "服务端工具调用")
-		if note := buildEventTimelineNote("服务端工具调用", event.Text); note != "" {
-			m.entries = append(m.entries, entry{role: "system", content: note})
-		}
 		if status := searchActivityText(event.Text); status != "" {
 			m.activityHint = status
 		} else {
@@ -3491,17 +3487,11 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 	case EventBuiltInCall:
 		m.requestStats.CommandCount++
 		m.currentToolLabel = currentToolLabel(event.Text, "本地命令执行")
-		if note := buildEventTimelineNote("本地命令执行", event.Text); note != "" {
-			m.entries = append(m.entries, entry{role: "system", content: note})
-		}
 		m.activityHint = "执行 " + m.currentToolLabel
 		m.splitNextAssistant = true
 	case EventClientToolCall:
 		m.requestStats.CommandCount++
 		m.currentToolLabel = currentToolLabel(event.Text, "本地工具调用")
-		if note := buildEventTimelineNote("本地工具调用", event.Text); note != "" {
-			m.entries = append(m.entries, entry{role: "system", content: note})
-		}
 		m.activityHint = "执行 " + m.currentToolLabel
 		m.splitNextAssistant = true
 	case EventStatsUpdate:
@@ -3534,18 +3524,6 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		m.syncViewport()
 	}
 	return cmd
-}
-
-func buildEventTimelineNote(kind string, detail string) string {
-	kind = strings.TrimSpace(kind)
-	detail = strings.TrimSpace(detail)
-	if kind == "" {
-		return detail
-	}
-	if detail == "" {
-		return "正在执行" + kind + "。"
-	}
-	return "正在执行" + kind + "：" + detail
 }
 
 func RenderSessionStatusText(snapshot Snapshot, prefix string) string {

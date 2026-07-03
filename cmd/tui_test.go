@@ -1525,7 +1525,7 @@ func TestExecuteTUIInternetCommandTogglesState(t *testing.T) {
 	}
 }
 
-func TestEmitTUIClientToolResultEventsEmitsStatusNoteWithoutPanel(t *testing.T) {
+func TestEmitTUIClientToolResultEventsEmitsNoNoteWithoutPanel(t *testing.T) {
 	events := []internaltui.Event{}
 	emitTUIClientToolResultEvents(func(event internaltui.Event) {
 		events = append(events, event)
@@ -1535,11 +1535,8 @@ func TestEmitTUIClientToolResultEventsEmitsStatusNoteWithoutPanel(t *testing.T) 
 			map[string]any{"name": "symbol", "path": "internal/tui/app.go"},
 		},
 	}, nil)
-	if len(events) != 1 {
-		t.Fatalf("expected status note only, got %#v", events)
-	}
-	if events[0].Kind != internaltui.EventSystemNote || !strings.Contains(events[0].Text, "结果已生成") {
-		t.Fatalf("expected system note, got %#v", events)
+	if len(events) != 0 {
+		t.Fatalf("expected no events without panel, got %#v", events)
 	}
 }
 
@@ -1663,11 +1660,8 @@ func TestEmitTUIClientToolResultEventsSkipsSuccessfulFileEditPanelInDirectMode(t
 		"sha256_before":  "old-hash",
 		"sha256_after":   "new-hash",
 	}, nil)
-	if len(events) != 1 {
-		t.Fatalf("expected only status note for direct file_edit success, got %#v", events)
-	}
-	if events[0].Kind != internaltui.EventSystemNote || !strings.Contains(events[0].Text, "结果已生成：file_edit notes.txt 替换 1 处") {
-		t.Fatalf("expected status note without tool panel, got %#v", events)
+	if len(events) != 0 {
+		t.Fatalf("expected no events for direct file_edit success, got %#v", events)
 	}
 }
 
@@ -1679,11 +1673,8 @@ func TestEmitTUIClientToolResultEventsSkipsSuccessfulComputerPanel(t *testing.T)
 		"window_id":    "win-1",
 		"process_name": "Finder",
 	}, nil)
-	if len(events) != 1 {
-		t.Fatalf("expected only status note for successful computer tool, got %#v", events)
-	}
-	if events[0].Kind != internaltui.EventSystemNote || !strings.Contains(events[0].Text, "结果已生成：focus_window") {
-		t.Fatalf("expected computer status note without tool panel, got %#v", events)
+	if len(events) != 0 {
+		t.Fatalf("expected no events for successful computer tool, got %#v", events)
 	}
 }
 
@@ -1696,11 +1687,8 @@ func TestEmitTUIClientToolResultEventsSkipsTaskInfoPanel(t *testing.T) {
 		"status":  "running",
 		"stdout":  "hello",
 	}, nil)
-	if len(events) != 1 {
-		t.Fatalf("expected only status note for task output, got %#v", events)
-	}
-	if events[0].Kind != internaltui.EventSystemNote || !strings.Contains(events[0].Text, "结果已生成：task-1") {
-		t.Fatalf("expected task output status note without tool panel, got %#v", events)
+	if len(events) != 0 {
+		t.Fatalf("expected no events for task output, got %#v", events)
 	}
 }
 
@@ -1715,14 +1703,11 @@ func TestEmitTUIClientToolResultEventsSkipsFileEditFailurePanel(t *testing.T) {
 		"status":        "patch_conflict",
 		"sha256_before": "old-hash",
 	}, errors.New("PATCH_CONFLICT"))
-	if len(events) != 2 {
-		t.Fatalf("expected error note and status note only for file_edit failure, got %#v", events)
+	if len(events) != 1 {
+		t.Fatalf("expected error note only for file_edit failure, got %#v", events)
 	}
 	if events[0].Kind != internaltui.EventErrorNote {
 		t.Fatalf("expected error note first, got %#v", events)
-	}
-	if events[1].Kind != internaltui.EventSystemNote {
-		t.Fatalf("expected status note second, got %#v", events)
 	}
 }
 
