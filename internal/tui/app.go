@@ -1331,10 +1331,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, lastCmd
 	case streamFailedMsg:
 		if !m.matchesStreamRun(typed.runID) {
-			if m.isBusy() {
-				return m, waitForStream(m.eventCh)
+			if !m.isBusy() {
+				return m, nil
 			}
-			return m, nil
+			// RunID 不匹配但 TUI 仍处于忙碌状态，可能是 EventStatsUpdate 覆盖了 RunID。
+			// streamFailedMsg 是终止事件，不会再有后续事件，直接按失败处理。
 		}
 		if m.interrupting || errors.Is(typed.err, context.Canceled) {
 			progressCmd := m.completeInterruptedRequest()
@@ -1362,10 +1363,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(progressCmd, m.maybeRefreshSnapshot())
 	case streamDoneMsg:
 		if !m.matchesStreamRun(typed.runID) {
-			if m.isBusy() {
-				return m, waitForStream(m.eventCh)
+			if !m.isBusy() {
+				return m, nil
 			}
-			return m, nil
+			// RunID 不匹配但 TUI 仍处于忙碌状态，可能是 EventStatsUpdate 覆盖了 RunID。
+			// streamDoneMsg 是终止事件，不会再有后续事件，直接按完成处理。
 		}
 		if m.interrupting {
 			progressCmd := m.completeInterruptedRequest()
@@ -1530,10 +1532,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if typed.err != nil {
 			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
 			m.syncViewport()
+			if m.isBusy() {
+				// 任务执行中 ! 命令失败，不改变进度状态，仅显示错误
+				return m, textinput.Blink
+			}
 			return m, tea.Batch(m.transitionProgress(progressFailed), textinput.Blink)
 		}
 		if cmd := m.applyLocalCommandResult(typed.result); cmd != nil {
 			return m, tea.Batch(cmd, textinput.Blink)
+		}
+		if m.isBusy() {
+			// 任务执行中 ! 命令完成，不改变进度状态，避免干扰正在运行的 runner
+			return m, textinput.Blink
 		}
 		return m.continueQRCodeWaitIfNeeded()
 	case localShellChunkMsg:
@@ -1817,7 +1827,7 @@ func mouseScrollModeCmd(enabled bool) tea.Cmd {
 func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
-		if m.isBusy() && m.requestCancel != nil {
+		if m.isBusy() && m.requestCancel != nil && !m.interrupting {
 			m.interrupting = true
 			m.requestCancel()
 			m.activityHint = "请求已中断"
@@ -1825,6 +1835,11 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.streamingIndicatorFrame = 0
 			m.syncViewport()
 			return m, nil
+		}
+		// 如果已经在中断中（interrupting=true）但 runner goroutine 仍未返回
+		// （例如续跑判定 HTTP 请求阻塞），则强制完成中断并退出，避免 TUI 卡死。
+		if m.isBusy() && m.interrupting {
+			m.completeInterruptedRequest()
 		}
 		m.quitting = true
 		return m, tea.Quit
@@ -1881,17 +1896,45 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.isBusy() {
 			pending := strings.TrimSpace(m.input.Value())
-			if pending != "" {
-				queuedUpdated := strings.TrimSpace(m.queuedInput) != ""
-				m.queuedInput = pending
-				m.input.SetValue("")
-				message := "当前任务执行中，下一条输入已加入队列。"
-				if queuedUpdated {
-					message = "当前任务执行中，已更新排队输入。"
-				}
-				m.entries = append(m.entries, entry{role: "system", content: message})
-				m.syncViewport()
+			if pending == "" {
+				return m, nil
 			}
+			// ! 开头的本地 shell 命令和 / 开头的本地 slash 命令不需要后端连接，
+			// 在任务执行中应立即执行，而不是排入队列等待后端空闲。
+			if strings.HasPrefix(pending, "!") {
+				m.input.SetValue("")
+				if commandHandled, cmd := m.handleLocalSlashCommand(pending); commandHandled {
+					return m, cmd
+				}
+			}
+			if strings.EqualFold(pending, "/exit") {
+				m.quitting = true
+				return m, tea.Quit
+			}
+			if strings.HasPrefix(pending, "/") {
+				// 本地 slash 命令（/todo、/tasks、/skills、/clear、/help、/about 等）
+				// 不依赖后端连接，在任务执行中可直接执行。
+				if isAvailableInReadOnlyMode(pending) || isTodoSlashCommand(pending) {
+					m.input.SetValue("")
+					if commandHandled, cmd := m.handleSlashCommand(pending); commandHandled {
+						return m, cmd
+					}
+					// 如果 handleSlashCommand 未处理，尝试 handleLocalSlashCommand
+					if commandHandled, cmd := m.handleLocalSlashCommand(pending); commandHandled {
+						return m, cmd
+					}
+				}
+			}
+			// 普通对话输入或需要后端的命令，排入队列等待后端空闲
+			queuedUpdated := strings.TrimSpace(m.queuedInput) != ""
+			m.queuedInput = pending
+			m.input.SetValue("")
+			message := "当前任务执行中，下一条输入已加入队列。"
+			if queuedUpdated {
+				message = "当前任务执行中，已更新排队输入。"
+			}
+			m.entries = append(m.entries, entry{role: "system", content: message})
+			m.syncViewport()
 			return m, nil
 		}
 		input := strings.TrimSpace(m.input.Value())
@@ -3463,7 +3506,9 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 		m.splitNextAssistant = true
 	case EventStatsUpdate:
 		if event.Stats != nil {
-			if strings.TrimSpace(event.Stats.RunID) != "" {
+			// 仅在当前 RunID 为空时才从 stats 中获取，避免覆盖 startRequestStats 设置的客户端 RunID，
+			// 否则会导致后续 streamDoneMsg 的 matchesStreamRun 校验失败，TUI 永远阻塞在 waitForStream 上。
+			if strings.TrimSpace(event.Stats.RunID) != "" && strings.TrimSpace(m.requestStats.RunID) == "" {
 				m.requestStats.RunID = event.Stats.RunID
 			}
 			if event.Stats.TokenUsage != nil {
@@ -6642,8 +6687,14 @@ func (m *model) handleLocalSlashCommand(command string) (bool, tea.Cmd) {
 	// ! 命令使用异步非流式执行路径：命令执行完毕后一次性显示全部输出，不阻塞 TUI。
 	if strings.HasPrefix(command, "!") {
 		m.input.SetValue("")
+		// 在任务执行中（isBusy）时，不改变进度状态，避免 ! 命令完成后
+		// 将状态恢复为 progressIdle 而 runner goroutine 仍在运行。
+		var progressCmd tea.Cmd
+		if !m.isBusy() {
+			progressCmd = m.transitionProgress(progressExecuting)
+		}
 		return true, tea.Batch(
-			m.transitionProgress(progressExecuting),
+			progressCmd,
 			executeLocalCommandCmd(m.ctx, m.snapshot, command, m.localCommand),
 		)
 	}
