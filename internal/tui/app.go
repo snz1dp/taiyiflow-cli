@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"math"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -9993,7 +9994,24 @@ func currentToolLabel(text string, fallbackValue string) string {
 	if trimmed == "" {
 		return fallbackValue
 	}
-	return trimText(trimmed, 48)
+	return trimText(shortenToolLabelPaths(trimmed), 48)
+}
+
+// shortenToolLabelPaths 将工具标签中的文件路径缩短为 basename，
+// 避免在状态栏和输出区显示过长的绝对路径。
+var toolLabelPathRegexp = regexp.MustCompile(`(?:^|\s)((?:/[\S]+)|(?:\.{1,2}/[\S]+))`)
+
+func shortenToolLabelPaths(text string) string {
+	return toolLabelPathRegexp.ReplaceAllStringFunc(text, func(match string) string {
+		// 提取路径部分（去掉前导空白）
+		parts := strings.SplitN(match, " ", 2)
+		if len(parts) == 1 {
+			// 匹配在行首
+			return filepath.Base(parts[0])
+		}
+		// 匹配在空格后
+		return parts[0] + " " + filepath.Base(parts[1])
+	})
 }
 
 func minInt(left int, right int) int {

@@ -4767,6 +4767,79 @@ func TestApplyEventToolCallDoesNotInjectTimelineNote(t *testing.T) {
 	}
 }
 
+func TestShortenToolLabelPaths(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		// 绝对路径 → basename
+		{
+			"read_file /Users/neeker/工作/技术开发平台/人工智能平台/太乙智启/taiyiflow-chatui/src-electron/managers/ipc-handlers.js",
+			"read_file ipc-handlers.js",
+		},
+		// file_edit 带绝对路径
+		{
+			"file_edit /Users/neeker/project/app.go",
+			"file_edit app.go",
+		},
+		// write_file 带路径和模式
+		{
+			"write_file /Users/neeker/project/main.go (overwrite)",
+			"write_file main.go (overwrite)",
+		},
+		// 相对路径 → basename
+		{
+			"read_file ./src/main.go",
+			"read_file main.go",
+		},
+		// 父级相对路径 → basename
+		{
+			"file_edit ../sibling/dir/file.go",
+			"file_edit file.go",
+		},
+		// 无路径，保持不变
+		{
+			"git status",
+			"git status",
+		},
+		// shell_exec 无路径
+		{
+			"shell_exec ls -la",
+			"shell_exec ls -la",
+		},
+		// 空字符串
+		{"", ""},
+		// 纯工具名
+		{
+			"task_list",
+			"task_list",
+		},
+		// 多个路径参数
+		{
+			"read_file /a/b/c.go /d/e/f.go",
+			"read_file c.go f.go",
+		},
+	}
+	for _, tc := range cases {
+		got := shortenToolLabelPaths(tc.input)
+		if got != tc.want {
+			t.Errorf("shortenToolLabelPaths(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestCurrentToolLabelShortensPaths(t *testing.T) {
+	// 确认 currentToolLabel 会调用 shortenToolLabelPaths
+	input := "read_file /Users/neeker/工作/技术开发平台/人工智能平台/太乙智启/taiyiflow-chatui/src-electron/managers/ipc-handlers.js"
+	got := currentToolLabel(input, "fallback")
+	if strings.Contains(got, "/Users/") {
+		t.Errorf("currentToolLabel should shorten paths, got %q", got)
+	}
+	if !strings.Contains(got, "ipc-handlers.js") {
+		t.Errorf("currentToolLabel should contain basename, got %q", got)
+	}
+}
+
 func TestIsMarkdownTableRow(t *testing.T) {
 	cases := []struct {
 		line string
