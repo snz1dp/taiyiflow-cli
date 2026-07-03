@@ -4824,3 +4824,84 @@ func TestHardWrapTextStillWrapsNonTableContent(t *testing.T) {
 		t.Fatalf("expected non-table content to be wrapped into multiple lines, got %d lines: %q", len(lines), wrapped)
 	}
 }
+
+func TestApplyEventToolSummaryDoesNotInjectSystemEntry(t *testing.T) {
+	m := model{}
+
+	m.applyEvent(Event{Kind: EventToolSummary, Text: "读取文件 test.go"})
+
+	if len(m.entries) != 0 {
+		t.Fatalf("expected no entries injected by EventToolSummary, got %#v", m.entries)
+	}
+	if m.latestToolSummary != "读取文件 test.go" {
+		t.Fatalf("expected latestToolSummary to be set, got %q", m.latestToolSummary)
+	}
+	if m.currentToolLabel != "" {
+		t.Fatalf("expected currentToolLabel to be cleared, got %q", m.currentToolLabel)
+	}
+}
+
+func TestApplyEventToolSummaryIgnoresEmptyText(t *testing.T) {
+	m := model{}
+
+	m.applyEvent(Event{Kind: EventToolSummary, Text: "   "})
+
+	if m.latestToolSummary != "" {
+		t.Fatalf("expected latestToolSummary to remain empty for blank text, got %q", m.latestToolSummary)
+	}
+}
+
+func TestApplyEventToolSummaryIgnoresEmptyTextAfterNonEmpty(t *testing.T) {
+	m := model{}
+
+	m.applyEvent(Event{Kind: EventToolSummary, Text: "读取文件 test.go"})
+	m.applyEvent(Event{Kind: EventToolSummary, Text: "  "})
+
+	if m.latestToolSummary != "读取文件 test.go" {
+		t.Fatalf("expected latestToolSummary to remain unchanged after blank text, got %q", m.latestToolSummary)
+	}
+}
+
+func TestToolSummarySegmentReturnsEmptyWhenNoData(t *testing.T) {
+	m := model{}
+
+	if got := m.toolSummarySegment(false); got != "" {
+		t.Fatalf("expected empty toolSummarySegment with no data, got %q", got)
+	}
+}
+
+func TestToolSummarySegmentReturnsLatestSummary(t *testing.T) {
+	m := model{}
+	m.applyEvent(Event{Kind: EventToolSummary, Text: "读取文件 test.go"})
+
+	got := m.toolSummarySegment(false)
+	if !strings.Contains(got, "读取文件") {
+		t.Fatalf("expected toolSummarySegment to contain summary text, got %q", got)
+	}
+}
+
+func TestToolSummarySegmentReturnsEmptyAfterExpiry(t *testing.T) {
+	m := model{}
+	m.applyEvent(Event{Kind: EventToolSummary, Text: "读取文件 test.go"})
+	// 模拟过期：将 latestToolAt 设为 21 秒前
+	m.latestToolAt = time.Now().Add(-21 * time.Second)
+
+	if got := m.toolSummarySegment(false); got != "" {
+		t.Fatalf("expected empty toolSummarySegment after expiry, got %q", got)
+	}
+}
+
+func TestToolSummarySegmentPrefersCurrentToolLabel(t *testing.T) {
+	m := model{}
+	m.applyEvent(Event{Kind: EventToolSummary, Text: "读取文件 test.go"})
+	m.currentToolLabel = "执行命令"
+
+	got := m.toolSummarySegment(false)
+	if !strings.Contains(got, "执行命令") {
+		t.Fatalf("expected toolSummarySegment to prefer currentToolLabel, got %q", got)
+	}
+	if strings.Contains(got, "读取文件") {
+		t.Fatalf("expected toolSummarySegment to not show summary when currentToolLabel is set, got %q", got)
+	}
+}
+

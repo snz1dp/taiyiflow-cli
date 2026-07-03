@@ -52,6 +52,12 @@ func detectLocalRuntimeTools() []runtimeToolResult {
 	return runtimeToolsCache
 }
 
+// resetRuntimeToolsCache 重置运行时工具探测缓存，仅用于测试。
+func resetRuntimeToolsCache() {
+	runtimeToolsCache = nil
+	runtimeToolsCacheOnce = sync.Once{}
+}
+
 // toolDisplayName 返回工具的显示名称，优先使用实际命中的命令名（basename），
 // 命令路径为空时回退到 probe label。
 func toolDisplayName(r runtimeToolResult) string {
