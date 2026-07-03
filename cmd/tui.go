@@ -1696,26 +1696,106 @@ func mapMessageRole(item provider.SessionMessage) string {
 	}
 }
 
+// tuiLogWriter 将 runtimeClient 的 stdout/stderr 转换为 TUI 事件。
+// suppressMode 用于抑制多行确认提示的续行：一旦遇到以多行抑制前缀开头的行，
+// 后续行也会被抑制，直到遇到提示终止符（如 "[y/N]:"）或摘要行。
 type tuiLogWriter struct {
-	emit    func(tui.Event)
-	pending string
+	emit         func(tui.Event)
+	pending      string
+	suppressMode bool
+}
+
+// isPromptTerminator 判断一行是否为确认提示的最后一行（等待用户输入的行）。
+func isPromptTerminator(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if strings.Contains(trimmed, "[y/N]:") {
+		return true
+	}
+	// ask_user 的输入提示行
+	askUserPrompts := []string{
+		"请输入答案:",
+		"请选择序号或候选值:",
+		"请选择一个或多个值，多个项用逗号分隔:",
+	}
+	for _, p := range askUserPrompts {
+		if strings.HasPrefix(trimmed, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldStartMultiLineSuppress 判断抑制前缀是否为多行确认提示的起始行。
+// 多行前缀（如 [客户端命令]、[ask_user]）会触发 suppressMode，
+// 单行前缀（如 [执行客户端命令]）只抑制当前行，不触发 suppressMode。
+func shouldStartMultiLineSuppress(line string) bool {
+	multiLinePrefixes := []string{
+		"[客户端命令]",
+		"[客户端工具]",
+		"[路径越界确认]",
+		"[ask_user]",
+	}
+	for _, prefix := range multiLinePrefixes {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *tuiLogWriter) Write(content []byte) (int, error) {
+	// 如果在 suppressMode 中且 pending 是终止符，先清除 pending 和 suppressMode
+	// 避免 pending 中的终止符与后续内容合并导致误抑制
+	if w.suppressMode && w.pending != "" {
+		if isPromptTerminator(w.pending) {
+			w.pending = ""
+			w.suppressMode = false
+		}
+	}
+
 	text := w.pending + string(content)
 	lines := strings.Split(text, "\n")
 	if len(lines) == 1 {
+		// 没有完整行，追加到 pending
 		w.pending = lines[0]
 		return len(content), nil
 	}
 
 	for _, line := range lines[:len(lines)-1] {
 		trimmed := strings.TrimSpace(line)
+
+		if w.suppressMode {
+			// 在抑制模式下，摘要行始终发出（退出抑制模式）
+			if summary, ok := parseTUIToolSummary(trimmed); ok {
+				w.suppressMode = false
+				w.emit(tui.Event{Kind: tui.EventToolSummary, Text: summary})
+				continue
+			}
+			// 新的多行抑制前缀：保持抑制模式（新的确认提示序列）
+			if shouldStartMultiLineSuppress(trimmed) {
+				continue
+			}
+			// 终止符：退出抑制模式
+			if isPromptTerminator(trimmed) {
+				w.suppressMode = false
+				continue
+			}
+			// 续行：抑制但不退出抑制模式
+			continue
+		}
+
 		if summary, ok := parseTUIToolSummary(trimmed); ok {
 			w.emit(tui.Event{Kind: tui.EventToolSummary, Text: summary})
 			continue
 		}
-		if trimmed != "" && !shouldSuppressTUILogLine(trimmed) {
+		if shouldSuppressTUILogLine(trimmed) {
+			// 多行前缀进入 suppressMode，单行前缀只抑制当前行
+			if shouldStartMultiLineSuppress(trimmed) {
+				w.suppressMode = true
+			}
+			continue
+		}
+		if trimmed != "" {
 			w.emit(tui.Event{Kind: tui.EventSystemNote, Text: trimmed})
 		}
 	}
@@ -1725,6 +1805,12 @@ func (w *tuiLogWriter) Write(content []byte) (int, error) {
 
 func (w *tuiLogWriter) Flush() {
 	trimmed := strings.TrimSpace(w.pending)
+	if w.suppressMode {
+		// 抑制模式下的 pending 行直接丢弃
+		w.suppressMode = false
+		w.pending = ""
+		return
+	}
 	if summary, ok := parseTUIToolSummary(trimmed); ok {
 		w.emit(tui.Event{Kind: tui.EventToolSummary, Text: summary})
 	} else if trimmed != "" && !shouldSuppressTUILogLine(trimmed) {
@@ -1733,21 +1819,53 @@ func (w *tuiLogWriter) Flush() {
 	w.pending = ""
 }
 
+// shouldSuppressTUILogLine 判断一行是否以已知的工具/确认提示前缀开头。
+// 注意：此函数只检查行首前缀，多行提示的续行由 tuiLogWriter.suppressMode 状态机处理。
+// suppressPrefixes 与 parseTUIToolSummary 的 summaryPrefixes 存在部分重叠
+//（[本地工具]、[本地命令]、[浏览器工具]、[桌面工具]），
+// 因为这些前缀行既需要作为 ToolSummary 发出（parseTUIToolSummary），
+// 又需要在非 Summary 路径中被抑制（shouldSuppressTUILogLine），
+// 两者职责不同，保持独立列表更清晰。
+// 函数内部对 line 再次 TrimSpace 是为了防御性编程，
+// 因为调用方可能传入已 trim 或未 trim 的值。
 func shouldSuppressTUILogLine(line string) bool {
 	trimmed := strings.TrimSpace(line)
-	return strings.HasPrefix(trimmed, "[执行客户端命令]") || strings.HasPrefix(trimmed, "[本地工具]") || strings.HasPrefix(trimmed, "[本地命令]")
+	if trimmed == "" {
+		return true
+	}
+	suppressPrefixes := []string{
+		"[执行客户端命令]",
+		"[本地工具]",
+		"[本地命令]",
+		"[浏览器工具]",
+		"[桌面工具]",
+		"[客户端命令]",
+		"[客户端工具]",
+		"[路径越界确认]",
+		"[ask_user]",
+	}
+	for _, prefix := range suppressPrefixes {
+		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseTUIToolSummary(line string) (string, bool) {
 	trimmed := strings.TrimSpace(line)
-	switch {
-	case strings.HasPrefix(trimmed, "[本地工具]"):
-		return strings.TrimSpace(strings.TrimPrefix(trimmed, "[本地工具]")), true
-	case strings.HasPrefix(trimmed, "[本地命令]"):
-		return strings.TrimSpace(strings.TrimPrefix(trimmed, "[本地命令]")), true
-	default:
-		return "", false
+	summaryPrefixes := []string{
+		"[本地工具]",
+		"[本地命令]",
+		"[浏览器工具]",
+		"[桌面工具]",
 	}
+	for _, prefix := range summaryPrefixes {
+		if strings.HasPrefix(trimmed, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, prefix)), true
+		}
+	}
+	return "", false
 }
 
 func requiresTUICommandConfirmation(config internalconfig.Config, payload map[string]any) bool {

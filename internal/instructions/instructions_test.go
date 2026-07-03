@@ -58,6 +58,7 @@ func isolateEnv(t *testing.T) {
 	t.Helper()
 	unsetEnvForTest(t, "TAIYIFLOW_MANAGED_INSTRUCTIONS_DIR")
 	unsetEnvForTest(t, "TAIYIFLOW_USER_INSTRUCTIONS_DIR")
+	unsetEnvForTest(t, "SNZ1DP_HOME")
 }
 
 // ---------------------------------------------------------------------------
@@ -867,6 +868,7 @@ func TestResolveUserDirs_EnvOverride(t *testing.T) {
 
 func TestResolveUserDirs_DefaultThreeDirs(t *testing.T) {
 	unsetEnvForTest(t, "TAIYIFLOW_USER_INSTRUCTIONS_DIR")
+	unsetEnvForTest(t, "SNZ1DP_HOME")
 	dirs := resolveUserDirs()
 	if len(dirs) != 3 {
 		t.Fatalf("expected 3 default user dirs, got %d", len(dirs))
@@ -889,6 +891,32 @@ func TestResolveUserDirs_DefaultThreeDirs(t *testing.T) {
 		if dirs[i].priority != e.priority {
 			t.Errorf("dirs[%d].priority = %d, want %d", i, dirs[i].priority, e.priority)
 		}
+	}
+}
+
+func TestResolveUserDirs_SNZ1DPHomeOverride(t *testing.T) {
+	unsetEnvForTest(t, "TAIYIFLOW_USER_INSTRUCTIONS_DIR")
+	customDir := t.TempDir()
+	setEnvForTest(t, "SNZ1DP_HOME", customDir)
+	dirs := resolveUserDirs()
+	if len(dirs) != 3 {
+		t.Fatalf("expected 3 default user dirs, got %d", len(dirs))
+	}
+	if dirs[0].dir != customDir {
+		t.Errorf("dirs[0].dir = %q, want %q (from SNZ1DP_HOME)", dirs[0].dir, customDir)
+	}
+	if dirs[0].priority != 10 {
+		t.Errorf("dirs[0].priority = %d, want 10", dirs[0].priority)
+	}
+}
+
+func TestResolveUserDir_SNZ1DPHomeOverride(t *testing.T) {
+	unsetEnvForTest(t, "TAIYIFLOW_USER_INSTRUCTIONS_DIR")
+	customDir := t.TempDir()
+	setEnvForTest(t, "SNZ1DP_HOME", customDir)
+	got := resolveUserDir()
+	if got != customDir {
+		t.Errorf("resolveUserDir() = %q, want %q (from SNZ1DP_HOME)", got, customDir)
 	}
 }
 

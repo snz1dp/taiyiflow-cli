@@ -2065,3 +2065,242 @@ type simpleError string
 func (e simpleError) Error() string {
 	return string(e)
 }
+
+func TestShouldSuppressTUILogLine(t *testing.T) {
+	tests := []struct {
+		line     string
+		expected bool
+	}{
+		{"[本地工具] read_file foo.go 行 1-10", true},
+		{"[本地命令] ls -la（成功，0.1s，退出码 0）", true},
+		{"[执行客户端命令] ls -la", true},
+		{"[浏览器工具] tabs_context", true},
+		{"[桌面工具] displays_context", true},
+		{"[客户端命令]\nls\n是否执行？", true},
+		{"[客户端工具]\nread_file\n是否执行？", true},
+		{"[路径越界确认]", true},
+		{"[ask_user] 请输入以下信息", true},
+		{"", true},
+		{"普通文本行", false},
+		{"some random output", false},
+	}
+	for _, tt := range tests {
+		got := shouldSuppressTUILogLine(tt.line)
+		if got != tt.expected {
+			t.Errorf("shouldSuppressTUILogLine(%q) = %v, want %v", tt.line, got, tt.expected)
+		}
+	}
+}
+
+func TestParseTUIToolSummary(t *testing.T) {
+	tests := []struct {
+		line        string
+		summary     string
+		ok          bool
+	}{
+		{"[本地工具] read_file foo.go 行 1-10", "read_file foo.go 行 1-10", true},
+		{"[本地命令] ls -la（成功，0.1s，退出码 0）", "ls -la（成功，0.1s，退出码 0）", true},
+		{"[浏览器工具] tabs_context", "tabs_context", true},
+		{"[桌面工具] displays_context", "displays_context", true},
+		{"[执行客户端命令] ls -la", "", false},
+		{"普通文本", "", false},
+		{"", "", false},
+	}
+	for _, tt := range tests {
+		summary, ok := parseTUIToolSummary(tt.line)
+		if ok != tt.ok || (ok && summary != tt.summary) {
+			t.Errorf("parseTUIToolSummary(%q) = (%q, %v), want (%q, %v)", tt.line, summary, ok, tt.summary, tt.ok)
+		}
+	}
+}
+
+func TestTuiLogWriterSuppressesAllToolPrefixes(t *testing.T) {
+	var emitted []internaltui.Event
+	emit := func(e internaltui.Event) { emitted = append(emitted, e) }
+	w := &tuiLogWriter{emit: emit}
+
+	// 摘要前缀行（单行，有换行符）
+	w.Write([]byte("[本地工具] read_file foo.go 行 1-10\n"))
+	w.Write([]byte("[本地命令] ls -la（成功，0.1s，退出码 0）\n"))
+	// 单行抑制前缀（不触发 suppressMode）
+	w.Write([]byte("[执行客户端命令] ls -la\n"))
+	// 摘要前缀行
+	w.Write([]byte("[浏览器工具] tabs_context\n"))
+	w.Write([]byte("[桌面工具] displays_context\n"))
+	// 多行确认提示（模拟实际输出，含终止符换行）
+	w.Write([]byte("\n[客户端命令]\nls -la\n是否执行？[y/N]: \n"))
+	w.Write([]byte("\n[客户端工具]\nfile_edit test.go\n是否执行？[y/N]: \n"))
+	w.Write([]byte("\n[路径越界确认]\n目标路径越界: /etc\n是否允许本次访问？[y/N]: \n"))
+	w.Write([]byte("\n[ask_user] 请输入以下信息\n1. 名字\n请输入答案: \n"))
+	// 正常文本
+	w.Write([]byte("普通文本行\n"))
+	w.Flush()
+
+	// 4 个摘要：[本地工具]、[本地命令]、[浏览器工具]、[桌面工具]
+	// 1 个笔记：普通文本行
+	// 其余工具前缀行及续行应被抑制
+	var summaryCount, noteCount int
+	for _, e := range emitted {
+		switch e.Kind {
+		case internaltui.EventToolSummary:
+			summaryCount++
+		case internaltui.EventSystemNote:
+			noteCount++
+		}
+	}
+	if summaryCount != 4 {
+		t.Errorf("expected 4 EventToolSummary, got %d", summaryCount)
+	}
+	if noteCount != 1 {
+		t.Errorf("expected 1 EventSystemNote, got %d", noteCount)
+	}
+}
+
+// TestTuiLogWriterSuppressesMultiLineConfirmPrompt 验证多行确认提示的续行被正确抑制。
+// 模拟 confirmCommand 的实际输出格式：\n[客户端命令]\n{preview}\n是否执行？[y/N]:
+func TestTuiLogWriterSuppressesMultiLineConfirmPrompt(t *testing.T) {
+	var emitted []internaltui.Event
+	emit := func(e internaltui.Event) { emitted = append(emitted, e) }
+	w := &tuiLogWriter{emit: emit}
+
+	// 模拟 confirmCommand 的完整输出（单次 Write）
+	w.Write([]byte("\n[客户端命令]\nls -la\n是否执行？[y/N]: "))
+	// 模拟用户输入后的后续正常输出
+	w.Write([]byte("命令执行完成\n"))
+	w.Flush()
+
+	// 确认提示部分不应发出任何事件
+	// "命令执行完成" 应作为 EventSystemNote 发出
+	var noteCount int
+	for _, e := range emitted {
+		if e.Kind == internaltui.EventSystemNote {
+			noteCount++
+			if e.Text != "命令执行完成" {
+				t.Errorf("unexpected note text: %q", e.Text)
+			}
+		}
+	}
+	if noteCount != 1 {
+		t.Errorf("expected 1 EventSystemNote (normal output), got %d", noteCount)
+	}
+}
+
+// TestTuiLogWriterSuppressesMultiLineClientToolPrompt 验证 [客户端工具] 多行提示抑制
+func TestTuiLogWriterSuppressesMultiLineClientToolPrompt(t *testing.T) {
+	var emitted []internaltui.Event
+	emit := func(e internaltui.Event) { emitted = append(emitted, e) }
+	w := &tuiLogWriter{emit: emit}
+
+	w.Write([]byte("\n[客户端工具]\nfile_edit path=test.go\n是否执行？[y/N]: "))
+	w.Write([]byte("工具执行完成\n"))
+	w.Flush()
+
+	for _, e := range emitted {
+		if e.Kind == internaltui.EventSystemNote && (strings.Contains(e.Text, "file_edit") || strings.Contains(e.Text, "是否执行")) {
+			t.Errorf("leaked suppress line as EventSystemNote: %q", e.Text)
+		}
+	}
+}
+
+// TestTuiLogWriterSuppressesMultiLineSandboxEscapePrompt 验证 [路径越界确认] 多行提示抑制
+func TestTuiLogWriterSuppressesMultiLineSandboxEscapePrompt(t *testing.T) {
+	var emitted []internaltui.Event
+	emit := func(e internaltui.Event) { emitted = append(emitted, e) }
+	w := &tuiLogWriter{emit: emit}
+
+	w.Write([]byte("\n[路径越界确认]\n目标路径位于当前工作目录外: /etc/passwd\n是否允许本次访问？[y/N]: "))
+	w.Write([]byte("正常输出\n"))
+	w.Flush()
+
+	for _, e := range emitted {
+		if e.Kind == internaltui.EventSystemNote && (strings.Contains(e.Text, "目标路径") || strings.Contains(e.Text, "是否允许")) {
+			t.Errorf("leaked suppress line as EventSystemNote: %q", e.Text)
+		}
+	}
+}
+
+// TestTuiLogWriterSuppressesMultiLineAskUserPrompt 验证 [ask_user] 多行提示抑制
+func TestTuiLogWriterSuppressesMultiLineAskUserPrompt(t *testing.T) {
+	var emitted []internaltui.Event
+	emit := func(e internaltui.Event) { emitted = append(emitted, e) }
+	w := &tuiLogWriter{emit: emit}
+
+	// 模拟 promptAskUserStdio 的输出
+	w.Write([]byte("\n[ask_user] 请输入以下信息；输入 /cancel 可取消。\n"))
+	w.Write([]byte("1. 请输入你的名字\n"))
+	w.Write([]byte("请输入答案: "))
+	// 模拟后续正常输出
+	w.Write([]byte("处理完成\n"))
+	w.Flush()
+
+	for _, e := range emitted {
+		if e.Kind == internaltui.EventSystemNote && (strings.Contains(e.Text, "请输入") || strings.Contains(e.Text, "ask_user")) {
+			t.Errorf("leaked suppress line as EventSystemNote: %q", e.Text)
+		}
+	}
+}
+
+// TestTuiLogWriterFlushInSuppressMode 验证 Flush 在 suppressMode 下正确丢弃 pending 行
+func TestTuiLogWriterFlushInSuppressMode(t *testing.T) {
+	var emitted []internaltui.Event
+	emit := func(e internaltui.Event) { emitted = append(emitted, e) }
+	w := &tuiLogWriter{emit: emit}
+
+	// 写入多行确认提示，最后一行（提示行）没有换行符
+	w.Write([]byte("\n[客户端命令]\nls -la\n是否执行？[y/N]: "))
+	// 不再写入更多数据，直接 Flush
+	w.Flush()
+
+	// suppressMode 下的 pending 行应被丢弃，不应发出任何事件
+	if len(emitted) != 0 {
+		t.Errorf("expected 0 events when flushing in suppress mode, got %d: %+v", len(emitted), emitted)
+	}
+	// Flush 后 suppressMode 应被重置
+	if w.suppressMode {
+		t.Errorf("suppressMode should be reset after Flush")
+	}
+}
+
+// TestTuiLogWriterPartialLineBuffering 验证分行缓冲（partial line buffering）：
+// 不完整的行应被缓冲，直到收到换行符后才处理
+func TestTuiLogWriterPartialLineBuffering(t *testing.T) {
+	var emitted []internaltui.Event
+	emit := func(e internaltui.Event) { emitted = append(emitted, e) }
+	w := &tuiLogWriter{emit: emit}
+
+	// 分多次写入同一行
+	w.Write([]byte("部分"))
+	w.Write([]byte("文本"))
+	w.Write([]byte("行\n"))
+	w.Flush()
+
+	if len(emitted) != 1 {
+		t.Errorf("expected 1 event for buffered partial line, got %d", len(emitted))
+	}
+	if len(emitted) > 0 && emitted[0].Text != "部分文本行" {
+		t.Errorf("expected text '部分文本行', got %q", emitted[0].Text)
+	}
+}
+
+// TestTuiLogWriterSuppressModeResetAfterTerminator 验证抑制模式在遇到终止符后正确退出
+func TestTuiLogWriterSuppressModeResetAfterTerminator(t *testing.T) {
+	var emitted []internaltui.Event
+	emit := func(e internaltui.Event) { emitted = append(emitted, e) }
+	w := &tuiLogWriter{emit: emit}
+
+	// 写入完整的确认提示（含终止符换行）
+	w.Write([]byte("\n[客户端命令]\nls -la\n是否执行？[y/N]: \n"))
+	// 后续正常文本应正常发出
+	w.Write([]byte("正常输出\n"))
+	w.Flush()
+
+	var noteCount int
+	for _, e := range emitted {
+		if e.Kind == internaltui.EventSystemNote {
+			noteCount++
+		}
+	}
+	if noteCount != 1 {
+		t.Errorf("expected 1 EventSystemNote after suppress mode reset, got %d", noteCount)
+	}
+}

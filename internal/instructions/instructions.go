@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 )
 
 // Known instruction file names, checked in order.
@@ -350,7 +352,7 @@ func resolveManagedDir() string {
 }
 
 // resolveUserDirs returns all user-level instruction directories in priority order.
-// Supports snz1dp (~/.snz1dp/), Claude Code (~/.claude/), and Codex (~/.codex/).
+// Supports snz1dp (SNZ1DP_HOME or ~/.snz1dp/), Claude Code (~/.claude/), and Codex (~/.codex/).
 func resolveUserDirs() []userDirEntry {
 	// Environment variable override: use it as the sole user dir with highest priority.
 	if v := os.Getenv("TAIYIFLOW_USER_INSTRUCTIONS_DIR"); v != "" {
@@ -362,8 +364,14 @@ func resolveUserDirs() []userDirEntry {
 		return nil
 	}
 
+	// snz1dp 目录优先从 SNZ1DP_HOME 环境变量提取，未设置时回退到 ~/.snz1dp。
+	snz1dpDir, err := internalconfig.DefaultRootDir()
+	if err != nil {
+		snz1dpDir = filepath.Join(home, ".snz1dp")
+	}
+
 	return []userDirEntry{
-		{dir: filepath.Join(home, ".snz1dp"), priority: 10},
+		{dir: snz1dpDir, priority: 10},
 		{dir: filepath.Join(home, ".claude"), priority: 11},
 		{dir: filepath.Join(home, ".codex"), priority: 12},
 	}
@@ -375,11 +383,12 @@ func resolveUserDir() string {
 	if v := os.Getenv("TAIYIFLOW_USER_INSTRUCTIONS_DIR"); v != "" {
 		return v
 	}
-	home, err := os.UserHomeDir()
+	// 优先从 SNZ1DP_HOME 环境变量提取，未设置时回退到 ~/.snz1dp。
+	dir, err := internalconfig.DefaultRootDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".snz1dp")
+	return dir
 }
 
 // FormatSummary returns a human-readable summary of the merged result,
