@@ -520,6 +520,7 @@ func buildCollaborationWorkerWebSocketURL(config internalconfig.Config) (string,
 	queryValues.Set("device_id", strings.TrimSpace(config.DeviceID))
 	queryValues.Set("client_type", provider.ClientTypeCLI)
 	queryValues.Set("device_type", goruntime.GOOS)
+	queryValues.Set("platform", goruntime.GOOS+"-"+goruntime.GOARCH)
 	queryValues.Set("connection_role", "collaboration_worker")
 	queryValues.Set("session_id", fmt.Sprintf("worker-%d", time.Now().UnixNano()))
 	baseURL.RawQuery = queryValues.Encode()

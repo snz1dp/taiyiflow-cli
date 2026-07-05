@@ -326,6 +326,7 @@ func buildPrimaryClientWebSocketURL(config internalconfig.Config, instanceID str
 	queryValues.Set("device_id", strings.TrimSpace(config.DeviceID))
 	queryValues.Set("client_type", provider.ClientTypeCLI)
 	queryValues.Set("device_type", goruntime.GOOS)
+	queryValues.Set("platform", goruntime.GOOS+"-"+goruntime.GOARCH)
 	queryValues.Set("connection_role", primaryClientConnectionRole)
 	queryValues.Set("instance_id", strings.TrimSpace(instanceID))
 	if strings.TrimSpace(sessionID) != "" {
