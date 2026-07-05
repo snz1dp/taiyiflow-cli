@@ -586,3 +586,106 @@ func TestExecuteClientToolPayloadRunSubtaskParallelAggregatesFailuresWithoutErro
 		t.Fatalf("expected one success and one failed aggregate item, got %#v", items)
 	}
 }
+
+func TestRunSubtaskLocalExecutionFailureReportsToServer(t *testing.T) {
+	tempDir := t.TempDir()
+	providerStub := &subtaskProviderStub{
+		createdSessionID: "child-session-1",
+		stream: streamWithEvents(
+			provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"message": "子任务执行出错"}},
+		),
+		streamSession: &provider.StreamSession{SessionID: "child-session-1"},
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+
+	_, resultAny, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, internalconfig.Config{
+		Workdir:            tempDir,
+		ApprovalMode:       "auto",
+		ClientID:           "cli-123",
+		DeviceID:           "device-456",
+		HTTPTimeoutSeconds: 30,
+	}, map[string]any{
+		"flow_id": "parent-flow",
+		"server":  map[string]any{"name": "local"},
+		"context": map[string]any{"session_id": "parent-session-1", "run_id": "parent-run-1", "message_id": "parent-message-1"},
+		"function": map[string]any{
+			"name": "run_subtask",
+			"arguments": map[string]any{
+				"prompt": "请总结当前变更",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected run_subtask to not return tool error, got %v", err)
+	}
+	result, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %#v", resultAny)
+	}
+	if result["status"] != "failed" {
+		t.Fatalf("expected failed status, got %#v", result["status"])
+	}
+	// 验证服务端收到了 failed 状态更新
+	failedUpdates := 0
+	for _, req := range providerStub.updateRequests {
+		if req.Status == "failed" {
+			failedUpdates++
+		}
+	}
+	if failedUpdates == 0 {
+		t.Fatalf("expected at least one failed status update to server, got %#v", providerStub.updateRequests)
+	}
+}
+
+func TestExecuteClientCollaborationTaskFailureReportsToServer(t *testing.T) {
+	tempDir := t.TempDir()
+	providerStub := &subtaskProviderStub{
+		createdSessionID: "child-session-existing",
+		stream: streamWithEvents(
+			provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"message": "子任务执行出错"}},
+		),
+		streamSession: &provider.StreamSession{SessionID: "child-session-existing"},
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+
+	result, err := runtimeClient.ExecuteClientCollaborationTask(context.Background(), providerStub, internalconfig.Config{
+		Workdir:            tempDir,
+		ApprovalMode:       "auto",
+		ClientID:           "cli-123",
+		DeviceID:           "device-456",
+		HTTPTimeoutSeconds: 30,
+	}, &provider.ClientCollaborationTask{
+		ID:              "collab-fail-test",
+		TargetClientID:  "cli-123",
+		TargetDeviceID:  "device-456",
+		SourceSessionID: "parent-session-2",
+		SourceRunID:     "parent-run-2",
+		SourceMessageID: "parent-message-2",
+		ChildSessionID:  "child-session-existing",
+		ChildRunID:      "child-run-existing",
+		TaskKind:        "dialogue_subtask",
+		DeliveryPolicy:  "local_default",
+		CommandPayload: map[string]any{
+			"prompt":            "请检查当前变更",
+			"flow_id":           "flow-child",
+			"request_mode":      "agent",
+			"working_directory": tempDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected ExecuteClientCollaborationTask to not return error, got %v", err)
+	}
+	if result["status"] != "failed" {
+		t.Fatalf("expected failed status, got %#v", result["status"])
+	}
+	// 验证服务端收到了 failed 状态更新
+	failedUpdates := 0
+	for _, req := range providerStub.updateRequests {
+		if req.Status == "failed" {
+			failedUpdates++
+		}
+	}
+	if failedUpdates == 0 {
+		t.Fatalf("expected at least one failed status update to server, got %#v", providerStub.updateRequests)
+	}
+}

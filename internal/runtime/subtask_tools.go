@@ -58,17 +58,30 @@ func (r *ClientRuntime) ExecuteClientCollaborationTask(
 	task *provider.ClientCollaborationTask,
 ) (map[string]any, error) {
 	if providerClient == nil {
-		return nil, newToolError("EXECUTION_FAILED", "客户端协同任务执行需要可用的 provider")
+		return map[string]any{
+			"status":        "failed",
+			"error_message": "客户端协同任务执行需要可用的 provider",
+		}, nil
 	}
 	if task == nil {
-		return nil, newToolError("PARAM_ERROR", "客户端协同任务不能为空")
+		return map[string]any{
+			"status":        "failed",
+			"error_message": "客户端协同任务不能为空",
+		}, nil
 	}
 	request, err := r.parseSubtaskExecutionRequestFromTask(ctx, providerClient, config, task)
 	if err != nil {
-		return nil, err
+		// 解析失败时向服务端写回失败状态，避免任务卡在非终态。
+		r.reportCollaborationTaskFailure(ctx, providerClient, config, task.ID, err.Error())
+		result := buildSubtaskResult(task, nil)
+		result["status"] = "failed"
+		result["error_message"] = err.Error()
+		return result, nil
 	}
 	executionResult, execErr := r.executeLocalSubtask(ctx, providerClient, config, request)
 	if execErr != nil {
+		// 执行失败时向服务端写回失败状态。
+		r.reportCollaborationTaskFailure(ctx, providerClient, config, task.ID, execErr.Error())
 		result := buildSubtaskResult(task, nil)
 		result["status"] = "failed"
 		result["error_message"] = execErr.Error()
@@ -85,15 +98,28 @@ func (r *ClientRuntime) runSubtask(
 	arguments map[string]any,
 ) (map[string]any, error) {
 	if providerClient == nil {
-		return nil, newToolError("EXECUTION_FAILED", "run_subtask 需要可用的 provider")
+		return map[string]any{
+			"status":        "failed",
+			"error_message": "run_subtask 需要可用的 provider",
+		}, nil
 	}
 
 	requests, maxParallelism, err := r.parseSubtaskExecutionRequests(ctx, providerClient, config, payload, arguments)
 	if err != nil {
-		return nil, err
+		return map[string]any{
+			"status":        "failed",
+			"error_message": err.Error(),
+		}, nil
 	}
 	if len(requests) == 1 {
-		return r.executeManagedSubtaskRequest(ctx, providerClient, config, requests[0])
+		result, subErr := r.executeManagedSubtaskRequest(ctx, providerClient, config, requests[0])
+		if subErr != nil {
+			return map[string]any{
+				"status":        "failed",
+				"error_message": subErr.Error(),
+			}, nil
+		}
+		return result, nil
 	}
 	return r.executeManagedSubtaskRequests(ctx, providerClient, config, requests, maxParallelism), nil
 }
@@ -117,7 +143,10 @@ func (r *ClientRuntime) executeManagedSubtaskRequest(
 		ChildRunID:      request.ChildRunID,
 	})
 	if err != nil {
-		return nil, newToolError("EXECUTION_FAILED", "创建子任务失败: %v", err)
+		return map[string]any{
+			"status":        "failed",
+			"error_message": fmt.Sprintf("创建子任务失败: %v", err),
+		}, nil
 	}
 
 	if shouldRunSubtaskRemotely(createdTask, config, request) {
@@ -126,9 +155,23 @@ func (r *ClientRuntime) executeManagedSubtaskRequest(
 		}
 		finalTask, waitErr := waitForClientCollaboration(ctx, providerClient, createdTask.ID, request.TimeoutSeconds)
 		if waitErr != nil {
+			// 等待远程子任务失败或超时时，向服务端写回失败状态，避免任务卡在 running/dispatched。
+			callbackCtx, cancel := DetachedCallbackContext(ctx, time.Duration(config.HTTPTimeoutSeconds)*time.Second)
+			_, updateErr := providerClient.UpdateClientCollaboration(callbackCtx, createdTask.ID, provider.ClientCollaborationUpdateRequest{
+				Status:       "failed",
+				ErrorMessage: waitErr.Error(),
+				StatusPayload: map[string]any{
+					"executor": "remote_wait",
+					"target":   "remote",
+				},
+			})
+			cancel()
 			result := buildSubtaskResult(createdTask, nil)
 			result["status"] = "failed"
 			result["error_message"] = waitErr.Error()
+			if updateErr != nil {
+				result["error_message"] = fmt.Sprintf("子任务等待失败: %v；写回失败状态也失败: %v", waitErr, updateErr)
+			}
 			return result, nil
 		}
 		result := buildSubtaskResult(finalTask, nil)
@@ -146,14 +189,19 @@ func (r *ClientRuntime) executeManagedSubtaskRequest(
 			"target":   "self",
 		},
 	}); err != nil {
-		return nil, newToolError("EXECUTION_FAILED", "更新子任务运行状态失败: %v", err)
+		result := buildSubtaskResult(createdTask, nil)
+		result["status"] = "failed"
+		result["error_message"] = fmt.Sprintf("更新子任务运行状态失败: %v", err)
+		return result, nil
 	}
 
 	executionCtx, cancel := context.WithTimeout(ctx, time.Duration(request.TimeoutSeconds)*time.Second)
 	defer cancel()
 	executionResult, execErr := r.executeLocalSubtask(executionCtx, providerClient, config, request)
 	if execErr != nil {
-		updatedTask, updateErr := providerClient.UpdateClientCollaboration(ctx, createdTask.ID, provider.ClientCollaborationUpdateRequest{
+		// 使用 DetachedCallbackContext 确保超时后仍能写回失败状态。
+		callbackCtx, callbackCancel := DetachedCallbackContext(ctx, time.Duration(config.HTTPTimeoutSeconds)*time.Second)
+		updatedTask, updateErr := providerClient.UpdateClientCollaboration(callbackCtx, createdTask.ID, provider.ClientCollaborationUpdateRequest{
 			Status:       "failed",
 			ErrorMessage: execErr.Error(),
 			StatusPayload: map[string]any{
@@ -161,6 +209,7 @@ func (r *ClientRuntime) executeManagedSubtaskRequest(
 				"target":   "self",
 			},
 		})
+		callbackCancel()
 		if updateErr != nil {
 			result := buildSubtaskResult(createdTask, nil)
 			result["status"] = "failed"
@@ -181,7 +230,11 @@ func (r *ClientRuntime) executeManagedSubtaskRequest(
 		ResultPayload: buildSubtaskResultPayload(request, executionResult),
 	})
 	if err != nil {
-		return nil, newToolError("EXECUTION_FAILED", "更新子任务成功状态失败: %v", err)
+		// 写回成功状态失败不应丢弃执行结果，仍然返回子任务输出。
+		result := buildSubtaskResult(createdTask, &executionResult)
+		result["status"] = "success"
+		result["error_message"] = fmt.Sprintf("更新子任务成功状态失败: %v", err)
+		return result, nil
 	}
 	return buildSubtaskResult(updatedTask, &executionResult), nil
 }
@@ -471,6 +524,35 @@ func (r *ClientRuntime) executeLocalSubtask(
 		ChildRunID:     request.ChildRunID,
 		ChildMessageID: childMessageID,
 	}, nil
+}
+
+// reportCollaborationTaskFailure 向服务端写回协同任务的失败状态。
+// 使用 DetachedCallbackContext 确保即使父上下文已超时或取消，仍能可靠写回。
+func (r *ClientRuntime) reportCollaborationTaskFailure(
+	ctx context.Context,
+	providerClient provider.Provider,
+	config internalconfig.Config,
+	taskID string,
+	errorMessage string,
+) {
+	if providerClient == nil || strings.TrimSpace(taskID) == "" {
+		return
+	}
+	trimmedMessage := firstNonEmptySubtask(strings.TrimSpace(errorMessage), "客户端协同任务执行失败")
+	callbackCtx, cancel := DetachedCallbackContext(ctx, time.Duration(config.HTTPTimeoutSeconds)*time.Second)
+	defer cancel()
+	_, err := providerClient.UpdateClientCollaboration(callbackCtx, taskID, provider.ClientCollaborationUpdateRequest{
+		Status:       "failed",
+		ErrorMessage: trimmedMessage,
+		StatusPayload: map[string]any{
+			"executor": "local_direct",
+			"target":   "self",
+		},
+	})
+	if err != nil {
+		// 写回失败不影响后续流程，仅记录日志。
+		r.writeStreamEventf(r.stderr, "[协同任务] 写回失败状态失败: task_id=%s err=%v\n", taskID, err)
+	}
 }
 
 func buildSubtaskCommandPayload(request subtaskExecutionRequest) map[string]any {
