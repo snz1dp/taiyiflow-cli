@@ -17,7 +17,46 @@ import (
 const (
 	defaultSubtaskTimeoutSeconds = 300
 	defaultSubtaskPollInterval   = 2 * time.Second
+
+	// 协同任务状态更新重试参数
+	collaborationUpdateMaxRetries    = 3
+	collaborationUpdateBaseDelay     = 1 * time.Second
+	collaborationUpdateBackoffFactor = 2
 )
+
+// updateCollaborationWithRetry 向服务端更新协同任务状态，支持自动重试和指数退避。
+// 使用 DetachedCallbackContext 确保父上下文取消或超时后仍能提交。
+// 重试策略: 首次尝试 + 最多 collaborationUpdateMaxRetries 次重试，
+// 退避间隔按指数增长（1s → 2s → 4s）。
+// logf 为可选的日志函数，传 nil 则不记录重试日志。
+func updateCollaborationWithRetry(
+	ctx context.Context,
+	providerClient provider.Provider,
+	timeout time.Duration,
+	taskID string,
+	request provider.ClientCollaborationUpdateRequest,
+	logf func(format string, args ...any),
+) (*provider.ClientCollaborationTask, error) {
+	callbackCtx, cancel := DetachedCallbackContext(ctx, timeout)
+	defer cancel()
+
+	var lastErr error
+	for attempt := 0; attempt <= collaborationUpdateMaxRetries; attempt++ {
+		task, err := providerClient.UpdateClientCollaboration(callbackCtx, taskID, request)
+		if err == nil {
+			return task, nil
+		}
+		lastErr = err
+		if attempt < collaborationUpdateMaxRetries {
+			delay := collaborationUpdateBaseDelay * time.Duration(collaborationUpdateBackoffFactor<<attempt)
+			if logf != nil {
+				logf("[协同任务] 状态更新失败，第 %d 次重试（等待 %v）: task_id=%s err=%v", attempt+1, delay, taskID, err)
+			}
+			time.Sleep(delay)
+		}
+	}
+	return nil, fmt.Errorf("协同任务状态更新失败（已重试 %d 次）: %w", collaborationUpdateMaxRetries, lastErr)
+}
 
 type subtaskExecutionRequest struct {
 	Prompt            string
@@ -156,16 +195,16 @@ func (r *ClientRuntime) executeManagedSubtaskRequest(
 		finalTask, waitErr := waitForClientCollaboration(ctx, providerClient, createdTask.ID, request.TimeoutSeconds)
 		if waitErr != nil {
 			// 等待远程子任务失败或超时时，向服务端写回失败状态，避免任务卡在 running/dispatched。
-			callbackCtx, cancel := DetachedCallbackContext(ctx, time.Duration(config.HTTPTimeoutSeconds)*time.Second)
-			_, updateErr := providerClient.UpdateClientCollaboration(callbackCtx, createdTask.ID, provider.ClientCollaborationUpdateRequest{
+			_, updateErr := updateCollaborationWithRetry(ctx, providerClient, time.Duration(config.HTTPTimeoutSeconds)*time.Second, createdTask.ID, provider.ClientCollaborationUpdateRequest{
 				Status:       "failed",
 				ErrorMessage: waitErr.Error(),
 				StatusPayload: map[string]any{
 					"executor": "remote_wait",
 					"target":   "remote",
 				},
+			}, func(format string, args ...any) {
+				r.writeStreamEventf(r.stderr, format+"\n", args...)
 			})
-			cancel()
 			result := buildSubtaskResult(createdTask, nil)
 			result["status"] = "failed"
 			result["error_message"] = waitErr.Error()
@@ -182,12 +221,14 @@ func (r *ClientRuntime) executeManagedSubtaskRequest(
 		return result, nil
 	}
 
-	if _, err := providerClient.UpdateClientCollaboration(ctx, createdTask.ID, provider.ClientCollaborationUpdateRequest{
+	if _, err := updateCollaborationWithRetry(ctx, providerClient, time.Duration(config.HTTPTimeoutSeconds)*time.Second, createdTask.ID, provider.ClientCollaborationUpdateRequest{
 		Status: "running",
 		StatusPayload: map[string]any{
 			"executor": "local_serial",
 			"target":   "self",
 		},
+	}, func(format string, args ...any) {
+		r.writeStreamEventf(r.stderr, format+"\n", args...)
 	}); err != nil {
 		result := buildSubtaskResult(createdTask, nil)
 		result["status"] = "failed"
@@ -199,17 +240,17 @@ func (r *ClientRuntime) executeManagedSubtaskRequest(
 	defer cancel()
 	executionResult, execErr := r.executeLocalSubtask(executionCtx, providerClient, config, request)
 	if execErr != nil {
-		// 使用 DetachedCallbackContext 确保超时后仍能写回失败状态。
-		callbackCtx, callbackCancel := DetachedCallbackContext(ctx, time.Duration(config.HTTPTimeoutSeconds)*time.Second)
-		updatedTask, updateErr := providerClient.UpdateClientCollaboration(callbackCtx, createdTask.ID, provider.ClientCollaborationUpdateRequest{
+		// 使用 updateCollaborationWithRetry 确保超时后仍能写回失败状态，并自动重试。
+		updatedTask, updateErr := updateCollaborationWithRetry(ctx, providerClient, time.Duration(config.HTTPTimeoutSeconds)*time.Second, createdTask.ID, provider.ClientCollaborationUpdateRequest{
 			Status:       "failed",
 			ErrorMessage: execErr.Error(),
 			StatusPayload: map[string]any{
 				"executor": "local_serial",
 				"target":   "self",
 			},
+		}, func(format string, args ...any) {
+			r.writeStreamEventf(r.stderr, format+"\n", args...)
 		})
-		callbackCancel()
 		if updateErr != nil {
 			result := buildSubtaskResult(createdTask, nil)
 			result["status"] = "failed"
@@ -221,13 +262,15 @@ func (r *ClientRuntime) executeManagedSubtaskRequest(
 		return result, nil
 	}
 
-	updatedTask, err := providerClient.UpdateClientCollaboration(ctx, createdTask.ID, provider.ClientCollaborationUpdateRequest{
+	updatedTask, err := updateCollaborationWithRetry(ctx, providerClient, time.Duration(config.HTTPTimeoutSeconds)*time.Second, createdTask.ID, provider.ClientCollaborationUpdateRequest{
 		Status: "success",
 		StatusPayload: map[string]any{
 			"executor": "local_serial",
 			"target":   "self",
 		},
 		ResultPayload: buildSubtaskResultPayload(request, executionResult),
+	}, func(format string, args ...any) {
+		r.writeStreamEventf(r.stderr, format+"\n", args...)
 	})
 	if err != nil {
 		// 写回成功状态失败不应丢弃执行结果，仍然返回子任务输出。
@@ -527,7 +570,8 @@ func (r *ClientRuntime) executeLocalSubtask(
 }
 
 // reportCollaborationTaskFailure 向服务端写回协同任务的失败状态。
-// 使用 DetachedCallbackContext 确保即使父上下文已超时或取消，仍能可靠写回。
+// 使用 updateCollaborationWithRetry 确保即使父上下文已超时或取消，仍能可靠写回，
+// 并通过自动重试和指数退避提高写回成功率。
 func (r *ClientRuntime) reportCollaborationTaskFailure(
 	ctx context.Context,
 	providerClient provider.Provider,
@@ -539,15 +583,15 @@ func (r *ClientRuntime) reportCollaborationTaskFailure(
 		return
 	}
 	trimmedMessage := firstNonEmptySubtask(strings.TrimSpace(errorMessage), "客户端协同任务执行失败")
-	callbackCtx, cancel := DetachedCallbackContext(ctx, time.Duration(config.HTTPTimeoutSeconds)*time.Second)
-	defer cancel()
-	_, err := providerClient.UpdateClientCollaboration(callbackCtx, taskID, provider.ClientCollaborationUpdateRequest{
+	_, err := updateCollaborationWithRetry(ctx, providerClient, time.Duration(config.HTTPTimeoutSeconds)*time.Second, taskID, provider.ClientCollaborationUpdateRequest{
 		Status:       "failed",
 		ErrorMessage: trimmedMessage,
 		StatusPayload: map[string]any{
 			"executor": "local_direct",
 			"target":   "self",
 		},
+	}, func(format string, args ...any) {
+		r.writeStreamEventf(r.stderr, format+"\n", args...)
 	})
 	if err != nil {
 		// 写回失败不影响后续流程，仅记录日志。
