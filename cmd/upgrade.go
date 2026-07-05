@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
+	internalConfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/updater"
 )
 
 const (
@@ -49,8 +51,10 @@ func (a *App) runUpgrade(ctx context.Context, args []string) error {
 
 	var force bool
 	var manifestURL string
+	var checkAPIOnly bool
 	flagSet.BoolVar(&force, "force", false, "强制更新，即使当前版本与远程版本相同")
 	flagSet.StringVar(&manifestURL, "manifest-url", "", "自定义 manifest.json 地址（默认从配置的后端地址获取）")
+	flagSet.BoolVar(&checkAPIOnly, "check-api", true, "仅使用 check-update API，不回退到 manifest 流程")
 
 	if err := flagSet.Parse(args); err != nil {
 		return err
@@ -60,6 +64,93 @@ func (a *App) runUpgrade(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
+
+	fmt.Fprintf(a.stdout, "正在检查更新...\n")
+	fmt.Fprintf(a.stdout, "当前版本: %s (%s)\n", buildinfo.Version, buildinfo.Commit)
+
+	// 优先尝试 check-update API（与 Electron 端对齐）
+	// 如果 check-update API 不可用且未强制指定 --check-api，回退到 manifest 流程
+	apiUpgraded := false
+	if manifestURL == "" {
+		apiUpgraded, err = a.runUpgradeViaAPI(ctx, config, force)
+		if err != nil {
+			if checkAPIOnly {
+				return err
+			}
+			fmt.Fprintf(a.stderr, "check-update API 不可用，回退到 manifest 流程: %v\n", err)
+		} else if apiUpgraded {
+			return nil
+		} else {
+			// API 返回无更新，但用户可能想用 manifest 流程
+			if checkAPIOnly {
+				fmt.Fprintf(a.stdout, "当前已是最新版本（check-update API）。\n")
+				return nil
+			}
+			// 尝试 manifest 流程作为补充
+			fmt.Fprintf(a.stdout, "check-update API 返回无更新，尝试 manifest 流程...\n")
+		}
+	}
+
+	if apiUpgraded {
+		return nil
+	}
+
+	// 回退到 manifest 流程
+	return a.runUpgradeViaManifest(ctx, config, force, manifestURL)
+}
+
+// runUpgradeViaAPI 使用 check-update API 执行更新流程。
+func (a *App) runUpgradeViaAPI(ctx context.Context, config internalConfig.Config, force bool) (bool, error) {
+	baseURL := strings.TrimRight(config.BackendBaseURL, "/")
+	if baseURL == "" {
+		return false, errors.New("未配置后端地址")
+	}
+
+	apiPrefix := config.BackendAPIPrefix
+	if apiPrefix == "" {
+		apiPrefix = internalConfig.DefaultBackendAPIPrefix
+	}
+
+	orch := updater.NewOrchestrator(baseURL, apiPrefix, config.AccessToken)
+
+	// 检查更新并下载
+	checkResp, dlResult, err := orch.CheckAndDownload(ctx, config.DeviceID, force, func(downloaded, total int64) {
+		if total > 0 {
+			fmt.Fprintf(a.stdout, "\r下载进度: %s / %s (%.1f%%)",
+				formatUpgradeSize(downloaded), formatUpgradeSize(total),
+				float64(downloaded)/float64(total)*100)
+		} else {
+			fmt.Fprintf(a.stdout, "\r下载进度: %s", formatUpgradeSize(downloaded))
+		}
+	})
+	if err != nil {
+		return false, err
+	}
+	fmt.Fprintln(a.stdout) // 进度行换行
+
+	if !checkResp.HasUpdate {
+		return false, nil
+	}
+
+	if dlResult == nil {
+		return false, errors.New("下载结果为空")
+	}
+
+	fmt.Fprintf(a.stdout, "远程版本: %s\n", checkResp.Version)
+	fmt.Fprintf(a.stdout, "已下载: %s (SHA256: %s)\n", formatUpgradeSize(dlResult.Bytes), dlResult.SHA256)
+
+	// 执行二进制替换
+	fmt.Fprintf(a.stdout, "正在安装...\n")
+	if err := orch.InstallBinary(ctx, dlResult.Path, checkResp.DeliveryID, config.DeviceID); err != nil {
+		return false, err
+	}
+
+	fmt.Fprintf(a.stdout, "更新完成！已从 %s 更新到 %s\n", buildinfo.Version, checkResp.Version)
+	return true, nil
+}
+
+// runUpgradeViaManifest 使用 manifest.json 流程执行更新（旧流程，作为回退）。
+func (a *App) runUpgradeViaManifest(ctx context.Context, config internalConfig.Config, force bool, manifestURL string) error {
 
 	// 确定 manifest URL
 	resolvedManifestURL := strings.TrimSpace(manifestURL)
@@ -407,4 +498,24 @@ func computeLocalSHA256(filePath string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// verifyStartupUpdate 启动时闭环验证：检查上次更新是否完成。
+// 如果当前版本 == 目标版本，说明更新已成功，清除状态。
+// 如果当前版本 != 目标版本但存在目标版本记录，说明更新可能未完成，输出警告。
+func (a *App) verifyStartupUpdate() {
+	orch := updater.NewOrchestrator("", "", "")
+	matched, targetVersion, err := orch.VerifyStartup()
+	if err != nil {
+		// 静默失败，不影响正常启动
+		return
+	}
+	if targetVersion == "" {
+		return
+	}
+	if matched {
+		fmt.Fprintf(a.stderr, "更新成功：已升级到版本 %s\n", targetVersion)
+	} else {
+		fmt.Fprintf(a.stderr, "警告: 上次更新到 %s 可能未完成（当前版本: %s）\n", targetVersion, buildinfo.Version)
+	}
 }

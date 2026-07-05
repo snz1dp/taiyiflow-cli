@@ -135,6 +135,9 @@ func NewApp() (*App, error) {
 }
 
 func (a *App) Run(ctx context.Context, args []string) error {
+	// 启动时闭环验证：检查上次更新是否完成
+	a.verifyStartupUpdate()
+
 	if len(args) == 0 {
 		return a.runTUI(ctx, nil)
 	}
@@ -1416,7 +1419,7 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli agents [list|current|use] [参数]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli memory [status|trigger] [flow=<智能体>] [参数]")
 	fmt.Fprintf(a.stdout, "  %s\n", skillsCommandSynopsis())
-	fmt.Fprintln(a.stdout, "  taiyiflow-cli upgrade [--force] [--manifest-url URL]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli upgrade [--force] [--manifest-url URL] [--check-api]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli about")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli version")
