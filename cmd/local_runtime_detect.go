@@ -117,6 +117,8 @@ func probeRuntimeTools() []runtimeToolResult {
 
 // probeOneTool 探测单个工具，依次尝试候选命令名。
 // 先在 CLI 可执行文件同目录查找，再通过 PATH 查找。
+// CLI 目录中的工具如果存在但无法正常运行（probeVersion 返回空），
+// 则回退到系统 PATH 查找，避免使用不可用的捆绑工具。
 func probeOneTool(probe runtimeToolProbe, cliDir string) *runtimeToolResult {
 	for _, cmdName := range probe.candidates {
 		// 1. 优先在 CLI 同目录查找
@@ -124,7 +126,10 @@ func probeOneTool(probe runtimeToolProbe, cliDir string) *runtimeToolResult {
 			fullPath := filepath.Join(cliDir, cmdName)
 			if isExecutable(fullPath) {
 				version := probeVersion(fullPath, probe.versionArg)
-				return &runtimeToolResult{label: probe.label, command: fullPath, version: version}
+				if version != "" {
+					return &runtimeToolResult{label: probe.label, command: fullPath, version: version}
+				}
+				// CLI 目录中的工具存在但无法正常运行，回退到系统 PATH 查找
 			}
 		}
 		// 2. 通过 PATH 查找
