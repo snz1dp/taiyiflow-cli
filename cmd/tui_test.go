@@ -1703,11 +1703,10 @@ func TestEmitTUIClientToolResultEventsSkipsFileEditFailurePanel(t *testing.T) {
 		"status":        "patch_conflict",
 		"sha256_before": "old-hash",
 	}, errors.New("PATCH_CONFLICT"))
-	if len(events) != 1 {
-		t.Fatalf("expected error note only for file_edit failure, got %#v", events)
-	}
-	if events[0].Kind != internaltui.EventErrorNote {
-		t.Fatalf("expected error note first, got %#v", events)
+	// 工具错误不再发射 EventErrorNote 到消息区，
+	// 错误已通过回调提交给服务端由模型提炼后输出。
+	if len(events) != 0 {
+		t.Fatalf("expected no events for file_edit failure (error suppressed), got %#v", events)
 	}
 }
 
@@ -2137,8 +2136,7 @@ func TestTuiLogWriterSuppressesAllToolPrefixes(t *testing.T) {
 	w.Flush()
 
 	// 4 个摘要：[本地工具]、[本地命令]、[浏览器工具]、[桌面工具]
-	// 1 个笔记：普通文本行
-	// 其余工具前缀行及续行应被抑制
+	// 普通文本行不再作为 EventSystemNote 发射（命令原始输出不在消息区展示）
 	var summaryCount, noteCount int
 	for _, e := range emitted {
 		switch e.Kind {
@@ -2151,8 +2149,8 @@ func TestTuiLogWriterSuppressesAllToolPrefixes(t *testing.T) {
 	if summaryCount != 4 {
 		t.Errorf("expected 4 EventToolSummary, got %d", summaryCount)
 	}
-	if noteCount != 1 {
-		t.Errorf("expected 1 EventSystemNote, got %d", noteCount)
+	if noteCount != 0 {
+		t.Errorf("expected 0 EventSystemNote, got %d", noteCount)
 	}
 }
 
@@ -2170,18 +2168,15 @@ func TestTuiLogWriterSuppressesMultiLineConfirmPrompt(t *testing.T) {
 	w.Flush()
 
 	// 确认提示部分不应发出任何事件
-	// "命令执行完成" 应作为 EventSystemNote 发出
+	// "命令执行完成" 不再作为 EventSystemNote 发出（命令原始输出不在消息区展示）
 	var noteCount int
 	for _, e := range emitted {
 		if e.Kind == internaltui.EventSystemNote {
 			noteCount++
-			if e.Text != "命令执行完成" {
-				t.Errorf("unexpected note text: %q", e.Text)
-			}
 		}
 	}
-	if noteCount != 1 {
-		t.Errorf("expected 1 EventSystemNote (normal output), got %d", noteCount)
+	if noteCount != 0 {
+		t.Errorf("expected 0 EventSystemNote (normal output suppressed), got %d", noteCount)
 	}
 }
 
@@ -2262,7 +2257,8 @@ func TestTuiLogWriterFlushInSuppressMode(t *testing.T) {
 }
 
 // TestTuiLogWriterPartialLineBuffering 验证分行缓冲（partial line buffering）：
-// 不完整的行应被缓冲，直到收到换行符后才处理
+// 不完整的行应被缓冲，直到收到换行符后才处理。
+// 非摘要行不再作为 EventSystemNote 发射，只验证不产生事件。
 func TestTuiLogWriterPartialLineBuffering(t *testing.T) {
 	var emitted []internaltui.Event
 	emit := func(e internaltui.Event) { emitted = append(emitted, e) }
@@ -2274,11 +2270,9 @@ func TestTuiLogWriterPartialLineBuffering(t *testing.T) {
 	w.Write([]byte("行\n"))
 	w.Flush()
 
-	if len(emitted) != 1 {
-		t.Errorf("expected 1 event for buffered partial line, got %d", len(emitted))
-	}
-	if len(emitted) > 0 && emitted[0].Text != "部分文本行" {
-		t.Errorf("expected text '部分文本行', got %q", emitted[0].Text)
+	// 非摘要行不再发射到消息区
+	if len(emitted) != 0 {
+		t.Errorf("expected 0 events for non-summary buffered line, got %d: %+v", len(emitted), emitted)
 	}
 }
 
@@ -2290,17 +2284,18 @@ func TestTuiLogWriterSuppressModeResetAfterTerminator(t *testing.T) {
 
 	// 写入完整的确认提示（含终止符换行）
 	w.Write([]byte("\n[客户端命令]\nls -la\n是否执行？[y/N]: \n"))
-	// 后续正常文本应正常发出
+	// 后续正常文本不再作为 EventSystemNote 发射
 	w.Write([]byte("正常输出\n"))
 	w.Flush()
 
+	// 非摘要行不再发射到消息区
 	var noteCount int
 	for _, e := range emitted {
 		if e.Kind == internaltui.EventSystemNote {
 			noteCount++
 		}
 	}
-	if noteCount != 1 {
-		t.Errorf("expected 1 EventSystemNote after suppress mode reset, got %d", noteCount)
+	if noteCount != 0 {
+		t.Errorf("expected 0 EventSystemNote after suppress mode reset, got %d", noteCount)
 	}
 }

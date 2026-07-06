@@ -1795,9 +1795,8 @@ func (w *tuiLogWriter) Write(content []byte) (int, error) {
 			}
 			continue
 		}
-		if trimmed != "" {
-			w.emit(tui.Event{Kind: tui.EventSystemNote, Text: trimmed})
-		}
+		// 非摘要、非抑制前缀的行（即命令 stdout/stderr 原始输出）不再发射到消息区。
+		// 命令执行结果已通过回调提交给服务端，由模型提炼关键信息后输出。
 	}
 	w.pending = lines[len(lines)-1]
 	return len(content), nil
@@ -1813,9 +1812,8 @@ func (w *tuiLogWriter) Flush() {
 	}
 	if summary, ok := parseTUIToolSummary(trimmed); ok {
 		w.emit(tui.Event{Kind: tui.EventToolSummary, Text: summary})
-	} else if trimmed != "" && !shouldSuppressTUILogLine(trimmed) {
-		w.emit(tui.Event{Kind: tui.EventSystemNote, Text: trimmed})
 	}
+	// 非摘要行（命令 stdout/stderr 原始输出）不再发射到消息区。
 	w.pending = ""
 }
 
@@ -2154,9 +2152,9 @@ func appendApprovedSkillName(state *agent.SessionState, name string) {
 }
 
 func emitTUIClientToolResultEvents(emit func(tui.Event), config internalconfig.Config, toolName string, result any, toolErr error) {
-	if toolErr != nil {
-		emit(tui.Event{Kind: tui.EventErrorNote, Text: errorText(toolErr)})
-	}
+	// 不在消息区展示工具调用的原始错误信息。
+	// 错误已通过 SubmitClientToolCallback 提交给服务端，
+	// 由模型提炼关键信息后通过对话输出告知用户。
 	if strings.TrimSpace(toolName) == "skill" {
 		if toolErr == nil {
 			skillName := ""
