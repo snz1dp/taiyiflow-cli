@@ -25,10 +25,10 @@ const (
 	SkillInstallScopeUser            = "user"
 	SkillInstallScopeWorkspace       = "workspace"
 	DefaultHTTPTimeoutSeconds        = 600
-	DefaultCommandTimeoutSeconds     = 3000
+	DefaultCommandTimeoutSeconds     = 3600
 	MaxHTTPTimeoutSeconds            = 2000
 	MaxCommandTimeoutSeconds         = 6000
-	DefaultSubtaskTimeoutSeconds     = 600
+	DefaultSubtaskTimeoutSeconds     = 3600
 	MaxSubtaskTimeoutSeconds         = 6000
 	DefaultStreamIdleTimeoutSeconds  = 1200
 	DefaultQRWaitTimeoutSeconds      = 120
