@@ -43,21 +43,39 @@ func cliExecutablePath() string {
 	return cliExePath
 }
 
+// pythonSubDir 返回 python3.12 下的可执行文件子目录。
+// Windows 下 Python 安装结构没有 bin 子目录，可执行文件直接位于 python3.12/ 中。
+func pythonSubDir() string {
+	if runtime.GOOS == "windows" {
+		return "python3.12"
+	}
+	return filepath.Join("python3.12", "bin")
+}
+
+// nodeSubDir 返回 node22 下的可执行文件子目录。
+// Windows 下 Node.js 安装结构没有 bin 子目录，可执行文件直接位于 node22/ 中。
+func nodeSubDir() string {
+	if runtime.GOOS == "windows" {
+		return "node22"
+	}
+	return filepath.Join("node22", "bin")
+}
+
 // commandOverrideMap 定义需要特殊路由的命令名到解析函数的映射。
 // 解析函数接收 CLI 二进制文件所在目录，返回目标可执行文件的候选绝对路径。
 // 如果候选文件不存在，则回退到系统默认（返回原始命令名）。
 var commandOverrideMap = map[string]func(cliDir string) string{
-	"python":        func(dir string) string { return filepath.Join(dir, "python3.12", "bin", "python") },
-	"python3":       func(dir string) string { return filepath.Join(dir, "python3.12", "bin", "python3") },
-	"python3.12":    func(dir string) string { return filepath.Join(dir, "python3.12", "bin", "python3.12") },
-	"node":          func(dir string) string { return filepath.Join(dir, "node22", "bin", "node") },
+	"python":        func(dir string) string { return filepath.Join(dir, pythonSubDir(), "python") },
+	"python3":       func(dir string) string { return filepath.Join(dir, pythonSubDir(), "python3") },
+	"python3.12":    func(dir string) string { return filepath.Join(dir, pythonSubDir(), "python3.12") },
+	"node":          func(dir string) string { return filepath.Join(dir, nodeSubDir(), "node") },
 	"rg":            func(dir string) string { return filepath.Join(dir, "rg") },
 	"taiyiflow-cli": func(_ string) string { return cliExecutablePath() },
 }
 
 // resolveCommandInCLIDir 根据命令名映射规则解析可执行文件路径。
-//   - python/python3/python3.12 → {cliDir}/python3.12/bin/{command}
-//   - node                      → {cliDir}/node22/bin/node
+//   - python/python3/python3.12 → {cliDir}/python3.12/bin/{command}（Windows 下为 {cliDir}/python3.12/{command}）
+//   - node                      → {cliDir}/node22/bin/node（Windows 下为 {cliDir}/node22/node）
 //   - rg                        → {cliDir}/rg
 //   - taiyiflow-cli             → 进程自身可执行文件路径
 //   - 其他命令                   → 在 CLI 目录中查找同名文件
@@ -129,15 +147,15 @@ func isExecutableFile(path string) bool {
 }
 
 // cliPathDirs 返回需要前置到 PATH 的目录列表，按优先级从高到低排列。
-// 包含 python3.12/bin、node22/bin 和 CLI 目录本身。
+// 包含 python3.12/bin（Windows 下为 python3.12）、node22/bin（Windows 下为 node22）和 CLI 目录本身。
 func cliPathDirs() []string {
 	dir := cliExecutableDir()
 	if dir == "" {
 		return nil
 	}
 	return []string{
-		filepath.Join(dir, "python3.12", "bin"),
-		filepath.Join(dir, "node22", "bin"),
+		filepath.Join(dir, pythonSubDir()),
+		filepath.Join(dir, nodeSubDir()),
 		dir,
 	}
 }

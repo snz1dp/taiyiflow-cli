@@ -12,13 +12,19 @@ func TestResolveCommandInCLIDir(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// 创建子目录结构
-	pythonBinDir := filepath.Join(tmpDir, "python3.12", "bin")
-	nodeBinDir := filepath.Join(tmpDir, "node22", "bin")
-	if err := os.MkdirAll(pythonBinDir, 0o755); err != nil {
-		t.Fatalf("创建 python3.12/bin 目录失败: %v", err)
+	// Windows 下 python/node 可执行文件直接在 python3.12/ 和 node22/ 目录下，
+	// 非 Windows 下在 python3.12/bin/ 和 node22/bin/ 下。
+	pythonSubDir := filepath.Join(tmpDir, "python3.12")
+	nodeSubDir := filepath.Join(tmpDir, "node22")
+	if runtime.GOOS != "windows" {
+		pythonSubDir = filepath.Join(pythonSubDir, "bin")
+		nodeSubDir = filepath.Join(nodeSubDir, "bin")
 	}
-	if err := os.MkdirAll(nodeBinDir, 0o755); err != nil {
-		t.Fatalf("创建 node22/bin 目录失败: %v", err)
+	if err := os.MkdirAll(pythonSubDir, 0o755); err != nil {
+		t.Fatalf("创建 python 子目录失败: %v", err)
+	}
+	if err := os.MkdirAll(nodeSubDir, 0o755); err != nil {
+		t.Fatalf("创建 node 子目录失败: %v", err)
 	}
 
 	// 创建测试用可执行文件
@@ -34,12 +40,12 @@ func TestResolveCommandInCLIDir(t *testing.T) {
 		}
 	}
 
-	// python3.12/bin 下的文件
-	createTestExe(filepath.Join(pythonBinDir, "python"))
-	createTestExe(filepath.Join(pythonBinDir, "python3"))
-	createTestExe(filepath.Join(pythonBinDir, "python3.12"))
-	// node22/bin 下的文件
-	createTestExe(filepath.Join(nodeBinDir, "node"))
+	// python 子目录下的文件
+	createTestExe(filepath.Join(pythonSubDir, "python"))
+	createTestExe(filepath.Join(pythonSubDir, "python3"))
+	createTestExe(filepath.Join(pythonSubDir, "python3.12"))
+	// node 子目录下的文件
+	createTestExe(filepath.Join(nodeSubDir, "node"))
 	// CLI 根目录下的文件
 	createTestExe(filepath.Join(tmpDir, "rg"))
 
@@ -59,30 +65,30 @@ func TestResolveCommandInCLIDir(t *testing.T) {
 		ext = ".exe"
 	}
 
-	// 测试 1: python → {cliDir}/python3.12/bin/python
+	// 测试 1: python → {cliDir}/python3.12/bin/python（Windows 下为 {cliDir}/python3.12/python）
 	resolved := resolveCommandInCLIDir("python")
-	expected := filepath.Join(pythonBinDir, "python") + ext
+	expected := filepath.Join(pythonSubDir, "python") + ext
 	if resolved != expected {
 		t.Errorf("resolveCommandInCLIDir(\"python\") = %q, want %q", resolved, expected)
 	}
 
-	// 测试 2: python3 → {cliDir}/python3.12/bin/python3
+	// 测试 2: python3 → {cliDir}/python3.12/bin/python3（Windows 下为 {cliDir}/python3.12/python3）
 	resolved = resolveCommandInCLIDir("python3")
-	expected = filepath.Join(pythonBinDir, "python3") + ext
+	expected = filepath.Join(pythonSubDir, "python3") + ext
 	if resolved != expected {
 		t.Errorf("resolveCommandInCLIDir(\"python3\") = %q, want %q", resolved, expected)
 	}
 
-	// 测试 3: python3.12 → {cliDir}/python3.12/bin/python3.12
+	// 测试 3: python3.12 → {cliDir}/python3.12/bin/python3.12（Windows 下为 {cliDir}/python3.12/python3.12）
 	resolved = resolveCommandInCLIDir("python3.12")
-	expected = filepath.Join(pythonBinDir, "python3.12") + ext
+	expected = filepath.Join(pythonSubDir, "python3.12") + ext
 	if resolved != expected {
 		t.Errorf("resolveCommandInCLIDir(\"python3.12\") = %q, want %q", resolved, expected)
 	}
 
-	// 测试 4: node → {cliDir}/node22/bin/node
+	// 测试 4: node → {cliDir}/node22/bin/node（Windows 下为 {cliDir}/node22/node）
 	resolved = resolveCommandInCLIDir("node")
-	expected = filepath.Join(nodeBinDir, "node") + ext
+	expected = filepath.Join(nodeSubDir, "node") + ext
 	if resolved != expected {
 		t.Errorf("resolveCommandInCLIDir(\"node\") = %q, want %q", resolved, expected)
 	}
@@ -116,7 +122,7 @@ func TestResolveCommandInCLIDir(t *testing.T) {
 	}
 
 	// 测试 9: 映射命令文件不存在时回退到系统默认
-	// python3.12/bin 下没有创建 "python3.13"，应返回原始命令名
+	// python 子目录下没有创建 "python3.13"，应返回原始命令名
 	resolved = resolveCommandInCLIDir("python3.13")
 	if resolved != "python3.13" {
 		t.Errorf("resolveCommandInCLIDir(\"python3.13\") = %q, want %q (文件不存在应回退)", resolved, "python3.13")
@@ -157,10 +163,14 @@ func TestPrependCLIDirToPath(t *testing.T) {
 	cliDir = "/fake/cli/dir"
 	defer func() { cliDir = originalDir }()
 
-	// 测试有 PATH 的情况：应前置 python3.12/bin、node22/bin 和 CLI 目录
+	// 根据平台确定期望的子目录
+	pythonDir := filepath.Join("/fake/cli/dir", pythonSubDir())
+	nodeDir := filepath.Join("/fake/cli/dir", nodeSubDir())
+
+	// 测试有 PATH 的情况：应前置 python 子目录、node 子目录和 CLI 目录
 	result := prependCLIDirToPath("/usr/bin:/bin")
-	expected := "/fake/cli/dir/python3.12/bin" + string(os.PathListSeparator) +
-		"/fake/cli/dir/node22/bin" + string(os.PathListSeparator) +
+	expected := pythonDir + string(os.PathListSeparator) +
+		nodeDir + string(os.PathListSeparator) +
 		"/fake/cli/dir" + string(os.PathListSeparator) + "/usr/bin:/bin"
 	if result != expected {
 		t.Errorf("prependCLIDirToPath(\"/usr/bin:/bin\") = %q, want %q", result, expected)
@@ -168,8 +178,8 @@ func TestPrependCLIDirToPath(t *testing.T) {
 
 	// 测试空 PATH 的情况
 	result = prependCLIDirToPath("")
-	expected = "/fake/cli/dir/python3.12/bin" + string(os.PathListSeparator) +
-		"/fake/cli/dir/node22/bin" + string(os.PathListSeparator) +
+	expected = pythonDir + string(os.PathListSeparator) +
+		nodeDir + string(os.PathListSeparator) +
 		"/fake/cli/dir"
 	if result != expected {
 		t.Errorf("prependCLIDirToPath(\"\") = %q, want %q", result, expected)
@@ -188,8 +198,10 @@ func TestPrependCLIDirToPathInEnv(t *testing.T) {
 	cliDir = "/fake/cli/dir"
 	defer func() { cliDir = originalDir }()
 
-	expectedPath := "/fake/cli/dir/python3.12/bin" + string(os.PathListSeparator) +
-		"/fake/cli/dir/node22/bin" + string(os.PathListSeparator) +
+	pythonDir := filepath.Join("/fake/cli/dir", pythonSubDir())
+	nodeDir := filepath.Join("/fake/cli/dir", nodeSubDir())
+	expectedPath := pythonDir + string(os.PathListSeparator) +
+		nodeDir + string(os.PathListSeparator) +
 		"/fake/cli/dir" + string(os.PathListSeparator) + "/usr/bin:/bin"
 
 	// 测试 PATH 键存在
@@ -203,8 +215,8 @@ func TestPrependCLIDirToPathInEnv(t *testing.T) {
 	envMap = map[string]string{"Path": "/usr/bin"}
 	prependCLIDirToPathInEnv(envMap)
 	// 应该找到 "Path" 键并修改它
-	if envMap["Path"] != "/fake/cli/dir/python3.12/bin"+string(os.PathListSeparator)+
-		"/fake/cli/dir/node22/bin"+string(os.PathListSeparator)+
+	if envMap["Path"] != pythonDir+string(os.PathListSeparator)+
+		nodeDir+string(os.PathListSeparator)+
 		"/fake/cli/dir"+string(os.PathListSeparator)+"/usr/bin" {
 		t.Errorf("Path = %q", envMap["Path"])
 	}
@@ -215,9 +227,9 @@ func TestPrependCLIDirToPathInEnv(t *testing.T) {
 	// 测试 PATH 不存在时自动创建
 	envMap = map[string]string{"HOME": "/tmp"}
 	prependCLIDirToPathInEnv(envMap)
-	if envMap["PATH"] != "/fake/cli/dir/python3.12/bin"+string(os.PathListSeparator)+
-		"/fake/cli/dir/node22/bin"+string(os.PathListSeparator)+
+	if envMap["PATH"] != pythonDir+string(os.PathListSeparator)+
+		nodeDir+string(os.PathListSeparator)+
 		"/fake/cli/dir" {
-		t.Errorf("PATH = %q, want %q", envMap["PATH"], "/fake/cli/dir/python3.12/bin:...")
+		t.Errorf("PATH = %q, want %q", envMap["PATH"], pythonDir+string(os.PathListSeparator)+"...")
 	}
 }
