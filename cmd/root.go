@@ -304,32 +304,41 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	}
 	flowDisplayName := a.resolveFlowDisplayName(ctx, providerClient, flowID)
 	sessionState.FlowDisplayName = flowDisplayName
-	configRef := newPrimaryClientConfigRef(config)
 	primaryDispatchCh := make(chan primaryTaskDispatch, 8)
-	primaryClientCtx, primaryClientCancel := context.WithCancel(ctx)
-	defer primaryClientCancel()
-	primaryClientErrCh := make(chan error, 1)
-	primaryClient := newPrimaryClientManager(configRef, instanceLease, sessionState.SessionID, primaryClientOptions{
-		OnDispatch: func(dispatch primaryTaskDispatch) {
+	configRef := newPrimaryClientConfigRef(config)
+	var primaryClient *primaryClientManager
+	isPublicUser := false
+	if currentUser, currentUserErr := providerClient.GetCurrentUserInfo(ctx); currentUserErr == nil && currentUser != nil {
+		isPublicUser = currentUser.UserScope == "public"
+	}
+	if isPublicUser {
+		fmt.Fprintln(a.stdout, "提示: 当前用户为非正式用户（public），已跳过远端任务调度连接。")
+	} else {
+		primaryClientCtx, primaryClientCancel := context.WithCancel(ctx)
+		defer primaryClientCancel()
+		primaryClientErrCh := make(chan error, 1)
+		primaryClient = newPrimaryClientManager(configRef, instanceLease, sessionState.SessionID, primaryClientOptions{
+			OnDispatch: func(dispatch primaryTaskDispatch) {
+				select {
+				case primaryDispatchCh <- dispatch:
+				default:
+				}
+			},
+		})
+		go func() {
+			primaryClientErrCh <- primaryClient.Run(primaryClientCtx)
+		}()
+		defer func() {
+			primaryClientCancel()
 			select {
-			case primaryDispatchCh <- dispatch:
+			case runErr := <-primaryClientErrCh:
+				if runErr != nil && !errors.Is(runErr, context.Canceled) {
+					fmt.Fprintf(a.stderr, "提示: 主实例长连接已退出: %v\n", runErr)
+				}
 			default:
 			}
-		},
-	})
-	go func() {
-		primaryClientErrCh <- primaryClient.Run(primaryClientCtx)
-	}()
-	defer func() {
-		primaryClientCancel()
-		select {
-		case runErr := <-primaryClientErrCh:
-			if runErr != nil && !errors.Is(runErr, context.Canceled) {
-				fmt.Fprintf(a.stderr, "提示: 主实例长连接已退出: %v\n", runErr)
-			}
-		default:
-		}
-	}()
+		}()
+	}
 
 	metadata, err := providerClient.GetMetadata(ctx, flowID)
 	if err == nil && metadata.WelcomeMessage != "" {

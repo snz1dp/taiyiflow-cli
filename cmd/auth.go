@@ -139,6 +139,16 @@ func (a *App) tryPersistentLogin(
 		providerClient.SetAPIKey(updatedToken)
 		changed = true
 	}
+	if isPublicUserScope(session.Scope) {
+		config, changed = clearAuthenticationState(config, false)
+		if changed {
+			if saveErr := a.configManager.Save(config); saveErr != nil {
+				return config, true, saveErr
+			}
+		}
+		providerClient.SetAPIKey("")
+		return config, changed, errPublicUserBlocked
+	}
 	if rotatedPersistentToken := strings.TrimSpace(session.PersistentToken); rotatedPersistentToken != "" && rotatedPersistentToken != persistentToken {
 		config.PersistentToken = rotatedPersistentToken
 		changed = true
@@ -166,6 +176,11 @@ func (a *App) persistAuthenticatedSession(
 ) (internalconfig.Config, error) {
 	if session == nil || strings.TrimSpace(session.AccessToken) == "" {
 		return config, fmt.Errorf("登录成功但未返回 access_token")
+	}
+
+	if isPublicUserScope(session.Scope) {
+		providerClient.SetAPIKey("")
+		return config, errPublicUserBlocked
 	}
 
 	config.AccessToken = strings.TrimSpace(session.AccessToken)
@@ -353,6 +368,16 @@ const (
 	httpStatusUnauthorized = 401
 	httpStatusForbidden    = 403
 )
+
+const publicUserScope = "public"
+
+// isPublicUserScope 判断登录返回的 scope 是否为公众用户（public）。
+func isPublicUserScope(scope string) bool {
+	return strings.EqualFold(strings.TrimSpace(scope), publicUserScope)
+}
+
+// errPublicUserBlocked 公众用户被拒绝登录时返回的错误。
+var errPublicUserBlocked = errors.New("公众用户（public）不允许登录，请使用正式账号")
 
 func isAuthenticationError(err error) bool {
 	message := strings.ToLower(strings.TrimSpace(err.Error()))

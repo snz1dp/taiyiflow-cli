@@ -87,35 +87,43 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		return err
 	}
 	primaryDispatchCh := make(chan string, 8)
-	primaryClientCtx, primaryClientCancel := context.WithCancel(ctx)
-	defer primaryClientCancel()
-	primaryClientErrCh := make(chan error, 1)
 	var primaryClient *primaryClientManager
-	primaryClient = newPrimaryClientManager(configRef, instanceLease, snapshot.SessionID, primaryClientOptions{
-		OnDispatch: func(dispatch primaryTaskDispatch) {
-			prompt := strings.TrimSpace(dispatch.Prompt)
-			if prompt == "" {
-				return
-			}
+	isPublicUser := false
+	if currentUser, currentUserErr := providerClient.GetCurrentUserInfo(ctx); currentUserErr == nil && currentUser != nil {
+		isPublicUser = currentUser.UserScope == "public"
+	}
+	if isPublicUser {
+		fmt.Fprintln(a.stderr, "提示: 当前用户为非正式用户（public），已跳过远端任务调度连接。")
+	} else {
+		primaryClientCtx, primaryClientCancel := context.WithCancel(ctx)
+		defer primaryClientCancel()
+		primaryClientErrCh := make(chan error, 1)
+		primaryClient = newPrimaryClientManager(configRef, instanceLease, snapshot.SessionID, primaryClientOptions{
+			OnDispatch: func(dispatch primaryTaskDispatch) {
+				prompt := strings.TrimSpace(dispatch.Prompt)
+				if prompt == "" {
+					return
+				}
+				select {
+				case primaryDispatchCh <- prompt:
+				default:
+				}
+			},
+		})
+		go func() {
+			primaryClientErrCh <- primaryClient.Run(primaryClientCtx)
+		}()
+		defer func() {
+			primaryClientCancel()
 			select {
-			case primaryDispatchCh <- prompt:
+			case err := <-primaryClientErrCh:
+				if err != nil && !errors.Is(err, context.Canceled) {
+					fmt.Fprintf(a.stderr, "提示: 主 CLI 长连接已退出: %v\n", err)
+				}
 			default:
 			}
-		},
-	})
-	go func() {
-		primaryClientErrCh <- primaryClient.Run(primaryClientCtx)
-	}()
-	defer func() {
-		primaryClientCancel()
-		select {
-		case err := <-primaryClientErrCh:
-			if err != nil && !errors.Is(err, context.Canceled) {
-				fmt.Fprintf(a.stderr, "提示: 主 CLI 长连接已退出: %v\n", err)
-			}
-		default:
-		}
-	}()
+		}()
+	}
 
 	flowItems := []tui.FlowItem{}
 
