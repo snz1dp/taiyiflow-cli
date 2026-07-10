@@ -116,26 +116,25 @@ func probeRuntimeTools() []runtimeToolResult {
 }
 
 // probeOneTool 探测单个工具，依次尝试候选命令名。
-// 先在 CLI 可执行文件同目录查找，再通过 PATH 查找。
-// CLI 目录中的工具如果存在但无法正常运行（probeVersion 返回空），
-// 则回退到系统 PATH 查找，避免使用不可用的捆绑工具。
+// 优先通过系统 PATH 查找操作系统内置的工具，找不到时才回退到 CLI 可执行文件同目录。
+// command 字段存储命令名而非全路径，执行时由操作系统通过 PATH 解析，
+// 避免绑定到特定版本路径（如 nvm/conda 管理的版本）。
 func probeOneTool(probe runtimeToolProbe, cliDir string) *runtimeToolResult {
 	for _, cmdName := range probe.candidates {
-		// 1. 优先在 CLI 同目录查找
+		// 1. 优先通过系统 PATH 查找（操作系统内置）
+		if path, err := exec.LookPath(cmdName); err == nil && path != "" {
+			version := probeVersion(path, probe.versionArg)
+			return &runtimeToolResult{label: probe.label, command: cmdName, version: version}
+		}
+		// 2. 系统 PATH 找不到时，回退到 CLI 同目录查找
 		if cliDir != "" {
 			fullPath := filepath.Join(cliDir, cmdName)
 			if isExecutable(fullPath) {
 				version := probeVersion(fullPath, probe.versionArg)
 				if version != "" {
-					return &runtimeToolResult{label: probe.label, command: fullPath, version: version}
+					return &runtimeToolResult{label: probe.label, command: cmdName, version: version}
 				}
-				// CLI 目录中的工具存在但无法正常运行，回退到系统 PATH 查找
 			}
-		}
-		// 2. 通过 PATH 查找
-		if path, err := exec.LookPath(cmdName); err == nil && path != "" {
-			version := probeVersion(path, probe.versionArg)
-			return &runtimeToolResult{label: probe.label, command: path, version: version}
 		}
 	}
 	return nil

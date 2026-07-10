@@ -52,7 +52,7 @@ func buildRawCommand(ctx context.Context, payload commandArguments) (*exec.Cmd, 
 		}
 		return exec.CommandContext(ctx, "sh", "-lc", payload.RawCommand), nil
 	}
-	// 结构化命令模式：优先从 CLI 二进制文件所在目录查找可执行文件
+	// 结构化命令模式：返回命令名由 PATH 解析（CLI 目录已追加到 PATH 末尾）
 	resolvedCommand := resolveCommandInCLIDir(payload.Command)
 	return exec.CommandContext(ctx, resolvedCommand, payload.Args...), nil
 }

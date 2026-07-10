@@ -28,7 +28,7 @@ func buildSandboxedCommandPlatform(ctx context.Context, payload commandArguments
 	if payload.Mode == "shell" {
 		args = append(args, "sh", "-lc", payload.RawCommand)
 	} else {
-		// 优先从 CLI 二进制文件所在目录查找可执行文件
+		// 命令名由 PATH 解析（CLI 目录已追加到 PATH 末尾）
 		args = append(args, resolveCommandInCLIDir(payload.Command))
 		args = append(args, payload.Args...)
 	}

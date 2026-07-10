@@ -1648,8 +1648,9 @@ func mergeEnv(overrides map[string]string) []string {
 		}
 		merged[key] = value
 	}
-	// 将 CLI 二进制文件所在目录前置到 PATH，使 shell 模式命令也能优先找到 CLI 目录中的工具
-	prependCLIDirToPathInEnv(merged)
+	// 将 CLI 二进制文件所在目录追加到 PATH 末尾，使操作系统内置工具优先，
+	// CLI 捆绑工具仅在系统 PATH 中不存在时作为回退
+	appendCLIDirToPathInEnv(merged)
 	result := make([]string, 0, len(merged))
 	for key, value := range merged {
 		result = append(result, key+"="+value)
@@ -1658,9 +1659,9 @@ func mergeEnv(overrides map[string]string) []string {
 	return result
 }
 
-// prependCLIDirToPathInEnv 将 CLI 二进制文件所在目录前置到环境变量 map 中的 PATH 值。
+// appendCLIDirToPathInEnv 将 CLI 二进制文件所在目录追加到环境变量 map 中的 PATH 值末尾。
 // 兼容 Windows 下 PATH 变量名大小写差异。
-func prependCLIDirToPathInEnv(envMap map[string]string) {
+func appendCLIDirToPathInEnv(envMap map[string]string) {
 	// 查找 PATH 键（兼容 Windows 大小写）
 	pathKey := ""
 	for k := range envMap {
@@ -1673,7 +1674,7 @@ func prependCLIDirToPathInEnv(envMap map[string]string) {
 		pathKey = "PATH"
 		envMap[pathKey] = ""
 	}
-	envMap[pathKey] = prependCLIDirToPath(envMap[pathKey])
+	envMap[pathKey] = appendCLIDirToPath(envMap[pathKey])
 }
 
 func commandPreview(arguments map[string]any) string {

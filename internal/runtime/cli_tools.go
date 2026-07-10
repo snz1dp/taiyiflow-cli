@@ -62,26 +62,20 @@ func nodeSubDir() string {
 }
 
 // commandOverrideMap 定义需要特殊路由的命令名到解析函数的映射。
-// 解析函数接收 CLI 二进制文件所在目录，返回目标可执行文件的候选绝对路径。
-// 如果候选文件不存在，则回退到系统默认（返回原始命令名）。
+// python/node/rg 不在此映射中，由 PATH 解析（CLI 目录追加到 PATH 末尾作为回退）。
+// 仅 taiyiflow-cli 需要特殊路由，始终指向进程自身可执行文件路径。
 var commandOverrideMap = map[string]func(cliDir string) string{
-	"python":        func(dir string) string { return filepath.Join(dir, pythonSubDir(), "python") },
-	"python3":       func(dir string) string { return filepath.Join(dir, pythonSubDir(), "python3") },
-	"python3.12":    func(dir string) string { return filepath.Join(dir, pythonSubDir(), "python3.12") },
-	"node":          func(dir string) string { return filepath.Join(dir, nodeSubDir(), "node") },
-	"rg":            func(dir string) string { return filepath.Join(dir, "rg") },
 	"taiyiflow-cli": func(_ string) string { return cliExecutablePath() },
 }
 
 // resolveCommandInCLIDir 根据命令名映射规则解析可执行文件路径。
-//   - python/python3/python3.12 → {cliDir}/python3.12/bin/{command}（Windows 下为 {cliDir}/python3.12/{command}）
-//   - node                      → {cliDir}/node22/bin/node（Windows 下为 {cliDir}/node22/node）
-//   - rg                        → {cliDir}/rg
 //   - taiyiflow-cli             → 进程自身可执行文件路径
-//   - 其他命令                   → 在 CLI 目录中查找同名文件
+//   - 其他命令                   → 返回原始命令名，由 PATH 解析
+//
+// CLI 目录（含 python3.12/bin、node22/bin）已追加到 PATH 末尾，
+// 操作系统内置工具优先被找到，CLI 捆绑工具仅在系统 PATH 中不存在时作为回退。
 //
 // 已是绝对路径或包含路径分隔符的命令不做覆盖。
-// 映射命令的候选文件不存在时，回退到系统默认（返回原始命令名）。
 func resolveCommandInCLIDir(command string) string {
 	dir := cliExecutableDir()
 	if dir == "" || command == "" {
@@ -96,7 +90,7 @@ func resolveCommandInCLIDir(command string) string {
 		return command
 	}
 
-	// 检查是否在特殊路由映射中
+	// 检查是否在特殊路由映射中（仅 taiyiflow-cli）
 	if resolver, ok := commandOverrideMap[command]; ok {
 		candidate := resolver(dir)
 		// Windows: 尝试 .exe 扩展名
@@ -115,20 +109,8 @@ func resolveCommandInCLIDir(command string) string {
 		return command
 	}
 
-	// 其他命令：在 CLI 目录中查找同名文件
-	candidate := filepath.Join(dir, command)
-	if runtime.GOOS == "windows" {
-		// Windows: 如果没有扩展名，尝试 .exe
-		if filepath.Ext(command) == "" {
-			candidateExe := candidate + ".exe"
-			if isExecutableFile(candidateExe) {
-				return candidateExe
-			}
-		}
-	}
-	if isExecutableFile(candidate) {
-		return candidate
-	}
+	// 其他命令：返回原始命令名，由 PATH 解析。
+	// CLI 目录已追加到 PATH 末尾，系统工具优先，CLI 捆绑工具作为回退。
 	return command
 }
 
@@ -160,16 +142,17 @@ func cliPathDirs() []string {
 	}
 }
 
-// prependCLIDirToPath 将 CLI 相关目录前置到 PATH 值中，
-// 使 shell 模式命令也能优先找到 CLI 捆绑的工具。
-func prependCLIDirToPath(currentPath string) string {
+// appendCLIDirToPath 将 CLI 相关目录追加到 PATH 值末尾，
+// 使操作系统内置工具优先被找到，CLI 捆绑工具作为回退。
+func appendCLIDirToPath(currentPath string) string {
 	dirs := cliPathDirs()
 	if len(dirs) == 0 {
 		return currentPath
 	}
-	parts := dirs
+	parts := []string{}
 	if currentPath != "" {
 		parts = append(parts, currentPath)
 	}
+	parts = append(parts, dirs...)
 	return strings.Join(parts, string(os.PathListSeparator))
 }
