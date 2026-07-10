@@ -312,8 +312,8 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 		config.CommandTimeoutSeconds = seconds
 	case "subtask_timeout_seconds":
 		seconds, err := strconv.Atoi(trimmedValue)
-		if err != nil || seconds < 1 || seconds > internalconfig.MaxSubtaskTimeoutSeconds {
-			return fmt.Errorf("subtask_timeout_seconds 仅支持 1-%d 的整数秒", internalconfig.MaxSubtaskTimeoutSeconds)
+		if err != nil || seconds < 0 || seconds > internalconfig.MaxSubtaskTimeoutSeconds {
+			return fmt.Errorf("subtask_timeout_seconds 仅支持 0-%d 的整数秒，0 表示不限制", internalconfig.MaxSubtaskTimeoutSeconds)
 		}
 		config.SubtaskTimeoutSeconds = seconds
 	case "stream_idle_timeout_seconds":
@@ -597,7 +597,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("技能包审查策略: %s", fallbackConfigValue(config.SkillReviewPolicy, internalconfig.Default().SkillReviewPolicy)),
 		fmt.Sprintf("写入确认策略: %s", fallbackConfigValue(config.WriteConfirmationPolicy, internalconfig.Default().WriteConfirmationPolicy)),
 		fmt.Sprintf("命令执行超时: %d 秒", config.CommandTimeoutSeconds),
-		fmt.Sprintf("子智能体超时: %d 秒", config.SubtaskTimeoutSeconds),
+		fmt.Sprintf("子智能体超时: %s", formatSubtaskTimeoutLabel(config.SubtaskTimeoutSeconds)),
 		fmt.Sprintf("流式空闲超时: %d 秒", config.StreamIdleTimeoutSeconds),
 		fmt.Sprintf("跨会话记忆: %t", config.CrossSessionMemoryEnabled),
 		fmt.Sprintf("扫码等待超时: %d 秒", config.QRWaitTimeoutSeconds),
@@ -682,4 +682,11 @@ func fallbackConfigValue(value string, defaultValue string) string {
 		return defaultValue
 	}
 	return trimmed
+}
+
+func formatSubtaskTimeoutLabel(seconds int) string {
+	if seconds <= 0 {
+		return "不限制"
+	}
+	return fmt.Sprintf("%d 秒", seconds)
 }

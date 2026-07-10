@@ -550,8 +550,8 @@ func NormalizeShellSandboxMode(value string) string {
 }
 
 func NormalizeSubtaskTimeoutSeconds(value int) int {
-	if value < 1 {
-		return DefaultSubtaskTimeoutSeconds
+	if value < 0 {
+		return 0
 	}
 	if value > MaxSubtaskTimeoutSeconds {
 		return MaxSubtaskTimeoutSeconds

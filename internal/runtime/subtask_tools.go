@@ -236,9 +236,7 @@ func (r *ClientRuntime) executeManagedSubtaskRequest(
 		return result, nil
 	}
 
-	executionCtx, cancel := context.WithTimeout(ctx, time.Duration(request.TimeoutSeconds)*time.Second)
-	defer cancel()
-	executionResult, execErr := r.executeLocalSubtask(executionCtx, providerClient, config, request)
+	executionResult, execErr := r.executeLocalSubtask(ctx, providerClient, config, request)
 	if execErr != nil {
 		// 使用 updateCollaborationWithRetry 确保超时后仍能写回失败状态，并自动重试。
 		updatedTask, updateErr := updateCollaborationWithRetry(ctx, providerClient, time.Duration(config.HTTPTimeoutSeconds)*time.Second, createdTask.ID, provider.ClientCollaborationUpdateRequest{
@@ -344,7 +342,7 @@ func (r *ClientRuntime) parseSubtaskExecutionRequest(
 		ParentRunID:       firstNonEmptySubtask(strings.TrimSpace(argumentString(arguments, "run_id", "runId")), strings.TrimSpace(nestedString(payload, "context", "run_id"))),
 		ParentMessageID:   firstNonEmptySubtask(strings.TrimSpace(argumentString(arguments, "message_id", "messageId")), strings.TrimSpace(nestedString(payload, "context", "message_id"))),
 	}
-	if request.TimeoutSeconds < 1 {
+	if request.TimeoutSeconds < 0 {
 		request.TimeoutSeconds = config.SubtaskTimeoutSeconds
 	}
 	if request.TargetClientID == "" && request.TargetDeviceID == "" {
@@ -490,11 +488,38 @@ func (r *ClientRuntime) executeLocalSubtask(
 	config internalconfig.Config,
 	request subtaskExecutionRequest,
 ) (subtaskExecutionResult, error) {
+	// 动态超时：超过 TimeoutSeconds 未收到任何 CHUNK 则判定为超时。
+	// 每收到一个流事件即重置计时器，只要数据持续流动就不会超时。
+	executionCtx, execCancel := context.WithCancel(ctx)
+	var idleTimer *time.Timer
+	var watchdogDone chan struct{}
+	if request.TimeoutSeconds > 0 {
+		idleTimer = time.NewTimer(time.Duration(request.TimeoutSeconds) * time.Second)
+		watchdogDone = make(chan struct{})
+		go func() {
+			defer close(watchdogDone)
+			select {
+			case <-idleTimer.C:
+				execCancel()
+			case <-executionCtx.Done():
+			}
+		}()
+	}
+	defer func() {
+		execCancel() // 先取消上下文，让 watchdog 退出
+		if idleTimer != nil {
+			idleTimer.Stop()
+		}
+		if watchdogDone != nil {
+			<-watchdogDone
+		}
+	}()
+
 	// NOTE: ClientInstructions is intentionally not passed to subtasks.
 	// Subtasks receive their instructions from the parent task's prompt.
 	// Passing ClientInstructions here would cause double-injection of
 	// project-level instruction files (CLAUDE.md, AGENT.md, etc.).
-	stream, streamSession, err := providerClient.Stream(ctx, provider.StreamRequest{
+	stream, streamSession, err := providerClient.Stream(executionCtx, provider.StreamRequest{
 		FlowID:                    request.FlowID,
 		Input:                     request.Prompt,
 		InputType:                 "any",
@@ -534,7 +559,12 @@ func (r *ClientRuntime) executeLocalSubtask(
 
 	var outputBuilder strings.Builder
 	childMessageID := ""
+
 	for event := range stream {
+		// 收到任意流事件即重置空闲计时器
+		if idleTimer != nil {
+			idleTimer.Reset(time.Duration(request.TimeoutSeconds) * time.Second)
+		}
 		if messageID := resolveSubtaskEventMessageID(event.Data); messageID != "" {
 			childMessageID = messageID
 		}
@@ -544,11 +574,11 @@ func (r *ClientRuntime) executeLocalSubtask(
 				outputBuilder.WriteString(text)
 			}
 		case provider.EventBuiltIn:
-			if err := quietRuntime.HandleBuiltInEvent(ctx, providerClient, childConfig, event.Data); err != nil {
+			if err := quietRuntime.HandleBuiltInEvent(executionCtx, providerClient, childConfig, event.Data); err != nil {
 				return subtaskExecutionResult{}, err
 			}
 		case provider.EventClientTool:
-			if err := quietRuntime.HandleClientToolEvent(ctx, providerClient, childConfig, event.Data); err != nil {
+			if err := quietRuntime.HandleClientToolEvent(executionCtx, providerClient, childConfig, event.Data); err != nil {
 				return subtaskExecutionResult{}, err
 			}
 		case provider.EventError:
@@ -817,10 +847,13 @@ func subtaskTargetsCurrentClient(config internalconfig.Config, request subtaskEx
 }
 
 func waitForClientCollaboration(ctx context.Context, providerClient provider.Provider, taskID string, timeoutSeconds int) (*provider.ClientCollaborationTask, error) {
-	if timeoutSeconds < 1 {
-		timeoutSeconds = defaultSubtaskTimeoutSeconds
+	var waitCtx context.Context
+	var cancel context.CancelFunc
+	if timeoutSeconds > 0 {
+		waitCtx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+	} else {
+		waitCtx, cancel = ctx, func() {}
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 	ticker := time.NewTicker(defaultSubtaskPollInterval)
 	defer ticker.Stop()
