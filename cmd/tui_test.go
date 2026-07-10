@@ -873,7 +873,7 @@ func TestBuildTUISkillAutoInstallConfirmRequest(t *testing.T) {
 		Scope:       internalconfig.SkillInstallScopeWorkspace,
 		InstallPath: "/tmp/work/.snz1dp/skills",
 		Reason:      "缺失技能名 Context Review 的精确匹配",
-	})
+	}, nil)
 	if !strings.Contains(request.Title, "自动安装技能") {
 		t.Fatalf("unexpected title: %#v", request)
 	}
@@ -1922,7 +1922,7 @@ func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T)
 			"name":      "skill",
 			"arguments": map[string]any{"name": "Context Review"},
 		},
-	}, func(context.Context) error { return nil }, func(context.Context) error { return nil }, nil, nil)
+	}, func(context.Context) error { return nil }, func(context.Context) error { return nil }, nil, nil, nil, nil)
 	if skillRequest.Title != "技能包审查(skill package review)" {
 		t.Fatalf("unexpected skill request title: %#v", skillRequest)
 	}
@@ -1941,7 +1941,7 @@ func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T)
 			"name":      "write_file",
 			"arguments": map[string]any{"path": "notes.txt", "mode": "overwrite", "content": "hello world"},
 		},
-	}, nil, nil, nil, nil)
+	}, nil, nil, nil, nil, nil, nil)
 	if writeRequest.Title != "写入比较摘要(write summary)待确认" {
 		t.Fatalf("unexpected write request title: %#v", writeRequest)
 	}
@@ -1971,7 +1971,7 @@ func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T)
 				"expected_sha256_before": "abc123",
 			},
 		},
-	}, nil, nil, nil, nil)
+	}, nil, nil, nil, nil, nil, nil)
 	if !strings.Contains(editRequest.PreviewBody, "@@ expected_sha256_before=abc123 @@") || !strings.Contains(editRequest.PreviewBody, "-before line") || !strings.Contains(editRequest.PreviewBody, "+after line") {
 		t.Fatalf("expected file_edit preview to render diff body, got %#v", editRequest.PreviewBody)
 	}
@@ -1987,7 +1987,7 @@ func TestBuildTUIClientToolConfirmRequestUsesBrowserAndComputerAlwaysApprovePoli
 			"name":      "taiyiflow-in-chrome__click",
 			"arguments": map[string]any{"selector": "button.submit"},
 		},
-	}, nil, nil, func(context.Context) error { return nil }, nil)
+	}, nil, nil, func(context.Context) error { return nil }, nil, nil, nil)
 	if browserRequest.Title != "浏览器操作(browser automation)待确认" {
 		t.Fatalf("unexpected browser request title: %#v", browserRequest)
 	}
@@ -2003,7 +2003,7 @@ func TestBuildTUIClientToolConfirmRequestUsesBrowserAndComputerAlwaysApprovePoli
 			"name":      "taiyiflow-computer__focus_window",
 			"arguments": map[string]any{"window_id": "win-1"},
 		},
-	}, nil, nil, nil, func(context.Context) error { return nil })
+	}, nil, nil, nil, func(context.Context) error { return nil }, nil, nil)
 	if computerRequest.Title != "桌面操作(desktop automation)待确认" {
 		t.Fatalf("unexpected computer request title: %#v", computerRequest)
 	}

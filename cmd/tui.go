@@ -172,6 +172,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		}
 		persistBrowserToolAlwaysAllow := a.persistConfigValue("browser_permission_mode", internalconfig.BrowserPermissionModeSkipAll)
 		persistComputerToolAlwaysAllow := a.persistConfigValue("computer_permission_mode", internalconfig.ComputerPermissionModeSkipAll)
+		persistWriteToolAlwaysAllow := a.persistConfigValue("write_confirmation_policy", internalconfig.WriteConfirmationPolicyDirect)
+		persistSkillAutoInstallAlwaysAllow := a.persistConfigValue("skill_review_policy", internalconfig.SkillReviewPolicyIgnore)
+		persistApprovalModeAuto := a.persistConfigValue("approval_mode", "auto")
 		sandboxEscapeConfirmer := func(path string) (bool, error) {
 			return confirm(buildTUISandboxEscapeConfirmRequest(path, persistSandboxEscapeAlwaysAllow)), nil
 		}
@@ -367,7 +370,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					emit(tui.Event{Kind: tui.EventBuiltInCall, Text: previewBuiltInCommand(event.Data)})
 					emit(tui.Event{Kind: tui.EventProgressNote, Text: "正在执行本地命令..."})
 					if requiresTUICommandConfirmation(localConfig, event.Data) {
-						approved := confirm(buildTUIConfirmRequest(event.Data))
+						approved := confirm(buildTUIConfirmRequest(event.Data, persistApprovalModeAuto))
 						if !approved {
 							emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端命令执行。"})
 							if err := submitClientCallFailure(runCtx, callbackProvider, localConfig, event.Data, "用户拒绝执行客户端命令"); err != nil {
@@ -415,7 +418,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 							appendApprovedSkillName(&sessionState, skillName)
 							return a.sessionStore.Save(sessionState)
 						}
-						approved := confirm(buildTUIClientToolConfirmRequest(localConfig, sessionState.ContextDir, event.Data, persistApprovedSkillReview, persistSkillReviewAllowAll, persistBrowserToolAlwaysAllow, persistComputerToolAlwaysAllow))
+						approved := confirm(buildTUIClientToolConfirmRequest(localConfig, sessionState.ContextDir, event.Data, persistApprovedSkillReview, persistSkillReviewAllowAll, persistBrowserToolAlwaysAllow, persistComputerToolAlwaysAllow, persistWriteToolAlwaysAllow, persistApprovalModeAuto))
 						if !approved {
 							emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端工具执行。"})
 							if err := submitClientCallFailure(runCtx, callbackProvider, localConfig, event.Data, "用户拒绝执行客户端工具"); err != nil {
@@ -448,7 +451,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 								requestedSkillNames,
 								missingSkillNames,
 								func(approval skillInstallApprovalRequest) bool {
-									return confirm(buildTUISkillAutoInstallConfirmRequest(approval))
+									return confirm(buildTUISkillAutoInstallConfirmRequest(approval, persistSkillAutoInstallAlwaysAllow))
 								},
 								func(text string) {
 									if strings.TrimSpace(text) != "" {
@@ -1906,14 +1909,17 @@ func requiresTUICommandConfirmation(config internalconfig.Config, payload map[st
 	return true
 }
 
-func buildTUIConfirmRequest(payload map[string]any) tui.ConfirmRequest {
+func buildTUIConfirmRequest(payload map[string]any, alwaysApprove func(context.Context) error) tui.ConfirmRequest {
 	request := tui.ConfirmRequest{
-		Title:        "客户端命令(client command)待确认",
-		Command:      previewBuiltInCommand(payload),
-		Detail:       "该命令由服务端下发，是否允许在本地执行？",
-		Hint:         "Y 执行本次命令，N 取消本次命令，A 切换为自动执行；方向键或 Tab 选择，Enter 确认。",
-		ApproveLabel: "执行本次命令",
-		RejectLabel:  "取消本次命令",
+		Title:                       "客户端命令(client command)待确认",
+		Command:                     previewBuiltInCommand(payload),
+		Detail:                      "该命令由服务端下发，是否允许在本地执行？",
+		Hint:                        "Y 执行本次命令，N 取消本次命令，A 切换为自动执行；方向键或 Tab 选择，Enter 确认。",
+		ApproveLabel:                "执行本次命令",
+		RejectLabel:                 "取消本次命令",
+		AlwaysApproveLabel:          "切换为自动执行",
+		AlwaysApprove:               alwaysApprove,
+		DisableDefaultAlwaysApprove: true,
 	}
 	return request
 }
@@ -1926,6 +1932,8 @@ func buildTUIClientToolConfirmRequest(
 	allowAllSkills func(context.Context) error,
 	allowBrowserTools func(context.Context) error,
 	allowComputerTools func(context.Context) error,
+	allowWriteTools func(context.Context) error,
+	allowAllTools func(context.Context) error,
 ) tui.ConfirmRequest {
 	toolName := nestedStringValue(payload, "function", "name")
 	arguments, _ := nestedMapValue(payload, "function", "arguments")
@@ -1959,7 +1967,9 @@ func buildTUIClientToolConfirmRequest(
 		request.Expanded = true
 		request.ApproveLabel = "确认本次写入"
 		request.RejectLabel = "取消本次写入"
-		request.Hint = "Y 确认本次写入，N 取消本次写入；方向键或 Tab 选择，Enter 确认。"
+		request.AlwaysApproveLabel = "以后都允许写入"
+		request.AlwaysApprove = allowWriteTools
+		request.Hint = "Y 确认本次写入，N 取消本次写入，A 以后都允许写入；方向键或 Tab 选择，Enter 确认。"
 		request.DisableDefaultAlwaysApprove = true
 	default:
 		switch {
@@ -1976,6 +1986,11 @@ func buildTUIClientToolConfirmRequest(
 			request.AlwaysApproveLabel = "始终允许桌面操作"
 			request.AlwaysApprove = allowComputerTools
 			request.Hint = "Y 允许本次执行，N 本次拒绝，A 始终允许桌面操作；方向键或 Tab 选择，Enter 确认。"
+			request.DisableDefaultAlwaysApprove = true
+		default:
+			// 其他客户端工具：提供"切换为自动执行"选项
+			request.AlwaysApproveLabel = "切换为自动执行"
+			request.AlwaysApprove = allowAllTools
 			request.DisableDefaultAlwaysApprove = true
 		}
 	}
@@ -2091,7 +2106,7 @@ func buildTUISandboxEscapeConfirmRequest(path string, alwaysApprove func(context
 	}
 }
 
-func buildTUISkillAutoInstallConfirmRequest(request skillInstallApprovalRequest) tui.ConfirmRequest {
+func buildTUISkillAutoInstallConfirmRequest(request skillInstallApprovalRequest, alwaysApprove func(context.Context) error) tui.ConfirmRequest {
 	previewLines := []string{
 		fmt.Sprintf("技能: %s (%s)", candidateLabel(request.Candidate), request.Candidate.Slug),
 		fmt.Sprintf("安装位置: %s", skillInstallScopeLabelText(request.Scope)),
@@ -2101,14 +2116,17 @@ func buildTUISkillAutoInstallConfirmRequest(request skillInstallApprovalRequest)
 		previewLines = append(previewLines, fmt.Sprintf("摘要: %s", request.Candidate.Summary))
 	}
 	return tui.ConfirmRequest{
-		Title:        "自动安装技能(skill auto install)待确认",
-		Command:      fmt.Sprintf("install %s", request.Candidate.Slug),
-		Detail:       fallbackString(strings.TrimSpace(request.Reason), "本轮请求命中了可补装的远程技能，确认后会先安装再继续发送请求。"),
-		PreviewTitle: "安装预览(install preview)",
-		PreviewBody:  strings.Join(previewLines, "\n"),
-		Hint:         "Y 安装并继续，N 跳过本次安装；方向键或 Tab 选择，Enter 确认。",
-		ApproveLabel: "安装并继续",
-		RejectLabel:  "跳过安装",
+		Title:                       "自动安装技能(skill auto install)待确认",
+		Command:                     fmt.Sprintf("install %s", request.Candidate.Slug),
+		Detail:                      fallbackString(strings.TrimSpace(request.Reason), "本轮请求命中了可补装的远程技能，确认后会先安装再继续发送请求。"),
+		PreviewTitle:                "安装预览(install preview)",
+		PreviewBody:                 strings.Join(previewLines, "\n"),
+		Hint:                        "Y 安装并继续，N 跳过本次安装，A 以后都自动安装；方向键或 Tab 选择，Enter 确认。",
+		ApproveLabel:                "安装并继续",
+		RejectLabel:                 "跳过安装",
+		AlwaysApproveLabel:          "以后都自动安装",
+		AlwaysApprove:               alwaysApprove,
+		DisableDefaultAlwaysApprove: true,
 	}
 }
 
