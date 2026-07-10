@@ -44,6 +44,10 @@ func (a *App) prepareInitialTUIAuthentication(
 }
 
 func (a *App) runTUI(ctx context.Context, args []string) error {
+	// TUI 模式默认开启子智能体
+	if a.runtime != nil {
+		a.runtime.SetSubtaskEnabled(true)
+	}
 	startupCommand := ""
 	if len(args) > 0 {
 		startupCommand = strings.TrimSpace(args[0])
@@ -143,6 +147,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 
 		runtimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), logWriter, logWriter)
 		quietRuntimeClient := clientruntime.NewClientRuntime(strings.NewReader("\n"), io.Discard, io.Discard)
+		// TUI 模式下子智能体默认启用
+		runtimeClient.SetSubtaskEnabled(true)
+		quietRuntimeClient.SetSubtaskEnabled(true)
 		defer func() {
 			errorMessage := ""
 			if returnErr != nil {

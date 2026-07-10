@@ -67,6 +67,7 @@ type rootOptions struct {
 	SandboxEscapePolicy       string
 	CrossSessionMemoryEnabled bool
 	CrossSessionMemorySet     bool
+	EnableSubtask             bool
 	ConfigOverrides           stringArrayFlag
 }
 
@@ -202,6 +203,7 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	flagSet.StringVar(&options.SandboxEscapePolicy, "external-resource-access-policy", "", "外部资源访问策略（confirm|deny|allow），仅影响当前命令")
 	flagSet.BoolVar(&options.CrossSessionMemoryEnabled, "cross-session-memory-enabled", false, "跨会话记忆（true|false），默认使用系统配置")
 	flagSet.Var(&options.ConfigOverrides, "config-override", "临时覆盖配置项（key=value），可多次使用，仅影响当前命令")
+	flagSet.BoolVar(&options.EnableSubtask, "enable-subtask", false, "在非交互式模式下启用子智能体（run_subtask）功能")
 
 	if err := flagSet.Parse(args); err != nil {
 		return err
@@ -244,6 +246,10 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	a.disableCLIFocusReporting()
 	defer clientruntime.ShutdownLocalTasks()
+	// 交互式模式默认开启子智能体
+	if a.runtime != nil {
+		a.runtime.SetSubtaskEnabled(true)
+	}
 
 	config, err := a.configManager.Load()
 	if err != nil {
@@ -624,6 +630,8 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	if a.runtime != nil {
 		previousInteractivePromptsEnabled := a.runtime.InteractivePromptsEnabled()
 		a.runtime.SetInteractivePromptsEnabled(false)
+		// 非交互式模式默认不开启子智能体，除非显式传 --enable-subtask
+		a.runtime.SetSubtaskEnabled(options.EnableSubtask)
 		defer a.runtime.SetInteractivePromptsEnabled(previousInteractivePromptsEnabled)
 	}
 
@@ -903,7 +911,7 @@ func (a *App) streamTaskWithSkillRetry(
 		lastVisibleOutputEndedWithNewline = strings.HasSuffix(text, "\n")
 	}
 	renderState := cliStreamRenderState{}
-	renderStreamingSuffix := isTerminalWriter(a.stdout)
+	renderStreamingSuffix := isTerminalWriter(a.stdout) && a.runtime.InteractivePromptsEnabled()
 	clearRenderedStreamingSuffix := func() {
 		if clearIndicator := clearStreamingSuffixIfNeeded(renderStreamingSuffix, &renderState); clearIndicator != "" {
 			fmt.Fprint(a.stdout, clearIndicator)

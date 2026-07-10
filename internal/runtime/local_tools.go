@@ -512,6 +512,17 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		}
 		definitions = filtered
 	}
+	if !r.subtaskEnabled {
+		filtered := definitions[:0]
+		for _, definition := range definitions {
+			name := strings.TrimSpace(stringValue(definition["name"]))
+			if name == "run_subtask" {
+				continue
+			}
+			filtered = append(filtered, definition)
+		}
+		definitions = filtered
+	}
 	if provider.NormalizeRequestType(mode) == provider.RequestTypeAgent {
 		return definitions
 	}

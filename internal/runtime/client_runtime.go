@@ -109,6 +109,9 @@ type ClientRuntime struct {
 	subtaskReasoningEnabled    bool
 	subtaskInternetSearch      bool
 	subtaskCrossSessionMemory  *bool
+	// subtaskEnabled 控制是否向模型暴露 run_subtask 工具。
+	// 非交互式模式默认 false，交互式模式和 TUI 默认 true。
+	subtaskEnabled bool
 }
 
 func NewClientRuntime(stdin io.Reader, stdout io.Writer, stderr io.Writer) *ClientRuntime {
@@ -153,6 +156,22 @@ func (r *ClientRuntime) InteractivePromptsEnabled() bool {
 	return r.interactivePromptsEnabled
 }
 
+// SetSubtaskEnabled 控制是否向模型暴露 run_subtask 工具。
+// 非交互式模式默认 false，交互式模式和 TUI 默认 true。
+func (r *ClientRuntime) SetSubtaskEnabled(enabled bool) {
+	if r == nil {
+		return
+	}
+	r.subtaskEnabled = enabled
+}
+
+func (r *ClientRuntime) SubtaskEnabled() bool {
+	if r == nil {
+		return false
+	}
+	return r.subtaskEnabled
+}
+
 // SetSubtaskCapabilities 注入子任务执行时需要继承的能力字段。
 // 由 cmd 层在发起 Stream 前调用，确保子任务拥有与主任务相同的 skills、MCP、reasoning 等能力。
 func (r *ClientRuntime) SetSubtaskCapabilities(skillPackages any, requestedSkillNames []string, reasoningEnabled bool, internetSearch bool, crossSessionMemory *bool) {
@@ -185,6 +204,7 @@ func (r *ClientRuntime) cloneRuntime() *ClientRuntime {
 		subtaskReasoningEnabled:     r.subtaskReasoningEnabled,
 		subtaskInternetSearch:       r.subtaskInternetSearch,
 		subtaskCrossSessionMemory:   r.subtaskCrossSessionMemory,
+		subtaskEnabled:              r.subtaskEnabled,
 	}
 }
 
