@@ -297,6 +297,38 @@ async function handleClick(args: Record<string, unknown>): Promise<Record<string
     if (!element) {
       return { ok: false, message: `selector not found: ${receivedSelector}` };
     }
+
+    // 检查 disabled 状态（使用 hasAttribute 兼容所有元素类型）
+    if (element.hasAttribute('disabled')) {
+      return { ok: false, message: `element is disabled: ${receivedSelector}` };
+    }
+
+    // 检查可见性
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+      return { ok: false, message: `element is not visible: ${receivedSelector}` };
+    }
+
+    // 滚动到可视区域（behavior: 'instant' 是同步的）
+    element.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior });
+
+    // getBoundingClientRect() 会强制同步回流，布局已稳定，无需 requestAnimationFrame
+    const rect = element.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+
+    // 覆盖检测：中心点必须在视口范围内，否则 elementFromPoint 可能返回 null
+    if (centerX >= 0 && centerX <= window.innerWidth && centerY >= 0 && centerY <= window.innerHeight) {
+      const topElement = document.elementFromPoint(centerX, centerY);
+      if (topElement && !element.contains(topElement) && !topElement.contains(element)) {
+        // 如果遮挡层设置了 pointer-events: none，点击可以穿透，不算遮挡
+        const topStyle = window.getComputedStyle(topElement);
+        if (topStyle.pointerEvents !== 'none') {
+          return { ok: false, message: `element is covered by another element at center point: ${receivedSelector}` };
+        }
+      }
+    }
+
     element.click();
     return { ok: true, message: receivedSelector };
   }, selector);
@@ -307,17 +339,85 @@ async function handleType(args: Record<string, unknown>): Promise<Record<string,
   const tab = await resolveTargetTab(args);
   const selector = readRequiredString(args, 'selector');
   const text = readRequiredString(args, 'text');
-  await runTabFunction(tab.id, (receivedSelector: string, receivedText: string) => {
-    const element = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(receivedSelector);
+  const append = readBoolean(args, 'append', false);
+  const pressEnter = readBoolean(args, 'press_enter', false);
+  await runTabFunction(tab.id, (receivedSelector: string, receivedText: string, shouldAppend: boolean, shouldPressEnter: boolean) => {
+    const element = document.querySelector<HTMLElement>(receivedSelector);
     if (!element) {
       return { ok: false, message: `selector not found: ${receivedSelector}` };
     }
+
+    // 检查可见性
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') {
+      return { ok: false, message: `element is not visible: ${receivedSelector}` };
+    }
+
+    // 滚动到可视区域
+    element.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior });
+
+    // 聚焦
     element.focus();
-    element.value = receivedText;
-    element.dispatchEvent(new Event('input', { bubbles: true }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
+
+    // 判断元素类型并设置值
+    const isContentEditable = element.getAttribute('contenteditable') === 'true' || element.getAttribute('contenteditable') === '';
+    const isInputLike = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement;
+
+    if (isContentEditable) {
+      // contenteditable 元素：使用 textContent，并派发 beforeinput / compositionend 以兼容主流框架
+      const currentText = element.textContent ?? '';
+      const newValue = shouldAppend ? currentText + receivedText : receivedText;
+      element.dispatchEvent(new InputEvent('beforeinput', { data: receivedText, inputType: 'insertText', bubbles: true, cancelable: true }));
+      element.textContent = newValue;
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new CompositionEvent('compositionend', { data: receivedText, bubbles: true }));
+    } else if (isInputLike) {
+      const inputElement = element as HTMLInputElement | HTMLTextAreaElement;
+
+      // React 兼容：通过原生 prototype setter 绕过框架拦截
+      const prototype = inputElement instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+
+      const newValue = shouldAppend ? inputElement.value + receivedText : receivedText;
+      if (nativeSetter) {
+        nativeSetter.call(inputElement, newValue);
+      } else {
+        // fallback：直接赋值（某些安全策略可能拦截 prototype setter）
+        inputElement.value = newValue;
+      }
+
+      // 事件序列：keydown → input → keyup → change（keypress 已废弃，不再派发）
+      inputElement.dispatchEvent(new Event('keydown', { bubbles: true }));
+      inputElement.dispatchEvent(new Event('input', { bubbles: true }));
+      inputElement.dispatchEvent(new Event('keyup', { bubbles: true }));
+      inputElement.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      return { ok: false, message: `element is not an input, textarea, or contenteditable: ${receivedSelector}` };
+    }
+
+    // 模拟回车键
+    if (shouldPressEnter) {
+      const enterEventInit: KeyboardEventInit = {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+      };
+      element.dispatchEvent(new KeyboardEvent('keydown', enterEventInit));
+      element.dispatchEvent(new KeyboardEvent('keyup', enterEventInit));
+      // 如果在表单内，尝试提交
+      const form = (element as HTMLElement).closest?.('form');
+      if (form) {
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      }
+    }
+
     return { ok: true, message: receivedSelector };
-  }, selector, text);
+  }, selector, text, append, pressEnter);
   return { ...(await readTabState(tab.id)), selector, text_length: text.length };
 }
 
