@@ -119,9 +119,9 @@ func (r *ClientRuntime) ExecuteClientCollaborationTask(
 	}
 	executionResult, execErr := r.executeLocalSubtask(ctx, providerClient, config, request)
 	if execErr != nil {
-		// 执行失败时向服务端写回失败状态。
-		r.reportCollaborationTaskFailure(ctx, providerClient, config, task.ID, execErr.Error())
-		result := buildSubtaskResult(task, nil)
+		// 执行失败时向服务端写回失败状态，并携带已收集的部分内容。
+		r.reportCollaborationTaskFailureWithResult(ctx, providerClient, config, task.ID, execErr.Error(), request, executionResult)
+		result := buildSubtaskResult(task, &executionResult)
 		result["status"] = "failed"
 		result["error_message"] = execErr.Error()
 		return result, nil
@@ -238,10 +238,12 @@ func (r *ClientRuntime) executeManagedSubtaskRequest(
 
 	executionResult, execErr := r.executeLocalSubtask(ctx, providerClient, config, request)
 	if execErr != nil {
-		// 使用 updateCollaborationWithRetry 确保超时后仍能写回失败状态，并自动重试。
+		// 执行失败时，将已收集的部分内容一并写回服务端，避免丢失。
+		partialResultPayload := buildSubtaskResultPayload(request, executionResult)
 		updatedTask, updateErr := updateCollaborationWithRetry(ctx, providerClient, time.Duration(config.HTTPTimeoutSeconds)*time.Second, createdTask.ID, provider.ClientCollaborationUpdateRequest{
-			Status:       "failed",
-			ErrorMessage: execErr.Error(),
+			Status:        "failed",
+			ErrorMessage:  execErr.Error(),
+			ResultPayload: partialResultPayload,
 			StatusPayload: map[string]any{
 				"executor": "local_serial",
 				"target":   "self",
@@ -250,12 +252,12 @@ func (r *ClientRuntime) executeManagedSubtaskRequest(
 			r.writeStreamEventf(r.stderr, format+"\n", args...)
 		})
 		if updateErr != nil {
-			result := buildSubtaskResult(createdTask, nil)
+			result := buildSubtaskResult(createdTask, &executionResult)
 			result["status"] = "failed"
 			result["error_message"] = fmt.Sprintf("子任务执行失败: %v；写回失败状态也失败: %v", execErr, updateErr)
 			return result, nil
 		}
-		result := buildSubtaskResult(updatedTask, nil)
+		result := buildSubtaskResult(updatedTask, &executionResult)
 		result["error_message"] = execErr.Error()
 		return result, nil
 	}
@@ -560,6 +562,20 @@ func (r *ClientRuntime) executeLocalSubtask(
 	var outputBuilder strings.Builder
 	childMessageID := ""
 
+	// buildPartialResult 从已收集的流输出中构建部分结果。
+	// 用于超时或执行出错时保留已收到的内容，避免丢弃。
+	buildPartialResult := func() subtaskExecutionResult {
+		rawOutput := strings.TrimSpace(outputBuilder.String())
+		reason, text := splitThinkingContent(rawOutput)
+		return subtaskExecutionResult{
+			Text:           text,
+			Reason:         reason,
+			ChildSessionID: childSessionID,
+			ChildRunID:     request.ChildRunID,
+			ChildMessageID: childMessageID,
+		}
+	}
+
 	for event := range stream {
 		// 收到任意流事件即重置空闲计时器
 		if idleTimer != nil {
@@ -575,28 +591,28 @@ func (r *ClientRuntime) executeLocalSubtask(
 			}
 		case provider.EventBuiltIn:
 			if err := quietRuntime.HandleBuiltInEvent(executionCtx, providerClient, childConfig, event.Data); err != nil {
-				return subtaskExecutionResult{}, err
+				// 出错时返回已收集的部分内容，供调用方写回服务端
+				return buildPartialResult(), err
 			}
 		case provider.EventClientTool:
 			if err := quietRuntime.HandleClientToolEvent(executionCtx, providerClient, childConfig, event.Data); err != nil {
-				return subtaskExecutionResult{}, err
+				// 出错时返回已收集的部分内容，供调用方写回服务端
+				return buildPartialResult(), err
 			}
 		case provider.EventError:
-			return subtaskExecutionResult{}, newToolError("EXECUTION_FAILED", "子任务执行失败: %s", resolveSubtaskErrorMessage(event.Data))
+			// 出错时返回已收集的部分内容，供调用方写回服务端
+			return buildPartialResult(), newToolError("EXECUTION_FAILED", "子任务执行失败: %s", resolveSubtaskErrorMessage(event.Data))
 		}
 	}
 
-	// 解析 <think> 标签，分离 reason 和 text
-	rawOutput := strings.TrimSpace(outputBuilder.String())
-	reason, text := splitThinkingContent(rawOutput)
+	// 循环结束后检测空闲超时：如果上下文因 idle timer 触发而被取消，
+	// 返回已收集的部分内容并附带超时错误。
+	if executionCtx.Err() != nil && ctx.Err() == nil {
+		return buildPartialResult(), newToolError("EXECUTION_FAILED", "子任务空闲超时（超过 %d 秒未收到任何 CHUNK）", request.TimeoutSeconds)
+	}
 
-	return subtaskExecutionResult{
-		Text:           text,
-		Reason:         reason,
-		ChildSessionID: childSessionID,
-		ChildRunID:     request.ChildRunID,
-		ChildMessageID: childMessageID,
-	}, nil
+	// 正常结束：解析 <think> 标签，分离 reason 和 text
+	return buildPartialResult(), nil
 }
 
 // reportCollaborationTaskFailure 向服务端写回协同任务的失败状态。
@@ -626,6 +642,39 @@ func (r *ClientRuntime) reportCollaborationTaskFailure(
 	if err != nil {
 		// 写回失败不影响后续流程，仅记录日志。
 		r.writeStreamEventf(r.stderr, "[协同任务] 写回失败状态失败: task_id=%s err=%v\n", taskID, err)
+	}
+}
+
+// reportCollaborationTaskFailureWithResult 向服务端写回协同任务的失败状态，并携带已收集的部分执行结果。
+// 用于子任务执行过程中发生错误时，将已收到的部分内容一并写回，避免丢失。
+func (r *ClientRuntime) reportCollaborationTaskFailureWithResult(
+	ctx context.Context,
+	providerClient provider.Provider,
+	config internalconfig.Config,
+	taskID string,
+	errorMessage string,
+	request subtaskExecutionRequest,
+	executionResult subtaskExecutionResult,
+) {
+	if providerClient == nil || strings.TrimSpace(taskID) == "" {
+		return
+	}
+	trimmedMessage := firstNonEmptySubtask(strings.TrimSpace(errorMessage), "客户端协同任务执行失败")
+	partialResultPayload := buildSubtaskResultPayload(request, executionResult)
+	_, err := updateCollaborationWithRetry(ctx, providerClient, time.Duration(config.HTTPTimeoutSeconds)*time.Second, taskID, provider.ClientCollaborationUpdateRequest{
+		Status:        "failed",
+		ErrorMessage:  trimmedMessage,
+		ResultPayload: partialResultPayload,
+		StatusPayload: map[string]any{
+			"executor": "local_direct",
+			"target":   "self",
+		},
+	}, func(format string, args ...any) {
+		r.writeStreamEventf(r.stderr, format+"\n", args...)
+	})
+	if err != nil {
+		// 写回失败不影响后续流程，仅记录日志。
+		r.writeStreamEventf(r.stderr, "[协同任务] 写回失败状态（含部分内容）失败: task_id=%s err=%v\n", taskID, err)
 	}
 }
 

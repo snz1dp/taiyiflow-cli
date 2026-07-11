@@ -383,7 +383,8 @@ func (w *collaborationWorker) executeTask(ctx context.Context, conn net.Conn, ta
 	}
 	executionResult, execErr := execRuntime.executeLocalSubtask(ctx, w.provider, execConfig, request)
 	if execErr != nil {
-		w.reportTaskFailure(ctx, conn, task.ID, execErr.Error())
+		// 执行失败时，将已收集的部分内容一并写回服务端，避免丢失。
+		w.reportTaskFailureWithResult(ctx, conn, task.ID, execErr.Error(), request, executionResult)
 		return
 	}
 	w.reportTaskSuccess(ctx, conn, task.ID, buildSubtaskResultPayload(request, executionResult))
@@ -423,6 +424,40 @@ func (w *collaborationWorker) reportTaskFailure(ctx context.Context, conn net.Co
 		w.updateTaskFallback(ctx, taskID, provider.ClientCollaborationUpdateRequest{
 			Status:       "failed",
 			ErrorMessage: trimmedMessage,
+			StatusPayload: map[string]any{
+				"executor":  collaborationWorkerExecutor,
+				"transport": collaborationWorkerFallbackTransport,
+			},
+		})
+	}
+}
+
+// reportTaskFailureWithResult 向服务端写回协同任务的失败状态，并携带已收集的部分执行结果。
+// 用于子任务执行过程中发生错误时，将已收到的部分内容一并写回，避免丢失。
+func (w *collaborationWorker) reportTaskFailureWithResult(
+	ctx context.Context,
+	conn net.Conn,
+	taskID string,
+	errorMessage string,
+	request subtaskExecutionRequest,
+	executionResult subtaskExecutionResult,
+) {
+	trimmedMessage := firstNonEmptySubtask(strings.TrimSpace(errorMessage), "客户端协同任务执行失败")
+	partialResultPayload := buildSubtaskResultPayload(request, executionResult)
+	payload := map[string]any{
+		"task_id":  taskID,
+		"error":    trimmedMessage,
+		"message":  trimmedMessage,
+		"status":   "failed",
+		"executor": collaborationWorkerExecutor,
+		"result":   partialResultPayload,
+	}
+	if err := w.sendEnvelope(conn, collaborationEventTaskError, payload); err != nil {
+		w.logf("发送协同任务失败结果（含部分内容）失败，回退接口更新: task_id=%s err=%v", taskID, err)
+		w.updateTaskFallback(ctx, taskID, provider.ClientCollaborationUpdateRequest{
+			Status:        "failed",
+			ErrorMessage:  trimmedMessage,
+			ResultPayload: partialResultPayload,
 			StatusPayload: map[string]any{
 				"executor":  collaborationWorkerExecutor,
 				"transport": collaborationWorkerFallbackTransport,
