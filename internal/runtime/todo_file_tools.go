@@ -203,8 +203,16 @@ func (r *ClientRuntime) fileEdit(config internalconfig.Config, arguments map[str
 	if matchedNewString != newString {
 		result["normalized_new_string_applied"] = true
 	}
+	isArtifact := true
+	if value, ok := arguments["is_artifact"]; ok {
+		isArtifact = boolValue(value)
+	}
+	result["is_artifact"] = isArtifact
+	if !isArtifact && !dryRun {
+		r.trackNonArtifactFile(resolvedPath)
+	}
 	r.writeStreamEventf(r.stdout, "[本地工具] file_edit %s 替换 %d 处%s\n", resolvedPath, replacements, map[bool]string{true: "（dry-run）", false: ""}[dryRun])
-	_ = appendAuditLog(config, "file_edit", map[string]any{"path": resolvedPath, "replacements": replacements, "dry_run": dryRun})
+	_ = appendAuditLog(config, "file_edit", map[string]any{"path": resolvedPath, "replacements": replacements, "dry_run": dryRun, "is_artifact": isArtifact})
 	return result, nil
 }
 

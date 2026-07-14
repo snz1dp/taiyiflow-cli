@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -185,7 +186,7 @@ func summarizeHookResult(result any) any {
 			return map[string]any{}
 		}
 		summary := map[string]any{}
-		for _, key := range []string{"task_id", "status", "text", "path", "count", "child_session_id", "child_run_id", "child_message_id"} {
+		for _, key := range []string{"task_id", "status", "text", "path", "count", "child_session_id", "child_run_id", "child_message_id", "is_artifact"} {
 			if value, ok := typed[key]; ok {
 				summary[key] = value
 			}
@@ -229,4 +230,44 @@ func firstNonEmptyHook(values ...string) string {
 func boolPtrHook(value bool) *bool {
 	result := value
 	return &result
+}
+
+// trackNonArtifactFile 记录 is_artifact=false 的文件路径，供 on_complete 时清理。
+func (r *ClientRuntime) trackNonArtifactFile(path string) {
+	if r == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	r.nonArtifactMu.Lock()
+	defer r.nonArtifactMu.Unlock()
+	r.nonArtifactFiles = append(r.nonArtifactFiles, path)
+}
+
+// nonArtifactCleanupHandler 在 on_complete 事件时删除所有标记为 is_artifact=false 的文件。
+// 清理在对话停止后执行，不影响续跑中的临时文件使用。
+func (r *ClientRuntime) nonArtifactCleanupHandler(config internalconfig.Config, event HookEvent) error {
+	if event.Name != HookOnComplete {
+		return nil
+	}
+	r.nonArtifactMu.Lock()
+	files := append([]string(nil), r.nonArtifactFiles...)
+	r.nonArtifactFiles = nil
+	r.nonArtifactMu.Unlock()
+
+	deleted := 0
+	for _, path := range files {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			r.writeStreamEventf(r.stderr, "[清理] 删除非产物文件失败 %s: %v\n", path, err)
+			continue
+		}
+		deleted++
+	}
+	if deleted > 0 {
+		r.writeStreamEventf(r.stdout, "[清理] 已删除 %d 个非产物文件\n", deleted)
+		_ = appendAuditLog(config, "cleanup_non_artifact", map[string]any{"deleted_count": deleted})
+	}
+	return nil
 }

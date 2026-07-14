@@ -266,6 +266,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 					"replace_all":            map[string]any{"type": "boolean"},
 					"dry_run":                map[string]any{"type": "boolean"},
 					"expected_sha256_before": map[string]any{"type": "string", "description": "可选的编辑前内容摘要，用于检测文件是否变化；冲突后可优先复用 retry_hint.recommended_args.expected_sha256_before。"},
+					"is_artifact":            map[string]any{"type": "boolean", "default": true, "description": "标记本次编辑是否为项目产物。设为 false 时不会出现在变更列表中（适用于临时文件、中间产物等）。"},
 				},
 				"required":             []string{"path", "old_string", "new_string"},
 				"additionalProperties": false,
@@ -476,9 +477,10 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"path":    map[string]any{"type": "string", "description": "目标文件路径。"},
-					"content": map[string]any{"type": "string", "description": "要写入的文本内容。"},
-					"mode":    map[string]any{"type": "string", "enum": []string{"create", "overwrite", "append"}},
+					"path":        map[string]any{"type": "string", "description": "目标文件路径。"},
+					"content":     map[string]any{"type": "string", "description": "要写入的文本内容。"},
+					"mode":        map[string]any{"type": "string", "enum": []string{"create", "overwrite", "append"}},
+					"is_artifact": map[string]any{"type": "boolean", "default": true, "description": "标记本次写入是否为项目产物。设为 false 时不会出现在变更列表中（适用于临时文件、中间产物等）。"},
 				},
 				"required":             []string{"path", "content"},
 				"additionalProperties": false,
@@ -913,14 +915,22 @@ func (r *ClientRuntime) writeFile(config internalconfig.Config, arguments map[st
 	if err := writeFileAtomically(resolvedPath, finalContent); err != nil {
 		return nil, newToolError("EXECUTION_FAILED", "写入文件失败: %v", err)
 	}
+	isArtifact := true
+	if value, ok := arguments["is_artifact"]; ok {
+		isArtifact = boolValue(value)
+	}
+	if !isArtifact {
+		r.trackNonArtifactFile(resolvedPath)
+	}
 	r.writeStreamEventf(r.stdout, "[本地工具] write_file %s (%s，%d 字节)\n", resolvedPath, mode, len(finalContent))
-	_ = appendAuditLog(config, "write_file", map[string]any{"path": resolvedPath, "mode": mode, "size": len(finalContent)})
+	_ = appendAuditLog(config, "write_file", map[string]any{"path": resolvedPath, "mode": mode, "size": len(finalContent), "is_artifact": isArtifact})
 	return map[string]any{
 		"path":          resolvedPath,
 		"mode":          mode,
 		"created":       created,
 		"bytes_written": len(finalContent),
 		"size":          len(finalContent),
+		"is_artifact":   isArtifact,
 	}, nil
 }
 

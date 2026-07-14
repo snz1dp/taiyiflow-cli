@@ -112,10 +112,15 @@ type ClientRuntime struct {
 	// subtaskEnabled 控制是否向模型暴露 run_subtask 工具。
 	// 非交互式模式默认 false，交互式模式和 TUI 默认 true。
 	subtaskEnabled bool
+	// nonArtifactFiles 追踪 is_artifact=false 的文件路径，在 on_complete 时自动清理。
+	nonArtifactFiles []string
+	nonArtifactMu    sync.Mutex
 }
 
 func NewClientRuntime(stdin io.Reader, stdout io.Writer, stderr io.Writer) *ClientRuntime {
-	return &ClientRuntime{stdin: stdin, stdout: stdout, stderr: stderr, browserToolExecutor: defaultBrowserToolExecutor{}, computerToolExecutor: defaultComputerToolExecutor{}, streamEventLogsEnabled: true, interactivePromptsEnabled: true, hookHandlers: []HookHandler{auditHookHandler}}
+	r := &ClientRuntime{stdin: stdin, stdout: stdout, stderr: stderr, browserToolExecutor: defaultBrowserToolExecutor{}, computerToolExecutor: defaultComputerToolExecutor{}, streamEventLogsEnabled: true, interactivePromptsEnabled: true, hookHandlers: []HookHandler{auditHookHandler}}
+	r.RegisterHookHandler(r.nonArtifactCleanupHandler)
+	return r
 }
 
 func (r *ClientRuntime) SetSandboxEscapeConfirmer(confirmer func(path string) (bool, error)) {
@@ -205,6 +210,7 @@ func (r *ClientRuntime) cloneRuntime() *ClientRuntime {
 		subtaskInternetSearch:       r.subtaskInternetSearch,
 		subtaskCrossSessionMemory:   r.subtaskCrossSessionMemory,
 		subtaskEnabled:              r.subtaskEnabled,
+		nonArtifactFiles:            append([]string(nil), r.nonArtifactFiles...),
 	}
 }
 
