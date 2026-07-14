@@ -8927,6 +8927,8 @@ func configFieldVisible(form *configFormState, index int) bool {
 	browserMode := configChoiceValue(configBrowserModeChoices(), form.browserModeCursor, internalconfig.BrowserModeChromeSession)
 	browserExtensionSetup := configChoiceValue(configBrowserExtensionSetupChoices(), form.browserExtensionCursor, internalconfig.BrowserExtensionSetupNative)
 	switch index {
+	case configFieldSubtaskTimeout:
+		return false
 	case configFieldComputerPermissionMode:
 		return computerEnabled
 	case configFieldBrowserPermissionMode, configFieldBrowserChannel, configFieldBrowserConnectTimeout:
