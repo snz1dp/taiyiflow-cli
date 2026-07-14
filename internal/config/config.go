@@ -67,6 +67,9 @@ const (
 	BrowserExtensionSetupNone        = "none"
 	DefaultBrowserConnectTimeout     = 15
 	MaxBrowserConnectTimeout         = 120
+	DefaultBrowserHostIdleTimeout    = 30
+	MinBrowserHostIdleTimeout        = 1
+	MaxBrowserHostIdleTimeout        = 3600
 )
 
 var defaultDocUnstructuredExts = []string{
@@ -183,16 +186,17 @@ type Config struct {
 }
 
 type BrowserConfig struct {
-	Mode                  string `yaml:"mode,omitempty"`
-	PermissionMode        string `yaml:"permission_mode,omitempty"`
-	Channel               string `yaml:"channel,omitempty"`
-	ExecutablePath        string `yaml:"executable_path,omitempty"`
-	ProfileDir            string `yaml:"profile_dir,omitempty"`
-	ConnectTimeoutSeconds int    `yaml:"connect_timeout_seconds,omitempty"`
-	ExtensionSetup        string `yaml:"extension_setup,omitempty"`
-	SocketDir             string `yaml:"socket_dir,omitempty"`
-	RemoteDebuggingURL    string `yaml:"remote_debugging_url,omitempty"`
-	Headless              bool   `yaml:"headless,omitempty"`
+	Mode                   string `yaml:"mode,omitempty"`
+	PermissionMode         string `yaml:"permission_mode,omitempty"`
+	Channel                string `yaml:"channel,omitempty"`
+	ExecutablePath         string `yaml:"executable_path,omitempty"`
+	ProfileDir             string `yaml:"profile_dir,omitempty"`
+	ConnectTimeoutSeconds  int    `yaml:"connect_timeout_seconds,omitempty"`
+	ExtensionSetup         string `yaml:"extension_setup,omitempty"`
+	SocketDir              string `yaml:"socket_dir,omitempty"`
+	RemoteDebuggingURL     string `yaml:"remote_debugging_url,omitempty"`
+	HostIdleTimeoutSeconds int    `yaml:"host_idle_timeout_seconds,omitempty"`
+	Headless               bool   `yaml:"headless,omitempty"`
 }
 
 type ComputerConfig struct {
@@ -442,6 +446,19 @@ func NormalizeBrowserConnectTimeoutSeconds(value int) int {
 	return value
 }
 
+func NormalizeBrowserHostIdleTimeoutSeconds(value int) int {
+	if value < 0 {
+		return DefaultBrowserHostIdleTimeout
+	}
+	if value > 0 && value < MinBrowserHostIdleTimeout {
+		return MinBrowserHostIdleTimeout
+	}
+	if value > MaxBrowserHostIdleTimeout {
+		return MaxBrowserHostIdleTimeout
+	}
+	return value
+}
+
 func NormalizeBrowserConfig(value BrowserConfig) BrowserConfig {
 	value.Mode = NormalizeBrowserMode(value.Mode)
 	value.PermissionMode = NormalizeBrowserPermissionMode(value.PermissionMode)
@@ -452,6 +469,7 @@ func NormalizeBrowserConfig(value BrowserConfig) BrowserConfig {
 	value.ExtensionSetup = NormalizeBrowserExtensionSetup(value.ExtensionSetup)
 	value.SocketDir = strings.TrimSpace(value.SocketDir)
 	value.RemoteDebuggingURL = strings.TrimSpace(value.RemoteDebuggingURL)
+	value.HostIdleTimeoutSeconds = NormalizeBrowserHostIdleTimeoutSeconds(value.HostIdleTimeoutSeconds)
 	return value
 }
 

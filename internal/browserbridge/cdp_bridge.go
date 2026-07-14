@@ -837,6 +837,14 @@ func browserTimeout(config internalconfig.BrowserConfig) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
+func browserHostIdleTimeout(config internalconfig.BrowserConfig) time.Duration {
+	seconds := internalconfig.NormalizeBrowserHostIdleTimeoutSeconds(config.HostIdleTimeoutSeconds)
+	if seconds <= 0 {
+		seconds = internalconfig.DefaultBrowserHostIdleTimeout
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 func clearSelectorExpression(selector string) string {
 	return fmt.Sprintf(`(() => {
 		const node = document.querySelector(%s);

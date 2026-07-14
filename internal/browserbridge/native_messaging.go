@@ -329,14 +329,29 @@ func RunNativeMessagingHost(ctx context.Context, config internalconfig.BrowserCo
 	defer func() {
 		bridge.markExtensionDisconnected()
 	}()
+	idleTimeout := browserHostIdleTimeout(config)
+	idleTimer := time.NewTimer(idleTimeout)
+	defer idleTimer.Stop()
+	// 初始状态：无 socket 连接，计时器已启动。
+	// 当有 client 连接时停止计时器；所有连接断开后重置计时器。
+	stdinCh := make(chan nativeMessage, 1)
+	stdinErrCh := make(chan error, 1)
+	go func() {
+		message, err := readNativeMessage(stdin)
+		if err != nil {
+			stdinErrCh <- err
+			return
+		}
+		stdinCh <- message
+	}()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		default:
-		}
-		message, err := readNativeMessage(stdin)
-		if err != nil {
+		case <-idleTimer.C:
+			bridge.markError("无客户端连接，本地消息宿主空闲超时，自动退出")
+			return nil
+		case err := <-stdinErrCh:
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -345,41 +360,75 @@ func RunNativeMessagingHost(ctx context.Context, config internalconfig.BrowserCo
 			}
 			bridge.markError(err.Error())
 			return err
-		}
-		response := nativeMessage{
-			ID:              message.ID,
-			HostName:        paths.HostName,
-			ProtocolVersion: NativeMessagingProtocolVersion,
-			Timestamp:       time.Now().Format(time.RFC3339Nano),
-		}
-		switch strings.TrimSpace(message.Type) {
-		case "hello":
-			bridge.markExtensionHello(message.ExtensionID, message.ExtensionVersion, message.Capabilities)
-			response.Type = "hello_ack"
-			response.OK = true
-			response.ExtensionID = ChromeExtensionID
-			response.Payload = map[string]any{
-				"extension_origin": paths.ExtensionOrigin,
-				"state_path":       paths.StatePath,
-				"channel":          normalizedBrowserChannel(config.Channel),
-				"socket_path":      paths.SocketPath,
+		case <-bridge.connChangeCh:
+			if bridge.ActiveConnectionCount() > 0 {
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
+				}
+			} else {
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
+				}
+				idleTimer.Reset(idleTimeout)
 			}
-		case "ping":
-			response.Type = "pong"
-			response.OK = true
-		case "tool_request":
-			response.Type = "tool_result"
-			response.Error = "当前本地消息宿主仅提供安装链路与握手诊断，浏览器工具执行协议待后续接线"
-		case "tool_result":
-			bridge.resolveToolResult(message)
-			continue
-		default:
-			response.Type = "error"
-			response.Error = fmt.Sprintf("不支持的本地消息协议类型: %s", strings.TrimSpace(message.Type))
-		}
-		if err := writer.write(response); err != nil {
-			bridge.markError(err.Error())
-			return err
+		case message := <-stdinCh:
+			response := nativeMessage{
+				ID:              message.ID,
+				HostName:        paths.HostName,
+				ProtocolVersion: NativeMessagingProtocolVersion,
+				Timestamp:       time.Now().Format(time.RFC3339Nano),
+			}
+			switch strings.TrimSpace(message.Type) {
+			case "hello":
+				bridge.markExtensionHello(message.ExtensionID, message.ExtensionVersion, message.Capabilities)
+				response.Type = "hello_ack"
+				response.OK = true
+				response.ExtensionID = ChromeExtensionID
+				response.Payload = map[string]any{
+					"extension_origin": paths.ExtensionOrigin,
+					"state_path":       paths.StatePath,
+					"channel":          normalizedBrowserChannel(config.Channel),
+					"socket_path":      paths.SocketPath,
+				}
+			case "ping":
+				response.Type = "pong"
+				response.OK = true
+			case "tool_request":
+				response.Type = "tool_result"
+				response.Error = "当前本地消息宿主仅提供安装链路与握手诊断，浏览器工具执行协议待后续接线"
+			case "tool_result":
+				bridge.resolveToolResult(message)
+				go func() {
+					nextMessage, err := readNativeMessage(stdin)
+					if err != nil {
+						stdinErrCh <- err
+						return
+					}
+					stdinCh <- nextMessage
+				}()
+				continue
+			default:
+				response.Type = "error"
+				response.Error = fmt.Sprintf("不支持的本地消息协议类型: %s", strings.TrimSpace(message.Type))
+			}
+			if err := writer.write(response); err != nil {
+				bridge.markError(err.Error())
+				return err
+			}
+			go func() {
+				nextMessage, err := readNativeMessage(stdin)
+				if err != nil {
+					stdinErrCh <- err
+					return
+				}
+				stdinCh <- nextMessage
+			}()
 		}
 	}
 }

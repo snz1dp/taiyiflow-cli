@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -224,6 +225,115 @@ func TestRunNativeMessagingHostStopsOnContextCancel(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("expected native host to exit after context cancellation")
 	}
+}
+
+func TestRunNativeMessagingHostExitsOnIdleTimeout(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	stdinReader, stdinWriter := io.Pipe()
+	stdout := &bytes.Buffer{}
+	config := internalconfig.BrowserConfig{
+		Channel:                internalconfig.BrowserChannelChrome,
+		HostIdleTimeoutSeconds: 1,
+	}
+	hostDone := make(chan error, 1)
+	go func() {
+		hostDone <- RunNativeMessagingHost(context.Background(), config, stdinReader, stdout, ioDiscard{})
+	}()
+	paths, err := ResolveNativeMessagingPaths(config, "", "")
+	if err != nil {
+		t.Fatalf("resolve paths failed: %v", err)
+	}
+	if err := waitForNativeBridge(paths.StatePath, 3*time.Second); err != nil {
+		t.Fatalf("waitForNativeBridge failed: %v", err)
+	}
+	// 无 socket 连接，等待空闲超时退出
+	select {
+	case err := <-hostDone:
+		if err != nil {
+			t.Fatalf("expected nil error on idle timeout, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		_ = stdinWriter.Close()
+		t.Fatal("expected native host to exit on idle timeout (no socket connections)")
+	}
+	_ = stdinWriter.Close()
+	state, ok := readNativeHostState(paths.StatePath)
+	if !ok {
+		t.Fatal("expected native host state to be written after idle timeout exit")
+	}
+	if state.SocketReady {
+		t.Fatalf("expected socket readiness to be cleared on idle timeout exit, got %#v", state)
+	}
+	if !strings.Contains(state.LastError, "空闲超时") {
+		t.Fatalf("expected last error to mention idle timeout, got %q", state.LastError)
+	}
+}
+
+func TestRunNativeMessagingHostKeepsAliveWithSocketConnection(t *testing.T) {
+	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+	config := internalconfig.BrowserConfig{
+		Channel:                internalconfig.BrowserChannelChrome,
+		HostIdleTimeoutSeconds: 2,
+	}
+	hostDone := make(chan error, 1)
+	go func() {
+		hostDone <- RunNativeMessagingHost(context.Background(), config, stdinReader, stdoutWriter, ioDiscard{})
+	}()
+	paths, err := ResolveNativeMessagingPaths(config, "", "")
+	if err != nil {
+		t.Fatalf("resolve paths failed: %v", err)
+	}
+	if err := waitForNativeBridge(paths.StatePath, 3*time.Second); err != nil {
+		t.Fatalf("waitForNativeBridge failed: %v", err)
+	}
+	// Send hello so extension is marked connected (required for tool requests)
+	if err := writeNativeMessage(stdinWriter, nativeMessage{
+		ID: "hello-1", Type: "hello", ExtensionID: ChromeExtensionID, ExtensionVersion: "0.1.0",
+	}); err != nil {
+		t.Fatalf("write hello failed: %v", err)
+	}
+	helloAck, err := readNativeMessage(stdoutReader)
+	if err != nil {
+		t.Fatalf("read hello ack failed: %v", err)
+	}
+	if helloAck.Type != "hello_ack" || !helloAck.OK {
+		t.Fatalf("unexpected hello ack: %#v", helloAck)
+	}
+	// Establish a socket connection (simulating a CLI client) and keep it open.
+	// This should prevent the idle timer from firing.
+	state, _ := readNativeHostState(paths.StatePath)
+	network, address, ok := nativeBridgeDialTarget(paths, state)
+	if !ok {
+		t.Fatal("expected native bridge dial target to be available")
+	}
+	conn, err := net.DialTimeout(network, address, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial native bridge failed: %v", err)
+	}
+	defer conn.Close()
+	// Wait beyond the 2s idle timeout — host should still be alive because a socket connection exists
+	time.Sleep(2500 * time.Millisecond)
+	select {
+	case err := <-hostDone:
+		t.Fatalf("host exited prematurely with socket connection active: %v", err)
+	default:
+	}
+	// Close the socket connection — now no connections remain, idle timer should fire
+	conn.Close()
+	select {
+	case err := <-hostDone:
+		if err != nil {
+			t.Fatalf("expected nil error after idle timeout, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		_ = stdinWriter.Close()
+		t.Fatal("expected host to exit after socket disconnect and idle timeout")
+	}
+	_ = stdinWriter.Close()
 }
 
 type ioDiscard struct{}

@@ -58,15 +58,20 @@ type nativeHostBridge struct {
 	seq       atomic.Uint64
 	closeOnce sync.Once
 	cleanup   func()
+
+	connMu       sync.Mutex
+	activeConns  int
+	connChangeCh chan struct{}
 }
 
 func newNativeHostBridge(config internalconfig.BrowserConfig, paths NativeMessagingPaths, state nativeHostState, writer *lockedNativeMessageWriter) *nativeHostBridge {
 	return &nativeHostBridge{
-		config:  internalconfig.NormalizeBrowserConfig(config),
-		paths:   paths,
-		writer:  writer,
-		state:   state,
-		pending: map[string]chan bridgeToolResponse{},
+		config:       internalconfig.NormalizeBrowserConfig(config),
+		paths:        paths,
+		writer:       writer,
+		state:        state,
+		pending:      map[string]chan bridgeToolResponse{},
+		connChangeCh: make(chan struct{}, 1),
 	}
 }
 
@@ -150,6 +155,35 @@ func (b *nativeHostBridge) close() {
 	})
 }
 
+func (b *nativeHostBridge) trackConnStart() {
+	b.connMu.Lock()
+	b.activeConns++
+	b.connMu.Unlock()
+	b.notifyConnChange()
+}
+
+func (b *nativeHostBridge) trackConnEnd() {
+	b.connMu.Lock()
+	if b.activeConns > 0 {
+		b.activeConns--
+	}
+	b.connMu.Unlock()
+	b.notifyConnChange()
+}
+
+func (b *nativeHostBridge) notifyConnChange() {
+	select {
+	case b.connChangeCh <- struct{}{}:
+	default:
+	}
+}
+
+func (b *nativeHostBridge) ActiveConnectionCount() int {
+	b.connMu.Lock()
+	defer b.connMu.Unlock()
+	return b.activeConns
+}
+
 func (b *nativeHostBridge) acceptLoop(ctx context.Context) {
 	for {
 		conn, err := b.listener.Accept()
@@ -167,6 +201,8 @@ func (b *nativeHostBridge) acceptLoop(ctx context.Context) {
 }
 
 func (b *nativeHostBridge) handleConn(conn net.Conn) {
+	b.trackConnStart()
+	defer b.trackConnEnd()
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(browserTimeout(b.config)))
 	request := bridgeToolRequest{}
