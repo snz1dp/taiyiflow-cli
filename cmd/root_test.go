@@ -1241,6 +1241,9 @@ func TestCallbackAuthRefreshProviderRetriesSubmitAfterUnauthorized(t *testing.T)
 	callbackCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		case backendAPIPath("/agents/client/call/result"):
 			callbackCalls++
 			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
@@ -1314,6 +1317,9 @@ func TestCallbackAuthRefreshProviderRetriesImageUnderstandingAfterUnauthorized(t
 	imageCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		case backendAPIPath("/run/image-flow"):
 			imageCalls++
 			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
@@ -1396,6 +1402,9 @@ func TestCallbackAuthRefreshProviderRetriesStreamAfterUnauthorized(t *testing.T)
 	streamCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		case backendAPIPath("/session_id"):
 			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {
 				writer.Header().Set("Content-Type", "application/json")
@@ -1478,6 +1487,9 @@ func TestCallbackAuthRefreshProviderRetriesListSessionsAfterUnauthorized(t *test
 	sessionCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		case backendAPIPath("/agents/flows/flow-1/sessions"):
 			sessionCalls++
 			if got := request.Header.Get("Authorization"); got != "Bearer access-1" {

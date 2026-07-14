@@ -139,7 +139,17 @@ func (a *App) tryPersistentLogin(
 		providerClient.SetAPIKey(updatedToken)
 		changed = true
 	}
-	if isPublicUserScope(session.Scope) {
+	// 从后台用户信息接口获取 user_scope，判断是否为公众用户（public）。
+	if currentUser, err := providerClient.GetCurrentUserInfo(ctx); err != nil {
+		config, changed = clearAuthenticationState(config, false)
+		if changed {
+			if saveErr := a.configManager.Save(config); saveErr != nil {
+				return config, true, saveErr
+			}
+		}
+		providerClient.SetAPIKey("")
+		return config, changed, fmt.Errorf("持久令牌自动登录成功但获取用户信息失败: %w", err)
+	} else if isPublicUserScope(currentUser.UserScope) {
 		config, changed = clearAuthenticationState(config, false)
 		if changed {
 			if saveErr := a.configManager.Save(config); saveErr != nil {
@@ -178,13 +188,21 @@ func (a *App) persistAuthenticatedSession(
 		return config, fmt.Errorf("登录成功但未返回 access_token")
 	}
 
-	if isPublicUserScope(session.Scope) {
+	config.AccessToken = strings.TrimSpace(session.AccessToken)
+	providerClient.SetAPIKey(config.AccessToken)
+	config.AuthUpdatedAt = time.Now().UTC().Format(time.RFC3339)
+
+	// 从后台用户信息接口获取 user_scope，判断是否为公众用户（public）。
+	if currentUser, err := providerClient.GetCurrentUserInfo(ctx); err != nil {
+		// 获取用户信息失败时清理登录状态。
+		config, _ = clearAuthenticationState(config, false)
+		providerClient.SetAPIKey("")
+		return config, fmt.Errorf("登录成功但获取用户信息失败: %w", err)
+	} else if isPublicUserScope(currentUser.UserScope) {
+		config, _ = clearAuthenticationState(config, false)
 		providerClient.SetAPIKey("")
 		return config, errPublicUserBlocked
 	}
-
-	config.AccessToken = strings.TrimSpace(session.AccessToken)
-	config.AuthUpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
 	if remember {
 		deviceID := strings.TrimSpace(config.DeviceID)
@@ -377,7 +395,7 @@ func isPublicUserScope(scope string) bool {
 }
 
 // errPublicUserBlocked 公众用户被拒绝登录时返回的错误。
-var errPublicUserBlocked = errors.New("公众用户（public）不允许登录，请使用正式账号")
+var errPublicUserBlocked = errors.New("请在微信端搜索太乙智启小程序并注册申请帐号后重试。")
 
 func isAuthenticationError(err error) bool {
 	message := strings.ToLower(strings.TrimSpace(err.Error()))

@@ -88,6 +88,9 @@ func TestSubmitTUILoginFormPasswordUpdatesAuthState(t *testing.T) {
 		case authAPIPath("/logged/persistent_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"persist-1","userinfo":{"userid":"u-1","display_name":"张三"}}}`)
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -169,6 +172,9 @@ func TestSubmitTUILoginFormPasswordClearsSavedSessionAfterSuccess(t *testing.T) 
 		case authAPIPath("/logged/persistent_token"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"ticket":"persist-1","userinfo":{"userid":"u-1","display_name":"张三"}}}`)
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -252,12 +258,16 @@ func TestExecuteTUILoginCommandOpensOverlay(t *testing.T) {
 		t.Fatalf("new manager failed: %v", err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != authAPIPath("/oauth/api/channel_names") {
+		switch request.URL.Path {
+		case authAPIPath("/oauth/api/channel_names"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"调用成功!","data":""}`)
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
+		default:
 			http.NotFound(writer, request)
-			return
 		}
-		writer.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(writer, `{"code":0,"message":"调用成功!","data":""}`)
 	}))
 	defer server.Close()
 	config := internalconfig.Default()
@@ -397,6 +407,9 @@ func TestSubmitTUILoginFormPasswordRequiresCaptcha(t *testing.T) {
 			kaptchaImageQueryTicket = request.URL.Query().Get("ticket")
 			writer.Header().Set("Content-Type", "image/png")
 			_, _ = writer.Write(kaptchaPNG.Bytes())
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -583,6 +596,9 @@ func TestSubmitTUILoginFormPasswordCaptchaRefetchesPasswordTokenEachSubmit(t *te
 			}
 			writer.Header().Set("Content-Type", "image/png")
 			_, _ = writer.Write(kaptchaPNG.Bytes())
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -687,6 +703,9 @@ func TestSubmitTUILoginFormPasswordUsesVerifyChallengeFromHTTPError(t *testing.T
 			kaptchaImageQueryTicket = request.URL.Query().Get("ticket")
 			writer.Header().Set("Content-Type", "image/png")
 			_, _ = writer.Write(kaptchaPNG.Bytes())
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -802,6 +821,9 @@ func TestSubmitTUILoginFormPasswordCaptchaFailureRefreshesImageByReturnedTicket(
 				return
 			}
 			_, _ = writer.Write(firstImagePNG.Bytes())
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -917,6 +939,9 @@ func TestSubmitTUILoginFormPasswordChallengeTicketOverridesQRTicket(t *testing.T
 			kaptchaImageQueryTicket = request.URL.Query().Get("ticket")
 			writer.Header().Set("Content-Type", "image/png")
 			_, _ = writer.Write(kaptchaPNG.Bytes())
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -1016,6 +1041,9 @@ func TestSubmitTUILoginFormPasswordSMSChallengeReusesAjaxLogon(t *testing.T) {
 		case authAPIPath("/ajax_logon/verify_login"):
 			verifyLoginCalls++
 			t.Fatalf("expected sms verification to stop using /ajax_logon/verify_login, got %q", request.URL.String())
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -1152,6 +1180,9 @@ func TestSubmitTUILoginFormPasswordSMSUsesAjaxLogon(t *testing.T) {
 		case authAPIPath("/ajax_logon/verify_login"):
 			verifyLoginCalls++
 			t.Fatalf("expected sms verification to stop using /ajax_logon/verify_login, got %q", request.URL.String())
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -1288,6 +1319,9 @@ func TestSubmitTUILoginFormPasswordMailUsesAjaxLogon(t *testing.T) {
 		case authAPIPath("/ajax_logon/verify_login"):
 			verifyLoginCalls++
 			t.Fatalf("expected mail verification to stop using /ajax_logon/verify_login, got %q", request.URL.String())
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -1454,6 +1488,9 @@ func TestSubmitTUILoginFormPasswordTOTPUsesAjaxLogon(t *testing.T) {
 		case authAPIPath("/ajax_logon/verify_login"):
 			verifyLoginCalls++
 			t.Fatalf("expected totp verification to stop using /ajax_logon/verify_login, got %q", request.URL.String())
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -1570,6 +1607,9 @@ func TestSubmitTUILoginFormPasswordShowsInlineErrorAndKeepsPasswordFocus(t *test
 		case authAPIPath("/ajax_logon"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":4001,"message":"用户名或密码错误"}`)
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -1656,12 +1696,16 @@ func TestExecuteTUILoginCommandRejectsQRCodeWhenChannelUnsupported(t *testing.T)
 		t.Fatalf("new manager failed: %v", err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != authAPIPath("/oauth/api/channel_names") {
+		switch request.URL.Path {
+		case authAPIPath("/oauth/api/channel_names"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"code":0,"message":"调用成功!","data":""}`)
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
+		default:
 			http.NotFound(writer, request)
-			return
 		}
-		writer.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(writer, `{"code":0,"message":"调用成功!","data":""}`)
 	}))
 	defer server.Close()
 	config := internalconfig.Default()
@@ -1880,6 +1924,9 @@ func TestExecuteTUIQRWaitKeepsStaticQRCodeStateWithoutDynamicMessage(t *testing.
 		case authAPIPath("/oauth/api/wait_event"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"","access_token":"","idle_duration":0,"scope":"","state":1}}`)
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -1934,6 +1981,9 @@ func TestExecuteTUIQRWaitShowsTerminalQRCodeStateError(t *testing.T) {
 		case authAPIPath("/oauth/api/wait_event"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"","access_token":"","idle_duration":0,"scope":"","state":-1}}`)
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -1982,6 +2032,9 @@ func TestExecuteTUIQRWaitStopsAutoRetryAfterTimeout(t *testing.T) {
 		case authAPIPath("/oauth/api/wait_event"):
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"code":0,"message":"OK","data":{"userid":"","access_token":"","idle_duration":0,"scope":"","state":0}}`)
+		case backendAPIPath("/users/whoami/userinfo"):
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		default:
 			http.NotFound(writer, request)
 		}

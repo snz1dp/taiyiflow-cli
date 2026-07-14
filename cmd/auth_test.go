@@ -298,8 +298,12 @@ func TestGenerateDeviceIDIsStableAcrossHostnameAndMACChanges(t *testing.T) {
 
 func TestPersistAuthenticatedSessionGeneratesDeviceIDWhenMissing(t *testing.T) {
 	var capturedDeviceID string
+	backendPrefix := internalconfig.DefaultBackendAPIPrefix
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
+		case backendPrefix + "/users/whoami/userinfo":
+			writer.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(writer, `{"name":"测试用户","user_id":"u-1","user_name":"testuser","user_scope":"employee"}`)
 		case authAPIPath("/logged/persistent_token"):
 			capturedDeviceID = strings.TrimSpace(request.URL.Query().Get("device_id"))
 			writer.Header().Set("Content-Type", "application/json")
