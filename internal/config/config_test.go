@@ -343,8 +343,8 @@ func TestDefaultConfigIncludesAgentAutoLoopDefaults(t *testing.T) {
 	if config.Skills.FreeTextSearchEnabled {
 		t.Fatal("expected default free text skill search to be disabled")
 	}
-	if config.CrossSessionMemoryEnabled {
-		t.Fatal("expected cross session memory to default to disabled")
+	if !config.CrossSessionMemoryEnabled {
+		t.Fatal("expected cross session memory to default to enabled")
 	}
 	if config.Browser.Mode != BrowserModeChromeSession {
 		t.Fatalf("expected default browser mode %q, got %q", BrowserModeChromeSession, config.Browser.Mode)

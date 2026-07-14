@@ -248,7 +248,7 @@ func Default() Config {
 		QRWaitTimeoutSeconds:      DefaultQRWaitTimeoutSeconds,
 		AgentAutoLoopEnabled:      false,
 		AgentAutoLoopMaxRounds:    DefaultAgentAutoLoopMaxRounds,
-		CrossSessionMemoryEnabled: false,
+		CrossSessionMemoryEnabled: true,
 		OutputLanguage:            "zh-CN",
 		AuditEnabled:              false,
 		SkillReviewPolicy:         SkillReviewPolicyConfirm,

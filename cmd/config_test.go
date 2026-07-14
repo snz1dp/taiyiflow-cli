@@ -277,7 +277,7 @@ func TestRenderConfigSummaryUsesExternalResourceAccessPolicyLabel(t *testing.T) 
 	if !strings.Contains(summary, "浏览器自动化模式:") || !strings.Contains(summary, "浏览器权限模式:") || !strings.Contains(summary, "桌面操作:") || !strings.Contains(summary, "桌面操作权限模式:") {
 		t.Fatalf("expected browser/computer config labels, got %q", summary)
 	}
-	if !strings.Contains(summary, "跨会话记忆: false") {
+	if !strings.Contains(summary, "跨会话记忆: true") {
 		t.Fatalf("expected cross session memory label, got %q", summary)
 	}
 	if !strings.Contains(summary, "文档服务端解析类型:") || !strings.Contains(summary, ".pdf") || !strings.Contains(summary, ".docx") {
