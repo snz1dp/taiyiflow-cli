@@ -6368,8 +6368,10 @@ func sanitizeTerminalText(content string) string {
 	cleaned = ansiOSCRegexp.ReplaceAllString(cleaned, "")
 	cleaned = ansiCSIRegexp.ReplaceAllString(cleaned, "")
 	cleaned = strings.ReplaceAll(cleaned, "\x1b", "")
-	cleaned = strings.ReplaceAll(cleaned, "<think>", "")
-	cleaned = strings.ReplaceAll(cleaned, "</think>", "")
+	// 不在此处移除 think 标签：
+	// - 流式 assistant chunk 在 tuiAssistantRenderState.consume 阶段已正确分离 think 内容
+	// - 历史消息在 sanitizeHistoryContent 阶段已独立过滤 think 标签
+	// - 此处 ReplaceAll 会误伤用户输入中包含 think 标签片段的文本
 	return textsanitize.StripWatermarkCharacters(cleaned)
 }
 

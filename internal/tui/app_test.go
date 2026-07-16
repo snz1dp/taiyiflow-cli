@@ -1998,13 +1998,19 @@ func TestSanitizeTerminalTextRemovesTmuxPassthrough(t *testing.T) {
 	}
 }
 
-func TestSanitizeTerminalTextStripsThinkControlTags(t *testing.T) {
-	content := "回答前缀</think>\n正在执行服务端工具调用：搜索额度信息<think>"
+func TestSanitizeTerminalTextPreservesThinkControlTags(t *testing.T) {
+	// sanitizeTerminalText 不再移除 think 标签：
+	// - 流式 assistant chunk 在 tuiAssistantRenderState.consume 阶段已正确分离 think 内容
+	// - 历史消息在 sanitizeHistoryContent 阶段已独立过滤 think 标签
+	// - sanitizeTerminalText 中的 ReplaceAll 会误伤用户输入中包含 think 标签片段的文本
+	content := "回答前缀<think>\n正在执行服务端工具调用：搜索额度信息</think>"
 	got := sanitizeTerminalText(content)
 
-	if strings.Contains(got, "<think>") || strings.Contains(got, "</think>") {
-		t.Fatalf("expected think control tags removed, got %q", got)
+	// think 标签应当被保留，由上层逻辑处理
+	if !strings.Contains(got, "<think>") || !strings.Contains(got, "</think>") {
+		t.Fatalf("expected think tags preserved, got %q", got)
 	}
+	// 可见内容仍然保留
 	if !strings.Contains(got, "回答前缀") || !strings.Contains(got, "正在执行服务端工具调用") {
 		t.Fatalf("expected visible content retained, got %q", got)
 	}
