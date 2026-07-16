@@ -17,7 +17,7 @@ var bundledSkillDefinitions = []BundledSkillDefinition{
 	{Name: "debug", RelativeDir: "debug", Summary: "当遇到报错、测试失败、命令异常或行为不符合预期时，用最短路径定位根因。", DefaultEnabled: true, RequestTypes: []string{"agent"}},
 	{Name: "developer", RelativeDir: "developer", Summary: "程序开发与调试实现的通用行为准则，涵盖编码规范、最小改动原则、子任务调度策略和质量要求。", DefaultEnabled: true, RequestTypes: []string{"agent"}},
 	{Name: "planner", RelativeDir: "planner", Summary: "把目标收敛为可执行计划，并明确依赖、风险、回退与验收。", DefaultEnabled: true, RequestTypes: []string{"plan", "agent"}},
-	{Name: "pua", RelativeDir: "pua", Summary: "在多次失败、循环卡壳、想放弃或把问题推回用户时，强制执行更彻底的排查与交付动作。", DefaultEnabled: true, RequestTypes: []string{"ask", "plan", "agent"}},
+	{Name: "pua", RelativeDir: "pua", Summary: "在多次失败、循环卡壳、想放弃或把问题推回用户时，强制执行更彻底的排查与交付动作。", DefaultEnabled: false, RequestTypes: []string{"ask", "plan", "agent"}},
 	{Name: "askuser", RelativeDir: "askuser", Summary: "在 CLI 执行过程中向用户补齐关键信息或确认关键动作。", DefaultEnabled: true, RequestTypes: []string{"ask", "plan", "agent"}},
 	{Name: "cross-platform-shell", RelativeDir: "cross-platform-shell", Summary: "在本地命令执行场景下，按当前 OS/ARCH 选择可用命令并处理 fork/exec 兼容问题。", DefaultEnabled: true, RequestTypes: []string{"agent"}},
 	{Name: "document-unstructured", RelativeDir: "document-unstructured", Summary: "当需要从本地音频、视频、PDF 等非图片文件中提取正文或结构化结果时，优先使用 local.document_unstructured。", DefaultEnabled: true, RequestTypes: []string{"agent"}},
