@@ -305,6 +305,11 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						emit(tui.Event{Kind: tui.EventSessionUpdate, SessionID: sessionState.SessionID, SessionTitle: resolveSessionTitle(sessionState)})
 					}
 					if assistantChunkEvent, ok := buildTUIAssistantChunkEvent(event.Data); ok {
+						if assistantChunkEvent.SplitAssistant {
+							// 遇到新的助手消息分段，重置累积缓冲，
+							// 使自动续跑判定只收到最后一段拼装好的消息
+							latestAssistantOutput.Reset()
+						}
 						segments := emitTUIAssistantChunk(emit, &assistantRenderState, assistantChunkEvent)
 						for _, segment := range segments {
 							if segment.Reasoning {
