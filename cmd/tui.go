@@ -181,7 +181,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		runtimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
 		quietRuntimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
 		skillRetryCount := 0
-		autoLoopCurrentRound := 0
+		autoLoopCurrentRound := request.AutoLoopRound
 		originalUserInput := request.Input
 		callbackProvider := a.providerWithCallbackAuthRefresh(providerClient, &config)
 		for {
@@ -529,8 +529,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					}
 					emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("自动续跑: %s", reason)})
 					emit(tui.Event{Kind: tui.EventFollowupRequest})
-					request = prepareTUIFollowupRequest(request, decideResult.NextPrompt)
-					continue
+					// 不再在 runner 内部直接续跑，而是将续跑提示发送给 TUI 层，
+					// 由 TUI 层在 runner 结束后统一检查 queuedInput 和续跑优先级。
+					emit(tui.Event{Kind: tui.EventAutoLoopResult, AutoLoopNextPrompt: decideResult.NextPrompt})
+					break
 				}
 
 				// 不需要续跑，任务已闭环

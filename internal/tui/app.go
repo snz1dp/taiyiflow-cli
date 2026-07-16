@@ -378,7 +378,8 @@ type EventKind string
 const (
 	EventAssistantChunk  EventKind = "assistant_chunk"
 	EventReasoningChunk  EventKind = "reasoning_chunk"
-	EventFollowupRequest EventKind = "followup_request"
+	EventFollowupRequest  EventKind = "followup_request"
+	EventAutoLoopResult   EventKind = "auto_loop_result"
 	EventProgressNote    EventKind = "progress_note"
 	EventSystemNote      EventKind = "system_note"
 	EventErrorNote       EventKind = "error_note"
@@ -403,6 +404,7 @@ type Event struct {
 	SessionID      string
 	SessionTitle   string
 	SplitAssistant bool
+	AutoLoopNextPrompt string
 	Stats          *RequestMetrics
 	Panel          *ToolPanel
 	TodoItems      []TodoItem
@@ -418,6 +420,7 @@ type Request struct {
 	RunID            string
 	RequestMode      string
 	ReasoningEnabled bool
+	AutoLoopRound    int
 }
 
 type ContextWindow struct {
@@ -775,6 +778,8 @@ type model struct {
 	commandCursor              int
 	startupCommand             string
 	queuedInput                string
+	pendingAutoLoopPrompt      string
+	autoLoopCurrentRound       int
 	lastRetryableRequest       *Request
 	retryAvailable             bool
 	pendingConfirm             *confirmState
@@ -1340,6 +1345,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.interrupting || errors.Is(typed.err, context.Canceled) {
 			progressCmd := m.completeInterruptedRequest()
+			m.pendingAutoLoopPrompt = ""
+			m.autoLoopCurrentRound = 0
 			m.input.Focus()
 			if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
 				return m, queuedCmd
@@ -1354,9 +1361,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.compressionProgressSettled = false
 		m.currentToolLabel = ""
 		m.requestCancel = nil
+		m.pendingAutoLoopPrompt = ""
 		m.retryAvailable = m.lastRetryableRequest != nil
 		m.syncViewport()
 		m.input.Focus()
+		// 自动续跑优先于用户排队输入（失败时不续跑，仅检查排队输入）
 		if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
 			return m, tea.Batch(queuedCmd, m.maybeRefreshSnapshot())
 		}
@@ -1373,6 +1382,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.interrupting {
 			progressCmd := m.completeInterruptedRequest()
 			m.input.Focus()
+			// 自动续跑优先于用户排队输入
+			if autoLoopCmd := m.startAutoLoopRequest(); autoLoopCmd != nil {
+				return m, autoLoopCmd
+			}
 			if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
 				return m, queuedCmd
 			}
@@ -1387,6 +1400,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.requestCancel = nil
 		m.retryAvailable = false
 		m.input.Focus()
+		// 自动续跑优先于用户排队输入
+		if autoLoopCmd := m.startAutoLoopRequest(); autoLoopCmd != nil {
+			return m, tea.Batch(autoLoopCmd, m.maybeRefreshSessionSnapshot())
+		}
 		if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
 			return m, tea.Batch(queuedCmd, m.maybeRefreshSessionSnapshot())
 		}
@@ -3437,6 +3454,8 @@ func (m *model) applyEvent(event Event) tea.Cmd {
 	case EventFollowupRequest:
 		m.compressionInProgress = true
 		m.compressionProgressSettled = false
+	case EventAutoLoopResult:
+		m.pendingAutoLoopPrompt = strings.TrimSpace(event.AutoLoopNextPrompt)
 	case EventProgressNote:
 		if strings.TrimSpace(event.Text) != "" {
 			if event.EventType == "compression_progress" {
@@ -3598,9 +3617,31 @@ func (m *model) startQueuedRequest() tea.Cmd {
 		return nil
 	}
 	m.queuedInput = ""
+	// 自动续跑优先于用户排队输入，清空待续跑提示并重置续跑计数
+	m.pendingAutoLoopPrompt = ""
+	m.autoLoopCurrentRound = 0
+	// 移除排队时添加的占位条目（user + system "已加入队列"），
+	// 由 startRequest 重新添加 user 条目，确保用户消息显示在对话区
+	m.entries = removeQueuedPlaceholderEntries(m.entries)
 	request := m.buildRequest(queued, newRequestRunID())
-	// 用户条目已在排队时添加到 entries，此处不再重复追加
-	return m.startRequest(request, false)
+	return m.startRequest(request, true)
+}
+
+// startAutoLoopRequest 在 runner 结束后检查是否有待执行的自动续跑提示。
+// 如果有且后端可用，发起续跑请求；否则返回 nil。
+// 此方法在 startQueuedRequest 之前调用，确保自动续跑优先于用户排队输入。
+func (m *model) startAutoLoopRequest() tea.Cmd {
+	prompt := strings.TrimSpace(m.pendingAutoLoopPrompt)
+	if prompt == "" || !m.snapshot.BackendAvailable {
+		m.pendingAutoLoopPrompt = ""
+		m.autoLoopCurrentRound = 0
+		return nil
+	}
+	m.pendingAutoLoopPrompt = ""
+	m.autoLoopCurrentRound++
+	request := m.buildRequest(prompt, newRequestRunID())
+	request.AutoLoopRound = m.autoLoopCurrentRound
+	return m.startRequest(request, true)
 }
 
 func (m *model) startRequest(request Request, appendUserEntry bool) tea.Cmd {
@@ -3609,6 +3650,10 @@ func (m *model) startRequest(request Request, appendUserEntry bool) tea.Cmd {
 	request.KnowledgeDocs = append([]string(nil), request.KnowledgeDocs...)
 	if strings.TrimSpace(request.RunID) == "" {
 		request.RunID = newRequestRunID()
+	}
+	// 非续跑请求（AutoLoopRound == 0）重置续跑计数
+	if request.AutoLoopRound == 0 {
+		m.autoLoopCurrentRound = 0
 	}
 	assumeCompressionFromHistory := m.hasConversationHistory()
 	if appendUserEntry {
