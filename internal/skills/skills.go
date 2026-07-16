@@ -497,6 +497,13 @@ func ClientPackages(items []Skill, rootDir string) any {
 		if item.Source != "bundled" {
 			skillName = filepath.Base(SkillDir(item))
 		}
+		// 内置技能（bundled）默认携带完整内容（summary=false），
+		// 其他技能只发送摘要（summary=true），由后端按需拉取全文。
+		isSummary := item.Source != "bundled"
+		content := item.Summary
+		if !isSummary {
+			content = item.Body
+		}
 		skillsValue = append(skillsValue, map[string]any{
 			"name":          skillName,
 			"description":   item.Description,
@@ -506,8 +513,8 @@ func ClientPackages(items []Skill, rootDir string) any {
 			"files":         item.Files,
 			"metadata":      item.Metadata,
 			"summary":       item.Summary,
-			"content":       item.Summary,
-			"is_summary":    true,
+			"content":       content,
+			"is_summary":    isSummary,
 			"path":          item.Path,
 			"skill_dir":     SkillDir(item),
 			"root_dir":      item.RootDir,
