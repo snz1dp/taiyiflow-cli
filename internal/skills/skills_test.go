@@ -152,15 +152,11 @@ func TestClientPackagesIncludeMarkdownAndContent(t *testing.T) {
 	if got := skillPayload["content"]; got != "检查回归风险。" {
 		t.Fatalf("unexpected content: %#v", got)
 	}
-	markdown, ok := skillPayload["markdown"].(string)
-	if !ok {
-		t.Fatalf("unexpected markdown payload: %#v", skillPayload["markdown"])
+	if isSummary, ok := skillPayload["is_summary"].(bool); !ok || !isSummary {
+		t.Fatalf("expected is_summary=true, got: %#v", skillPayload["is_summary"])
 	}
-	if !strings.Contains(markdown, "name: Code Review") {
-		t.Fatalf("markdown missing manifest: %s", markdown)
-	}
-	if !strings.Contains(markdown, "检查回归风险。") {
-		t.Fatalf("markdown missing body: %s", markdown)
+	if _, hasMarkdown := skillPayload["markdown"]; hasMarkdown {
+		t.Fatalf("unexpected markdown field in summary mode")
 	}
 }
 
