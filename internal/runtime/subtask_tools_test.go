@@ -117,6 +117,8 @@ func (s *subtaskProviderStub) GetClientCollaboration(_ context.Context, taskID s
 }
 
 func (s *subtaskProviderStub) Stream(_ context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.lastStream = request
 	if s.streamCalls < len(s.streams) {
 		stream := s.streams[s.streamCalls]

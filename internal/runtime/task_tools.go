@@ -204,10 +204,12 @@ func (m *localTaskManager) startTask(
 	}
 	command.Dir = payload.WorkingDirectory
 	command.Env = mergeEnv(payload.EnvOverrides)
-	stdin, err := runtimeClient.resolveCommandStdin(ctx, payload)
-	if err != nil {
-		cancel()
-		return nil, err
+	// 后台任务不使用 host 的共享 stdin reader（r.stdin），
+	// 因为多个后台任务可能并发启动，共享同一个 io.Reader 会导致 data race。
+	// 仅接受通过 payload 显式传入的 stdin。
+	var stdin io.Reader
+	if payload.HasStdin {
+		stdin = strings.NewReader(payload.Stdin)
 	}
 	if stdin != nil {
 		command.Stdin = stdin

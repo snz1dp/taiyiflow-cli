@@ -55,6 +55,8 @@ func canonicalClientToolName(toolName string) string {
 		return "skill"
 	case "ask_user":
 		return "ask_user"
+	case "switch_to_agent":
+		return "switch_to_agent"
 	case "lsp_query":
 		return "lsp_query"
 	case "glob_files":
@@ -500,6 +502,18 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 				"additionalProperties": false,
 			},
 		},
+		{
+			"name":                 "switch_to_agent",
+			"description":          "切换当前会话到执行模式（agent）。在问答模式（ask）或计划模式（plan）下，模型可调用此工具切换到执行模式，以便使用完整的本地工具能力。切换后对后续对话生效，当前对话不受影响。",
+			"waiting_for_response": true,
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"reason": map[string]any{"type": "string", "description": "切换到执行模式的原因。"},
+				},
+				"additionalProperties": false,
+			},
+		},
 	}
 	definitions = append(definitions, browserClientToolDefinitions()...)
 	definitions = append(definitions, computerClientToolDefinitions()...)
@@ -526,6 +540,16 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		definitions = filtered
 	}
 	if provider.NormalizeRequestType(mode) == provider.RequestTypeAgent {
+		// agent 模式下不需要 switch_to_agent（已经是 agent 模式），过滤掉避免无效调用。
+		filtered := definitions[:0]
+		for _, definition := range definitions {
+			name := strings.TrimSpace(stringValue(definition["name"]))
+			if name == "switch_to_agent" {
+				continue
+			}
+			filtered = append(filtered, definition)
+		}
+		definitions = filtered
 		return definitions
 	}
 	allowed := allowedClientToolSetForMode(mode)
@@ -553,6 +577,7 @@ func allowedClientToolSetForMode(mode string) map[string]bool {
 		"search_files":              true,
 		"read_file":                 true,
 		"skill":                     true,
+		"switch_to_agent":           true,
 		browserToolTabsContext:      true,
 		browserToolReadText:         true,
 		browserToolReadConsole:      true,
@@ -807,6 +832,12 @@ func previewClientTool(toolName string, arguments map[string]any) string {
 		return fmt.Sprintf("document_unstructured %d 文件", len(paths))
 	case "skill":
 		return fmt.Sprintf("skill %s", fallbackString(name, "<missing>"))
+	case "switch_to_agent":
+		reason := argumentString(arguments, "reason")
+		if reason != "" {
+			return fmt.Sprintf("switch_to_agent: %s", reason)
+		}
+		return "switch_to_agent"
 	default:
 		return toolName
 	}

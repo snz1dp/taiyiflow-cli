@@ -1104,6 +1104,15 @@ func (a *App) streamTaskWithSkillRetry(
 			if err := a.runtime.HandleClientToolEvent(ctx, providerClient, eventRuntimeConfig, event.Data); err != nil {
 				return sessionState, err
 			}
+			if mode := a.runtime.ConsumePendingModeSwitch(); mode != "" {
+				sessionState.RequestMode = mode
+				if err := saveSessionStateIfReady(a.sessionStore, sessionState); err != nil {
+					return sessionState, err
+				}
+				if showStreamEvents {
+					fmt.Fprintf(a.stderr, "[系统提示]: 已切换为%s。\n", requestModeLabel(mode))
+				}
+			}
 		case provider.EventToolCall:
 			if !showStreamEvents {
 				continue

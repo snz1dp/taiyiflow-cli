@@ -432,12 +432,28 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						if err := runtimeClient.SubmitClientToolCallback(runCtx, callbackProvider, localConfig, event.Data, result, toolErr); err != nil {
 							return err
 						}
+						if mode := runtimeClient.ConsumePendingModeSwitch(); mode != "" {
+							request.RequestMode = mode
+							sessionState.RequestMode = mode
+							if saveErr := a.sessionStore.Save(sessionState); saveErr != nil {
+								return saveErr
+							}
+							emit(tui.Event{Kind: tui.EventSystemNote, Text: fmt.Sprintf("已切换为%s。", requestModeLabel(mode))})
+						}
 						continue
 					}
 					toolName, result, toolErr := runtimeClient.ExecuteClientToolPayloadWithProvider(runCtx, callbackProvider, localConfig, event.Data)
 					emitTUIClientToolResultEvents(emit, localConfig, toolName, result, toolErr)
 					if err := runtimeClient.SubmitClientToolCallback(runCtx, callbackProvider, localConfig, event.Data, result, toolErr); err != nil {
 						return err
+					}
+					if mode := runtimeClient.ConsumePendingModeSwitch(); mode != "" {
+						request.RequestMode = mode
+						sessionState.RequestMode = mode
+						if saveErr := a.sessionStore.Save(sessionState); saveErr != nil {
+							return saveErr
+						}
+						emit(tui.Event{Kind: tui.EventSystemNote, Text: fmt.Sprintf("已切换为%s。", requestModeLabel(mode))})
 					}
 				case provider.EventError:
 					normalizedErr := normalizeStreamEventError(event.Data["error"])

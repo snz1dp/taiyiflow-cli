@@ -112,6 +112,11 @@ type ClientRuntime struct {
 	// subtaskEnabled 控制是否向模型暴露 run_subtask 工具。
 	// 非交互式模式默认 false，交互式模式和 TUI 默认 true。
 	subtaskEnabled bool
+	// pendingModeSwitch 存储 switch_to_agent 工具执行后待消费的模式切换请求。
+	// cmd 层在 HandleClientToolEvent 返回后通过 ConsumePendingModeSwitch 读取并更新会话状态。
+	// 非线程安全：仅限单 goroutine 事件循环内写入和消费（switchToAgent 写入、ConsumePendingModeSwitch 读取）。
+	// 如果未来引入并发事件处理，需改为 sync.Mutex 或 atomic 保护。
+	pendingModeSwitch string
 	// nonArtifactFiles 追踪 is_artifact=false 的文件路径，在 on_complete 时自动清理。
 	nonArtifactFiles []string
 	nonArtifactMu    sync.Mutex
@@ -177,6 +182,17 @@ func (r *ClientRuntime) SubtaskEnabled() bool {
 	return r.subtaskEnabled
 }
 
+// ConsumePendingModeSwitch 读取并清除 switch_to_agent 工具设置的模式切换请求。
+// 返回非空字符串表示需要将会话模式切换到该值；返回空字符串表示无待处理的切换。
+func (r *ClientRuntime) ConsumePendingModeSwitch() string {
+	if r == nil {
+		return ""
+	}
+	mode := r.pendingModeSwitch
+	r.pendingModeSwitch = ""
+	return mode
+}
+
 // SetSubtaskCapabilities 注入子任务执行时需要继承的能力字段。
 // 由 cmd 层在发起 Stream 前调用，确保子任务拥有与主任务相同的 skills、MCP、reasoning 等能力。
 func (r *ClientRuntime) SetSubtaskCapabilities(skillPackages any, requestedSkillNames []string, reasoningEnabled bool, internetSearch bool, crossSessionMemory *bool) {
@@ -210,6 +226,8 @@ func (r *ClientRuntime) cloneRuntime() *ClientRuntime {
 		subtaskInternetSearch:       r.subtaskInternetSearch,
 		subtaskCrossSessionMemory:   r.subtaskCrossSessionMemory,
 		subtaskEnabled:              r.subtaskEnabled,
+		// pendingModeSwitch 被有意忽略：克隆运行时不应继承父运行时的模式切换请求，
+		// 模式切换仅由主运行时上的 switch_to_agent 工具触发，由 cmd 层消费主运行时的 pendingModeSwitch。
 		nonArtifactFiles:            append([]string(nil), r.nonArtifactFiles...),
 	}
 }
@@ -387,6 +405,8 @@ func (r *ClientRuntime) executeClientToolPayload(
 		result, err = r.writeFile(config, arguments)
 	case "skill":
 		result, err = r.skill(config, arguments)
+	case "switch_to_agent":
+		result, err = r.switchToAgent(arguments)
 	default:
 		if isBrowserTool(toolName) {
 			result, err = r.browserTool(ctx, providerClient, config, toolName, arguments)
@@ -1819,6 +1839,21 @@ func stringSlice(value any) []string {
 	default:
 		return nil
 	}
+}
+
+// switchToAgent 处理 switch_to_agent 工具调用。
+// 设置 pendingModeSwitch 标记，由 cmd 层在工具回调完成后消费并更新会话状态。
+func (r *ClientRuntime) switchToAgent(arguments map[string]any) (map[string]any, error) {
+	r.pendingModeSwitch = provider.RequestTypeAgent
+	reason := argumentString(arguments, "reason")
+	message := "已切换到执行模式（agent），后续对话将使用 agent 模式。"
+	if reason != "" {
+		message = fmt.Sprintf("已切换到执行模式（agent），原因: %s", reason)
+	}
+	return map[string]any{
+		"switched_to": "agent",
+		"message":     message,
+	}, nil
 }
 
 // streamCallbackWriter 将写入的数据实时转发给 streamCallback。
