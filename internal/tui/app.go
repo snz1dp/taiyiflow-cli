@@ -777,7 +777,7 @@ type model struct {
 	approvalCursor             int
 	commandCursor              int
 	startupCommand             string
-	queuedInput                string
+	queuedInputs               []string
 	pendingAutoLoopPrompt      string
 	autoLoopCurrentRound       int
 	lastRetryableRequest       *Request
@@ -1944,19 +1944,12 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			// 普通对话输入或需要后端的命令，排入队列等待后端空闲
-			queuedUpdated := strings.TrimSpace(m.queuedInput) != ""
-			// 如果是更新排队输入，移除上次排队时追加的 user 条目和 system 条目
-			if queuedUpdated {
-				m.entries = removeQueuedPlaceholderEntries(m.entries)
-			}
-			m.queuedInput = pending
+			m.queuedInputs = append(m.queuedInputs, pending)
 			m.input.SetValue("")
 			// 立即将用户输入作为 user 条目添加到消息区，保证问答顺序正确
 			m.entries = append(m.entries, entry{role: "user", content: pending})
-			message := "当前任务执行中，下一条输入已加入队列。"
-			if queuedUpdated {
-				message = "当前任务执行中，已更新排队输入。"
-			}
+			queuePosition := len(m.queuedInputs)
+			message := fmt.Sprintf("当前任务执行中，输入已加入队列（位置 %d）。", queuePosition)
 			m.entries = append(m.entries, entry{role: "system", content: message})
 			m.syncViewport()
 			return m, nil
@@ -3589,22 +3582,17 @@ func (m *model) completeInterruptedRequest() tea.Cmd {
 }
 
 // removeQueuedPlaceholderEntries 移除排队时添加的占位条目（user 条目和紧随其后的 system "已加入队列" 条目）。
-// 当用户更新排队输入时调用，避免旧的用户输入残留在消息区。
+// 当 startQueuedRequest 从队列头部取出输入执行时调用，移除最早排入的占位条目。
 func removeQueuedPlaceholderEntries(entries []entry) []entry {
 	if len(entries) == 0 {
 		return entries
 	}
-	// 从末尾向前查找：先找 system "已加入队列" 条目，再找其前方的 user 条目
-	for i := len(entries) - 1; i >= 0; i-- {
-		if entries[i].role == "system" && strings.Contains(entries[i].content, "已加入队列") {
-			// 检查前一个条目是否为 user（排队时添加的占位用户条目）
-			if i > 0 && entries[i-1].role == "user" {
-				// 移除 user 和 system 两个条目
-				entries = append(entries[:i-1], entries[i+1:]...)
-			} else {
-				// 只移除 system 条目
-				entries = append(entries[:i], entries[i+1:]...)
-			}
+	// 从前向后查找：先找 user 条目，再找其后的 system "已加入队列" 条目
+	for i := 0; i < len(entries); i++ {
+		if entries[i].role == "user" && i+1 < len(entries) &&
+			entries[i+1].role == "system" && strings.Contains(entries[i+1].content, "已加入队列") {
+			// 移除 user 和 system 两个条目
+			entries = append(entries[:i], entries[i+2:]...)
 			break
 		}
 	}
@@ -3612,11 +3600,14 @@ func removeQueuedPlaceholderEntries(entries []entry) []entry {
 }
 
 func (m *model) startQueuedRequest() tea.Cmd {
-	queued := strings.TrimSpace(m.queuedInput)
-	if queued == "" || !m.snapshot.BackendAvailable {
+	if len(m.queuedInputs) == 0 || !m.snapshot.BackendAvailable {
 		return nil
 	}
-	m.queuedInput = ""
+	queued := strings.TrimSpace(m.queuedInputs[0])
+	m.queuedInputs = m.queuedInputs[1:]
+	if queued == "" {
+		return nil
+	}
 	// 自动续跑优先于用户排队输入，清空待续跑提示并重置续跑计数
 	m.pendingAutoLoopPrompt = ""
 	m.autoLoopCurrentRound = 0
@@ -6906,15 +6897,12 @@ func (m *model) applyLocalCommandResult(result LocalCommandResult) tea.Cmd {
 		m.applyEvent(event)
 	}
 	if queued := strings.TrimSpace(result.QueuedInput); queued != "" {
-		// 如果已有排队输入，先移除旧的占位条目
-		if strings.TrimSpace(m.queuedInput) != "" {
-			m.entries = removeQueuedPlaceholderEntries(m.entries)
-		}
-		m.queuedInput = queued
+		m.queuedInputs = append(m.queuedInputs, queued)
 		if m.isBusy() {
 			// 立即将用户输入作为 user 条目添加到消息区，保证问答顺序正确
 			m.entries = append(m.entries, entry{role: "user", content: queued})
-			m.entries = append(m.entries, entry{role: "system", content: "当前任务执行中，下一条输入已加入队列。"})
+			queuePosition := len(m.queuedInputs)
+			m.entries = append(m.entries, entry{role: "system", content: fmt.Sprintf("当前任务执行中，输入已加入队列（位置 %d）。", queuePosition)})
 			m.syncViewport()
 		} else {
 			m.refreshLayoutAfterStateChange()
