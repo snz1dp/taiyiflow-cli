@@ -137,7 +137,7 @@ func TestClientPackagesIncludeMarkdownAndContent(t *testing.T) {
 			continue
 		}
 		for _, candidate := range skillsPayload {
-			if candidate["name"] == "Code Review" {
+			if candidate["name"] == "reviewer" {
 				skillPayload = candidate
 				break
 			}
@@ -147,7 +147,7 @@ func TestClientPackagesIncludeMarkdownAndContent(t *testing.T) {
 		}
 	}
 	if skillPayload == nil {
-		t.Fatalf("expected Code Review payload in %#v", payload)
+		t.Fatalf("expected reviewer payload in %#v", payload)
 	}
 	if got := skillPayload["content"]; got != "检查回归风险。" {
 		t.Fatalf("unexpected content: %#v", got)

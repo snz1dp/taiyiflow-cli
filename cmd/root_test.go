@@ -2930,7 +2930,7 @@ func TestStreamTaskIncludesWorkspaceSkillPackagesInRequest(t *testing.T) {
 			continue
 		}
 		for _, skill := range skillsValue {
-			if skill["name"] == "Context Review" {
+			if skill["name"] == "context-review" {
 				found = true
 				break
 			}

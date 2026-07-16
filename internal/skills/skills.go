@@ -493,8 +493,12 @@ func ClientPackages(items []Skill, rootDir string) any {
 			})
 		}
 		skillsValue, _ := packages[index]["skills"].([]map[string]any)
+		skillName := item.Name
+		if item.Source != "bundled" {
+			skillName = filepath.Base(SkillDir(item))
+		}
 		skillsValue = append(skillsValue, map[string]any{
-			"name":          item.Name,
+			"name":          skillName,
 			"description":   item.Description,
 			"homepage":      item.Homepage,
 			"category":      item.Category,

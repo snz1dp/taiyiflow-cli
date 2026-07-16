@@ -131,7 +131,7 @@ func TestLoadSkillPayloadUsesContextDirWorkspaceSkills(t *testing.T) {
 			continue
 		}
 		for _, item := range skillsPayload {
-			if item["name"] == "Context Review" {
+			if item["name"] == "context-review" {
 				if item["skill_dir"] != resolvedSkillDir {
 					t.Fatalf("expected skill_dir %q, got %#v", skillDir, item)
 				}
