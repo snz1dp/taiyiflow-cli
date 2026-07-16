@@ -497,9 +497,10 @@ func ClientPackages(items []Skill, rootDir string) any {
 		if item.Source != "bundled" {
 			skillName = filepath.Base(SkillDir(item))
 		}
-		// 内置技能（bundled）默认携带完整内容（summary=false），
-		// 其他技能只发送摘要（summary=true），由后端按需拉取全文。
-		isSummary := item.Source != "bundled"
+		// 默认启用的内置技能携带完整内容（summary=false），
+		// 默认不启用的内置技能及其他来源技能只发送摘要（summary=true），
+		// 由后端按需拉取全文。
+		isSummary := item.Source != "bundled" || !bundledSkillDefaultEnabled(item.Name)
 		content := item.Summary
 		if !isSummary {
 			content = item.Body
