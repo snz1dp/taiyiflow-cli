@@ -502,18 +502,6 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 				"additionalProperties": false,
 			},
 		},
-		{
-			"name":                 "switch_to_agent",
-			"description":          "切换当前会话到执行模式（agent）。在问答模式（ask）或计划模式（plan）下，模型可调用此工具切换到执行模式，以便使用完整的本地工具能力。切换后对后续对话生效，当前对话不受影响。",
-			"waiting_for_response": true,
-			"inputSchema": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"reason": map[string]any{"type": "string", "description": "切换到执行模式的原因。"},
-				},
-				"additionalProperties": false,
-			},
-		},
 	}
 	definitions = append(definitions, browserClientToolDefinitions()...)
 	definitions = append(definitions, computerClientToolDefinitions()...)
@@ -540,18 +528,22 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		definitions = filtered
 	}
 	if provider.NormalizeRequestType(mode) == provider.RequestTypeAgent {
-		// agent 模式下不需要 switch_to_agent（已经是 agent 模式），过滤掉避免无效调用。
-		filtered := definitions[:0]
-		for _, definition := range definitions {
-			name := strings.TrimSpace(stringValue(definition["name"]))
-			if name == "switch_to_agent" {
-				continue
-			}
-			filtered = append(filtered, definition)
-		}
-		definitions = filtered
+		// agent 模式：直接返回全部工具定义，不包含 switch_to_agent（未加入基础列表）。
 		return definitions
 	}
+	// 非 agent 模式（ask/plan）：追加 switch_to_agent 工具定义。
+	definitions = append(definitions, map[string]any{
+		"name":                 "switch_to_agent",
+		"description":          "切换当前会话到执行模式（agent）。在问答模式（ask）或计划模式（plan）下，模型可调用此工具切换到执行模式，以便使用完整的本地工具能力。切换后对后续对话生效，当前对话不受影响。返回值包含 agent 模式新增的工具能力描述（additional_tools），便于模型了解切换后可获得的新能力。",
+		"waiting_for_response": true,
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"reason": map[string]any{"type": "string", "description": "切换到执行模式的原因。"},
+			},
+			"additionalProperties": false,
+		},
+	})
 	allowed := allowedClientToolSetForMode(mode)
 	filtered := make([]map[string]any, 0, len(definitions))
 	for _, definition := range definitions {

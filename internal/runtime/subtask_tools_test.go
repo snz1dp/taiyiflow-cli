@@ -691,3 +691,73 @@ func TestExecuteClientCollaborationTaskFailureReportsToServer(t *testing.T) {
 		t.Fatalf("expected at least one failed status update to server, got %#v", providerStub.updateRequests)
 	}
 }
+
+func TestSplitThinkingContent(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		wantReason string
+		wantText   string
+	}{
+		{
+			name:       "no thinking tags",
+			input:      "hello world",
+			wantReason: "",
+			wantText:   "hello world",
+		},
+		{
+			name:       "single thinking block",
+			input:      "<think>let me think</think>answer is 42",
+			wantReason: "let me think",
+			wantText:   "answer is 42",
+		},
+		{
+			name:       "multiple thinking blocks",
+			input:      "<think>first thought</think>middle text<think>second thought</think>final answer",
+			wantReason: "first thought\n\nsecond thought",
+			wantText:   "middle text\n\nfinal answer",
+		},
+		{
+			name:       "thinking at start and end",
+			input:      "<think>opening thought</think>body text<think>closing thought</think>",
+			wantReason: "opening thought\n\nclosing thought",
+			wantText:   "body text",
+		},
+		{
+			name:       "unclosed thinking tag",
+			input:      "<think>unfinished thought",
+			wantReason: "unfinished thought",
+			wantText:   "",
+		},
+		{
+			name:       "empty thinking block",
+			input:      "<think></think>just text",
+			wantReason: "",
+			wantText:   "just text",
+		},
+		{
+			name:       "only thinking blocks, no text",
+			input:      "<think>thought one</think><think>thought two</think>",
+			wantReason: "thought one\n\nthought two",
+			wantText:   "",
+		},
+		{
+			name:       "text before first thinking",
+			input:      "prefix text<think>thought</think>suffix text",
+			wantReason: "thought",
+			wantText:   "prefix text\n\nsuffix text",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotReason, gotText := splitThinkingContent(tt.input)
+			if gotReason != tt.wantReason {
+				t.Errorf("reason = %q, want %q", gotReason, tt.wantReason)
+			}
+			if gotText != tt.wantText {
+				t.Errorf("text = %q, want %q", gotText, tt.wantText)
+			}
+		})
+	}
+}

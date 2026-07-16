@@ -527,6 +527,8 @@ func (r *ClientRuntime) executeLocalSubtask(
 		InputType:                 "any",
 		Tweaks:                    buildSubtaskTweaks(request.WorkingDirectory, "client"),
 		InternetSearch:            r.subtaskInternetSearch,
+		KnowledgeScopes:           append([]string(nil), r.subtaskKnowledgeScopes...),
+		KnowledgeDocs:             append([]string(nil), r.subtaskKnowledgeDocs...),
 		OutputType:                "any",
 		SessionID:                 request.ChildSessionID,
 		RunID:                     request.ChildRunID,
@@ -714,9 +716,7 @@ func buildSubtaskResult(task *provider.ClientCollaborationTask, execution *subta
 			if text := strings.TrimSpace(stringValue(task.ResultPayload["text"])); text != "" {
 				result["text"] = text
 			}
-			if reason := strings.TrimSpace(stringValue(task.ResultPayload["reason"])); reason != "" {
-				result["reason"] = reason
-			}
+			// 思考内容（reason）不放入返回结果，避免 <tag>thinking</tag> 标签内容干扰父智能体
 		}
 		if strings.TrimSpace(task.ErrorMessage) != "" {
 			result["error_message"] = task.ErrorMessage
@@ -726,9 +726,7 @@ func buildSubtaskResult(task *provider.ClientCollaborationTask, execution *subta
 		if strings.TrimSpace(execution.Text) != "" {
 			result["text"] = execution.Text
 		}
-		if strings.TrimSpace(execution.Reason) != "" {
-			result["reason"] = execution.Reason
-		}
+		// 思考内容（reason）不放入返回结果，避免 <tag>thinking</tag> 标签内容干扰父智能体
 		if strings.TrimSpace(execution.ChildSessionID) != "" {
 			result["child_session_id"] = execution.ChildSessionID
 		}
@@ -752,9 +750,7 @@ func buildSubtaskResultPayload(request subtaskExecutionRequest, execution subtas
 		"request_mode":      request.RequestMode,
 		"working_directory": request.WorkingDirectory,
 	}
-	if strings.TrimSpace(execution.Reason) != "" {
-		payload["reason"] = execution.Reason
-	}
+	// 思考内容（reason）不写入服务端 payload，避免 <tag>thinking</tag> 标签内容干扰父智能体
 	return payload
 }
 
@@ -1037,48 +1033,59 @@ func filterSubtaskExcludedTools(servers map[string]any) map[string]any {
 	return filtered
 }
 
-// splitThinkingContent 从文本中提取 <think> 标签内容和剩余文本
-// 返回值: reason (<think> 标签内的内容), text (</think> 标签后的内容)
-// 如果存在多个 <think> 块，取最后一个
+// splitThinkingContent 从文本中提取所有 <think> 标签内容和剩余文本。
+// 返回值: reason (所有 <think> 标签内的内容合并), text (所有非 <think> 文本合并)。
+// 支持流式输出中可能出现多段 <think> 块的情况。
 func splitThinkingContent(content string) (reason string, text string) {
 	const openTag = "<think>"
 	const closeTag = "</think>"
 
-	// 查找最后一个 </think> 标签的位置
-	lastCloseIdx := strings.LastIndex(content, closeTag)
-	if lastCloseIdx == -1 {
-		// 没有 </think> 标签，整个内容作为 text
-		return "", content
-	}
+	var reasonParts []string
+	var textParts []string
 
-	// 查找对应的 <think> 标签
-	searchStart := 0
-	lastOpenIdx := -1
+	cursor := 0
 	for {
-		idx := strings.Index(content[searchStart:], openTag)
-		if idx == -1 {
+		// 查找下一个 <think> 标签
+		openIdx := strings.Index(content[cursor:], openTag)
+		if openIdx == -1 {
+			// 没有更多 <think> 标签，剩余内容全部作为 text
+			if cursor < len(content) {
+				if trimmed := strings.TrimSpace(content[cursor:]); trimmed != "" {
+					textParts = append(textParts, trimmed)
+				}
+			}
 			break
 		}
-		absIdx := searchStart + idx
-		if absIdx < lastCloseIdx {
-			lastOpenIdx = absIdx
-			searchStart = absIdx + len(openTag)
-		} else {
+		absOpenIdx := cursor + openIdx
+
+		// <think> 标签之前的文本归入 text
+		if absOpenIdx > cursor {
+			if trimmed := strings.TrimSpace(content[cursor:absOpenIdx]); trimmed != "" {
+				textParts = append(textParts, trimmed)
+			}
+		}
+
+		// 查找对应的 </think> 标签
+		afterOpen := absOpenIdx + len(openTag)
+		closeIdx := strings.Index(content[afterOpen:], closeTag)
+		if closeIdx == -1 {
+			// <think> 标签未闭合，将 <think> 标签后的所有内容作为 reason
+			if afterOpen < len(content) {
+				reasonParts = append(reasonParts, strings.TrimSpace(content[afterOpen:]))
+			}
 			break
 		}
+		absCloseIdx := afterOpen + closeIdx
+
+		// 提取 <think> 和 </think> 之间的内容作为 reason
+		reasonParts = append(reasonParts, strings.TrimSpace(content[afterOpen:absCloseIdx]))
+
+		// 移动游标到 </think> 标签之后
+		cursor = absCloseIdx + len(closeTag)
 	}
 
-	if lastOpenIdx == -1 {
-		// 有 </think> 但没有对应的 <think>，整个内容作为 text
-		return "", content
-	}
-
-	// 提取 reason: <think> 和 </think> 之间的内容
-	reasonStart := lastOpenIdx + len(openTag)
-	reason = strings.TrimSpace(content[reasonStart:lastCloseIdx])
-
-	// 提取 text: </think> 之后的内容
-	text = strings.TrimSpace(content[lastCloseIdx+len(closeTag):])
+	reason = strings.Join(reasonParts, "\n\n")
+	text = strings.Join(textParts, "\n\n")
 
 	return reason, text
 }

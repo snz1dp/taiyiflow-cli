@@ -834,6 +834,7 @@ func (a *App) streamTaskWithSkillRetry(
 	providerClient = a.providerWithCallbackAuthRefresh(providerClient, &config)
 	a.runtime.SetStreamEventLogsEnabled(showStreamEvents)
 	defer a.runtime.SetStreamEventLogsEnabled(true)
+	a.runtime.SetCurrentRequestMode(sessionState.RequestMode)
 
 	runtimeConfig := applyEffectiveSandboxEscapePolicy(config, sessionState.SandboxEscapePolicyOverride, commandSandboxEscapePolicy)
 	runtimeConfig = applyEffectiveSkillReviewPolicy(runtimeConfig, sessionState.SkillReviewPolicyOverride)
@@ -870,6 +871,8 @@ func (a *App) streamTaskWithSkillRetry(
 		resolveReasoningEnabled(config, sessionState.ReasoningOverride),
 		resolveInternetSearchEnabled(sessionState.InternetSearchOverride),
 		boolPtr(config.CrossSessionMemoryEnabled),
+		nil,
+		nil,
 	)
 	stream, streamSession, err := providerClient.Stream(ctx, provider.StreamRequest{
 		FlowID:                    flowID,

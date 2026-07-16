@@ -222,6 +222,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				request.ReasoningEnabled,
 				request.InternetSearch,
 				boolPtr(config.CrossSessionMemoryEnabled),
+				append([]string(nil), request.KnowledgeScopes...),
+				append([]string(nil), request.KnowledgeDocs...),
 			)
 			stream, streamSession, streamErr := callbackProvider.Stream(runCtx, provider.StreamRequest{
 				FlowID:                    currentFlow,

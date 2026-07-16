@@ -109,6 +109,8 @@ type ClientRuntime struct {
 	subtaskReasoningEnabled    bool
 	subtaskInternetSearch      bool
 	subtaskCrossSessionMemory  *bool
+	subtaskKnowledgeScopes     []string
+	subtaskKnowledgeDocs       []string
 	// subtaskEnabled 控制是否向模型暴露 run_subtask 工具。
 	// 非交互式模式默认 false，交互式模式和 TUI 默认 true。
 	subtaskEnabled bool
@@ -117,6 +119,9 @@ type ClientRuntime struct {
 	// 非线程安全：仅限单 goroutine 事件循环内写入和消费（switchToAgent 写入、ConsumePendingModeSwitch 读取）。
 	// 如果未来引入并发事件处理，需改为 sync.Mutex 或 atomic 保护。
 	pendingModeSwitch string
+	// currentRequestMode 记录当前请求模式（ask/plan/agent），由 cmd 层在发起 Stream 前注入。
+	// additionalAgentToolDescriptions 使用此字段确定基准模式，计算 agent 模式相比当前模式新增的工具。
+	currentRequestMode string
 	// nonArtifactFiles 追踪 is_artifact=false 的文件路径，在 on_complete 时自动清理。
 	nonArtifactFiles []string
 	nonArtifactMu    sync.Mutex
@@ -193,14 +198,22 @@ func (r *ClientRuntime) ConsumePendingModeSwitch() string {
 	return mode
 }
 
+// SetCurrentRequestMode 注入当前请求模式（ask/plan/agent）。
+// 由 cmd 层在发起 Stream 前调用，用于 additionalAgentToolDescriptions 计算基准模式。
+func (r *ClientRuntime) SetCurrentRequestMode(mode string) {
+	r.currentRequestMode = provider.NormalizeRequestType(mode)
+}
+
 // SetSubtaskCapabilities 注入子任务执行时需要继承的能力字段。
-// 由 cmd 层在发起 Stream 前调用，确保子任务拥有与主任务相同的 skills、MCP、reasoning 等能力。
-func (r *ClientRuntime) SetSubtaskCapabilities(skillPackages any, requestedSkillNames []string, reasoningEnabled bool, internetSearch bool, crossSessionMemory *bool) {
+// 由 cmd 层在发起 Stream 前调用，确保子任务拥有与主任务相同的 skills、MCP、reasoning、联网搜索、知识库等能力。
+func (r *ClientRuntime) SetSubtaskCapabilities(skillPackages any, requestedSkillNames []string, reasoningEnabled bool, internetSearch bool, crossSessionMemory *bool, knowledgeScopes []string, knowledgeDocs []string) {
 	r.subtaskSkillPackages = skillPackages
 	r.subtaskRequestedSkillNames = requestedSkillNames
 	r.subtaskReasoningEnabled = reasoningEnabled
 	r.subtaskInternetSearch = internetSearch
 	r.subtaskCrossSessionMemory = crossSessionMemory
+	r.subtaskKnowledgeScopes = knowledgeScopes
+	r.subtaskKnowledgeDocs = knowledgeDocs
 }
 
 func (r *ClientRuntime) cloneRuntime() *ClientRuntime {
@@ -225,9 +238,12 @@ func (r *ClientRuntime) cloneRuntime() *ClientRuntime {
 		subtaskReasoningEnabled:     r.subtaskReasoningEnabled,
 		subtaskInternetSearch:       r.subtaskInternetSearch,
 		subtaskCrossSessionMemory:   r.subtaskCrossSessionMemory,
+		subtaskKnowledgeScopes:      append([]string(nil), r.subtaskKnowledgeScopes...),
+		subtaskKnowledgeDocs:        append([]string(nil), r.subtaskKnowledgeDocs...),
 		subtaskEnabled:              r.subtaskEnabled,
 		// pendingModeSwitch 被有意忽略：克隆运行时不应继承父运行时的模式切换请求，
 		// 模式切换仅由主运行时上的 switch_to_agent 工具触发，由 cmd 层消费主运行时的 pendingModeSwitch。
+		currentRequestMode:         r.currentRequestMode,
 		nonArtifactFiles:            append([]string(nil), r.nonArtifactFiles...),
 	}
 }
@@ -1843,6 +1859,8 @@ func stringSlice(value any) []string {
 
 // switchToAgent 处理 switch_to_agent 工具调用。
 // 设置 pendingModeSwitch 标记，由 cmd 层在工具回调完成后消费并更新会话状态。
+// 返回值包含 additional_tools 字段，列出 agent 模式相比 ask/plan 模式新增的工具名称和描述，
+// 便于模型在当前轮了解切换后可获得的新能力。
 func (r *ClientRuntime) switchToAgent(arguments map[string]any) (map[string]any, error) {
 	r.pendingModeSwitch = provider.RequestTypeAgent
 	reason := argumentString(arguments, "reason")
@@ -1851,9 +1869,43 @@ func (r *ClientRuntime) switchToAgent(arguments map[string]any) (map[string]any,
 		message = fmt.Sprintf("已切换到执行模式（agent），原因: %s", reason)
 	}
 	return map[string]any{
-		"switched_to": "agent",
-		"message":     message,
+		"switched_to":      "agent",
+		"message":          message,
+		"additional_tools": r.additionalAgentToolDescriptions(),
 	}, nil
+}
+
+// additionalAgentToolDescriptions 计算 agent 模式相比当前模式（ask 或 plan）新增的工具名称和描述。
+// 基准模式由 r.currentRequestMode 决定，如果未设置则回退到 ask。
+// 通过对比 clientToolDefinitionsForMode(agent) 和 clientToolDefinitionsForMode(基准模式) 的差集得到。
+func (r *ClientRuntime) additionalAgentToolDescriptions() []map[string]any {
+	baseMode := r.currentRequestMode
+	if baseMode == "" || baseMode == provider.RequestTypeAgent {
+		baseMode = provider.RequestTypeAsk
+	}
+	agentDefs := r.clientToolDefinitionsForMode(provider.RequestTypeAgent)
+	baseDefs := r.clientToolDefinitionsForMode(baseMode)
+
+	baseNames := make(map[string]bool, len(baseDefs))
+	for _, def := range baseDefs {
+		name := strings.TrimSpace(stringValue(def["name"]))
+		if name != "" {
+			baseNames[name] = true
+		}
+	}
+
+	additional := make([]map[string]any, 0)
+	for _, def := range agentDefs {
+		name := strings.TrimSpace(stringValue(def["name"]))
+		if name == "" || baseNames[name] {
+			continue
+		}
+		additional = append(additional, map[string]any{
+			"name":        name,
+			"description": def["description"],
+		})
+	}
+	return additional
 }
 
 // streamCallbackWriter 将写入的数据实时转发给 streamCallback。
