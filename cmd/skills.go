@@ -1,11 +1,17 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
+	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
 )
 
@@ -38,6 +44,17 @@ func renderSkillsUsage(synopsis string) string {
 		"  source [show|set|reset]        查看或切换远程技能仓库地址",
 		"  enable <名称>                  恢复技能的候选资格",
 		"  disable <名称>                 将技能移出候选集合",
+		"",
+		"  后端技能管理:",
+		"  backend list                   列出后端可见技能及安装状态",
+		"  backend view <名称或ID>        查看后端技能详情",
+		"  backend install <名称或ID>     从后端下载安装技能到本地",
+		"  backend remove <名称或ID>     卸载后端技能并清除本地缓存",
+		"  backend sync                   同步后端已安装技能到本地",
+		"  backend upload <本地技能名>     上传本地技能到后端",
+		"  backend upload-file <文件路径>  上传 ZIP 或 MD 文件到后端",
+		"  backend delete <技能ID>        从后端删除自定义技能",
+		"",
 		"  help                           显示当前帮助",
 		"",
 		"自动补装配置:",
@@ -49,6 +66,9 @@ func renderSkillsUsage(synopsis string) string {
 		"  taiyiflow-cli skills view-remote remote-skill",
 		"  taiyiflow-cli skills install remote-skill",
 		"  taiyiflow-cli skills source set https://mirror-cn.clawhub.com",
+		"  taiyiflow-cli skills backend list",
+		"  taiyiflow-cli skills backend install my-skill",
+		"  taiyiflow-cli skills backend upload my-local-skill",
 	}
 	return strings.Join(lines, "\n")
 }
@@ -62,8 +82,8 @@ func skillsSlashUsage() string {
 	return strings.ReplaceAll(usage, "taiyiflow-cli skills", "/skills")
 }
 
-func (a *App) runSkills(args []string) error {
-	output, err := a.executeSkillsCommand(args)
+func (a *App) runSkills(ctx context.Context, args []string) error {
+	output, err := a.executeSkillsCommand(ctx, args)
 	if err != nil {
 		return err
 	}
@@ -73,7 +93,7 @@ func (a *App) runSkills(args []string) error {
 	return nil
 }
 
-func (a *App) executeSkillsCommand(args []string) (string, error) {
+func (a *App) executeSkillsCommand(ctx context.Context, args []string) (string, error) {
 	config, err := a.configManager.Load()
 	if err != nil {
 		return "", err
@@ -359,6 +379,8 @@ func (a *App) executeSkillsCommand(args []string) (string, error) {
 			return fmt.Sprintf("已恢复技能候选资格: %s", item.Name), nil
 		}
 		return fmt.Sprintf("已禁用技能候选资格: %s", item.Name), nil
+	case "backend":
+		return a.executeBackendSkillsCommand(ctx, config, args[1:])
 	default:
 		return "", fmt.Errorf("不支持的 skills 子命令: %s\n\n%s", subcommand, skillsCommandUsage())
 	}
@@ -570,4 +592,306 @@ func formatSkillPopularityLabel(value float64) string {
 
 func formatSkillDownloadsLabel(value int64) string {
 	return fmt.Sprintf("下载 %d", value)
+}
+
+// ---- 后端技能管理子命令 ----
+
+func (a *App) executeBackendSkillsCommand(ctx context.Context, config internalconfig.Config, args []string) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("用法: taiyiflow-cli skills backend <list|view|install|remove|sync|upload|upload-file|delete> [参数]")
+	}
+
+	subcommand := strings.ToLower(strings.TrimSpace(args[0]))
+	subArgs := args[1:]
+
+	switch subcommand {
+	case "list":
+		return a.backendSkillsList(ctx, config)
+	case "view":
+		if len(subArgs) < 1 {
+			return "", fmt.Errorf("用法: taiyiflow-cli skills backend view <名称或ID>")
+		}
+		return a.backendSkillsView(ctx, config, subArgs[0])
+	case "install":
+		if len(subArgs) < 1 {
+			return "", fmt.Errorf("用法: taiyiflow-cli skills backend install <名称或ID>")
+		}
+		return a.backendSkillsInstall(ctx, config, subArgs[0])
+	case "remove":
+		if len(subArgs) < 1 {
+			return "", fmt.Errorf("用法: taiyiflow-cli skills backend remove <名称或ID>")
+		}
+		return a.backendSkillsRemove(ctx, config, subArgs[0])
+	case "sync":
+		return a.backendSkillsSync(ctx, config)
+	case "upload":
+		if len(subArgs) < 1 {
+			return "", fmt.Errorf("用法: taiyiflow-cli skills backend upload <本地技能名>")
+		}
+		return a.backendSkillsUpload(ctx, config, subArgs[0])
+	case "upload-file":
+		if len(subArgs) < 1 {
+			return "", fmt.Errorf("用法: taiyiflow-cli skills backend upload-file <文件路径> [显示名称]")
+		}
+		displayName := ""
+		if len(subArgs) > 1 {
+			displayName = subArgs[1]
+		}
+		return a.backendSkillsUploadFile(ctx, config, subArgs[0], displayName)
+	case "delete":
+		if len(subArgs) < 1 {
+			return "", fmt.Errorf("用法: taiyiflow-cli skills backend delete <技能ID>")
+		}
+		return a.backendSkillsDelete(ctx, config, subArgs[0])
+	default:
+		return "", fmt.Errorf("不支持的后端技能子命令: %s\n可用子命令: list, view, install, remove, sync, upload, upload-file, delete", subcommand)
+	}
+}
+
+func (a *App) backendSkillsList(ctx context.Context, config internalconfig.Config) (string, error) {
+	client := buildProviderClient(config)
+	if err := a.ensureBackendAuth(ctx, client, config); err != nil {
+		return "", err
+	}
+
+	skillList, err := skills.FetchBackendSkills(ctx, client, provider.FetchVisibleSkillsParams{})
+	if err != nil {
+		return "", fmt.Errorf("获取后端技能列表失败: %w", err)
+	}
+
+	if len(skillList) == 0 {
+		return "后端暂无可用的技能包。", nil
+	}
+
+	// 获取安装记录
+	installRecords, _ := client.QueryInstallations(ctx, provider.QueryInstallationsParams{
+		Limit: 200,
+	})
+	installedMap := map[string]bool{}
+	if installRecords != nil {
+		for _, record := range installRecords.Items {
+			if record.Status == "installed" {
+				installedMap[record.SkillPackageID] = true
+			}
+		}
+	}
+
+	lines := []string{"后端技能列表:"}
+	for _, skill := range skillList {
+		status := "未安装"
+		if installedMap[skill.ID] {
+			status = "已安装"
+		}
+		name := skill.DisplayName
+		if name == "" {
+			name = skill.Name
+		}
+		lines = append(lines, fmt.Sprintf("  %-30s %-10s %-10s %s", name, skill.Version, status, skill.Summary))
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+func (a *App) backendSkillsView(ctx context.Context, config internalconfig.Config, nameOrID string) (string, error) {
+	client := buildProviderClient(config)
+	if err := a.ensureBackendAuth(ctx, client, config); err != nil {
+		return "", err
+	}
+
+	skillList, err := skills.FetchBackendSkills(ctx, client, provider.FetchVisibleSkillsParams{})
+	if err != nil {
+		return "", fmt.Errorf("获取后端技能列表失败: %w", err)
+	}
+
+	var matched *provider.VisibleSkillPackage
+	for i := range skillList {
+		s := &skillList[i]
+		if strings.EqualFold(s.ID, nameOrID) || strings.EqualFold(s.Name, nameOrID) || strings.EqualFold(s.DisplayName, nameOrID) {
+			matched = s
+			break
+		}
+	}
+	if matched == nil {
+		return "", fmt.Errorf("未找到后端技能: %s", nameOrID)
+	}
+
+	// 下载技能内容
+	content, err := client.DownloadSkillContent(ctx, matched.ID)
+	if err != nil {
+		return "", fmt.Errorf("下载技能内容失败: %w", err)
+	}
+
+	lines := []string{
+		fmt.Sprintf("名称: %s", matched.Name),
+		fmt.Sprintf("显示名: %s", matched.DisplayName),
+		fmt.Sprintf("版本: %s", matched.Version),
+		fmt.Sprintf("来源: %s", matched.Source),
+		fmt.Sprintf("作用域: %s", matched.Scope),
+		fmt.Sprintf("摘要: %s", matched.Summary),
+		"",
+		"--- SKILL.md 内容 ---",
+		content.Content,
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+func (a *App) backendSkillsInstall(ctx context.Context, config internalconfig.Config, nameOrID string) (string, error) {
+	client := buildProviderClient(config)
+	if err := a.ensureBackendAuth(ctx, client, config); err != nil {
+		return "", err
+	}
+
+	skillList, err := skills.FetchBackendSkills(ctx, client, provider.FetchVisibleSkillsParams{})
+	if err != nil {
+		return "", fmt.Errorf("获取后端技能列表失败: %w", err)
+	}
+
+	var matched *provider.VisibleSkillPackage
+	for i := range skillList {
+		s := &skillList[i]
+		if strings.EqualFold(s.ID, nameOrID) || strings.EqualFold(s.Name, nameOrID) || strings.EqualFold(s.DisplayName, nameOrID) {
+			matched = s
+			break
+		}
+	}
+	if matched == nil {
+		return "", fmt.Errorf("未找到后端技能: %s", nameOrID)
+	}
+
+	clientInfo := a.buildBackendClientInfo(config)
+	result, err := skills.InstallBackendSkill(ctx, client, config, *matched, clientInfo)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("已安装后端技能: %s (版本 %s)\n安装目录: %s", result.Name, result.Version, result.TargetDir), nil
+}
+
+func (a *App) backendSkillsRemove(ctx context.Context, config internalconfig.Config, nameOrID string) (string, error) {
+	client := buildProviderClient(config)
+	if err := a.ensureBackendAuth(ctx, client, config); err != nil {
+		return "", err
+	}
+
+	result, err := skills.RemoveBackendSkill(ctx, client, config, nameOrID)
+	if err != nil {
+		return "", err
+	}
+	msg := fmt.Sprintf("已卸载后端技能: %s", result.Name)
+	if result.TargetDir != "" {
+		msg += fmt.Sprintf("\n已清除本地缓存: %s", result.TargetDir)
+	}
+	return msg, nil
+}
+
+func (a *App) backendSkillsSync(ctx context.Context, config internalconfig.Config) (string, error) {
+	client := buildProviderClient(config)
+	if err := a.ensureBackendAuth(ctx, client, config); err != nil {
+		return "", err
+	}
+
+	clientInfo := a.buildBackendClientInfo(config)
+	result, err := skills.SyncBackendSkills(ctx, client, config, clientInfo)
+	if err != nil {
+		return "", err
+	}
+
+	lines := []string{"后端技能同步完成:"}
+	if len(result.Installed) > 0 {
+		lines = append(lines, fmt.Sprintf("  新安装 (%d): %s", len(result.Installed), strings.Join(result.Installed, ", ")))
+	}
+	if len(result.Updated) > 0 {
+		lines = append(lines, fmt.Sprintf("  已更新 (%d): %s", len(result.Updated), strings.Join(result.Updated, ", ")))
+	}
+	if len(result.Failed) > 0 {
+		lines = append(lines, fmt.Sprintf("  失败 (%d): %s", len(result.Failed), strings.Join(result.Failed, ", ")))
+	}
+	if len(result.Installed) == 0 && len(result.Updated) == 0 && len(result.Failed) == 0 {
+		lines = append(lines, "  所有技能已是最新状态。")
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+func (a *App) backendSkillsUpload(ctx context.Context, config internalconfig.Config, localSkillName string) (string, error) {
+	client := buildProviderClient(config)
+	if err := a.ensureBackendAuth(ctx, client, config); err != nil {
+		return "", err
+	}
+
+	result, err := skills.UploadLocalSkillToBackend(ctx, client, config, localSkillName)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("已上传技能到后端: %s (ID: %s, 版本: %s)", result.Name, result.SkillID, result.Version), nil
+}
+
+func (a *App) backendSkillsUploadFile(ctx context.Context, config internalconfig.Config, filePath string, displayName string) (string, error) {
+	client := buildProviderClient(config)
+	if err := a.ensureBackendAuth(ctx, client, config); err != nil {
+		return "", err
+	}
+
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return "", fmt.Errorf("解析文件路径失败: %w", err)
+	}
+	if _, err := os.Stat(absPath); err != nil {
+		return "", fmt.Errorf("文件不存在: %s", absPath)
+	}
+
+	if displayName == "" {
+		displayName = strings.TrimSuffix(filepath.Base(absPath), filepath.Ext(absPath))
+	}
+
+	ext := strings.ToLower(filepath.Ext(absPath))
+	if ext == ".zip" {
+		result, err := skills.UploadSkillArchiveToBackend(ctx, client, absPath, displayName)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("已上传 ZIP 技能包到后端: %s (ID: %s, 版本: %s)", result.Name, result.SkillID, result.Version), nil
+	}
+
+	// .md 文件按纯文本内容上传
+	content, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", fmt.Errorf("读取文件失败: %w", err)
+	}
+	result, err := skills.UploadSkillContentToBackend(ctx, client, displayName, string(content), displayName, "", "1.0.0")
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("已上传技能到后端: %s (ID: %s, 版本: %s)", result.Name, result.SkillID, result.Version), nil
+}
+
+func (a *App) backendSkillsDelete(ctx context.Context, config internalconfig.Config, skillID string) (string, error) {
+	client := buildProviderClient(config)
+	if err := a.ensureBackendAuth(ctx, client, config); err != nil {
+		return "", err
+	}
+
+	if err := skills.DeleteBackendSkill(ctx, client, skillID); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("已从后端删除自定义技能: %s", skillID), nil
+}
+
+func (a *App) buildBackendClientInfo(config internalconfig.Config) skills.ClientInfo {
+	version := buildinfo.Version
+	if version == "" {
+		version = "dev"
+	}
+	platform := "darwin/arm64"
+	return skills.ClientInfo{
+		ClientID:       config.ClientID,
+		DeviceID:      config.DeviceID,
+		ClientPlatform: platform,
+		ClientVersion:  version,
+		InstallSource:  "cli-manual",
+		InstallScope:   config.Skills.InstallScope,
+	}
+}
+
+func (a *App) ensureBackendAuth(ctx context.Context, client *providerclient.Client, config internalconfig.Config) error {
+	// 复用已有的认证流程
+	_, _, err := a.ensureProviderAuthenticated(ctx, client, config)
+	return err
 }

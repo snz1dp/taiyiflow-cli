@@ -761,7 +761,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if configErr != nil {
 				return tui.LocalCommandResult{}, configErr
 			}
-			result, pickerErr := a.executeTUISkillsPickerCommand(localConfig, resolveTUISkillsContextDir(snapshot), trimmed)
+			result, pickerErr := a.executeTUISkillsPickerCommand(ctx, localConfig, resolveTUISkillsContextDir(snapshot), trimmed)
 			if pickerErr != nil {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: pickerErr.Error()}}}, nil
 			}
@@ -856,7 +856,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				}},
 			}, nil
 		case strings.HasPrefix(strings.ToLower(trimmed), "/skills "):
-			output, err := a.executeSkillsCommand(parseSlashSkillsArgs(trimmed))
+			output, err := a.executeSkillsCommand(ctx, parseSlashSkillsArgs(trimmed))
 			if err != nil {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: err.Error()}}}, nil
 			}
@@ -4609,7 +4609,7 @@ func buildTUISkillsPicker(config internalconfig.Config, contextDir string, query
 	}, nil
 }
 
-func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contextDir string, command string) (tui.LocalCommandResult, error) {
+func (a *App) executeTUISkillsPickerCommand(ctx context.Context, config internalconfig.Config, contextDir string, command string) (tui.LocalCommandResult, error) {
 	remainder := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(command), skillsPickerCommandPrefix))
 	action := "open"
 	args := []string{}
@@ -4781,7 +4781,7 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 		return result, nil
 	}
 	executeLocalRemove := func(target string, query string, closeToolPanel bool) (tui.LocalCommandResult, error) {
-		output, commandErr := a.executeSkillsCommand([]string{"remove", target})
+		output, commandErr := a.executeSkillsCommand(ctx, []string{"remove", target})
 		result, pickerErr := buildLocalPicker(query)
 		if pickerErr != nil {
 			return tui.LocalCommandResult{}, pickerErr
@@ -4799,7 +4799,7 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 		if enable {
 			action = "enable"
 		}
-		output, commandErr := a.executeSkillsCommand([]string{action, target})
+		output, commandErr := a.executeSkillsCommand(ctx, []string{action, target})
 		if commandErr != nil {
 			result, pickerErr := buildLocalPicker(query)
 			if pickerErr != nil {
@@ -4860,7 +4860,7 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 		if action == "install" {
 			return executeInstall(slug, a.resolveSkillInstallScope(skillConfig), false, false, query)
 		}
-		output, commandErr := a.executeSkillsCommand([]string{action, slug})
+		output, commandErr := a.executeSkillsCommand(ctx, []string{action, slug})
 		result, pickerErr := buildRemotePicker(query)
 		if pickerErr != nil {
 			return tui.LocalCommandResult{}, pickerErr
@@ -4892,7 +4892,7 @@ func (a *App) executeTUISkillsPickerCommand(config internalconfig.Config, contex
 		if baseAction == "install" {
 			return executeInstall(slug, a.resolveSkillInstallScope(skillConfig), false, true, query)
 		}
-		output, commandErr := a.executeSkillsCommand([]string{baseAction, slug})
+		output, commandErr := a.executeSkillsCommand(ctx, []string{baseAction, slug})
 		if commandErr != nil {
 			result, pickerErr := buildRemotePicker(query)
 			if pickerErr != nil {

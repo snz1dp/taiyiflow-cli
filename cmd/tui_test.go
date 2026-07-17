@@ -487,7 +487,7 @@ func TestExecuteTUISkillsPickerInstallDetailRefreshesPickerAndPanel(t *testing.T
 	}
 	app := &App{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, configManager: manager}
 
-	promptResult, err := app.executeTUISkillsPickerCommand(config, workspaceDir, "/skills-picker install-detail-select remote-skill remote")
+	promptResult, err := app.executeTUISkillsPickerCommand(context.Background(), config, workspaceDir, "/skills-picker install-detail-select remote-skill remote")
 	if err != nil {
 		t.Fatalf("executeTUISkillsPickerCommand failed: %v", err)
 	}
@@ -498,7 +498,7 @@ func TestExecuteTUISkillsPickerInstallDetailRefreshesPickerAndPanel(t *testing.T
 		t.Fatalf("expected install target panel event, got %#v", promptResult.Events)
 	}
 	installCommand := promptResult.Events[len(promptResult.Events)-1].Panel.Actions[0].Command
-	result, err := app.executeTUISkillsPickerCommand(config, workspaceDir, installCommand)
+	result, err := app.executeTUISkillsPickerCommand(context.Background(), config, workspaceDir, installCommand)
 	if err != nil {
 		t.Fatalf("execute install-scope failed: %v", err)
 	}
@@ -558,7 +558,7 @@ func TestExecuteTUISkillsPickerInstallSelectUsesRememberedSessionScope(t *testin
 		t.Fatalf("save config failed: %v", err)
 	}
 	app := &App{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, configManager: manager, skillInstallScopeSession: internalconfig.SkillInstallScopeWorkspace, skillInstallScopePinned: true}
-	result, err := app.executeTUISkillsPickerCommand(config, workspaceDir, "/skills-picker install-select remote-skill remote")
+	result, err := app.executeTUISkillsPickerCommand(context.Background(), config, workspaceDir, "/skills-picker install-select remote-skill remote")
 	if err != nil {
 		t.Fatalf("executeTUISkillsPickerCommand failed: %v", err)
 	}
@@ -633,7 +633,7 @@ func TestExecuteTUISkillsPickerRemoveLocalDetailRefreshesPickerAndClosesPanel(t 
 		t.Fatalf("expected installed remote skill to be marked removable, got %#v", picker.Items)
 	}
 
-	result, err := app.executeTUISkillsPickerCommand(config, workspaceDir, "/skills-picker remove-local-detail remote-skill remote")
+	result, err := app.executeTUISkillsPickerCommand(context.Background(), config, workspaceDir, "/skills-picker remove-local-detail remote-skill remote")
 	if err != nil {
 		t.Fatalf("remove-local-detail failed: %v", err)
 	}
@@ -697,7 +697,7 @@ func TestExecuteTUISkillsPickerDisableLocalDetailRefreshesPickerAndKeepsSkillIns
 	}
 	app := &App{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, configManager: manager, skillInstallScopeSession: internalconfig.SkillInstallScopeWorkspace, skillInstallScopePinned: true}
 
-	result, err := app.executeTUISkillsPickerCommand(config, workspaceDir, "/skills-picker disable-local-detail remote-skill remote")
+	result, err := app.executeTUISkillsPickerCommand(context.Background(), config, workspaceDir, "/skills-picker disable-local-detail remote-skill remote")
 	if err != nil {
 		t.Fatalf("disable-local-detail failed: %v", err)
 	}

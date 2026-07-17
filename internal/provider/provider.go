@@ -505,6 +505,76 @@ type ClientCollaborationUpdateRequest struct {
 	ErrorMessage  string
 }
 
+// VisibleSkillPackage 对应后端 VisibleSkillPackageRead
+type VisibleSkillPackage struct {
+	ID          string
+	Name        string
+	DisplayName string
+	Summary     string
+	Description string
+	Version     string
+	Scope       string
+	Source      string
+	Category    string
+	UpdatedAt   string
+}
+
+// SkillPackageContent 对应后端 SkillPackageContentRead
+type SkillPackageContent struct {
+	Content string
+	Version string
+}
+
+// SkillInstallationRecord 对应后端 SkillInstallationRecordRead
+type SkillInstallationRecord struct {
+	ID              string
+	SkillPackageID  string
+	SkillName       string
+	SkillVersion    string
+	Status          string
+	InstallSource   string
+	ClientID        string
+	DeviceID        string
+	ClientPlatform  string
+	ClientVersion   string
+	CreatedAt       string
+	UpdatedAt       string
+}
+
+// SkillInstallationPage 安装记录分页结果
+type SkillInstallationPage struct {
+	Total  int
+	Offset int
+	Limit  int
+	Items  []SkillInstallationRecord
+}
+
+// UploadCustomSkillRequest 上传自定义技能请求
+type UploadCustomSkillRequest struct {
+	Name        string
+	Content     string
+	DisplayName string
+	Summary     string
+	Version     string
+}
+
+// UploadCustomSkillArchiveRequest 上传自定义技能 ZIP 请求
+type UploadCustomSkillArchiveRequest struct {
+	FilePath    string
+	Name        string
+	DisplayName string
+}
+
+// ReportInstallationRequest 上报安装记录请求
+type ReportInstallationRequest struct {
+	SkillPackageID  string
+	ClientID        string
+	DeviceID        string
+	InstallSource   string
+	ClientPlatform  string
+	ClientVersion   string
+}
+
 type ClientCollaborationTask struct {
 	ID              string
 	OwnerUserID     string
@@ -555,4 +625,32 @@ type Provider interface {
 	CreateClientCollaboration(ctx context.Context, request ClientCollaborationCreateRequest) (*ClientCollaborationTask, error)
 	GetClientCollaboration(ctx context.Context, taskID string) (*ClientCollaborationTask, error)
 	UpdateClientCollaboration(ctx context.Context, taskID string, request ClientCollaborationUpdateRequest) (*ClientCollaborationTask, error)
+
+	// 后端技能包管理 API
+	FetchVisibleSkills(ctx context.Context, params FetchVisibleSkillsParams) ([]VisibleSkillPackage, error)
+	DownloadSkillContent(ctx context.Context, skillID string) (*SkillPackageContent, error)
+	UploadCustomSkill(ctx context.Context, request UploadCustomSkillRequest) (*VisibleSkillPackage, error)
+	UploadCustomSkillArchive(ctx context.Context, request UploadCustomSkillArchiveRequest) (*VisibleSkillPackage, error)
+	DeleteCustomSkill(ctx context.Context, skillID string) error
+	ReportInstallation(ctx context.Context, request ReportInstallationRequest) (*SkillInstallationRecord, error)
+	QueryInstallations(ctx context.Context, params QueryInstallationsParams) (*SkillInstallationPage, error)
+	UninstallSkillRecord(ctx context.Context, recordID string) (*SkillInstallationRecord, error)
+}
+
+// FetchVisibleSkillsParams 查询可见技能列表参数
+type FetchVisibleSkillsParams struct {
+	FlowID                 string
+	SessionID              string
+	CommandExecutionTarget string
+	AvailableTools         []string
+	TerminalType           string
+}
+
+// QueryInstallationsParams 查询安装记录参数
+type QueryInstallationsParams struct {
+	ClientID       string
+	SkillPackageID string
+	Status         string
+	Offset         int
+	Limit          int
 }

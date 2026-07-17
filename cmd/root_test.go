@@ -260,6 +260,38 @@ func (s stubProvider) UpdateClientCollaboration(context.Context, string, provide
 	return &provider.ClientCollaborationTask{}, nil
 }
 
+func (s stubProvider) FetchVisibleSkills(context.Context, provider.FetchVisibleSkillsParams) ([]provider.VisibleSkillPackage, error) {
+	return nil, nil
+}
+
+func (s stubProvider) DownloadSkillContent(context.Context, string) (*provider.SkillPackageContent, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s stubProvider) UploadCustomSkill(context.Context, provider.UploadCustomSkillRequest) (*provider.VisibleSkillPackage, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s stubProvider) UploadCustomSkillArchive(context.Context, provider.UploadCustomSkillArchiveRequest) (*provider.VisibleSkillPackage, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s stubProvider) DeleteCustomSkill(context.Context, string) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (s stubProvider) ReportInstallation(context.Context, provider.ReportInstallationRequest) (*provider.SkillInstallationRecord, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s stubProvider) QueryInstallations(context.Context, provider.QueryInstallationsParams) (*provider.SkillInstallationPage, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s stubProvider) UninstallSkillRecord(context.Context, string) (*provider.SkillInstallationRecord, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
 func streamWithEvents(events ...provider.StreamEvent) <-chan provider.StreamEvent {
 	stream := make(chan provider.StreamEvent, len(events))
 	for _, event := range events {

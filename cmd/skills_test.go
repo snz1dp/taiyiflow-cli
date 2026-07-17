@@ -3,6 +3,7 @@ package cmd
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -163,7 +164,7 @@ func TestLoadSkillPayloadReflectsDisabledSkillImmediately(t *testing.T) {
 	if !containsIgnoreCase(names, "update-config") {
 		t.Fatalf("expected update-config enabled before disable, got %#v", names)
 	}
-	if _, err := app.executeSkillsCommand([]string{"disable", "update-config"}); err != nil {
+	if _, err := app.executeSkillsCommand(context.Background(), []string{"disable", "update-config"}); err != nil {
 		t.Fatalf("disable skill failed: %v", err)
 	}
 	names, _, err = app.loadSkillPayload(config, "", provider.RequestTypeAgent)
@@ -173,7 +174,7 @@ func TestLoadSkillPayloadReflectsDisabledSkillImmediately(t *testing.T) {
 	if containsIgnoreCase(names, "update-config") {
 		t.Fatalf("expected disabled skill to disappear immediately, got %#v", names)
 	}
-	if _, err := app.executeSkillsCommand([]string{"enable", "update-config"}); err != nil {
+	if _, err := app.executeSkillsCommand(context.Background(), []string{"enable", "update-config"}); err != nil {
 		t.Fatalf("re-enable skill failed: %v", err)
 	}
 	names, _, err = app.loadSkillPayload(config, "", provider.RequestTypeAgent)
@@ -203,7 +204,7 @@ func TestExecuteSkillsDisableAndEnableBundledSkill(t *testing.T) {
 		t.Fatalf("save config failed: %v", err)
 	}
 
-	if _, err := app.executeSkillsCommand([]string{"disable", "update-config"}); err != nil {
+	if _, err := app.executeSkillsCommand(context.Background(), []string{"disable", "update-config"}); err != nil {
 		t.Fatalf("disable failed: %v", err)
 	}
 	updated, err := manager.Load()
@@ -214,7 +215,7 @@ func TestExecuteSkillsDisableAndEnableBundledSkill(t *testing.T) {
 		t.Fatalf("expected disabled skill recorded, got %#v", updated.Skills.Disabled)
 	}
 
-	if _, err := app.executeSkillsCommand([]string{"enable", "update-config"}); err != nil {
+	if _, err := app.executeSkillsCommand(context.Background(), []string{"enable", "update-config"}); err != nil {
 		t.Fatalf("enable failed: %v", err)
 	}
 	updated, err = manager.Load()
@@ -240,7 +241,7 @@ func TestExecuteSkillsListGroupsBundledSkillsBySource(t *testing.T) {
 	if err := manager.Save(config); err != nil {
 		t.Fatalf("save config failed: %v", err)
 	}
-	output, err := app.executeSkillsCommand([]string{"list"})
+	output, err := app.executeSkillsCommand(context.Background(), []string{"list"})
 	if err != nil {
 		t.Fatalf("list failed: %v", err)
 	}
@@ -363,7 +364,7 @@ func TestExecuteSkillsViewShowsFilesAndDisplayLabels(t *testing.T) {
 	if err := manager.Save(config); err != nil {
 		t.Fatalf("save config failed: %v", err)
 	}
-	output, err := app.executeSkillsCommand([]string{"view", "taiyiflow-api"})
+	output, err := app.executeSkillsCommand(context.Background(), []string{"view", "taiyiflow-api"})
 	if err != nil {
 		t.Fatalf("view failed: %v", err)
 	}
@@ -427,7 +428,7 @@ func TestExecuteSkillsRemoteLifecycle(t *testing.T) {
 		t.Fatalf("save config failed: %v", err)
 	}
 
-	searchOutput, err := app.executeSkillsCommand([]string{"search", "remote"})
+	searchOutput, err := app.executeSkillsCommand(context.Background(), []string{"search", "remote"})
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
@@ -441,7 +442,7 @@ func TestExecuteSkillsRemoteLifecycle(t *testing.T) {
 		t.Fatalf("expected popularity/downloads in search output, got %q", searchOutput)
 	}
 
-	viewOutput, err := app.executeSkillsCommand([]string{"view-remote", "remote-skill"})
+	viewOutput, err := app.executeSkillsCommand(context.Background(), []string{"view-remote", "remote-skill"})
 	if err != nil {
 		t.Fatalf("view-remote failed: %v", err)
 	}
@@ -449,7 +450,7 @@ func TestExecuteSkillsRemoteLifecycle(t *testing.T) {
 		t.Fatalf("unexpected remote view output: %q", viewOutput)
 	}
 
-	installOutput, err := app.executeSkillsCommand([]string{"install", "remote-skill"})
+	installOutput, err := app.executeSkillsCommand(context.Background(), []string{"install", "remote-skill"})
 	if err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
@@ -469,7 +470,7 @@ func TestExecuteSkillsRemoteLifecycle(t *testing.T) {
 	latestVersion = "2.0.0"
 	versionMu.Unlock()
 
-	updateOutput, err := app.executeSkillsCommand([]string{"update", "remote-skill"})
+	updateOutput, err := app.executeSkillsCommand(context.Background(), []string{"update", "remote-skill"})
 	if err != nil {
 		t.Fatalf("update failed: %v", err)
 	}
@@ -484,7 +485,7 @@ func TestExecuteSkillsRemoteLifecycle(t *testing.T) {
 		t.Fatalf("unexpected update output: %q", updateOutput)
 	}
 
-	removeOutput, err := app.executeSkillsCommand([]string{"remove", "remote-skill"})
+	removeOutput, err := app.executeSkillsCommand(context.Background(), []string{"remove", "remote-skill"})
 	if err != nil {
 		t.Fatalf("remove failed: %v", err)
 	}
@@ -502,7 +503,7 @@ func TestExecuteSkillsRemoteLifecycle(t *testing.T) {
 		t.Fatalf("unexpected remove output: %q", removeOutput)
 	}
 
-	sourceOutput, err := app.executeSkillsCommand([]string{"source", "set", "https://example.com/skills/"})
+	sourceOutput, err := app.executeSkillsCommand(context.Background(), []string{"source", "set", "https://example.com/skills/"})
 	if err != nil {
 		t.Fatalf("source set failed: %v", err)
 	}
@@ -517,7 +518,7 @@ func TestExecuteSkillsRemoteLifecycle(t *testing.T) {
 		t.Fatalf("expected normalized registry URL, got %q", updatedConfig.Skills.RegistryURL)
 	}
 
-	resetOutput, err := app.executeSkillsCommand([]string{"source", "reset"})
+	resetOutput, err := app.executeSkillsCommand(context.Background(), []string{"source", "reset"})
 	if err != nil {
 		t.Fatalf("source reset failed: %v", err)
 	}

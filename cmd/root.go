@@ -153,7 +153,7 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	case "login":
 		return a.runLogin(ctx, args[1:])
 	case "skills":
-		return a.runSkills(args[1:])
+		return a.runSkills(ctx, args[1:])
 	case "cli":
 		return errors.New("`cli` 子命令已移除，请改用 `taiyiflow-cli task`")
 	case "config":
@@ -437,7 +437,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 				fmt.Fprintln(a.stdout, "/permissions 已移除，请使用 /config 管理权限与执行配置。")
 				continue
 			case line == "/skills" || strings.HasPrefix(strings.ToLower(line), "/skills "):
-				output, err := a.executeSkillsCommand(parseSlashSkillsArgs(line))
+				output, err := a.executeSkillsCommand(ctx, parseSlashSkillsArgs(line))
 				if err != nil {
 					fmt.Fprintf(a.stderr, "技能命令执行失败: %v\n", err)
 					continue

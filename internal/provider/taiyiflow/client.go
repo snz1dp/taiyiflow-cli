@@ -2289,3 +2289,435 @@ func stringValue(value any) string {
 		return strings.TrimSpace(fmt.Sprintf("%v", typed))
 	}
 }
+
+// ---- 后端技能包管理 API ----
+
+type visibleSkillPackageResponse struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Summary     string `json:"summary"`
+	Description string `json:"description"`
+	Version     string `json:"version"`
+	Scope       string `json:"scope"`
+	Source      string `json:"source"`
+	Category    string `json:"category"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+type skillPackageContentResponse struct {
+	Content string `json:"content"`
+	Version string `json:"version"`
+}
+
+type skillInstallationRecordResponse struct {
+	ID             string `json:"id"`
+	SkillPackageID string `json:"skill_package_id"`
+	SkillName      string `json:"skill_name"`
+	SkillVersion   string `json:"skill_version"`
+	Status         string `json:"status"`
+	InstallSource  string `json:"install_source"`
+	ClientID       string `json:"client_id"`
+	DeviceID       string `json:"device_id"`
+	ClientPlatform string `json:"client_platform"`
+	ClientVersion  string `json:"client_version"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
+type skillInstallationPageResponse struct {
+	Data  []skillInstallationRecordResponse `json:"data"`
+	Total int                                `json:"total"`
+}
+
+type uploadCustomSkillRequestBody struct {
+	Name        string `json:"name"`
+	Content     string `json:"content"`
+	DisplayName string `json:"display_name,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	Version     string `json:"version,omitempty"`
+}
+
+type reportInstallationRequestBody struct {
+	SkillPackageID string `json:"skill_package_id"`
+	ClientID       string `json:"client_id,omitempty"`
+	DeviceID       string `json:"device_id,omitempty"`
+	InstallSource string `json:"install_source,omitempty"`
+	ClientPlatform string `json:"client_platform,omitempty"`
+	ClientVersion string `json:"client_version,omitempty"`
+}
+
+func (c *Client) FetchVisibleSkills(ctx context.Context, params provider.FetchVisibleSkillsParams) ([]provider.VisibleSkillPackage, error) {
+	endpointURL, err := url.Parse(c.apiURL("/agents/skills"))
+	if err != nil {
+		return nil, fmt.Errorf("构造可见技能请求地址失败: %w", err)
+	}
+	query := endpointURL.Query()
+	if trimmed := strings.TrimSpace(params.FlowID); trimmed != "" {
+		query.Set("flow_id", trimmed)
+	}
+	if trimmed := strings.TrimSpace(params.SessionID); trimmed != "" {
+		query.Set("session_id", trimmed)
+	}
+	if trimmed := strings.TrimSpace(params.CommandExecutionTarget); trimmed != "" {
+		query.Set("command_execution_target", trimmed)
+	}
+	if trimmed := strings.TrimSpace(params.TerminalType); trimmed != "" {
+		query.Set("terminal_type", trimmed)
+	}
+	if len(params.AvailableTools) > 0 {
+		query.Set("available_tools", strings.Join(params.AvailableTools, ","))
+	}
+	endpointURL.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpointURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建可见技能请求失败: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求可见技能列表失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("请求可见技能列表失败", resp)
+	}
+
+	var payload []visibleSkillPackageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析可见技能列表失败: %w", err)
+	}
+
+	result := make([]provider.VisibleSkillPackage, 0, len(payload))
+	for _, item := range payload {
+		result = append(result, provider.VisibleSkillPackage{
+			ID:          strings.TrimSpace(item.ID),
+			Name:        strings.TrimSpace(item.Name),
+			DisplayName: strings.TrimSpace(item.DisplayName),
+			Summary:     strings.TrimSpace(item.Summary),
+			Description: strings.TrimSpace(item.Description),
+			Version:     strings.TrimSpace(item.Version),
+			Scope:       strings.TrimSpace(item.Scope),
+			Source:      strings.TrimSpace(item.Source),
+			Category:    strings.TrimSpace(item.Category),
+			UpdatedAt:   strings.TrimSpace(item.UpdatedAt),
+		})
+	}
+	return result, nil
+}
+
+func (c *Client) DownloadSkillContent(ctx context.Context, skillID string) (*provider.SkillPackageContent, error) {
+	trimmedID := strings.TrimSpace(skillID)
+	if trimmedID == "" {
+		return nil, fmt.Errorf("技能 ID 不能为空")
+	}
+	endpoint := c.apiURL(fmt.Sprintf("/agents/skills/%s", url.PathEscape(trimmedID)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建技能内容下载请求失败: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("下载技能内容失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("下载技能内容失败", resp)
+	}
+
+	var payload skillPackageContentResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析技能内容响应失败: %w", err)
+	}
+	return &provider.SkillPackageContent{
+		Content: payload.Content,
+		Version: strings.TrimSpace(payload.Version),
+	}, nil
+}
+
+func (c *Client) UploadCustomSkill(ctx context.Context, request provider.UploadCustomSkillRequest) (*provider.VisibleSkillPackage, error) {
+	body := uploadCustomSkillRequestBody{
+		Name:        strings.TrimSpace(request.Name),
+		Content:     request.Content,
+		DisplayName: strings.TrimSpace(request.DisplayName),
+		Summary:     strings.TrimSpace(request.Summary),
+		Version:     strings.TrimSpace(request.Version),
+	}
+	if body.Name == "" {
+		return nil, fmt.Errorf("技能名称不能为空")
+	}
+	if strings.TrimSpace(body.Content) == "" {
+		return nil, fmt.Errorf("技能内容不能为空")
+	}
+	content, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("序列化上传技能请求失败: %w", err)
+	}
+	endpoint := c.apiURL("/agents/skills/upload")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(content))
+	if err != nil {
+		return nil, fmt.Errorf("创建上传技能请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("上传自定义技能失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("上传自定义技能失败", resp)
+	}
+	var payload visibleSkillPackageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析上传技能响应失败: %w", err)
+	}
+	return mapVisibleSkillPackage(payload), nil
+}
+
+func (c *Client) UploadCustomSkillArchive(ctx context.Context, request provider.UploadCustomSkillArchiveRequest) (*provider.VisibleSkillPackage, error) {
+	trimmedPath := strings.TrimSpace(request.FilePath)
+	if trimmedPath == "" {
+		return nil, fmt.Errorf("技能 ZIP 文件路径不能为空")
+	}
+	file, err := os.Open(trimmedPath)
+	if err != nil {
+		return nil, fmt.Errorf("打开技能 ZIP 文件失败: %w", err)
+	}
+	defer file.Close()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if trimmed := strings.TrimSpace(request.Name); trimmed != "" {
+		if err := writer.WriteField("name", trimmed); err != nil {
+			return nil, fmt.Errorf("构造上传表单失败: %w", err)
+		}
+	}
+	if trimmed := strings.TrimSpace(request.DisplayName); trimmed != "" {
+		if err := writer.WriteField("display_name", trimmed); err != nil {
+			return nil, fmt.Errorf("构造上传表单失败: %w", err)
+		}
+	}
+	part, err := writer.CreateFormFile("file", filepath.Base(trimmedPath))
+	if err != nil {
+		return nil, fmt.Errorf("构造上传文件字段失败: %w", err)
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		return nil, fmt.Errorf("写入上传文件内容失败: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("完成上传表单失败: %w", err)
+	}
+
+	endpoint := c.apiURL("/agents/skills/upload")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
+	if err != nil {
+		return nil, fmt.Errorf("创建上传技能请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Accept", "application/json")
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("上传自定义技能 ZIP 失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("上传自定义技能 ZIP 失败", resp)
+	}
+	var payload visibleSkillPackageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析上传技能响应失败: %w", err)
+	}
+	return mapVisibleSkillPackage(payload), nil
+}
+
+func (c *Client) DeleteCustomSkill(ctx context.Context, skillID string) error {
+	trimmedID := strings.TrimSpace(skillID)
+	if trimmedID == "" {
+		return fmt.Errorf("技能 ID 不能为空")
+	}
+	endpoint := c.apiURL(fmt.Sprintf("/agents/skills/%s", url.PathEscape(trimmedID)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("创建删除技能请求失败: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("删除自定义技能失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		return readHTTPError("删除自定义技能失败", resp)
+	}
+	return nil
+}
+
+func (c *Client) ReportInstallation(ctx context.Context, request provider.ReportInstallationRequest) (*provider.SkillInstallationRecord, error) {
+	body := reportInstallationRequestBody{
+		SkillPackageID: strings.TrimSpace(request.SkillPackageID),
+		ClientID:       strings.TrimSpace(request.ClientID),
+		DeviceID:       strings.TrimSpace(request.DeviceID),
+		InstallSource:  strings.TrimSpace(request.InstallSource),
+		ClientPlatform: strings.TrimSpace(request.ClientPlatform),
+		ClientVersion:  strings.TrimSpace(request.ClientVersion),
+	}
+	if body.SkillPackageID == "" {
+		return nil, fmt.Errorf("技能包 ID 不能为空")
+	}
+	content, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("序列化安装记录请求失败: %w", err)
+	}
+	endpoint := c.apiURL("/agents/skills/installations")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(content))
+	if err != nil {
+		return nil, fmt.Errorf("创建安装记录请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("上报安装记录失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("上报安装记录失败", resp)
+	}
+	var payload skillInstallationRecordResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析安装记录响应失败: %w", err)
+	}
+	return mapSkillInstallationRecord(payload), nil
+}
+
+func (c *Client) QueryInstallations(ctx context.Context, params provider.QueryInstallationsParams) (*provider.SkillInstallationPage, error) {
+	endpointURL, err := url.Parse(c.apiURL("/agents/skills/installations"))
+	if err != nil {
+		return nil, fmt.Errorf("构造安装记录请求地址失败: %w", err)
+	}
+	query := endpointURL.Query()
+	if trimmed := strings.TrimSpace(params.ClientID); trimmed != "" {
+		query.Set("client_id", trimmed)
+	}
+	if trimmed := strings.TrimSpace(params.SkillPackageID); trimmed != "" {
+		query.Set("skill_package_id", trimmed)
+	}
+	if trimmed := strings.TrimSpace(params.Status); trimmed != "" {
+		query.Set("status", trimmed)
+	}
+	if params.Offset > 0 {
+		query.Set("offset", strconv.Itoa(params.Offset))
+	}
+	if params.Limit > 0 {
+		query.Set("limit", strconv.Itoa(params.Limit))
+	}
+	endpointURL.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpointURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建安装记录请求失败: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("查询安装记录失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("查询安装记录失败", resp)
+	}
+
+	// 后端可能返回数组或分页对象，先尝试分页对象
+	var pagePayload skillInstallationPageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&pagePayload); err != nil {
+		return nil, fmt.Errorf("解析安装记录响应失败: %w", err)
+	}
+
+	items := make([]provider.SkillInstallationRecord, 0, len(pagePayload.Data))
+	for _, item := range pagePayload.Data {
+		items = append(items, *mapSkillInstallationRecord(item))
+	}
+	return &provider.SkillInstallationPage{
+		Total:  pagePayload.Total,
+		Offset: params.Offset,
+		Limit:  params.Limit,
+		Items:  items,
+	}, nil
+}
+
+func (c *Client) UninstallSkillRecord(ctx context.Context, recordID string) (*provider.SkillInstallationRecord, error) {
+	trimmedID := strings.TrimSpace(recordID)
+	if trimmedID == "" {
+		return nil, fmt.Errorf("安装记录 ID 不能为空")
+	}
+	endpoint := c.apiURL(fmt.Sprintf("/agents/skills/installations/%s/uninstall", url.PathEscape(trimmedID)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建卸载记录请求失败: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	c.applyAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("标记技能卸载失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("标记技能卸载失败", resp)
+	}
+	var payload skillInstallationRecordResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析卸载记录响应失败: %w", err)
+	}
+	return mapSkillInstallationRecord(payload), nil
+}
+
+func mapVisibleSkillPackage(payload visibleSkillPackageResponse) *provider.VisibleSkillPackage {
+	return &provider.VisibleSkillPackage{
+		ID:          strings.TrimSpace(payload.ID),
+		Name:        strings.TrimSpace(payload.Name),
+		DisplayName: strings.TrimSpace(payload.DisplayName),
+		Summary:     strings.TrimSpace(payload.Summary),
+		Description: strings.TrimSpace(payload.Description),
+		Version:     strings.TrimSpace(payload.Version),
+		Scope:       strings.TrimSpace(payload.Scope),
+		Source:      strings.TrimSpace(payload.Source),
+		Category:    strings.TrimSpace(payload.Category),
+		UpdatedAt:   strings.TrimSpace(payload.UpdatedAt),
+	}
+}
+
+func mapSkillInstallationRecord(payload skillInstallationRecordResponse) *provider.SkillInstallationRecord {
+	return &provider.SkillInstallationRecord{
+		ID:             strings.TrimSpace(payload.ID),
+		SkillPackageID: strings.TrimSpace(payload.SkillPackageID),
+		SkillName:      strings.TrimSpace(payload.SkillName),
+		SkillVersion:   strings.TrimSpace(payload.SkillVersion),
+		Status:         strings.TrimSpace(payload.Status),
+		InstallSource:  strings.TrimSpace(payload.InstallSource),
+		ClientID:       strings.TrimSpace(payload.ClientID),
+		DeviceID:       strings.TrimSpace(payload.DeviceID),
+		ClientPlatform: strings.TrimSpace(payload.ClientPlatform),
+		ClientVersion:  strings.TrimSpace(payload.ClientVersion),
+		CreatedAt:      strings.TrimSpace(payload.CreatedAt),
+		UpdatedAt:      strings.TrimSpace(payload.UpdatedAt),
+	}
+}
