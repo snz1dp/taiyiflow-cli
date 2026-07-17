@@ -9011,8 +9011,12 @@ func configWriteConfirmationChoices() []ConfigChoice {
 }
 
 func configSkillsInstallScopeChoices() []ConfigChoice {
+	userDirDesc := "安装到 ~/.snz1dp/skills。"
+	if label := internalconfig.DefaultSkillsDirLabel(); label != "" {
+		userDirDesc = fmt.Sprintf("安装到 %s。", label)
+	}
 	return []ConfigChoice{
-		{Value: "user", Label: "用户目录", Description: "安装到 ~/.snz1dp/skills。"},
+		{Value: "user", Label: "用户目录", Description: userDirDesc},
 		{Value: "workspace", Label: "工作区", Description: "安装到当前工作区的 .snz1dp/skills。"},
 	}
 }

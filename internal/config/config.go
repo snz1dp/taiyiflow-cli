@@ -644,6 +644,16 @@ func DefaultSkillsDir() (string, error) {
 	return filepath.Join(rootDir, "skills"), nil
 }
 
+// DefaultSkillsDirLabel 返回用户级技能目录的显示标签。
+// 当 SNZ1DP_HOME 已设置时，标签反映实际路径而非硬编码的 ~/.snz1dp/skills。
+func DefaultSkillsDirLabel() string {
+	dir, err := DefaultSkillsDir()
+	if err != nil {
+		return "用户目录 (~/.snz1dp/skills)"
+	}
+	return fmt.Sprintf("用户目录 (%s)", dir)
+}
+
 func DefaultBundledSkillsDir() (string, error) {
 	rootDir, err := DefaultRootDir()
 	if err != nil {

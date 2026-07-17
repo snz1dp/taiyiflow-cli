@@ -628,7 +628,7 @@ func skillInstallScopeLabel(config internalconfig.Config) string {
 	case internalconfig.SkillInstallScopeWorkspace:
 		return "工作区 (.snz1dp/skills)"
 	default:
-		return "用户目录 (~/.snz1dp/skills)"
+		return internalconfig.DefaultSkillsDirLabel()
 	}
 }
 
