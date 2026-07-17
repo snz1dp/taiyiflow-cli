@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
 )
 
@@ -19,11 +21,11 @@ var missingSkillPattern = regexp.MustCompile(`未找到技能[:：]\s*([^\n\r]+)
 const missingSkillsErrorCode = "MISSING_SKILLS"
 
 type skillInstallCandidate struct {
-	Slug        string
-	DisplayName string
-	Summary     string
-	Reason      string
-	Query       string
+	SkillID string
+	Name    string
+	Summary string
+	Reason  string
+	Query   string
 }
 
 type skillInstallApprovalRequest struct {
@@ -164,6 +166,8 @@ func extractMissingSkillNamesFromEventData(eventData map[string]any) []string {
 }
 
 func (a *App) autoInstallCandidates(
+	ctx context.Context,
+	client provider.Provider,
 	config internalconfig.Config,
 	sessionState *agent.SessionState,
 	input string,
@@ -179,7 +183,7 @@ func (a *App) autoInstallCandidates(
 	if policy == internalconfig.SkillAutoInstallPolicyOff {
 		return false, nil
 	}
-	candidates, err := collectSkillInstallCandidates(config, sessionState, input, requestedSkillNames, missingSkillNames, note)
+	candidates, err := collectSkillInstallCandidates(ctx, client, config, sessionState, input, requestedSkillNames, missingSkillNames, note)
 	if err != nil {
 		return false, err
 	}
@@ -212,13 +216,33 @@ func (a *App) autoInstallCandidates(
 				continue
 			}
 		}
-		result, installErr := skills.InstallRemote(config, candidate.Slug, "", false)
+		// 通过后端 Provider 接口查找匹配的 VisibleSkillPackage
+		allSkills, fetchErr := skills.FetchBackendSkills(ctx, client, provider.FetchVisibleSkillsParams{})
+		if fetchErr != nil {
+			note(fmt.Sprintf("获取后端技能列表失败: %v", fetchErr))
+			continue
+		}
+		var matchedSkill provider.VisibleSkillPackage
+		found := false
+		for _, sk := range allSkills {
+			if sk.ID == candidate.SkillID {
+				matchedSkill = sk
+				found = true
+				break
+			}
+		}
+		if !found {
+			note(fmt.Sprintf("未在后端技能列表中找到候选 %s。", candidateLabel(candidate)))
+			continue
+		}
+		clientInfo := a.buildBackendClientInfo(config)
+		result, installErr := skills.InstallBackendSkill(ctx, client, config, matchedSkill, clientInfo)
 		if installErr != nil {
 			note(fmt.Sprintf("自动安装技能 %s 失败: %v", candidateLabel(candidate), installErr))
 			continue
 		}
 		installedAny = true
-		note(fmt.Sprintf("已自动安装技能 %s (%s)，目录: %s", fallbackConfigValue(result.Name, result.Slug), result.Slug, result.TargetDir))
+		note(fmt.Sprintf("已自动安装技能 %s (%s)，目录: %s", fallbackConfigValue(result.Name, result.SkillID), result.SkillID, result.TargetDir))
 		if sessionState != nil {
 			appendApprovedSkillName(sessionState, result.Name)
 		}
@@ -227,6 +251,8 @@ func (a *App) autoInstallCandidates(
 }
 
 func collectSkillInstallCandidates(
+	ctx context.Context,
+	client provider.Provider,
 	config internalconfig.Config,
 	sessionState *agent.SessionState,
 	input string,
@@ -248,7 +274,13 @@ func collectSkillInstallCandidates(
 			localNameSet[normalizeSkillLookupKey(item.Name)] = true
 		}
 	}
-	seenSlugs := map[string]bool{}
+	// 一次性拉取后端全部可见技能列表，后续在本地过滤
+	allBackendSkills, fetchErr := skills.FetchBackendSkills(ctx, client, provider.FetchVisibleSkillsParams{})
+	if fetchErr != nil {
+		note(fmt.Sprintf("获取后端技能列表失败: %v", fetchErr))
+		return nil, fetchErr
+	}
+	seenSkillIDs := map[string]bool{}
 	searchedQueries := map[string]struct{}{}
 	candidates := make([]skillInstallCandidate, 0, len(missingSkillNames)+1)
 	for _, missingName := range missingSkillNames {
@@ -257,18 +289,14 @@ func collectSkillInstallCandidates(
 			continue
 		}
 		searchedQueries[strings.ToLower(query)] = struct{}{}
-		results, _, searchErr := skills.SearchRemote(config, query, 10)
-		if searchErr != nil {
-			note(fmt.Sprintf("搜索缺失技能 %s 失败: %v", strings.TrimSpace(missingName), searchErr))
-			continue
-		}
+		results := filterBackendSkillsByQuery(allBackendSkills, query)
 		candidate, ok := selectExactSkillInstallCandidate(missingName, results, localNameSet, installedSlugSet)
 		if !ok {
 			note(fmt.Sprintf("缺失技能 %s 未命中可自动安装候选。", strings.TrimSpace(missingName)))
 			continue
 		}
-		if !seenSlugs[strings.ToLower(candidate.Slug)] {
-			seenSlugs[strings.ToLower(candidate.Slug)] = true
+		if !seenSkillIDs[strings.ToLower(candidate.SkillID)] {
+			seenSkillIDs[strings.ToLower(candidate.SkillID)] = true
 			candidates = append(candidates, candidate)
 		}
 	}
@@ -280,18 +308,14 @@ func collectSkillInstallCandidates(
 		return candidates, nil
 	}
 	note(fmt.Sprintf("自由文本关键词检索: %s", strings.Join(searchKeywords, ", ")))
-	aggregatedResults := make([]skills.RemoteSearchResult, 0, len(searchKeywords)*5)
+	aggregatedResults := make([]provider.VisibleSkillPackage, 0, len(searchKeywords)*5)
 	for _, keyword := range searchKeywords {
 		normalizedKeyword := strings.ToLower(strings.TrimSpace(keyword))
 		if _, duplicated := searchedQueries[normalizedKeyword]; duplicated {
 			continue
 		}
 		searchedQueries[normalizedKeyword] = struct{}{}
-		results, _, searchErr := skills.SearchRemote(config, keyword, 5)
-		if searchErr != nil {
-			note(fmt.Sprintf("按关键词 %s 搜索远程技能失败: %v", keyword, searchErr))
-			continue
-		}
+		results := filterBackendSkillsByQuery(allBackendSkills, keyword)
 		aggregatedResults = append(aggregatedResults, results...)
 	}
 	filtered := filterSkillInstallResults(aggregatedResults, localNameSet, installedSlugSet)
@@ -299,7 +323,7 @@ func collectSkillInstallCandidates(
 		candidate := filtered[0]
 		candidate.Reason = "关键词检索匹配"
 		candidate.Query = strings.Join(searchKeywords, " ")
-		if !seenSlugs[strings.ToLower(candidate.Slug)] {
+		if !seenSkillIDs[strings.ToLower(candidate.SkillID)] {
 			candidates = append(candidates, candidate)
 		}
 		return candidates, nil
@@ -312,35 +336,35 @@ func collectSkillInstallCandidates(
 
 func selectExactSkillInstallCandidate(
 	missingName string,
-	results []skills.RemoteSearchResult,
+	results []provider.VisibleSkillPackage,
 	localNameSet map[string]bool,
 	installedSlugSet map[string]bool,
 ) (skillInstallCandidate, bool) {
 	targetKey := normalizeSkillLookupKey(missingName)
 	for _, item := range results {
-		slug := strings.ToLower(strings.TrimSpace(item.Slug))
-		if slug == "" || installedSlugSet[slug] {
+		skillID := strings.ToLower(strings.TrimSpace(item.ID))
+		if skillID == "" || installedSlugSet[skillID] {
 			continue
 		}
 		if localNameSet[normalizeSkillLookupKey(item.DisplayName)] {
 			continue
 		}
-		if normalizeSkillLookupKey(item.Slug) != targetKey && normalizeSkillLookupKey(item.DisplayName) != targetKey {
+		if normalizeSkillLookupKey(item.ID) != targetKey && normalizeSkillLookupKey(item.DisplayName) != targetKey && normalizeSkillLookupKey(item.Name) != targetKey {
 			continue
 		}
 		return skillInstallCandidate{
-			Slug:        strings.TrimSpace(item.Slug),
-			DisplayName: strings.TrimSpace(item.DisplayName),
-			Summary:     strings.TrimSpace(item.Summary),
-			Reason:      fmt.Sprintf("缺失技能名 %s 的精确匹配", strings.TrimSpace(missingName)),
-			Query:       strings.TrimSpace(missingName),
+			SkillID: strings.TrimSpace(item.ID),
+			Name:    strings.TrimSpace(item.DisplayName),
+			Summary: strings.TrimSpace(item.Summary),
+			Reason:  fmt.Sprintf("缺失技能名 %s 的精确匹配", strings.TrimSpace(missingName)),
+			Query:   strings.TrimSpace(missingName),
 		}, true
 	}
 	return skillInstallCandidate{}, false
 }
 
 func filterSkillInstallResults(
-	results []skills.RemoteSearchResult,
+	results []provider.VisibleSkillPackage,
 	localNameSet map[string]bool,
 	installedSlugSet map[string]bool,
 ) []skillInstallCandidate {
@@ -351,40 +375,40 @@ func filterSkillInstallResults(
 	scored := map[string]scoredCandidate{}
 	filtered := make([]skillInstallCandidate, 0, len(results))
 	for _, item := range results {
-		slug := strings.ToLower(strings.TrimSpace(item.Slug))
-		if slug == "" || installedSlugSet[slug] {
+		skillID := strings.ToLower(strings.TrimSpace(item.ID))
+		if skillID == "" || installedSlugSet[skillID] {
 			continue
 		}
-		if localNameSet[normalizeSkillLookupKey(item.DisplayName)] || localNameSet[normalizeSkillLookupKey(item.Slug)] {
+		if localNameSet[normalizeSkillLookupKey(item.DisplayName)] || localNameSet[normalizeSkillLookupKey(item.ID)] {
 			continue
 		}
-		entry, ok := scored[slug]
+		entry, ok := scored[skillID]
 		if !ok {
 			entry = scoredCandidate{
 				candidate: skillInstallCandidate{
-					Slug:        strings.TrimSpace(item.Slug),
-					DisplayName: strings.TrimSpace(item.DisplayName),
-					Summary:     strings.TrimSpace(item.Summary),
+					SkillID: strings.TrimSpace(item.ID),
+					Name:    strings.TrimSpace(item.DisplayName),
+					Summary: strings.TrimSpace(item.Summary),
 				},
 			}
 		}
 		entry.score++
-		scored[slug] = entry
+		scored[skillID] = entry
 	}
 	if len(scored) == 0 {
 		return filtered
 	}
 	type sortable struct {
-		slug  string
-		entry scoredCandidate
+		skillID string
+		entry   scoredCandidate
 	}
 	sorted := make([]sortable, 0, len(scored))
-	for slug, entry := range scored {
-		sorted = append(sorted, sortable{slug: slug, entry: entry})
+	for skillID, entry := range scored {
+		sorted = append(sorted, sortable{skillID: skillID, entry: entry})
 	}
 	sort.Slice(sorted, func(i, j int) bool {
 		if sorted[i].entry.score == sorted[j].entry.score {
-			return sorted[i].slug < sorted[j].slug
+			return sorted[i].skillID < sorted[j].skillID
 		}
 		return sorted[i].entry.score > sorted[j].entry.score
 	})
@@ -490,17 +514,17 @@ func normalizeSkillLookupKey(value string) string {
 }
 
 func candidateLabel(candidate skillInstallCandidate) string {
-	if strings.TrimSpace(candidate.DisplayName) != "" {
-		return candidate.DisplayName
+	if strings.TrimSpace(candidate.Name) != "" {
+		return candidate.Name
 	}
-	return candidate.Slug
+	return candidate.SkillID
 }
 
 func (a *App) confirmSkillAutoInstall(request skillInstallApprovalRequest) bool {
 	if a.stdout == nil || a.stdin == nil {
 		return false
 	}
-	_, _ = fmt.Fprintf(a.stdout, "[系统提示]: 检测到可补装技能 %s (%s)\n", candidateLabel(request.Candidate), request.Candidate.Slug)
+	_, _ = fmt.Fprintf(a.stdout, "[系统提示]: 检测到可补装技能 %s (%s)\n", candidateLabel(request.Candidate), request.Candidate.SkillID)
 	if strings.TrimSpace(request.Reason) != "" {
 		_, _ = fmt.Fprintf(a.stdout, "原因: %s\n", request.Reason)
 	}

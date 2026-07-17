@@ -18,13 +18,13 @@ import (
 func skillsCommandSynopsis() string {
 	return strings.Join([]string{
 		"taiyiflow-cli skills [list|view|search|view-remote|install|remove|",
-		"                        update|source|enable|disable|help] [参数]",
+		"                        update|enable|disable|help] [参数]",
 	}, "\n")
 }
 
 func skillsSlashSynopsis() string {
 	return strings.Join([]string{
-		"/skills [list|view|search|view-remote|install|remove|update|source|enable|disable|help]",
+		"/skills [list|view|search|view-remote|install|remove|update|enable|disable|help]",
 	}, "\n")
 }
 
@@ -36,16 +36,15 @@ func renderSkillsUsage(synopsis string) string {
 		"子命令:",
 		"  list                           列出本地已发现技能及来源状态",
 		"  view <名称>                    查看本地技能详情",
-		"  search [关键词]                搜索远程技能仓库，关键词可省略",
-		"  view-remote <slug>             查看远程技能详情",
-		"  install <slug> [version]       安装远程技能，可选指定版本",
-		"  remove <名称或slug>            删除已安装远程技能",
-		"  update <名称或slug|all>        更新指定远程技能或全部远程技能",
-		"  source [show|set|reset]        查看或切换远程技能仓库地址",
+		"  search [关键词]                搜索服务端技能，关键词可省略",
+		"  view-remote <名称或ID>         查看服务端技能详情",
+		"  install <名称或ID>             从服务端安装技能到本地",
+		"  remove <名称或ID>             卸载已安装的服务端技能",
+		"  update [名称或ID|all]         更新指定服务端技能或全部服务端技能",
 		"  enable <名称>                  恢复技能的候选资格",
 		"  disable <名称>                 将技能移出候选集合",
 		"",
-		"  后端技能管理:",
+		"  后端技能管理（高级）:",
 		"  backend list                   列出后端可见技能及安装状态",
 		"  backend view <名称或ID>        查看后端技能详情",
 		"  backend install <名称或ID>     从后端下载安装技能到本地",
@@ -63,9 +62,8 @@ func renderSkillsUsage(synopsis string) string {
 		"",
 		"示例:",
 		"  taiyiflow-cli skills search debug",
-		"  taiyiflow-cli skills view-remote remote-skill",
-		"  taiyiflow-cli skills install remote-skill",
-		"  taiyiflow-cli skills source set https://mirror-cn.clawhub.com",
+		"  taiyiflow-cli skills view-remote my-skill",
+		"  taiyiflow-cli skills install my-skill",
 		"  taiyiflow-cli skills backend list",
 		"  taiyiflow-cli skills backend install my-skill",
 		"  taiyiflow-cli skills backend upload my-local-skill",
@@ -179,28 +177,27 @@ func (a *App) executeSkillsCommand(ctx context.Context, args []string) (string, 
 		return strings.Join(lines, "\n"), nil
 	case "search":
 		query := strings.TrimSpace(strings.Join(args[1:], " "))
-		results, registryURL, err := skills.SearchRemote(config, query, 20)
-		if err != nil {
+		client := buildProviderClient(config)
+		if err := a.ensureBackendAuth(ctx, client, config); err != nil {
 			return "", err
 		}
-		lines := []string{fmt.Sprintf("技能仓库: %s", registryURL)}
-		if len(results) == 0 {
-			lines = append(lines, "未搜索到远程技能。")
+		skillList, err := skills.FetchBackendSkills(ctx, client, provider.FetchVisibleSkillsParams{})
+		if err != nil {
+			return "", fmt.Errorf("获取服务端技能列表失败: %w", err)
+		}
+		filtered := filterBackendSkillsByQuery(skillList, query)
+		lines := []string{"服务端技能列表:"}
+		if len(filtered) == 0 {
+			lines = append(lines, "未搜索到匹配的技能。")
 			return strings.Join(lines, "\n"), nil
 		}
-		for _, item := range results {
-			line := fmt.Sprintf("- %s", item.Slug)
-			if strings.TrimSpace(item.DisplayName) != "" {
+		for _, item := range filtered {
+			line := fmt.Sprintf("- %s", item.Name)
+			if strings.TrimSpace(item.DisplayName) != "" && !strings.EqualFold(item.DisplayName, item.Name) {
 				line += fmt.Sprintf(" (%s)", item.DisplayName)
 			}
 			if strings.TrimSpace(item.Version) != "" {
-				line += fmt.Sprintf(" | 最新版本 %s", item.Version)
-			}
-			if item.Popularity > 0 {
-				line += fmt.Sprintf(" | %s", formatSkillPopularityLabel(item.Popularity))
-			}
-			if item.Downloads > 0 {
-				line += fmt.Sprintf(" | %s", formatSkillDownloadsLabel(item.Downloads))
+				line += fmt.Sprintf(" | 版本 %s", item.Version)
 			}
 			if strings.TrimSpace(item.Summary) != "" {
 				line += fmt.Sprintf(" | %s", item.Summary)
@@ -210,136 +207,27 @@ func (a *App) executeSkillsCommand(ctx context.Context, args []string) (string, 
 		return strings.Join(lines, "\n"), nil
 	case "view-remote", "remote-view", "detail":
 		if len(args) < 2 {
-			return "", fmt.Errorf("用法: taiyiflow-cli skills %s <slug>", subcommand)
+			return "", fmt.Errorf("用法: taiyiflow-cli skills %s <名称或ID>", subcommand)
 		}
-		detail, registryURL, err := skills.FetchRemoteDetail(config, args[1])
-		if err != nil {
-			return "", err
-		}
-		lines := []string{
-			fmt.Sprintf("技能仓库: %s", registryURL),
-			fmt.Sprintf("Slug: %s", fallbackConfigValue(detail.Slug, "<未填写>")),
-			fmt.Sprintf("显示名称: %s", fallbackConfigValue(detail.DisplayName, "<未填写>")),
-			fmt.Sprintf("摘要: %s", fallbackConfigValue(detail.Summary, "<未填写>")),
-			fmt.Sprintf("最新版本: %s", fallbackConfigValue(detail.Version, "<未填写>")),
-		}
-		if detail.OwnerHandle != "" || detail.OwnerName != "" {
-			owner := fallbackConfigValue(detail.OwnerName, detail.OwnerHandle)
-			if detail.OwnerHandle != "" && !strings.EqualFold(owner, detail.OwnerHandle) {
-				owner += fmt.Sprintf(" (%s)", detail.OwnerHandle)
-			}
-			lines = append(lines, fmt.Sprintf("发布者: %s", owner))
-		}
-		if len(detail.SupportedOS) > 0 {
-			lines = append(lines, fmt.Sprintf("支持系统: %s", strings.Join(detail.SupportedOS, ", ")))
-		}
-		if len(detail.SupportedEnvs) > 0 {
-			lines = append(lines, fmt.Sprintf("适用环境: %s", strings.Join(detail.SupportedEnvs, ", ")))
-		}
-		return strings.Join(lines, "\n"), nil
+		return a.backendSkillsView(ctx, config, args[1])
 	case "install":
 		if len(args) < 2 {
-			return "", fmt.Errorf("用法: taiyiflow-cli skills install <slug> [version]")
+			return "", fmt.Errorf("用法: taiyiflow-cli skills install <名称或ID>")
 		}
-		version := ""
-		if len(args) > 2 {
-			version = strings.TrimSpace(args[2])
-		}
-		result, err := skills.InstallRemote(config, args[1], version, false)
-		if err != nil {
-			return "", err
-		}
-		lines := []string{
-			fmt.Sprintf("已安装远程技能: %s (%s)", fallbackConfigValue(result.Name, result.Slug), result.Slug),
-			fmt.Sprintf("版本: %s", result.Version),
-			fmt.Sprintf("目录: %s", result.TargetDir),
-			fmt.Sprintf("技能仓库: %s", result.RegistryURL),
-		}
-		return strings.Join(lines, "\n"), nil
+		return a.backendSkillsInstall(ctx, config, args[1])
 	case "remove", "delete", "uninstall":
 		if len(args) < 2 {
-			return "", fmt.Errorf("用法: taiyiflow-cli skills %s <名称或slug>", subcommand)
+			return "", fmt.Errorf("用法: taiyiflow-cli skills %s <名称或ID>", subcommand)
 		}
-		result, err := skills.RemoveInstalled(config, strings.Join(args[1:], " "))
-		if err != nil {
-			return "", err
-		}
-		config.Skills.Enabled = removeSkillNameAliases(config.Skills.Enabled, result.Name, result.Slug)
-		config.Skills.Disabled = removeSkillNameAliases(config.Skills.Disabled, result.Name, result.Slug)
-		if err := a.configManager.Save(config); err != nil {
-			return "", err
-		}
-		return strings.Join([]string{
-			fmt.Sprintf("已删除技能: %s (%s)", fallbackConfigValue(result.Name, result.Slug), result.Slug),
-			fmt.Sprintf("目录: %s", result.TargetDir),
-		}, "\n"), nil
+		return a.backendSkillsRemove(ctx, config, strings.Join(args[1:], " "))
 	case "update":
 		if len(args) < 2 {
-			return "", fmt.Errorf("用法: taiyiflow-cli skills update <名称或slug|all>")
+			return "", fmt.Errorf("用法: taiyiflow-cli skills update [名称或ID|all]")
 		}
 		if strings.EqualFold(strings.TrimSpace(args[1]), "all") {
-			results, err := skills.UpdateAllRemote(config)
-			if err != nil {
-				return "", err
-			}
-			if len(results) == 0 {
-				return "当前没有已安装的远程技能。", nil
-			}
-			lines := []string{"远程技能更新结果:"}
-			for _, item := range results {
-				if item.Changed {
-					lines = append(lines, fmt.Sprintf("- %s (%s): %s -> %s", fallbackConfigValue(item.Name, item.Slug), item.Slug, fallbackConfigValue(item.PreviousVersion, "<未知>"), item.Version))
-					continue
-				}
-				lines = append(lines, fmt.Sprintf("- %s (%s): 已是最新版本 %s", fallbackConfigValue(item.Name, item.Slug), item.Slug, item.Version))
-			}
-			return strings.Join(lines, "\n"), nil
+			return a.backendSkillsSync(ctx, config)
 		}
-		result, err := skills.UpdateRemote(config, strings.Join(args[1:], " "))
-		if err != nil {
-			return "", err
-		}
-		if !result.Changed {
-			return strings.Join([]string{
-				fmt.Sprintf("技能已是最新版本: %s (%s)", fallbackConfigValue(result.Name, result.Slug), result.Slug),
-				fmt.Sprintf("版本: %s", result.Version),
-			}, "\n"), nil
-		}
-		return strings.Join([]string{
-			fmt.Sprintf("已更新技能: %s (%s)", fallbackConfigValue(result.Name, result.Slug), result.Slug),
-			fmt.Sprintf("版本: %s -> %s", fallbackConfigValue(result.PreviousVersion, "<未知>"), result.Version),
-			fmt.Sprintf("目录: %s", result.TargetDir),
-		}, "\n"), nil
-	case "source":
-		action := "show"
-		if len(args) > 1 {
-			action = strings.ToLower(strings.TrimSpace(args[1]))
-		}
-		switch action {
-		case "show", "":
-			return fmt.Sprintf("当前技能仓库: %s", resolveRegistryURLDisplay(config)), nil
-		case "set":
-			if len(args) < 3 {
-				return "", fmt.Errorf("用法: taiyiflow-cli skills source set <url>")
-			}
-			registryURL, err := normalizeRemoteRegistryURL(strings.Join(args[2:], " "))
-			if err != nil {
-				return "", err
-			}
-			config.Skills.RegistryURL = registryURL
-			if err := a.configManager.Save(config); err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("已更新技能仓库: %s", registryURL), nil
-		case "reset", "unset", "default":
-			config.Skills.RegistryURL = internalconfig.Default().Skills.RegistryURL
-			if err := a.configManager.Save(config); err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("已恢复默认技能仓库: %s", config.Skills.RegistryURL), nil
-		default:
-			return "", fmt.Errorf("不支持的 source 子命令: %s", action)
-		}
+		return a.backendSkillsInstall(ctx, config, args[1])
 	case "enable", "disable":
 		if len(args) < 2 {
 			return "", fmt.Errorf("用法: taiyiflow-cli skills %s <名称>", subcommand)
@@ -384,14 +272,6 @@ func (a *App) executeSkillsCommand(ctx context.Context, args []string) (string, 
 	default:
 		return "", fmt.Errorf("不支持的 skills 子命令: %s\n\n%s", subcommand, skillsCommandUsage())
 	}
-}
-
-func resolveRegistryURLDisplay(config internalconfig.Config) string {
-	value := strings.TrimSpace(config.Skills.RegistryURL)
-	if value == "" {
-		return internalconfig.Default().Skills.RegistryURL
-	}
-	return value
 }
 
 func removeSkillNameAliases(items []string, aliases ...string) []string {
@@ -894,4 +774,27 @@ func (a *App) ensureBackendAuth(ctx context.Context, client *providerclient.Clie
 	// 复用已有的认证流程
 	_, _, err := a.ensureProviderAuthenticated(ctx, client, config)
 	return err
+}
+
+// filterBackendSkillsByQuery 按关键词模糊过滤后端技能列表。
+// 空关键词时返回全部技能（参考 chatui 的前端过滤逻辑）。
+func filterBackendSkillsByQuery(skills []provider.VisibleSkillPackage, query string) []provider.VisibleSkillPackage {
+	trimmedQuery := strings.ToLower(strings.TrimSpace(query))
+	if trimmedQuery == "" || trimmedQuery == "*" {
+		return skills
+	}
+	filtered := make([]provider.VisibleSkillPackage, 0, len(skills))
+	for _, skill := range skills {
+		name := strings.ToLower(strings.TrimSpace(skill.Name))
+		displayName := strings.ToLower(strings.TrimSpace(skill.DisplayName))
+		summary := strings.ToLower(strings.TrimSpace(skill.Summary))
+		description := strings.ToLower(strings.TrimSpace(skill.Description))
+		if strings.Contains(name, trimmedQuery) ||
+			strings.Contains(displayName, trimmedQuery) ||
+			strings.Contains(summary, trimmedQuery) ||
+			strings.Contains(description, trimmedQuery) {
+			filtered = append(filtered, skill)
+		}
+	}
+	return filtered
 }

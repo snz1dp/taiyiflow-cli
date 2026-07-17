@@ -468,6 +468,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						missingSkillNames := detectMissingSkillNames(event.Data, normalizedErr)
 						if len(missingSkillNames) > 0 {
 							installedAny, installErr := a.autoInstallCandidates(
+								runCtx,
+								callbackProvider,
 								skillConfig,
 								&sessionState,
 								request.Input,
@@ -761,7 +763,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if configErr != nil {
 				return tui.LocalCommandResult{}, configErr
 			}
-			result, pickerErr := a.executeTUISkillsPickerCommand(ctx, localConfig, resolveTUISkillsContextDir(snapshot), trimmed)
+			result, pickerErr := a.executeTUISkillsPickerCommand(ctx, commandProvider, localConfig, resolveTUISkillsContextDir(snapshot), trimmed)
 			if pickerErr != nil {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: pickerErr.Error()}}}, nil
 			}
@@ -771,7 +773,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if configErr != nil {
 				return tui.LocalCommandResult{}, configErr
 			}
-			picker, pickerErr := buildTUISkillsPicker(localConfig, resolveTUISkillsContextDir(snapshot), "")
+			picker, pickerErr := buildTUISkillsPicker(commandCtx, commandProvider, localConfig, resolveTUISkillsContextDir(snapshot), "")
 			if pickerErr != nil {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: pickerErr.Error()}}}, nil
 			}
@@ -2133,7 +2135,7 @@ func buildTUISandboxEscapeConfirmRequest(path string, alwaysApprove func(context
 
 func buildTUISkillAutoInstallConfirmRequest(request skillInstallApprovalRequest, alwaysApprove func(context.Context) error) tui.ConfirmRequest {
 	previewLines := []string{
-		fmt.Sprintf("技能: %s (%s)", candidateLabel(request.Candidate), request.Candidate.Slug),
+		fmt.Sprintf("技能: %s (%s)", candidateLabel(request.Candidate), request.Candidate.SkillID),
 		fmt.Sprintf("安装位置: %s", skillInstallScopeLabelText(request.Scope)),
 		fmt.Sprintf("目标目录: %s", request.InstallPath),
 	}
@@ -2142,7 +2144,7 @@ func buildTUISkillAutoInstallConfirmRequest(request skillInstallApprovalRequest,
 	}
 	return tui.ConfirmRequest{
 		Title:                       "自动安装技能(skill auto install)待确认",
-		Command:                     fmt.Sprintf("install %s", request.Candidate.Slug),
+		Command:                     fmt.Sprintf("install %s", request.Candidate.SkillID),
 		Detail:                      fallbackString(strings.TrimSpace(request.Reason), "本轮请求命中了可补装的远程技能，确认后会先安装再继续发送请求。"),
 		PreviewTitle:                "安装预览(install preview)",
 		PreviewBody:                 strings.Join(previewLines, "\n"),
@@ -3414,8 +3416,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			SkillsInstallScope:        internalconfig.NormalizeSkillInstallScope(config.Skills.InstallScope),
 			SkillsAutoInstallPolicy:   internalconfig.NormalizeSkillAutoInstallPolicy(config.Skills.AutoInstallPolicy),
 			SkillsFreeTextSearch:      config.Skills.FreeTextSearchEnabled,
-			SkillsRegistryURL:         strings.TrimSpace(config.Skills.RegistryURL),
-			DocUnstructuredExts:       strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "),
+				DocUnstructuredExts:       strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "),
 			ShellSandboxMode:          strings.TrimSpace(config.ShellSandboxMode),
 		},
 	}, nil
@@ -3613,12 +3614,6 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 
 	if err := assignConfigValue(&config, "skills_free_text_search", strconv.FormatBool(submission.Values.SkillsFreeTextSearch)); err != nil {
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "skills_free_text_search", Message: err.Error()}
-	}
-
-	if strings.TrimSpace(submission.Values.SkillsRegistryURL) == "" {
-		config.Skills.RegistryURL = internalconfig.Default().Skills.RegistryURL
-	} else if err := assignConfigValue(&config, "skills_registry_url", submission.Values.SkillsRegistryURL); err != nil {
-		return internalconfig.Config{}, tui.ConfigFieldError{Field: "skills_registry_url", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.ShellSandboxMode) == "" {
@@ -4502,7 +4497,13 @@ func formatRelativeTimeChinese(value time.Time) string {
 	return fmt.Sprintf("%d 年前", int(delta/(365*24*time.Hour)))
 }
 
-func buildTUISkillsPicker(config internalconfig.Config, contextDir string, query string) (*tui.SkillsPickerState, error) {
+func buildTUISkillsPicker(
+	ctx context.Context,
+	client provider.Provider,
+	config internalconfig.Config,
+	contextDir string,
+	query string,
+) (*tui.SkillsPickerState, error) {
 	skillConfig := config
 	resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(contextDir, config.Workdir))
 	if strings.TrimSpace(resolvedContextDir) != "" {
@@ -4557,23 +4558,28 @@ func buildTUISkillsPicker(config internalconfig.Config, contextDir string, query
 		hint = "当前没有可展示的技能，Esc 关闭。"
 	}
 	remoteQuery := strings.TrimSpace(query)
-	remoteResults, registryURL, remoteErr := skills.SearchRemote(config, remoteQuery, 20)
+	var allBackendSkills []provider.VisibleSkillPackage
+	var remoteErr error
+	if client != nil {
+		allBackendSkills, remoteErr = skills.FetchBackendSkills(ctx, client, provider.FetchVisibleSkillsParams{})
+	}
+	if remoteErr == nil && remoteQuery != "" {
+		allBackendSkills = filterBackendSkillsByQuery(allBackendSkills, remoteQuery)
+	}
 	installedMap := map[string]skills.InstalledRemoteSkill{}
 	if installedErr == nil {
 		for _, item := range installedItems {
 			installedMap[strings.ToLower(strings.TrimSpace(item.Slug))] = item
 		}
 	}
-	registryLabel := compactSkillsRegistryLabel(registryURL)
-	remoteItems := make([]tui.RemoteSkillItem, 0, len(remoteResults))
-	for _, item := range remoteResults {
-		installed, ok := installedMap[strings.ToLower(strings.TrimSpace(item.Slug))]
+	registryLabel := "后端"
+	remoteItems := make([]tui.RemoteSkillItem, 0, len(allBackendSkills))
+	for _, item := range allBackendSkills {
+		installed, ok := installedMap[strings.ToLower(strings.TrimSpace(item.ID))]
 		remoteItems = append(remoteItems, tui.RemoteSkillItem{
-			Slug:             strings.TrimSpace(item.Slug),
+			Slug:             strings.TrimSpace(item.ID),
 			DisplayName:      strings.TrimSpace(item.DisplayName),
 			Summary:          strings.TrimSpace(item.Summary),
-			Popularity:       item.Popularity,
-			Downloads:        item.Downloads,
 			Version:          strings.TrimSpace(item.Version),
 			RegistryLabel:    registryLabel,
 			Installed:        ok,
@@ -4609,7 +4615,7 @@ func buildTUISkillsPicker(config internalconfig.Config, contextDir string, query
 	}, nil
 }
 
-func (a *App) executeTUISkillsPickerCommand(ctx context.Context, config internalconfig.Config, contextDir string, command string) (tui.LocalCommandResult, error) {
+func (a *App) executeTUISkillsPickerCommand(ctx context.Context, client provider.Provider, config internalconfig.Config, contextDir string, command string) (tui.LocalCommandResult, error) {
 	remainder := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(command), skillsPickerCommandPrefix))
 	action := "open"
 	args := []string{}
@@ -4639,7 +4645,7 @@ func (a *App) executeTUISkillsPickerCommand(ctx context.Context, config internal
 		return current
 	}
 	buildRemotePicker := func(query string) (tui.LocalCommandResult, error) {
-		picker, err := buildTUISkillsPicker(currentSkillConfig(), resolvedContextDir, query)
+		picker, err := buildTUISkillsPicker(ctx, client, currentSkillConfig(), resolvedContextDir, query)
 		if err != nil {
 			return tui.LocalCommandResult{}, err
 		}
@@ -4649,7 +4655,7 @@ func (a *App) executeTUISkillsPickerCommand(ctx context.Context, config internal
 		return tui.LocalCommandResult{Handled: true, SkillsPicker: picker}, nil
 	}
 	buildLocalPicker := func(query string) (tui.LocalCommandResult, error) {
-		picker, err := buildTUISkillsPicker(currentSkillConfig(), resolvedContextDir, query)
+		picker, err := buildTUISkillsPicker(ctx, client, currentSkillConfig(), resolvedContextDir, query)
 		if err != nil {
 			return tui.LocalCommandResult{}, err
 		}
@@ -4663,12 +4669,29 @@ func (a *App) executeTUISkillsPickerCommand(ctx context.Context, config internal
 		if err != nil {
 			return tui.LocalCommandResult{}, err
 		}
-		detail, _, detailErr := skills.FetchRemoteDetail(skillConfig, slug)
+		// 通过后端技能列表查找匹配的技能详情
+		allSkills, detailErr := skills.FetchBackendSkills(ctx, client, provider.FetchVisibleSkillsParams{})
 		if detailErr != nil {
 			if note != "" {
 				result.Events = append(result.Events, tui.Event{Kind: tui.EventSystemNote, Text: note})
 			}
 			result.Events = append(result.Events, tui.Event{Kind: tui.EventErrorNote, Text: detailErr.Error()})
+			return result, nil
+		}
+		var detail provider.VisibleSkillPackage
+		detailFound := false
+		for _, sk := range allSkills {
+			if strings.EqualFold(strings.TrimSpace(sk.ID), strings.TrimSpace(slug)) || strings.EqualFold(strings.TrimSpace(sk.Name), strings.TrimSpace(slug)) {
+				detail = sk
+				detailFound = true
+				break
+			}
+		}
+		if !detailFound {
+			if note != "" {
+				result.Events = append(result.Events, tui.Event{Kind: tui.EventSystemNote, Text: note})
+			}
+			result.Events = append(result.Events, tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("未找到技能: %s", slug)})
 			return result, nil
 		}
 		installedItems, installedErr := skills.ListInstalledRemoteSkills(skillConfig)
@@ -4683,7 +4706,7 @@ func (a *App) executeTUISkillsPickerCommand(ctx context.Context, config internal
 				}
 			}
 		}
-		panelItem := buildRemoteSkillDetailItem(detail, compactSkillsRegistryLabel(detail.RegistryURL), installed, installedFound)
+		panelItem := buildRemoteSkillDetailItem(detail, "后端", installed, installedFound)
 		if note != "" {
 			result.Events = append(result.Events, tui.Event{Kind: tui.EventSystemNote, Text: note})
 		}
@@ -4747,7 +4770,35 @@ func (a *App) executeTUISkillsPickerCommand(ctx context.Context, config internal
 	executeInstall := func(slug string, scope string, remember bool, reopenDetail bool, query string) (tui.LocalCommandResult, error) {
 		installConfig := skillConfig
 		installConfig.Skills.InstallScope = internalconfig.NormalizeSkillInstallScope(scope)
-		resultData, installErr := skills.InstallRemote(installConfig, slug, "", false)
+		// 通过后端技能列表查找匹配的 VisibleSkillPackage
+		allSkills, fetchErr := skills.FetchBackendSkills(ctx, client, provider.FetchVisibleSkillsParams{})
+		if fetchErr != nil {
+			result, pickerErr := buildRemotePicker(query)
+			if pickerErr != nil {
+				return tui.LocalCommandResult{}, pickerErr
+			}
+			result.Events = []tui.Event{{Kind: tui.EventErrorNote, Text: fetchErr.Error()}}
+			return result, nil
+		}
+		var matchedSkill provider.VisibleSkillPackage
+		matched := false
+		for _, sk := range allSkills {
+			if strings.EqualFold(strings.TrimSpace(sk.ID), strings.TrimSpace(slug)) || strings.EqualFold(strings.TrimSpace(sk.Name), strings.TrimSpace(slug)) {
+				matchedSkill = sk
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			result, pickerErr := buildRemotePicker(query)
+			if pickerErr != nil {
+				return tui.LocalCommandResult{}, pickerErr
+			}
+			result.Events = []tui.Event{{Kind: tui.EventErrorNote, Text: fmt.Sprintf("未找到技能: %s", slug)}}
+			return result, nil
+		}
+		clientInfo := a.buildBackendClientInfo(installConfig)
+		resultData, installErr := skills.InstallBackendSkill(ctx, client, installConfig, matchedSkill, clientInfo)
 		if installErr != nil {
 			result, pickerErr := buildRemotePicker(query)
 			if pickerErr != nil {
@@ -4761,10 +4812,9 @@ func (a *App) executeTUISkillsPickerCommand(ctx context.Context, config internal
 			a.skillInstallScopePinned = true
 		}
 		lines := []string{
-			fmt.Sprintf("已安装远程技能: %s (%s)", fallbackConfigValue(resultData.Name, resultData.Slug), resultData.Slug),
+			fmt.Sprintf("已安装远程技能: %s (%s)", fallbackConfigValue(resultData.Name, resultData.SkillID), resultData.SkillID),
 			fmt.Sprintf("版本: %s", resultData.Version),
 			fmt.Sprintf("目录: %s", resultData.TargetDir),
-			fmt.Sprintf("技能仓库: %s", resultData.RegistryURL),
 		}
 		note := strings.Join(lines, "\n")
 		if remember {
@@ -4956,26 +5006,16 @@ func compactSkillsRegistryLabel(value string) string {
 	return parsed.Host
 }
 
-func buildRemoteSkillDetailItem(detail skills.RemoteSkillDetail, registryLabel string, installed skills.InstalledRemoteSkill, installedFound bool) tui.RemoteSkillItem {
-	ownerLabel := strings.TrimSpace(detail.OwnerName)
-	if ownerLabel == "" {
-		ownerLabel = strings.TrimSpace(detail.OwnerHandle)
-	} else if strings.TrimSpace(detail.OwnerHandle) != "" && !strings.EqualFold(ownerLabel, strings.TrimSpace(detail.OwnerHandle)) {
-		ownerLabel += fmt.Sprintf(" (%s)", strings.TrimSpace(detail.OwnerHandle))
-	}
+func buildRemoteSkillDetailItem(detail provider.VisibleSkillPackage, registryLabel string, installed skills.InstalledRemoteSkill, installedFound bool) tui.RemoteSkillItem {
 	return tui.RemoteSkillItem{
-		Slug:             strings.TrimSpace(detail.Slug),
+		Slug:             strings.TrimSpace(detail.ID),
 		DisplayName:      strings.TrimSpace(detail.DisplayName),
 		Summary:          strings.TrimSpace(detail.Summary),
-		SkillMarkdown:    strings.TrimSpace(detail.SkillMarkdown),
 		Version:          strings.TrimSpace(detail.Version),
 		RegistryLabel:    registryLabel,
 		Installed:        installedFound,
 		InstalledVersion: strings.TrimSpace(installed.InstalledVersion),
 		CanUpdate:        installedFound && !strings.EqualFold(strings.TrimSpace(installed.InstalledVersion), strings.TrimSpace(detail.Version)),
-		OwnerLabel:       ownerLabel,
-		SupportedOS:      append([]string{}, detail.SupportedOS...),
-		SupportedEnvs:    append([]string{}, detail.SupportedEnvs...),
 	}
 }
 

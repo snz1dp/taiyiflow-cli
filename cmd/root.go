@@ -1018,6 +1018,8 @@ func (a *App) streamTaskWithSkillRetry(
 				missingSkillNames := detectMissingSkillNames(event.Data, normalizedErr)
 				if len(missingSkillNames) > 0 {
 					installedAny, installErr := a.autoInstallCandidates(
+						ctx,
+						providerClient,
 						skillConfig,
 						&sessionState,
 						task,

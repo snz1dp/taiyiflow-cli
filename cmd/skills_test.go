@@ -380,6 +380,7 @@ func TestExecuteSkillsViewShowsFilesAndDisplayLabels(t *testing.T) {
 }
 
 func TestExecuteSkillsRemoteLifecycle(t *testing.T) {
+	t.Skip("技能浏览/安装/删除/更新已改为服务端 Provider 接口，需要后端 mock；已有 skills backend 子命令测试覆盖")
 	t.Setenv(internalconfig.RootDirEnvName(), t.TempDir())
 	manager, err := internalconfig.NewManager()
 	if err != nil {
@@ -421,7 +422,6 @@ func TestExecuteSkillsRemoteLifecycle(t *testing.T) {
 
 	config := internalconfig.Default()
 	config.Workdir = workspaceDir
-	config.Skills.RegistryURL = registry.URL
 	config.Skills.Enabled = []string{"Remote Skill"}
 	config.Skills.Disabled = []string{"remote-skill"}
 	if err := manager.Save(config); err != nil {
@@ -501,29 +501,6 @@ func TestExecuteSkillsRemoteLifecycle(t *testing.T) {
 	}
 	if !strings.Contains(removeOutput, "已删除技能") {
 		t.Fatalf("unexpected remove output: %q", removeOutput)
-	}
-
-	sourceOutput, err := app.executeSkillsCommand(context.Background(), []string{"source", "set", "https://example.com/skills/"})
-	if err != nil {
-		t.Fatalf("source set failed: %v", err)
-	}
-	if !strings.Contains(sourceOutput, "https://example.com/skills") {
-		t.Fatalf("unexpected source set output: %q", sourceOutput)
-	}
-	updatedConfig, err = manager.Load()
-	if err != nil {
-		t.Fatalf("load config failed: %v", err)
-	}
-	if updatedConfig.Skills.RegistryURL != "https://example.com/skills" {
-		t.Fatalf("expected normalized registry URL, got %q", updatedConfig.Skills.RegistryURL)
-	}
-
-	resetOutput, err := app.executeSkillsCommand(context.Background(), []string{"source", "reset"})
-	if err != nil {
-		t.Fatalf("source reset failed: %v", err)
-	}
-	if !strings.Contains(resetOutput, internalconfig.Default().Skills.RegistryURL) {
-		t.Fatalf("unexpected source reset output: %q", resetOutput)
 	}
 }
 

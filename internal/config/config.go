@@ -45,7 +45,6 @@ const (
 	SkillAutoInstallPolicyOff        = "off"
 	SkillAutoInstallPolicyConfirm    = "confirm"
 	SkillAutoInstallPolicyAllow      = "allow"
-	DefaultClawHubRegistryURL        = "https://mirror-cn.clawhub.com"
 	BrowserModeDisabled              = "disabled"
 	BrowserModeChromeSession         = "chrome_session"
 	BrowserModeIsolated              = "isolated"
@@ -219,8 +218,7 @@ type SkillConfig struct {
 	// Directory 指向全局技能目录；发现顺序始终是“当前工作区 .snz1dp/skills 优先，
 	// 然后再到这里配置的全局目录”，留空时回退到默认 ~/.snz1dp/skills。
 	// 该字段仅保留兼容读取历史自定义路径配置，不再作为新的用户可编辑项。
-	Directory   string `yaml:"directory,omitempty"`
-	RegistryURL string `yaml:"registry_url,omitempty"`
+	Directory string `yaml:"directory,omitempty"`
 	// Enabled 保留为显式放行/兼容配置。当前默认策略不是白名单启用，未列入 enabled
 	// 的技能只要没有被 disabled 命中，仍会纳入渐进式披露候选集合。
 	Enabled []string `yaml:"enabled,omitempty"`
@@ -270,7 +268,6 @@ func Default() Config {
 			InstallScope:          SkillInstallScopeUser,
 			AutoInstallPolicy:     SkillAutoInstallPolicyOff,
 			FreeTextSearchEnabled: false,
-			RegistryURL:           DefaultClawHubRegistryURL,
 		},
 	}
 }
@@ -728,9 +725,6 @@ func (m *Manager) Load() (Config, error) {
 	}
 	config.Browser = NormalizeBrowserConfig(config.Browser)
 	config.Computer = NormalizeComputerConfig(config.Computer)
-	if strings.TrimSpace(config.Skills.RegistryURL) == "" {
-		config.Skills.RegistryURL = Default().Skills.RegistryURL
-	}
 	config.FileSearchExcludeDirs = NormalizeFileSearchExcludeDirs(config.FileSearchExcludeDirs)
 	config.PermissionRules = NormalizePermissionRules(config.PermissionRules)
 	return config, nil

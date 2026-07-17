@@ -732,10 +732,10 @@ func TestFitOverlayContentKeepsFocusedConfigFieldVisible(t *testing.T) {
 			Workdir:                  "/workspace/demo",
 			StreamIdleTimeoutSeconds: "300",
 			OutputLanguage:           "zh-CN",
-			SkillsRegistryURL:        "https://mirror-cn.clawhub.com",
+			DocUnstructuredExts:       ".pdf, .docx",
 		},
 	})
-	state.cursor = configFieldSkillsRegistryURL
+	state.cursor = configFieldDocUnstructuredExts
 
 	model := model{
 		width:        80,
@@ -745,7 +745,7 @@ func TestFitOverlayContentKeepsFocusedConfigFieldVisible(t *testing.T) {
 	}
 
 	rendered := sanitizeTerminalText(model.fitOverlayContent(model.renderConfigForm()))
-	if !strings.Contains(rendered, "技能仓库地址") {
+	if !strings.Contains(rendered, "服务端文档解析类型") {
 		t.Fatalf("expected focused field to remain visible, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "上方还有") {
@@ -1064,7 +1064,6 @@ func TestConfigFormValuesFromInputsReadsAgentAutoLoopMaxRoundsAtShiftedIndex(t *
 	state := newConfigFormState(ConfigFormState{})
 	state.inputs[configFieldAgentAutoLoopMaxRounds].SetValue("0")
 	state.inputs[configFieldOutputLanguage].SetValue("zh-CN")
-	state.inputs[configFieldSkillsRegistryURL].SetValue("https://mirror-cn.clawhub.com")
 
 	values := configFormValuesFromInputs(state.inputs)
 	if values.AgentAutoLoopMaxRounds != "0" {
@@ -1072,9 +1071,6 @@ func TestConfigFormValuesFromInputsReadsAgentAutoLoopMaxRoundsAtShiftedIndex(t *
 	}
 	if values.OutputLanguage != "zh-CN" {
 		t.Fatalf("expected output language from %d, got %q", configFieldOutputLanguage, values.OutputLanguage)
-	}
-	if values.SkillsRegistryURL != "https://mirror-cn.clawhub.com" {
-		t.Fatalf("expected registry url from %d, got %q", configFieldSkillsRegistryURL, values.SkillsRegistryURL)
 	}
 }
 

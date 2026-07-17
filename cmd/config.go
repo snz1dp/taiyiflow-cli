@@ -370,12 +370,6 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("skills_free_text_search 仅支持 true 或 false")
 		}
 		config.Skills.FreeTextSearchEnabled = normalized == "true"
-	case "skills_registry_url":
-		normalizedURL, err := normalizeRemoteRegistryURL(trimmedValue)
-		if err != nil {
-			return err
-		}
-		config.Skills.RegistryURL = normalizedURL
 	case "sandbox_roots":
 		if trimmedValue == "" {
 			return fmt.Errorf("sandbox_roots（可访问外部资源目录）不能为空，如需清空请使用 taiyiflow-cli config unset sandbox_roots")
@@ -477,8 +471,6 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.Skills.AutoInstallPolicy = defaults.Skills.AutoInstallPolicy
 	case "skills_free_text_search":
 		config.Skills.FreeTextSearchEnabled = defaults.Skills.FreeTextSearchEnabled
-	case "skills_registry_url":
-		config.Skills.RegistryURL = defaults.Skills.RegistryURL
 	case "sandbox_roots":
 		config.SandboxRoots = nil
 	case "file_search_exclude_dirs":
@@ -607,7 +599,6 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("技能安装位置: %s", skillInstallScopeLabel(config)),
 		fmt.Sprintf("技能自动补装策略: %s", fallbackConfigValue(config.Skills.AutoInstallPolicy, internalconfig.Default().Skills.AutoInstallPolicy)),
 		fmt.Sprintf("自由文本技能搜索: %t", config.Skills.FreeTextSearchEnabled),
-		fmt.Sprintf("技能仓库: %s", fallbackConfigValue(config.Skills.RegistryURL, internalconfig.Default().Skills.RegistryURL)),
 		fmt.Sprintf("文档服务端解析类型: %s", fallbackConfigValue(strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "), strings.Join(prefixDocumentExts(internalconfig.Default().DocUnstructuredExts), ", "))),
 		fmt.Sprintf("可访问外部资源目录: %s", fallbackConfigValue(strings.Join(config.SandboxRoots, ", "), "<仅当前工作目录>")),
 		fmt.Sprintf("文件搜索排除目录: %d 个（未配置时使用内置默认值）", len(config.FileSearchExcludeDirs)),
@@ -646,22 +637,6 @@ func enabledStateLabel(enabled bool) string {
 		return "开启"
 	}
 	return "关闭"
-}
-
-func normalizeRemoteRegistryURL(value string) (string, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return "", fmt.Errorf("skills_registry_url 不能为空")
-	}
-	parsed, err := url.Parse(trimmed)
-	if err != nil || strings.TrimSpace(parsed.Scheme) == "" || strings.TrimSpace(parsed.Host) == "" {
-		return "", fmt.Errorf("skills_registry_url 必须是完整的 HTTP 地址，例如 https://mirror-cn.clawhub.com")
-	}
-	scheme := strings.ToLower(parsed.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return "", fmt.Errorf("skills_registry_url 仅支持 http 或 https")
-	}
-	return strings.TrimRight(trimmed, "/"), nil
 }
 
 func splitConfigCSV(value string) []string {

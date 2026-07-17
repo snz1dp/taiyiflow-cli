@@ -270,7 +270,6 @@ type ConfigFormValues struct {
 	SkillsInstallScope        string
 	SkillsAutoInstallPolicy   string
 	SkillsFreeTextSearch      bool
-	SkillsRegistryURL         string
 	DocUnstructuredExts       string
 	ShellSandboxMode          string
 }
@@ -915,7 +914,6 @@ const (
 	configFieldSkillsInstallScope
 	configFieldSkillsAutoInstallPolicy
 	configFieldSkillsFreeTextSearch
-	configFieldSkillsRegistryURL
 	configFieldDocUnstructuredExts
 	configFieldShellSandboxMode
 	configFieldCount
@@ -8299,7 +8297,6 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "技能安装位置", placeholder: "", description: "左右键或空格切换用户目录(user)或工作区(workspace)。"},
 		{label: "技能自动补装策略", placeholder: "", description: "左右键或空格切换关闭(off)、确认(confirm)、自动安装(allow)。默认建议使用确认(confirm)。"},
 		{label: "自由文本技能搜索", placeholder: "", description: "左右键或空格切换是否允许按任务文本搜索远程技能候选。"},
-		{label: "技能仓库地址", placeholder: "https://mirror-cn.clawhub.com", description: "远程技能搜索、详情和安装默认使用该镜像站。"},
 		{label: "服务端文档解析类型", placeholder: "pdf,wav,mp3", description: "留空表示恢复内置默认值；多个扩展名用逗号分隔，仅对配置列表中的扩展名启用服务端文档结构化解析。"},
 		{label: "Shell 沙盒模式", placeholder: "", description: "左右键或空格切换关闭(off)、自动(auto)、强制(enforce)。auto 在平台不支持时静默降级；enforce 在平台不支持时拒绝执行。"},
 	}
@@ -8319,7 +8316,7 @@ func configFormFieldGroup(index int) string {
 		return "桌面操作"
 	case configFieldBrowserMode, configFieldBrowserPermissionMode, configFieldBrowserChannel, configFieldBrowserExecutablePath, configFieldBrowserProfileDir, configFieldBrowserConnectTimeout, configFieldBrowserExtensionSetup, configFieldBrowserSocketDir, configFieldBrowserRemoteDebuggingURL, configFieldBrowserHeadless:
 		return "浏览器自动化"
-	case configFieldSkillsInstallScope, configFieldSkillsAutoInstallPolicy, configFieldSkillsFreeTextSearch, configFieldSkillsRegistryURL:
+	case configFieldSkillsInstallScope, configFieldSkillsAutoInstallPolicy, configFieldSkillsFreeTextSearch:
 		return "技能配置"
 	case configFieldDocUnstructuredExts:
 		return "文档工具"
@@ -8398,8 +8395,6 @@ func configFormFieldValue(index int, values ConfigFormValues) string {
 		return ""
 	case configFieldSkillsFreeTextSearch:
 		return ""
-	case configFieldSkillsRegistryURL:
-		return strings.TrimSpace(values.SkillsRegistryURL)
 	case configFieldDocUnstructuredExts:
 		return strings.TrimSpace(values.DocUnstructuredExts)
 	case configFieldShellSandboxMode:
@@ -8477,9 +8472,6 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 	if len(inputs) > configFieldBrowserHeadless {
 		values.BrowserHeadless = strings.TrimSpace(inputs[configFieldBrowserHeadless].Value())
 	}
-	if len(inputs) > configFieldSkillsRegistryURL {
-		values.SkillsRegistryURL = strings.TrimSpace(inputs[configFieldSkillsRegistryURL].Value())
-	}
 	if len(inputs) > configFieldDocUnstructuredExts {
 		values.DocUnstructuredExts = strings.TrimSpace(inputs[configFieldDocUnstructuredExts].Value())
 	}
@@ -8488,7 +8480,7 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 
 func isConfigTextField(index int) bool {
 	switch index {
-	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldSubtaskTimeout, configFieldQRWaitTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldBrowserExecutablePath, configFieldBrowserProfileDir, configFieldBrowserConnectTimeout, configFieldBrowserSocketDir, configFieldBrowserRemoteDebuggingURL, configFieldSkillsRegistryURL, configFieldDocUnstructuredExts:
+	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldSubtaskTimeout, configFieldQRWaitTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldBrowserExecutablePath, configFieldBrowserProfileDir, configFieldBrowserConnectTimeout, configFieldBrowserSocketDir, configFieldBrowserRemoteDebuggingURL, configFieldDocUnstructuredExts:
 		return true
 	default:
 		return false
@@ -8563,8 +8555,6 @@ func configFieldKey(index int) string {
 		return "skills_auto_install_policy"
 	case configFieldSkillsFreeTextSearch:
 		return "skills_free_text_search"
-	case configFieldSkillsRegistryURL:
-		return "skills_registry_url"
 	case configFieldDocUnstructuredExts:
 		return "doc_unstructured_exts"
 	case configFieldShellSandboxMode:

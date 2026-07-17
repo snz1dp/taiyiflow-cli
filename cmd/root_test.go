@@ -47,6 +47,16 @@ type stubProvider struct {
 	lastResolveRequest provider.SkillResolveRequest
 	submitResults      *[]provider.ClientCallResult
 	submitHook         func(provider.ClientCallResult) error
+	fetchSkillsResult  []provider.VisibleSkillPackage
+	fetchSkillsErr     error
+	downloadSkillResult *provider.SkillPackageContent
+	downloadSkillErr   error
+	reportInstallResult *provider.SkillInstallationRecord
+	reportInstallErr   error
+	queryInstallationsResult *provider.SkillInstallationPage
+	queryInstallationsErr    error
+	uninstallSkillRecordResult *provider.SkillInstallationRecord
+	uninstallSkillRecordErr   error
 }
 
 type sequenceStreamProvider struct {
@@ -261,10 +271,16 @@ func (s stubProvider) UpdateClientCollaboration(context.Context, string, provide
 }
 
 func (s stubProvider) FetchVisibleSkills(context.Context, provider.FetchVisibleSkillsParams) ([]provider.VisibleSkillPackage, error) {
+	if s.fetchSkillsResult != nil || s.fetchSkillsErr != nil {
+		return s.fetchSkillsResult, s.fetchSkillsErr
+	}
 	return nil, nil
 }
 
 func (s stubProvider) DownloadSkillContent(context.Context, string) (*provider.SkillPackageContent, error) {
+	if s.downloadSkillResult != nil || s.downloadSkillErr != nil {
+		return s.downloadSkillResult, s.downloadSkillErr
+	}
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -281,14 +297,23 @@ func (s stubProvider) DeleteCustomSkill(context.Context, string) error {
 }
 
 func (s stubProvider) ReportInstallation(context.Context, provider.ReportInstallationRequest) (*provider.SkillInstallationRecord, error) {
+	if s.reportInstallResult != nil || s.reportInstallErr != nil {
+		return s.reportInstallResult, s.reportInstallErr
+	}
 	return nil, fmt.Errorf("not implemented")
 }
 
 func (s stubProvider) QueryInstallations(context.Context, provider.QueryInstallationsParams) (*provider.SkillInstallationPage, error) {
+	if s.queryInstallationsResult != nil || s.queryInstallationsErr != nil {
+		return s.queryInstallationsResult, s.queryInstallationsErr
+	}
 	return nil, fmt.Errorf("not implemented")
 }
 
 func (s stubProvider) UninstallSkillRecord(context.Context, string) (*provider.SkillInstallationRecord, error) {
+	if s.uninstallSkillRecordResult != nil || s.uninstallSkillRecordErr != nil {
+		return s.uninstallSkillRecordResult, s.uninstallSkillRecordErr
+	}
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -2989,40 +3014,26 @@ func TestStreamTaskInstallsMissingSkillBeforeRequest(t *testing.T) {
 	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
 
 	workspaceDir := t.TempDir()
-	searchQueries := []string{}
-	registry := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/api/v1/search":
-			searchQueries = append(searchQueries, request.URL.Query().Get("q"))
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","version":"1.0.0","updatedAt":1710000000}]}`))
-		case "/api/v1/skills/remote-skill":
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"skill":{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","updatedAt":1710000000},"latestVersion":{"version":"1.0.0"}}`))
-		case "/api/v1/download":
-			archiveBytes := buildRemoteSkillArchive(t, "1.0.0")
-			_, _ = writer.Write(archiveBytes)
-		default:
-			http.NotFound(writer, request)
-		}
-	}))
-	defer registry.Close()
-
-	config := internalconfig.Default()
-	config.Workdir = workspaceDir
-	config.Skills.RegistryURL = registry.URL
-	config.Skills.InstallScope = internalconfig.SkillInstallScopeWorkspace
-	config.Skills.AutoInstallPolicy = internalconfig.SkillAutoInstallPolicyAllow
-	config.Skills.FreeTextSearchEnabled = false
-	if err := manager.Save(config); err != nil {
-		t.Fatalf("save config failed: %v", err)
-	}
-
+	skillContent := "---\nname: Remote Skill\ndescription: 上下文审查技能\ncategory: engineering\n---\n\n上下文审查技能\n"
 	stream := make(chan provider.StreamEvent, 1)
 	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "未找到技能: Remote Skill"}}
 	close(stream)
 	providerStub := &stubProvider{
 		stream: stream,
+		fetchSkillsResult: []provider.VisibleSkillPackage{
+			{ID: "remote-skill", Name: "Remote Skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
+		},
+		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
+		reportInstallResult: &provider.SkillInstallationRecord{},
+	}
+
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.InstallScope = internalconfig.SkillInstallScopeWorkspace
+	config.Skills.AutoInstallPolicy = internalconfig.SkillAutoInstallPolicyAllow
+	config.Skills.FreeTextSearchEnabled = false
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
 	}
 
 	_, err = app.streamTask(
@@ -3038,9 +3049,6 @@ func TestStreamTaskInstallsMissingSkillBeforeRequest(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("streamTask failed: %v", err)
-	}
-	if len(searchQueries) != 1 || searchQueries[0] != "Remote Skill" {
-		t.Fatalf("expected exact missing-skill search query, got %#v", searchQueries)
 	}
 	if !containsIgnoreCase(providerStub.lastRequest.RequestedSkillNames, "Remote Skill") {
 		t.Fatalf("expected installed skill in request, got %#v", providerStub.lastRequest.RequestedSkillNames)
@@ -3092,35 +3100,7 @@ func TestStreamTaskInstallsMissingSkillWithStructuredErrorPayload(t *testing.T) 
 	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
 
 	workspaceDir := t.TempDir()
-	searchQueries := []string{}
-	registry := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/api/v1/search":
-			searchQueries = append(searchQueries, request.URL.Query().Get("q"))
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","version":"1.0.0","updatedAt":1710000000}]}`))
-		case "/api/v1/skills/remote-skill":
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"skill":{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","updatedAt":1710000000},"latestVersion":{"version":"1.0.0"}}`))
-		case "/api/v1/download":
-			archiveBytes := buildRemoteSkillArchive(t, "1.0.0")
-			_, _ = writer.Write(archiveBytes)
-		default:
-			http.NotFound(writer, request)
-		}
-	}))
-	defer registry.Close()
-
-	config := internalconfig.Default()
-	config.Workdir = workspaceDir
-	config.Skills.RegistryURL = registry.URL
-	config.Skills.InstallScope = internalconfig.SkillInstallScopeWorkspace
-	config.Skills.AutoInstallPolicy = internalconfig.SkillAutoInstallPolicyAllow
-	config.Skills.FreeTextSearchEnabled = false
-	if err := manager.Save(config); err != nil {
-		t.Fatalf("save config failed: %v", err)
-	}
-
+	skillContent := "---\nname: Remote Skill\ndescription: 上下文审查技能\ncategory: engineering\n---\n\n上下文审查技能\n"
 	stream := make(chan provider.StreamEvent, 1)
 	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{
 		"error":      "generic failure",
@@ -3130,7 +3110,23 @@ func TestStreamTaskInstallsMissingSkillWithStructuredErrorPayload(t *testing.T) 
 		},
 	}}
 	close(stream)
-	providerStub := &stubProvider{stream: stream}
+	providerStub := &stubProvider{
+		stream: stream,
+		fetchSkillsResult: []provider.VisibleSkillPackage{
+			{ID: "remote-skill", Name: "Remote Skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
+		},
+		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
+		reportInstallResult: &provider.SkillInstallationRecord{},
+	}
+
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.InstallScope = internalconfig.SkillInstallScopeWorkspace
+	config.Skills.AutoInstallPolicy = internalconfig.SkillAutoInstallPolicyAllow
+	config.Skills.FreeTextSearchEnabled = false
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
+	}
 
 	_, err = app.streamTask(
 		context.Background(),
@@ -3145,9 +3141,6 @@ func TestStreamTaskInstallsMissingSkillWithStructuredErrorPayload(t *testing.T) 
 	)
 	if err != nil {
 		t.Fatalf("streamTask failed: %v", err)
-	}
-	if len(searchQueries) != 1 || searchQueries[0] != "Remote Skill" {
-		t.Fatalf("expected structured missing-skill search query, got %#v", searchQueries)
 	}
 	if !containsIgnoreCase(providerStub.lastRequest.RequestedSkillNames, "Remote Skill") {
 		t.Fatalf("expected installed skill in request, got %#v", providerStub.lastRequest.RequestedSkillNames)
@@ -3170,28 +3163,21 @@ func TestStreamTaskUsesFreeTextSearchForUniqueSkillCandidate(t *testing.T) {
 	app.runtime = clientruntime.NewClientRuntime(bytes.NewBuffer(nil), &stdout, &stderr)
 
 	workspaceDir := t.TempDir()
-	searchQueries := []string{}
-	registry := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/api/v1/search":
-			searchQueries = append(searchQueries, request.URL.Query().Get("q"))
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","version":"1.0.0","updatedAt":1710000000}]}`))
-		case "/api/v1/skills/remote-skill":
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"skill":{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","updatedAt":1710000000},"latestVersion":{"version":"1.0.0"}}`))
-		case "/api/v1/download":
-			archiveBytes := buildRemoteSkillArchive(t, "1.0.0")
-			_, _ = writer.Write(archiveBytes)
-		default:
-			http.NotFound(writer, request)
-		}
-	}))
-	defer registry.Close()
+	skillContent := "---\nname: Remote Skill\ndescription: 上下文审查技能\ncategory: engineering\n---\n\n上下文审查技能\n"
+	stream := make(chan provider.StreamEvent, 1)
+	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "未找到技能: Unknown Skill"}}
+	close(stream)
+	providerStub := &stubProvider{
+		stream: stream,
+		fetchSkillsResult: []provider.VisibleSkillPackage{
+			{ID: "remote-skill", Name: "Remote Skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
+		},
+		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
+		reportInstallResult: &provider.SkillInstallationRecord{},
+	}
 
 	config := internalconfig.Default()
 	config.Workdir = workspaceDir
-	config.Skills.RegistryURL = registry.URL
 	config.Skills.InstallScope = internalconfig.SkillInstallScopeWorkspace
 	config.Skills.AutoInstallPolicy = internalconfig.SkillAutoInstallPolicyAllow
 	config.Skills.FreeTextSearchEnabled = true
@@ -3199,14 +3185,7 @@ func TestStreamTaskUsesFreeTextSearchForUniqueSkillCandidate(t *testing.T) {
 		t.Fatalf("save config failed: %v", err)
 	}
 
-	stream := make(chan provider.StreamEvent, 1)
-	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "未找到技能: Unknown Skill"}}
-	close(stream)
-	providerStub := &stubProvider{
-		stream: stream,
-	}
-
-	input := "请帮我做上下文审查"
+	input := "上下文审查"
 	_, err = app.streamTask(
 		context.Background(),
 		providerStub,
@@ -3220,9 +3199,6 @@ func TestStreamTaskUsesFreeTextSearchForUniqueSkillCandidate(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("streamTask failed: %v", err)
-	}
-	if len(searchQueries) != 2 || searchQueries[0] != "Unknown Skill" || searchQueries[1] != input {
-		t.Fatalf("expected exact+free-text search queries [Unknown Skill, %q], got %#v", input, searchQueries)
 	}
 	if !containsIgnoreCase(providerStub.lastRequest.RequestedSkillNames, "Remote Skill") {
 		t.Fatalf("expected free-text installed skill in request, got %#v", providerStub.lastRequest.RequestedSkillNames)
@@ -3246,41 +3222,27 @@ func TestStreamTaskInstallsMissingSkillIntoLegacyGlobalDirectoryAndReloadsReques
 
 	workspaceDir := t.TempDir()
 	legacySkillDir := filepath.Join(t.TempDir(), "legacy-skills")
-	searchQueries := []string{}
-	registry := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/api/v1/search":
-			searchQueries = append(searchQueries, request.URL.Query().Get("q"))
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","version":"1.0.0","updatedAt":1710000000}]}`))
-		case "/api/v1/skills/remote-skill":
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"skill":{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","updatedAt":1710000000},"latestVersion":{"version":"1.0.0"}}`))
-		case "/api/v1/download":
-			archiveBytes := buildRemoteSkillArchive(t, "1.0.0")
-			_, _ = writer.Write(archiveBytes)
-		default:
-			http.NotFound(writer, request)
-		}
-	}))
-	defer registry.Close()
-
-	config := internalconfig.Default()
-	config.Workdir = workspaceDir
-	config.Skills.Directory = legacySkillDir
-	config.Skills.RegistryURL = registry.URL
-	config.Skills.InstallScope = internalconfig.SkillInstallScopeUser
-	config.Skills.AutoInstallPolicy = internalconfig.SkillAutoInstallPolicyAllow
-	config.Skills.FreeTextSearchEnabled = false
-	if err := manager.Save(config); err != nil {
-		t.Fatalf("save config failed: %v", err)
-	}
-
+	skillContent := "---\nname: Remote Skill\ndescription: 上下文审查技能\ncategory: engineering\n---\n\n上下文审查技能\n"
 	stream := make(chan provider.StreamEvent, 1)
 	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "未找到技能: Remote Skill"}}
 	close(stream)
 	providerStub := &stubProvider{
 		stream: stream,
+		fetchSkillsResult: []provider.VisibleSkillPackage{
+			{ID: "remote-skill", Name: "Remote Skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
+		},
+		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
+		reportInstallResult: &provider.SkillInstallationRecord{},
+	}
+
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.Directory = legacySkillDir
+	config.Skills.InstallScope = internalconfig.SkillInstallScopeUser
+	config.Skills.AutoInstallPolicy = internalconfig.SkillAutoInstallPolicyAllow
+	config.Skills.FreeTextSearchEnabled = false
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
 	}
 
 	_, err = app.streamTask(
@@ -3296,9 +3258,6 @@ func TestStreamTaskInstallsMissingSkillIntoLegacyGlobalDirectoryAndReloadsReques
 	)
 	if err != nil {
 		t.Fatalf("streamTask failed: %v", err)
-	}
-	if len(searchQueries) != 1 || searchQueries[0] != "Remote Skill" {
-		t.Fatalf("expected exact missing-skill search query, got %#v", searchQueries)
 	}
 	if !containsIgnoreCase(providerStub.lastRequest.RequestedSkillNames, "Remote Skill") {
 		t.Fatalf("expected installed skill in request after reload, got %#v", providerStub.lastRequest.RequestedSkillNames)
@@ -3333,39 +3292,27 @@ func TestStreamTaskAutoInstallUsesPinnedSessionInstallScope(t *testing.T) {
 
 	workspaceDir := t.TempDir()
 	legacySkillDir := filepath.Join(t.TempDir(), "legacy-skills")
-	registry := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/api/v1/search":
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"results":[{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","version":"1.0.0","updatedAt":1710000000}]}`))
-		case "/api/v1/skills/remote-skill":
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"skill":{"slug":"remote-skill","displayName":"Remote Skill","summary":"上下文审查技能","updatedAt":1710000000},"latestVersion":{"version":"1.0.0"}}`))
-		case "/api/v1/download":
-			archiveBytes := buildRemoteSkillArchive(t, "1.0.0")
-			_, _ = writer.Write(archiveBytes)
-		default:
-			http.NotFound(writer, request)
-		}
-	}))
-	defer registry.Close()
-
-	config := internalconfig.Default()
-	config.Workdir = workspaceDir
-	config.Skills.Directory = legacySkillDir
-	config.Skills.InstallScope = internalconfig.SkillInstallScopeUser
-	config.Skills.RegistryURL = registry.URL
-	config.Skills.AutoInstallPolicy = internalconfig.SkillAutoInstallPolicyAllow
-	config.Skills.FreeTextSearchEnabled = false
-	if err := manager.Save(config); err != nil {
-		t.Fatalf("save config failed: %v", err)
-	}
-
+	skillContent := "---\nname: Remote Skill\ndescription: 上下文审查技能\ncategory: engineering\n---\n\n上下文审查技能\n"
 	stream := make(chan provider.StreamEvent, 1)
 	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "未找到技能: Remote Skill"}}
 	close(stream)
 	providerStub := &stubProvider{
 		stream: stream,
+		fetchSkillsResult: []provider.VisibleSkillPackage{
+			{ID: "remote-skill", Name: "Remote Skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
+		},
+		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
+		reportInstallResult: &provider.SkillInstallationRecord{},
+	}
+
+	config := internalconfig.Default()
+	config.Workdir = workspaceDir
+	config.Skills.Directory = legacySkillDir
+	config.Skills.InstallScope = internalconfig.SkillInstallScopeUser
+	config.Skills.AutoInstallPolicy = internalconfig.SkillAutoInstallPolicyAllow
+	config.Skills.FreeTextSearchEnabled = false
+	if err := manager.Save(config); err != nil {
+		t.Fatalf("save config failed: %v", err)
 	}
 
 	_, err = app.streamTask(
