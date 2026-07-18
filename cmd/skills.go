@@ -123,6 +123,10 @@ func (a *App) executeSkillsCommand(ctx context.Context, args []string) (string, 
 					marker = "[x]"
 				}
 				line := fmt.Sprintf("%s %s", marker, item.Name)
+				slug := filepath.Base(skills.SkillDir(item))
+				if slug != "" && !strings.EqualFold(slug, item.Name) {
+					line += fmt.Sprintf(" (%s)", slug)
+				}
 				if strings.TrimSpace(item.Description) != "" {
 					line += fmt.Sprintf(" - %s", item.Description)
 				}
@@ -565,6 +569,10 @@ func (a *App) backendSkillsList(ctx context.Context, config internalconfig.Confi
 		name := skill.DisplayName
 		if name == "" {
 			name = skill.Name
+		}
+		// 当 slug 与展示名不同时，附加显示 slug
+		if skill.Name != "" && !strings.EqualFold(skill.Name, name) {
+			name = fmt.Sprintf("%s (%s)", name, skill.Name)
 		}
 		lines = append(lines, fmt.Sprintf("  %-30s %-10s %-10s %s", name, skill.Version, status, skill.Summary))
 	}
