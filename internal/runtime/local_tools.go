@@ -576,7 +576,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 	// 非 agent 模式（ask/plan）：追加 switch_to_agent 工具定义。
 	definitions = append(definitions, map[string]any{
 		"name":                 "switch_to_agent",
-		"description":          "切换当前会话到执行模式（agent）。在问答模式（ask）或计划模式（plan）下，模型可调用此工具切换到执行模式，以便使用完整的本地工具能力。切换后对后续对话生效，当前对话不受影响。返回值包含 agent 模式新增的工具能力描述（additional_tools），便于模型了解切换后可获得的新能力。",
+		"description":          "切换当前会话到执行模式（agent）。在问答模式（ask）或计划模式（plan）下，模型可调用此工具切换到执行模式，以便使用完整的本地工具能力。切换后对后续对话生效，当前对话不受影响。返回值包含 agent 模式新增的工具完整定义（additional_tools），包括工具名称、描述、参数格式（inputSchema）和是否需要等待响应（waiting_for_response），便于模型了解切换后可用的工具及其调用方式。",
 		"waiting_for_response": true,
 		"inputSchema": map[string]any{
 			"type": "object",

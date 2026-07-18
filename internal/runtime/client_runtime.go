@@ -1865,8 +1865,8 @@ func stringSlice(value any) []string {
 
 // switchToAgent 处理 switch_to_agent 工具调用。
 // 设置 pendingModeSwitch 标记，由 cmd 层在工具回调完成后消费并更新会话状态。
-// 返回值包含 additional_tools 字段，列出 agent 模式相比 ask/plan 模式新增的工具名称和描述，
-// 便于模型在当前轮了解切换后可获得的新能力。
+// 返回值包含 additional_tools 字段，列出 agent 模式相比 ask/plan 模式新增的工具完整定义
+// （name、description、inputSchema、waiting_for_response），便于模型了解切换后可用的工具及其参数。
 func (r *ClientRuntime) switchToAgent(arguments map[string]any) (map[string]any, error) {
 	r.pendingModeSwitch = provider.RequestTypeAgent
 	reason := argumentString(arguments, "reason")
@@ -1881,9 +1881,10 @@ func (r *ClientRuntime) switchToAgent(arguments map[string]any) (map[string]any,
 	}, nil
 }
 
-// additionalAgentToolDescriptions 计算 agent 模式相比当前模式（ask 或 plan）新增的工具名称和描述。
+// additionalAgentToolDescriptions 计算 agent 模式相比当前模式（ask 或 plan）新增的工具完整定义。
 // 基准模式由 r.currentRequestMode 决定，如果未设置则回退到 ask。
 // 通过对比 clientToolDefinitionsForMode(agent) 和 clientToolDefinitionsForMode(基准模式) 的差集得到。
+// 返回每个工具的 name、description、inputSchema 和 waiting_for_response，确保模型知道切换后可用工具的参数格式。
 func (r *ClientRuntime) additionalAgentToolDescriptions() []map[string]any {
 	baseMode := r.currentRequestMode
 	if baseMode == "" || baseMode == provider.RequestTypeAgent {
@@ -1906,10 +1907,17 @@ func (r *ClientRuntime) additionalAgentToolDescriptions() []map[string]any {
 		if name == "" || baseNames[name] {
 			continue
 		}
-		additional = append(additional, map[string]any{
+		entry := map[string]any{
 			"name":        name,
 			"description": def["description"],
-		})
+		}
+		if schema, ok := def["inputSchema"]; ok {
+			entry["inputSchema"] = schema
+		}
+		if wfr, ok := def["waiting_for_response"]; ok {
+			entry["waiting_for_response"] = wfr
+		}
+		additional = append(additional, entry)
 	}
 	return additional
 }

@@ -38,7 +38,7 @@ func TestSwitchToAgentSetsPendingModeSwitch(t *testing.T) {
 	if len(additionalTools) == 0 {
 		t.Fatal("expected non-empty additional_tools")
 	}
-	// 验证每个条目包含 name 和 description
+	// 验证每个条目包含 name、description 和 inputSchema
 	for i, tool := range additionalTools {
 		name, _ := tool["name"].(string)
 		if name == "" {
@@ -47,6 +47,9 @@ func TestSwitchToAgentSetsPendingModeSwitch(t *testing.T) {
 		desc, _ := tool["description"].(string)
 		if desc == "" {
 			t.Fatalf("additional_tools[%d] missing description", i)
+		}
+		if _, ok := tool["inputSchema"]; !ok {
+			t.Fatalf("additional_tools[%d] (%s) missing inputSchema", i, name)
 		}
 	}
 	// 验证包含 shell_exec（agent 模式核心工具）
@@ -268,11 +271,35 @@ func TestAdditionalAgentToolDescriptionsReturnsDiff(t *testing.T) {
 	for _, tool := range additional {
 		if name, _ := tool["name"].(string); name == "shell_exec" {
 			found = true
+			// 验证 shell_exec 包含 inputSchema
+			if _, ok := tool["inputSchema"]; !ok {
+				t.Fatal("expected shell_exec to have inputSchema in additional tools")
+			}
 			break
 		}
 	}
 	if !found {
 		t.Fatal("expected shell_exec in additional tools")
+	}
+}
+
+func TestAdditionalAgentToolDescriptionsIncludesInputSchema(t *testing.T) {
+	r := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	r.SetCurrentRequestMode(provider.RequestTypeAsk)
+	additional := r.additionalAgentToolDescriptions()
+	for i, tool := range additional {
+		name, _ := tool["name"].(string)
+		if _, ok := tool["inputSchema"]; !ok {
+			t.Fatalf("additional_tools[%d] (%s) missing inputSchema", i, name)
+		}
+		// inputSchema 应为 map[string]any 且包含 type 字段
+		schema, ok := tool["inputSchema"].(map[string]any)
+		if !ok {
+			t.Fatalf("additional_tools[%d] (%s) inputSchema should be map[string]any, got %T", i, name, tool["inputSchema"])
+		}
+		if _, ok := schema["type"]; !ok {
+			t.Fatalf("additional_tools[%d] (%s) inputSchema missing type field", i, name)
+		}
 	}
 }
 
