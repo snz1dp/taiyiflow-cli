@@ -146,6 +146,8 @@ func buildPermissionsPanel(configPath string, config internalconfig.Config) *tui
 		fmt.Sprintf("技能包审查策略(skill_review_policy): %s", fallbackConfigValue(config.SkillReviewPolicy, internalconfig.Default().SkillReviewPolicy)),
 		fmt.Sprintf("写入确认策略(write_confirmation_policy): %s", fallbackConfigValue(config.WriteConfirmationPolicy, internalconfig.Default().WriteConfirmationPolicy)),
 		fmt.Sprintf("模式切换确认策略(mode_switch_confirmation_policy): %s", fallbackConfigValue(config.ModeSwitchConfirmationPolicy, internalconfig.Default().ModeSwitchConfirmationPolicy)),
+		fmt.Sprintf("默认请求模式(default_request_mode): %s", fallbackConfigValue(config.DefaultRequestMode, internalconfig.Default().DefaultRequestMode)),
+		fmt.Sprintf("请求模式自动切换(request_mode_auto_switch): %t", config.RequestModeAutoSwitch),
 	}
 	if len(config.PermissionRules) > 0 {
 		bodyLines = append(bodyLines, "", "细粒度规则(permission_rules):")

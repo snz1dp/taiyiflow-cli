@@ -59,6 +59,9 @@ const (
 	ShellSandboxModeOff              = "off"
 	ShellSandboxModeAuto             = "auto"
 	ShellSandboxModeEnforce          = "enforce"
+	DefaultRequestModeAgent          = "agent"
+	DefaultRequestModeAsk            = "ask"
+	DefaultRequestModePlan           = "plan"
 	BrowserChannelChrome             = "chrome"
 	BrowserChannelChromium           = "chromium"
 	BrowserChannelEdge               = "edge"
@@ -178,6 +181,8 @@ type Config struct {
 	SkillReviewPolicy         string           `yaml:"skill_review_policy,omitempty"`
 	WriteConfirmationPolicy   string           `yaml:"write_confirmation_policy,omitempty"`
 	ModeSwitchConfirmationPolicy string       `yaml:"mode_switch_confirmation_policy,omitempty"`
+	DefaultRequestMode           string       `yaml:"default_request_mode,omitempty"`
+	RequestModeAutoSwitch        bool         `yaml:"request_mode_auto_switch,omitempty"`
 	SandboxRoots              []string         `yaml:"sandbox_roots,omitempty"`
 	FileSearchExcludeDirs     []string         `yaml:"file_search_exclude_dirs,omitempty"`
 	PermissionRules           []PermissionRule `yaml:"permission_rules,omitempty"`
@@ -255,6 +260,8 @@ func Default() Config {
 		SkillReviewPolicy:         SkillReviewPolicyConfirm,
 		WriteConfirmationPolicy:   WriteConfirmationPolicyConfirm,
 		ModeSwitchConfirmationPolicy: ModeSwitchConfirmationPolicyConfirm,
+		DefaultRequestMode:           DefaultRequestModeAgent,
+		RequestModeAutoSwitch:        true,
 		ShellSandboxMode:          ShellSandboxModeOff,
 		FileSearchExcludeDirs:     append([]string(nil), defaultFileSearchExcludeDirs...),
 		Browser: BrowserConfig{
@@ -503,6 +510,17 @@ func NormalizeModeSwitchConfirmationPolicy(value string) string {
 	}
 }
 
+func NormalizeDefaultRequestMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case DefaultRequestModeAsk:
+		return DefaultRequestModeAsk
+	case DefaultRequestModePlan:
+		return DefaultRequestModePlan
+	default:
+		return DefaultRequestModeAgent
+	}
+}
+
 // DefaultFileSearchExcludeDirs 返回文件搜索排除目录的默认值副本。
 func DefaultFileSearchExcludeDirs() []string {
 	return append([]string(nil), defaultFileSearchExcludeDirs...)
@@ -737,6 +755,7 @@ func (m *Manager) Load() (Config, error) {
 	config.Skills.AutoInstallPolicy = NormalizeSkillAutoInstallPolicy(config.Skills.AutoInstallPolicy)
 	config.WriteConfirmationPolicy = NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy)
 	config.ModeSwitchConfirmationPolicy = NormalizeModeSwitchConfirmationPolicy(config.ModeSwitchConfirmationPolicy)
+	config.DefaultRequestMode = NormalizeDefaultRequestMode(config.DefaultRequestMode)
 	config.ShellSandboxMode = NormalizeShellSandboxMode(config.ShellSandboxMode)
 	config.HTTPTimeoutSeconds = NormalizeHTTPTimeoutSeconds(config.HTTPTimeoutSeconds)
 	config.CommandTimeoutSeconds = NormalizeCommandTimeoutSeconds(config.CommandTimeoutSeconds)

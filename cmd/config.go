@@ -65,6 +65,8 @@ func (a *App) showConfigHelp() error {
 		"  file_search_exclude_dirs      文件搜索排除目录（逗号分隔）；未配置时使用内置默认值，可用自定义列表覆盖。",
 		"  skills_auto_install_policy    技能自动补装策略；可选 off、confirm、allow。",
 		"  cross_session_memory_enabled  跨会话记忆开关；可选 true、false。",
+		"  default_request_mode           默认请求模式；可选 agent、ask、plan。",
+		"  request_mode_auto_switch       请求模式自动切换开关；可选 true、false。",
 		"",
 		"示例:",
 		"  taiyiflow-cli config set backend_base_url https://snz1.cn",
@@ -306,6 +308,20 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			}
 		}
 		config.ModeSwitchConfirmationPolicy = normalizedPolicy
+	case "default_request_mode":
+		normalizedMode := internalconfig.NormalizeDefaultRequestMode(trimmedValue)
+		if normalizedMode != trimmedValue {
+			if strings.ToLower(trimmedValue) != normalizedMode {
+				return fmt.Errorf("default_request_mode 仅支持 agent、ask、plan")
+			}
+		}
+		config.DefaultRequestMode = normalizedMode
+	case "request_mode_auto_switch":
+		normalized := strings.ToLower(trimmedValue)
+		if normalized != "true" && normalized != "false" {
+			return fmt.Errorf("request_mode_auto_switch 仅支持 true 或 false")
+		}
+		config.RequestModeAutoSwitch = normalized == "true"
 	case "http_timeout_seconds":
 		seconds, err := strconv.Atoi(trimmedValue)
 		if err != nil || seconds < 1 || seconds > internalconfig.MaxHTTPTimeoutSeconds {
@@ -456,6 +472,10 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.WriteConfirmationPolicy = defaults.WriteConfirmationPolicy
 	case "mode_switch_confirmation_policy":
 		config.ModeSwitchConfirmationPolicy = defaults.ModeSwitchConfirmationPolicy
+	case "default_request_mode":
+		config.DefaultRequestMode = defaults.DefaultRequestMode
+	case "request_mode_auto_switch":
+		config.RequestModeAutoSwitch = defaults.RequestModeAutoSwitch
 	case "http_timeout_seconds":
 		config.HTTPTimeoutSeconds = defaults.HTTPTimeoutSeconds
 	case "command_timeout_seconds":
@@ -558,6 +578,10 @@ func normalizeConfigKey(key string) string {
 		return "file_search_exclude_dirs"
 	case "shell_sandbox", "shell_exec_sandbox_mode":
 		return "shell_sandbox_mode"
+	case "default_mode", "default_request_type", "request_mode", "request_type":
+		return "default_request_mode"
+	case "auto_switch_request_mode", "auto_request_mode_switch", "request_mode_auto":
+		return "request_mode_auto_switch"
 	default:
 		return normalized
 	}
@@ -599,6 +623,8 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("技能包审查策略: %s", fallbackConfigValue(config.SkillReviewPolicy, internalconfig.Default().SkillReviewPolicy)),
 		fmt.Sprintf("写入确认策略: %s", fallbackConfigValue(config.WriteConfirmationPolicy, internalconfig.Default().WriteConfirmationPolicy)),
 		fmt.Sprintf("模式切换确认策略: %s", fallbackConfigValue(config.ModeSwitchConfirmationPolicy, internalconfig.Default().ModeSwitchConfirmationPolicy)),
+		fmt.Sprintf("默认请求模式: %s", fallbackConfigValue(config.DefaultRequestMode, internalconfig.Default().DefaultRequestMode)),
+		fmt.Sprintf("请求模式自动切换: %t", config.RequestModeAutoSwitch),
 		fmt.Sprintf("命令执行超时: %d 秒", config.CommandTimeoutSeconds),
 		fmt.Sprintf("子智能体超时: %s", formatSubtaskTimeoutLabel(config.SubtaskTimeoutSeconds)),
 		fmt.Sprintf("流式空闲超时: %d 秒", config.StreamIdleTimeoutSeconds),

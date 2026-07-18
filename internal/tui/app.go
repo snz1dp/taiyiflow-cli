@@ -272,6 +272,8 @@ type ConfigFormValues struct {
 	SkillsFreeTextSearch      bool
 	DocUnstructuredExts       string
 	ShellSandboxMode          string
+	DefaultRequestMode        string
+	RequestModeAutoSwitch     bool
 }
 
 type ConfigChoice struct {
@@ -827,6 +829,8 @@ type configFormState struct {
 	skillsAutoInstallCursor  int
 	skillsFreeTextCursor     int
 	shellSandboxCursor       int
+	defaultRequestModeCursor int
+	requestModeAutoSwitchCursor int
 	fieldErrorKey            string
 	fieldErrorText           string
 }
@@ -916,6 +920,8 @@ const (
 	configFieldSkillsFreeTextSearch
 	configFieldDocUnstructuredExts
 	configFieldShellSandboxMode
+	configFieldDefaultRequestMode
+	configFieldRequestModeAutoSwitch
 	configFieldCount
 )
 
@@ -2595,6 +2601,14 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveConfigShellSandboxCursor(-1)
 			return m, nil
 		}
+		if m.configForm.cursor == configFieldDefaultRequestMode {
+			m.moveConfigDefaultRequestModeCursor(-1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldRequestModeAutoSwitch {
+			m.moveConfigRequestModeAutoSwitchCursor(-1)
+			return m, nil
+		}
 		if m.configForm.cursor == configFieldDefaultFlow {
 			m.moveConfigFlowCursor(-1)
 			return m, nil
@@ -2666,6 +2680,14 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldShellSandboxMode {
 			m.moveConfigShellSandboxCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldDefaultRequestMode {
+			m.moveConfigDefaultRequestModeCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldRequestModeAutoSwitch {
+			m.moveConfigRequestModeAutoSwitchCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldDefaultFlow {
@@ -2753,6 +2775,14 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldShellSandboxMode {
 			m.moveConfigShellSandboxCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldDefaultRequestMode {
+			m.moveConfigDefaultRequestModeCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldRequestModeAutoSwitch {
+			m.moveConfigRequestModeAutoSwitchCursor(1)
 			return m, nil
 		}
 	case "ctrl+s":
@@ -5322,6 +5352,10 @@ func (m model) renderConfigForm() string {
 			lines = append(lines, m.renderConfigSkillsFreeTextSearchField())
 		case configFieldShellSandboxMode:
 			lines = append(lines, m.renderConfigShellSandboxField())
+		case configFieldDefaultRequestMode:
+			lines = append(lines, m.renderConfigDefaultRequestModeField())
+		case configFieldRequestModeAutoSwitch:
+			lines = append(lines, m.renderConfigRequestModeAutoSwitchField())
 		default:
 			lines = append(lines, m.configForm.inputs[index].View())
 		}
@@ -5669,6 +5703,52 @@ func (m model) renderConfigShellSandboxField() string {
 		}
 		item := marker + " " + option.Label
 		if m.configForm.cursor == configFieldShellSandboxMode && selected {
+			parts = append(parts, selectedFlowStyle.Render(item))
+		} else if selected {
+			parts = append(parts, valueStyle.Render(item))
+		} else {
+			parts = append(parts, commandHintStyle.Render(item))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m model) renderConfigDefaultRequestModeField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(configDefaultRequestModeChoices()))
+	for index, option := range configDefaultRequestModeChoices() {
+		selected := index == m.configForm.defaultRequestModeCursor
+		marker := "( )"
+		if selected {
+			marker = "(*)"
+		}
+		item := marker + " " + option.Label
+		if m.configForm.cursor == configFieldDefaultRequestMode && selected {
+			parts = append(parts, selectedFlowStyle.Render(item))
+		} else if selected {
+			parts = append(parts, valueStyle.Render(item))
+		} else {
+			parts = append(parts, commandHintStyle.Render(item))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m model) renderConfigRequestModeAutoSwitchField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(configRequestModeAutoSwitchChoices()))
+	for index, option := range configRequestModeAutoSwitchChoices() {
+		selected := index == m.configForm.requestModeAutoSwitchCursor
+		marker := "( )"
+		if selected {
+			marker = "(*)"
+		}
+		item := marker + " " + option.Label
+		if m.configForm.cursor == configFieldRequestModeAutoSwitch && selected {
 			parts = append(parts, selectedFlowStyle.Render(item))
 		} else if selected {
 			parts = append(parts, valueStyle.Render(item))
@@ -7727,6 +7807,14 @@ func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
 	if m.configForm.shellSandboxCursor >= 0 && m.configForm.shellSandboxCursor < len(shellSandboxChoices) {
 		submission.Values.ShellSandboxMode = strings.TrimSpace(shellSandboxChoices[m.configForm.shellSandboxCursor].Value)
 	}
+	defaultRequestModeChoices := configDefaultRequestModeChoices()
+	if m.configForm.defaultRequestModeCursor >= 0 && m.configForm.defaultRequestModeCursor < len(defaultRequestModeChoices) {
+		submission.Values.DefaultRequestMode = strings.TrimSpace(defaultRequestModeChoices[m.configForm.defaultRequestModeCursor].Value)
+	}
+	requestModeAutoSwitchChoices := configRequestModeAutoSwitchChoices()
+	if m.configForm.requestModeAutoSwitchCursor >= 0 && m.configForm.requestModeAutoSwitchCursor < len(requestModeAutoSwitchChoices) {
+		submission.Values.RequestModeAutoSwitch = strings.TrimSpace(requestModeAutoSwitchChoices[m.configForm.requestModeAutoSwitchCursor].Value) == "true"
+	}
 	return m, tea.Batch(m.transitionProgress(progressExecuting), submitConfigFormCmd(m.ctx, m.snapshot, submission, m.configFormSubmit))
 }
 
@@ -7823,6 +7911,8 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 		skillsAutoInstallCursor:  configChoiceIndex(configSkillsAutoInstallChoices(), values.SkillsAutoInstallPolicy),
 		skillsFreeTextCursor:     configChoiceIndex(configSkillsFreeTextSearchChoices(), boolChoiceValue(values.SkillsFreeTextSearch)),
 		shellSandboxCursor:       configChoiceIndex(configShellSandboxChoices(), values.ShellSandboxMode),
+		defaultRequestModeCursor: configChoiceIndex(configDefaultRequestModeChoices(), values.DefaultRequestMode),
+		requestModeAutoSwitchCursor: configChoiceIndex(configRequestModeAutoSwitchChoices(), boolChoiceValue(values.RequestModeAutoSwitch)),
 	}
 }
 
@@ -8299,6 +8389,8 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "自由文本技能搜索", placeholder: "", description: "左右键或空格切换是否允许按任务文本搜索远程技能候选。"},
 		{label: "服务端文档解析类型", placeholder: "pdf,wav,mp3", description: "留空表示恢复内置默认值；多个扩展名用逗号分隔，仅对配置列表中的扩展名启用服务端文档结构化解析。"},
 		{label: "Shell 沙盒模式", placeholder: "", description: "左右键或空格切换关闭(off)、自动(auto)、强制(enforce)。auto 在平台不支持时静默降级；enforce 在平台不支持时拒绝执行。"},
+		{label: "默认请求模式", placeholder: "", description: "左右键或空格切换执行模式(agent)、问答模式(ask)、计划模式(plan)。新建会话时使用该默认值。"},
+		{label: "请求模式自动切换", placeholder: "", description: "左右键或空格切换是否允许根据任务上下文自动切换请求模式。"},
 	}
 }
 
@@ -8322,6 +8414,8 @@ func configFormFieldGroup(index int) string {
 		return "文档工具"
 	case configFieldShellSandboxMode:
 		return "安全沙盒"
+	case configFieldDefaultRequestMode, configFieldRequestModeAutoSwitch:
+		return "请求模式"
 	default:
 		return ""
 	}
@@ -8398,6 +8492,10 @@ func configFormFieldValue(index int, values ConfigFormValues) string {
 	case configFieldDocUnstructuredExts:
 		return strings.TrimSpace(values.DocUnstructuredExts)
 	case configFieldShellSandboxMode:
+		return ""
+	case configFieldDefaultRequestMode:
+		return ""
+	case configFieldRequestModeAutoSwitch:
 		return ""
 	default:
 		return ""
@@ -8559,6 +8657,10 @@ func configFieldKey(index int) string {
 		return "doc_unstructured_exts"
 	case configFieldShellSandboxMode:
 		return "shell_sandbox_mode"
+	case configFieldDefaultRequestMode:
+		return "default_request_mode"
+	case configFieldRequestModeAutoSwitch:
+		return "request_mode_auto_switch"
 	default:
 		return ""
 	}
@@ -8833,6 +8935,34 @@ func (m *model) moveConfigShellSandboxCursor(delta int) {
 	m.syncLayout()
 }
 
+func (m *model) moveConfigDefaultRequestModeCursor(delta int) {
+	choices := configDefaultRequestModeChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.defaultRequestModeCursor += delta
+	if m.configForm.defaultRequestModeCursor < 0 {
+		m.configForm.defaultRequestModeCursor = len(choices) - 1
+	} else if m.configForm.defaultRequestModeCursor >= len(choices) {
+		m.configForm.defaultRequestModeCursor = 0
+	}
+	m.syncLayout()
+}
+
+func (m *model) moveConfigRequestModeAutoSwitchCursor(delta int) {
+	choices := configRequestModeAutoSwitchChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.requestModeAutoSwitchCursor += delta
+	if m.configForm.requestModeAutoSwitchCursor < 0 {
+		m.configForm.requestModeAutoSwitchCursor = len(choices) - 1
+	} else if m.configForm.requestModeAutoSwitchCursor >= len(choices) {
+		m.configForm.requestModeAutoSwitchCursor = 0
+	}
+	m.syncLayout()
+}
+
 func configReasoningChoices() []ConfigChoice {
 	return []ConfigChoice{{Value: "off", Label: "关闭"}, {Value: "on", Label: "开启"}}
 }
@@ -9026,6 +9156,21 @@ func configShellSandboxChoices() []ConfigChoice {
 		{Value: internalconfig.ShellSandboxModeOff, Label: "关闭", Description: "不启用沙盒，命令在工作区内直接执行。"},
 		{Value: internalconfig.ShellSandboxModeAuto, Label: "自动", Description: "自动尝试启用 OS 级沙盒；平台不支持时静默降级。"},
 		{Value: internalconfig.ShellSandboxModeEnforce, Label: "强制", Description: "强制启用沙盒；平台不支持时拒绝执行命令。"},
+	}
+}
+
+func configDefaultRequestModeChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: internalconfig.DefaultRequestModeAgent, Label: "执行模式", Description: "新建会话时默认使用执行模式(agent)。"},
+		{Value: internalconfig.DefaultRequestModeAsk, Label: "问答模式", Description: "新建会话时默认使用问答模式(ask)。"},
+		{Value: internalconfig.DefaultRequestModePlan, Label: "计划模式", Description: "新建会话时默认使用计划模式(plan)。"},
+	}
+}
+
+func configRequestModeAutoSwitchChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: "true", Label: "开启", Description: "允许根据任务上下文自动切换请求模式。"},
+		{Value: "false", Label: "关闭", Description: "不自动切换，始终保持默认请求模式。"},
 	}
 }
 

@@ -3437,6 +3437,8 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			SkillsFreeTextSearch:      config.Skills.FreeTextSearchEnabled,
 				DocUnstructuredExts:       strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "),
 			ShellSandboxMode:          strings.TrimSpace(config.ShellSandboxMode),
+			DefaultRequestMode:        strings.TrimSpace(config.DefaultRequestMode),
+			RequestModeAutoSwitch:     config.RequestModeAutoSwitch,
 		},
 	}, nil
 }
@@ -3639,6 +3641,16 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		config.ShellSandboxMode = internalconfig.Default().ShellSandboxMode
 	} else if err := assignConfigValue(&config, "shell_sandbox_mode", submission.Values.ShellSandboxMode); err != nil {
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "shell_sandbox_mode", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.DefaultRequestMode) == "" {
+		config.DefaultRequestMode = internalconfig.Default().DefaultRequestMode
+	} else if err := assignConfigValue(&config, "default_request_mode", submission.Values.DefaultRequestMode); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "default_request_mode", Message: err.Error()}
+	}
+
+	if err := assignConfigValue(&config, "request_mode_auto_switch", strconv.FormatBool(submission.Values.RequestModeAutoSwitch)); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "request_mode_auto_switch", Message: err.Error()}
 	}
 
 	if err := a.configManager.Save(config); err != nil {

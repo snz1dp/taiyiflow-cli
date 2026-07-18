@@ -1798,6 +1798,7 @@ func applyEffectiveSkillReviewPolicy(config internalconfig.Config, sessionOverri
 	}
 	updated.WriteConfirmationPolicy = internalconfig.NormalizeWriteConfirmationPolicy(updated.WriteConfirmationPolicy)
 	updated.ModeSwitchConfirmationPolicy = internalconfig.NormalizeModeSwitchConfirmationPolicy(updated.ModeSwitchConfirmationPolicy)
+	updated.DefaultRequestMode = internalconfig.NormalizeDefaultRequestMode(updated.DefaultRequestMode)
 	return updated
 }
 
