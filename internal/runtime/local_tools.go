@@ -645,6 +645,9 @@ func RequiresClientToolConfirmation(config internalconfig.Config, payload map[st
 	if toolName == "skill" {
 		return internalconfig.NormalizeSkillReviewPolicy(config.SkillReviewPolicy) == internalconfig.SkillReviewPolicyConfirm
 	}
+	if toolName == "switch_to_agent" {
+		return internalconfig.NormalizeModeSwitchConfirmationPolicy(config.ModeSwitchConfirmationPolicy) == internalconfig.ModeSwitchConfirmationPolicyConfirm
+	}
 	return shouldConfirmMutatingTool(config, toolName)
 }
 
@@ -709,6 +712,22 @@ func (r *ClientRuntime) authorizeClientTool(toolName string, arguments map[strin
 	}
 	if canonicalClientToolName(toolName) == "skill" {
 		if internalconfig.NormalizeSkillReviewPolicy(config.SkillReviewPolicy) != internalconfig.SkillReviewPolicyConfirm {
+			return nil
+		}
+		if mode == "auto" {
+			return nil
+		}
+		approved, err := r.confirmClientTool(toolName, arguments)
+		if err != nil {
+			return err
+		}
+		if !approved {
+			return newToolError("PERMISSION_DENIED", "用户拒绝执行 %s", canonicalClientToolName(toolName))
+		}
+		return nil
+	}
+	if canonicalClientToolName(toolName) == "switch_to_agent" {
+		if internalconfig.NormalizeModeSwitchConfirmationPolicy(config.ModeSwitchConfirmationPolicy) != internalconfig.ModeSwitchConfirmationPolicyConfirm {
 			return nil
 		}
 		if mode == "auto" {

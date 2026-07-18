@@ -173,6 +173,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		persistBrowserToolAlwaysAllow := a.persistConfigValue("browser_permission_mode", internalconfig.BrowserPermissionModeSkipAll)
 		persistComputerToolAlwaysAllow := a.persistConfigValue("computer_permission_mode", internalconfig.ComputerPermissionModeSkipAll)
 		persistWriteToolAlwaysAllow := a.persistConfigValue("write_confirmation_policy", internalconfig.WriteConfirmationPolicyDirect)
+		persistModeSwitchAlwaysAllow := a.persistConfigValue("mode_switch_confirmation_policy", internalconfig.ModeSwitchConfirmationPolicySkip)
 		persistSkillAutoInstallAlwaysAllow := a.persistConfigValue("skill_review_policy", internalconfig.SkillReviewPolicyIgnore)
 		persistApprovalModeAuto := a.persistConfigValue("approval_mode", "auto")
 		sandboxEscapeConfirmer := func(path string) (bool, error) {
@@ -425,7 +426,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 							appendApprovedSkillName(&sessionState, skillName)
 							return a.sessionStore.Save(sessionState)
 						}
-						approved := confirm(buildTUIClientToolConfirmRequest(localConfig, sessionState.ContextDir, event.Data, persistApprovedSkillReview, persistSkillReviewAllowAll, persistBrowserToolAlwaysAllow, persistComputerToolAlwaysAllow, persistWriteToolAlwaysAllow, persistApprovalModeAuto))
+						approved := confirm(buildTUIClientToolConfirmRequest(localConfig, sessionState.ContextDir, event.Data, persistApprovedSkillReview, persistSkillReviewAllowAll, persistBrowserToolAlwaysAllow, persistComputerToolAlwaysAllow, persistWriteToolAlwaysAllow, persistModeSwitchAlwaysAllow, persistApprovalModeAuto))
 						if !approved {
 							emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端工具执行。"})
 							if err := submitClientCallFailure(runCtx, callbackProvider, localConfig, event.Data, "用户拒绝执行客户端工具"); err != nil {
@@ -1968,6 +1969,7 @@ func buildTUIClientToolConfirmRequest(
 	allowBrowserTools func(context.Context) error,
 	allowComputerTools func(context.Context) error,
 	allowWriteTools func(context.Context) error,
+	allowModeSwitch func(context.Context) error,
 	allowAllTools func(context.Context) error,
 ) tui.ConfirmRequest {
 	toolName := nestedStringValue(payload, "function", "name")
@@ -2005,6 +2007,15 @@ func buildTUIClientToolConfirmRequest(
 		request.AlwaysApproveLabel = "以后都允许写入"
 		request.AlwaysApprove = allowWriteTools
 		request.Hint = "Y 确认本次写入，N 取消本次写入，A 以后都允许写入；方向键或 Tab 选择，Enter 确认。"
+		request.DisableDefaultAlwaysApprove = true
+	case "switch_to_agent":
+		request.Title = "模式切换(mode switch)待确认"
+		request.Detail = "该操作会将当前会话从问答/计划模式切换到执行模式（agent），后续对话将获得完整的本地工具能力（包括 shell_exec、write_file 等），是否允许？"
+		request.ApproveLabel = "本次允许切换"
+		request.RejectLabel = "本次拒绝"
+		request.AlwaysApproveLabel = "以后都允许模式切换"
+		request.AlwaysApprove = allowModeSwitch
+		request.Hint = "Y 允许本次切换，N 本次拒绝，A 以后都允许模式切换；方向键或 Tab 选择，Enter 确认。"
 		request.DisableDefaultAlwaysApprove = true
 	default:
 		switch {

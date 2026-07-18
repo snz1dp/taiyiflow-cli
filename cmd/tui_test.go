@@ -1920,7 +1920,7 @@ func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T)
 			"name":      "skill",
 			"arguments": map[string]any{"name": "Context Review"},
 		},
-	}, func(context.Context) error { return nil }, func(context.Context) error { return nil }, nil, nil, nil, nil)
+	}, func(context.Context) error { return nil }, func(context.Context) error { return nil }, nil, nil, nil, nil, nil)
 	if skillRequest.Title != "技能包审查(skill package review)" {
 		t.Fatalf("unexpected skill request title: %#v", skillRequest)
 	}
@@ -1939,7 +1939,7 @@ func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T)
 			"name":      "write_file",
 			"arguments": map[string]any{"path": "notes.txt", "mode": "overwrite", "content": "hello world"},
 		},
-	}, nil, nil, nil, nil, nil, nil)
+	}, nil, nil, nil, nil, nil, nil, nil)
 	if writeRequest.Title != "写入比较摘要(write summary)待确认" {
 		t.Fatalf("unexpected write request title: %#v", writeRequest)
 	}
@@ -1969,7 +1969,7 @@ func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T)
 				"expected_sha256_before": "abc123",
 			},
 		},
-	}, nil, nil, nil, nil, nil, nil)
+	}, nil, nil, nil, nil, nil, nil, nil)
 	if !strings.Contains(editRequest.PreviewBody, "@@ expected_sha256_before=abc123 @@") || !strings.Contains(editRequest.PreviewBody, "-before line") || !strings.Contains(editRequest.PreviewBody, "+after line") {
 		t.Fatalf("expected file_edit preview to render diff body, got %#v", editRequest.PreviewBody)
 	}
@@ -1985,7 +1985,7 @@ func TestBuildTUIClientToolConfirmRequestUsesBrowserAndComputerAlwaysApprovePoli
 			"name":      "taiyiflow-in-chrome__click",
 			"arguments": map[string]any{"selector": "button.submit"},
 		},
-	}, nil, nil, func(context.Context) error { return nil }, nil, nil, nil)
+	}, nil, nil, func(context.Context) error { return nil }, nil, nil, nil, nil)
 	if browserRequest.Title != "浏览器操作(browser automation)待确认" {
 		t.Fatalf("unexpected browser request title: %#v", browserRequest)
 	}
@@ -2001,7 +2001,7 @@ func TestBuildTUIClientToolConfirmRequestUsesBrowserAndComputerAlwaysApprovePoli
 			"name":      "taiyiflow-computer__focus_window",
 			"arguments": map[string]any{"window_id": "win-1"},
 		},
-	}, nil, nil, nil, func(context.Context) error { return nil }, nil, nil)
+	}, nil, nil, nil, func(context.Context) error { return nil }, nil, nil, nil)
 	if computerRequest.Title != "桌面操作(desktop automation)待确认" {
 		t.Fatalf("unexpected computer request title: %#v", computerRequest)
 	}
@@ -2010,6 +2010,31 @@ func TestBuildTUIClientToolConfirmRequestUsesBrowserAndComputerAlwaysApprovePoli
 	}
 	if !strings.Contains(computerRequest.Hint, "A 始终允许桌面操作") {
 		t.Fatalf("expected computer request hint to mention always approve, got %#v", computerRequest)
+	}
+}
+
+func TestBuildTUIClientToolConfirmRequestUsesModeSwitchPolicy(t *testing.T) {
+	config := internalconfig.Default()
+	modeSwitchRequest := buildTUIClientToolConfirmRequest(config, t.TempDir(), map[string]any{
+		"function": map[string]any{
+			"name":      "switch_to_agent",
+			"arguments": map[string]any{"reason": "需要执行代码"},
+		},
+	}, nil, nil, nil, nil, nil, func(context.Context) error { return nil }, nil)
+	if modeSwitchRequest.Title != "模式切换(mode switch)待确认" {
+		t.Fatalf("unexpected mode switch request title: %#v", modeSwitchRequest)
+	}
+	if modeSwitchRequest.ApproveLabel != "本次允许切换" || modeSwitchRequest.RejectLabel != "本次拒绝" {
+		t.Fatalf("unexpected mode switch request labels: %#v", modeSwitchRequest)
+	}
+	if modeSwitchRequest.AlwaysApproveLabel != "以后都允许模式切换" {
+		t.Fatalf("unexpected mode switch always approve label: %#v", modeSwitchRequest)
+	}
+	if !modeSwitchRequest.DisableDefaultAlwaysApprove {
+		t.Fatalf("expected mode switch request to disable default always approve, got %#v", modeSwitchRequest)
+	}
+	if !strings.Contains(modeSwitchRequest.Hint, "A 以后都允许模式切换") {
+		t.Fatalf("expected mode switch request hint to mention always approve, got %#v", modeSwitchRequest)
 	}
 }
 

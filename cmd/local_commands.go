@@ -143,6 +143,9 @@ func buildPermissionsPanel(configPath string, config internalconfig.Config) *tui
 		fmt.Sprintf("外部资源访问策略(external_resource_access_policy): %s", fallbackConfigValue(config.SandboxEscapePolicy, internalconfig.Default().SandboxEscapePolicy)),
 		fmt.Sprintf("可访问外部资源目录(sandbox_roots): %s", fallbackConfigValue(strings.Join(config.SandboxRoots, ", "), "<仅当前工作目录>")),
 		fmt.Sprintf("Shell 沙盒模式(shell_sandbox_mode): %s", fallbackConfigValue(config.ShellSandboxMode, internalconfig.Default().ShellSandboxMode)),
+		fmt.Sprintf("技能包审查策略(skill_review_policy): %s", fallbackConfigValue(config.SkillReviewPolicy, internalconfig.Default().SkillReviewPolicy)),
+		fmt.Sprintf("写入确认策略(write_confirmation_policy): %s", fallbackConfigValue(config.WriteConfirmationPolicy, internalconfig.Default().WriteConfirmationPolicy)),
+		fmt.Sprintf("模式切换确认策略(mode_switch_confirmation_policy): %s", fallbackConfigValue(config.ModeSwitchConfirmationPolicy, internalconfig.Default().ModeSwitchConfirmationPolicy)),
 	}
 	if len(config.PermissionRules) > 0 {
 		bodyLines = append(bodyLines, "", "细粒度规则(permission_rules):")

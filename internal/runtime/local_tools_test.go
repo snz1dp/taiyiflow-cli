@@ -962,6 +962,29 @@ func TestRequiresClientToolConfirmationRespectsSkillAndWritePolicies(t *testing.
 	}
 }
 
+func TestRequiresClientToolConfirmationRespectsModeSwitchPolicy(t *testing.T) {
+	switchPayload := map[string]any{
+		"function": map[string]any{
+			"name":      "switch_to_agent",
+			"arguments": map[string]any{"reason": "需要执行代码"},
+		},
+	}
+
+	confirmConfig := internalconfig.Config{
+		ApprovalMode:                  "auto",
+		ModeSwitchConfirmationPolicy:  internalconfig.ModeSwitchConfirmationPolicyConfirm,
+	}
+	if !RequiresClientToolConfirmation(confirmConfig, switchPayload) {
+		t.Fatal("expected switch_to_agent to require confirmation when policy is confirm")
+	}
+
+	skipConfig := confirmConfig
+	skipConfig.ModeSwitchConfirmationPolicy = internalconfig.ModeSwitchConfirmationPolicySkip
+	if RequiresClientToolConfirmation(skipConfig, switchPayload) {
+		t.Fatal("expected switch_to_agent to skip confirmation when policy is skip")
+	}
+}
+
 func TestRequiresClientToolConfirmationDocumentUnstructuredFollowsApprovalMode(t *testing.T) {
 	payload := map[string]any{
 		"function": map[string]any{

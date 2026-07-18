@@ -298,6 +298,14 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			}
 		}
 		config.WriteConfirmationPolicy = normalizedPolicy
+	case "mode_switch_confirmation_policy":
+		normalizedPolicy := internalconfig.NormalizeModeSwitchConfirmationPolicy(trimmedValue)
+		if normalizedPolicy != trimmedValue {
+			if strings.ToLower(trimmedValue) != normalizedPolicy {
+				return fmt.Errorf("mode_switch_confirmation_policy 仅支持 confirm、skip")
+			}
+		}
+		config.ModeSwitchConfirmationPolicy = normalizedPolicy
 	case "http_timeout_seconds":
 		seconds, err := strconv.Atoi(trimmedValue)
 		if err != nil || seconds < 1 || seconds > internalconfig.MaxHTTPTimeoutSeconds {
@@ -446,6 +454,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.SkillReviewPolicy = defaults.SkillReviewPolicy
 	case "write_confirmation_policy":
 		config.WriteConfirmationPolicy = defaults.WriteConfirmationPolicy
+	case "mode_switch_confirmation_policy":
+		config.ModeSwitchConfirmationPolicy = defaults.ModeSwitchConfirmationPolicy
 	case "http_timeout_seconds":
 		config.HTTPTimeoutSeconds = defaults.HTTPTimeoutSeconds
 	case "command_timeout_seconds":
@@ -588,6 +598,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("外部资源访问策略: %s", fallbackConfigValue(config.SandboxEscapePolicy, internalconfig.Default().SandboxEscapePolicy)),
 		fmt.Sprintf("技能包审查策略: %s", fallbackConfigValue(config.SkillReviewPolicy, internalconfig.Default().SkillReviewPolicy)),
 		fmt.Sprintf("写入确认策略: %s", fallbackConfigValue(config.WriteConfirmationPolicy, internalconfig.Default().WriteConfirmationPolicy)),
+		fmt.Sprintf("模式切换确认策略: %s", fallbackConfigValue(config.ModeSwitchConfirmationPolicy, internalconfig.Default().ModeSwitchConfirmationPolicy)),
 		fmt.Sprintf("命令执行超时: %d 秒", config.CommandTimeoutSeconds),
 		fmt.Sprintf("子智能体超时: %s", formatSubtaskTimeoutLabel(config.SubtaskTimeoutSeconds)),
 		fmt.Sprintf("流式空闲超时: %d 秒", config.StreamIdleTimeoutSeconds),

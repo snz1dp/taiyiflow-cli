@@ -42,6 +42,8 @@ const (
 	SkillReviewPolicyIgnore          = "ignore"
 	WriteConfirmationPolicyConfirm   = "confirm"
 	WriteConfirmationPolicyDirect    = "direct"
+	ModeSwitchConfirmationPolicyConfirm = "confirm"
+	ModeSwitchConfirmationPolicySkip     = "skip"
 	SkillAutoInstallPolicyOff        = "off"
 	SkillAutoInstallPolicyConfirm    = "confirm"
 	SkillAutoInstallPolicyAllow      = "allow"
@@ -175,6 +177,7 @@ type Config struct {
 	AuditEnabled              bool             `yaml:"audit_enabled,omitempty"`
 	SkillReviewPolicy         string           `yaml:"skill_review_policy,omitempty"`
 	WriteConfirmationPolicy   string           `yaml:"write_confirmation_policy,omitempty"`
+	ModeSwitchConfirmationPolicy string       `yaml:"mode_switch_confirmation_policy,omitempty"`
 	SandboxRoots              []string         `yaml:"sandbox_roots,omitempty"`
 	FileSearchExcludeDirs     []string         `yaml:"file_search_exclude_dirs,omitempty"`
 	PermissionRules           []PermissionRule `yaml:"permission_rules,omitempty"`
@@ -251,6 +254,7 @@ func Default() Config {
 		AuditEnabled:              false,
 		SkillReviewPolicy:         SkillReviewPolicyConfirm,
 		WriteConfirmationPolicy:   WriteConfirmationPolicyConfirm,
+		ModeSwitchConfirmationPolicy: ModeSwitchConfirmationPolicyConfirm,
 		ShellSandboxMode:          ShellSandboxModeOff,
 		FileSearchExcludeDirs:     append([]string(nil), defaultFileSearchExcludeDirs...),
 		Browser: BrowserConfig{
@@ -490,6 +494,15 @@ func NormalizeWriteConfirmationPolicy(value string) string {
 	}
 }
 
+func NormalizeModeSwitchConfirmationPolicy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case ModeSwitchConfirmationPolicySkip:
+		return ModeSwitchConfirmationPolicySkip
+	default:
+		return ModeSwitchConfirmationPolicyConfirm
+	}
+}
+
 // DefaultFileSearchExcludeDirs 返回文件搜索排除目录的默认值副本。
 func DefaultFileSearchExcludeDirs() []string {
 	return append([]string(nil), defaultFileSearchExcludeDirs...)
@@ -723,6 +736,7 @@ func (m *Manager) Load() (Config, error) {
 	config.SkillReviewPolicy = NormalizeSkillReviewPolicy(config.SkillReviewPolicy)
 	config.Skills.AutoInstallPolicy = NormalizeSkillAutoInstallPolicy(config.Skills.AutoInstallPolicy)
 	config.WriteConfirmationPolicy = NormalizeWriteConfirmationPolicy(config.WriteConfirmationPolicy)
+	config.ModeSwitchConfirmationPolicy = NormalizeModeSwitchConfirmationPolicy(config.ModeSwitchConfirmationPolicy)
 	config.ShellSandboxMode = NormalizeShellSandboxMode(config.ShellSandboxMode)
 	config.HTTPTimeoutSeconds = NormalizeHTTPTimeoutSeconds(config.HTTPTimeoutSeconds)
 	config.CommandTimeoutSeconds = NormalizeCommandTimeoutSeconds(config.CommandTimeoutSeconds)
