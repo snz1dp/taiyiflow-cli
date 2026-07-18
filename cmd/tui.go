@@ -953,10 +953,11 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					Items:      items,
 				},
 			}, nil
-		case trimmed == "/new":
+		case trimmed == "/new" || strings.HasPrefix(strings.ToLower(trimmed), "/new "):
 			if strings.TrimSpace(snapshot.DefaultFlow) == "" {
 				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "当前未选择默认智能体，无法重置会话。"}}}, nil
 			}
+			newPrompt := strings.TrimSpace(strings.TrimPrefix(trimmed, "/new"))
 			if err := a.sessionStore.Delete(snapshot.DefaultFlow, snapshot.Workdir); err != nil {
 				return tui.LocalCommandResult{}, err
 			}
@@ -971,14 +972,21 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			updatedSnapshot.HistoryTotal = 0
 			updatedSnapshot.RequestStats = nil
 			primaryClient.UpdateSession("")
+			events := []tui.Event{
+				{Kind: tui.EventSessionUpdate, SessionID: ""},
+			}
+			if newPrompt != "" {
+				events = append(events, tui.Event{Kind: tui.EventSystemNote, Text: "已重置本地会话，正在发送请求。"})
+			} else {
+				events = append(events, tui.Event{Kind: tui.EventSystemNote, Text: "已重置本地会话。"})
+			}
 			return tui.LocalCommandResult{
 				Handled:        true,
 				ClearHistory:   true,
 				Snapshot:       &updatedSnapshot,
 				RebuildEntries: true,
-				Events: []tui.Event{
-					{Kind: tui.EventSessionUpdate, SessionID: ""},
-				},
+				QueuedInput:    newPrompt,
+				Events:         events,
 			}, nil
 		default:
 			return tui.LocalCommandResult{}, nil
@@ -1078,7 +1086,7 @@ func buildTUIHelpLines(snapshot tui.Snapshot) []string {
 	return []string{
 		"可用命令:",
 		"/about 显示当前客户端版本、组织与后端对接说明",
-		"/new 重置当前智能体的本地会话",
+		"/new 或 /new <任务> 重置当前智能体的本地会话，可直接发起对话",
 		"/refresh 刷新当前会话的历史消息",
 		"/clear 清空当前界面消息",
 		"/internet [on|off|status] 查看或切换当前对话的联网搜索",

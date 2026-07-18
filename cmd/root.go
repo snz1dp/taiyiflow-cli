@@ -483,7 +483,8 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 					return err
 				}
 				continue
-			case line == "/new":
+			case line == "/new" || strings.HasPrefix(strings.ToLower(line), "/new "):
+				newPrompt := strings.TrimSpace(line[len("/new"):])
 				sessionState = agent.SessionState{
 					FlowID:                         flowID,
 					FlowDisplayName:                flowDisplayName,
@@ -498,7 +499,18 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 				}
 				primaryClient.UpdateSession("")
 				a.clearInteractiveScreen()
-				fmt.Fprintln(a.stdout, "已重置本地会话。")
+				if newPrompt != "" {
+					fmt.Fprintln(a.stdout, "已重置本地会话，正在发送请求。")
+					updatedState, err := a.streamTask(ctx, providerClient, config, flowID, newPrompt, sessionState, options.SandboxEscapePolicy, options.ShowStreamEvents, options.ShowThinking)
+					if err != nil {
+						fmt.Fprintf(a.stderr, "执行任务失败: %v\n", err)
+						continue
+					}
+					sessionState = updatedState
+					primaryClient.UpdateSession(sessionState.SessionID)
+				} else {
+					fmt.Fprintln(a.stdout, "已重置本地会话。")
+				}
 				continue
 			case strings.HasPrefix(strings.ToLower(line), "/config session "):
 				output, err := a.runInteractiveSessionConfigCommand(line, &sessionState)
@@ -1474,7 +1486,7 @@ func (a *App) printInteractiveUsage(ctx context.Context, providerClient provider
 	fmt.Fprintln(a.stdout, "  /help     显示帮助")
 	fmt.Fprintln(a.stdout, "  /session  显示当前会话状态")
 	fmt.Fprintln(a.stdout, "  /sessions 显示本地已保存会话")
-	fmt.Fprintln(a.stdout, "  /new      清屏并重置当前智能体的本地会话")
+	fmt.Fprintln(a.stdout, "  /new      清屏并重置当前智能体的本地会话，可写成 /new <任务> 直接发起对话")
 	fmt.Fprintln(a.stdout, "  /clear    清屏")
 	fmt.Fprintln(a.stdout, "  /exit     退出")
 	fmt.Fprintln(a.stdout, "  启动参数: --reasoning on|off 可设置本次会话初始思考模式；--internet-search on|off 可设置本次会话联网搜索；--stream-retry-attempts 0-3 可覆盖本次任务流失败重试次数；--show-stream-events 可显示系统提示与工具调用日志；--show-thinking 可显示思考内容（不输出 <think></think> 标签）")

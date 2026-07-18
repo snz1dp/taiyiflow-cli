@@ -1069,7 +1069,7 @@ var (
 )
 
 var slashCommands = []slashCommand{
-	{Trigger: "/new", Completion: "/new", Description: "重置当前智能体的本地会话"},
+	{Trigger: "/new", Completion: "/new ", Description: "重置当前智能体的本地会话，可写成 /new <任务> 直接发起对话"},
 	{Trigger: "/retry", Completion: "/retry", Description: "重新发起最近一次失败的请求"},
 	{Trigger: "/refresh", Completion: "/refresh", Description: "刷新当前会话的历史消息"},
 	{Trigger: "/clear", Completion: "/clear", Description: "清空当前界面消息"},
