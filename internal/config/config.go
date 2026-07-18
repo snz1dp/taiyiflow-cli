@@ -262,7 +262,7 @@ func Default() Config {
 		ModeSwitchConfirmationPolicy: ModeSwitchConfirmationPolicyConfirm,
 		DefaultRequestMode:           DefaultRequestModeAgent,
 		RequestModeAutoSwitch:        true,
-		ShellSandboxMode:          ShellSandboxModeOff,
+		ShellSandboxMode:          ShellSandboxModeAuto,
 		FileSearchExcludeDirs:     append([]string(nil), defaultFileSearchExcludeDirs...),
 		Browser: BrowserConfig{
 			Mode:                  BrowserModeChromeSession,
@@ -586,12 +586,12 @@ func NormalizePermissionAction(value string) string {
 
 func NormalizeShellSandboxMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case ShellSandboxModeAuto:
-		return ShellSandboxModeAuto
+	case ShellSandboxModeOff:
+		return ShellSandboxModeOff
 	case ShellSandboxModeEnforce:
 		return ShellSandboxModeEnforce
 	default:
-		return ShellSandboxModeOff
+		return ShellSandboxModeAuto
 	}
 }
 

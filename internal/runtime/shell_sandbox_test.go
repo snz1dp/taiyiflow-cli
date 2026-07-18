@@ -336,14 +336,14 @@ func TestShellSandboxModeNormalization(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"", internalconfig.ShellSandboxModeOff},
+		{"", internalconfig.ShellSandboxModeAuto},
 		{"off", internalconfig.ShellSandboxModeOff},
 		{"OFF", internalconfig.ShellSandboxModeOff},
 		{"auto", internalconfig.ShellSandboxModeAuto},
 		{"AUTO", internalconfig.ShellSandboxModeAuto},
 		{"enforce", internalconfig.ShellSandboxModeEnforce},
 		{"ENFORCE", internalconfig.ShellSandboxModeEnforce},
-		{"invalid", internalconfig.ShellSandboxModeOff},
+		{"invalid", internalconfig.ShellSandboxModeAuto},
 	}
 	for _, tt := range tests {
 		got := internalconfig.NormalizeShellSandboxMode(tt.input)
