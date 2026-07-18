@@ -561,6 +561,8 @@ type UploadCustomSkillRequest struct {
 // UploadCustomSkillArchiveRequest 上传自定义技能 ZIP 请求
 type UploadCustomSkillArchiveRequest struct {
 	FilePath    string
+	ZipData     []byte
+	ZipFileName string
 	Name        string
 	DisplayName string
 }

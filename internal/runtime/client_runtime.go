@@ -421,6 +421,12 @@ func (r *ClientRuntime) executeClientToolPayload(
 		result, err = r.writeFile(config, arguments)
 	case "skill":
 		result, err = r.skill(config, arguments)
+	case "skill_create":
+		result, err = r.skillCreate(config, arguments)
+	case "skill_upload":
+		result, err = r.skillUpload(ctx, providerClient, config, arguments)
+	case "skill_delete":
+		result, err = r.skillDelete(config, arguments)
 	case "switch_to_agent":
 		result, err = r.switchToAgent(arguments)
 	default:

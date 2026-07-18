@@ -2484,15 +2484,30 @@ func (c *Client) UploadCustomSkill(ctx context.Context, request provider.UploadC
 }
 
 func (c *Client) UploadCustomSkillArchive(ctx context.Context, request provider.UploadCustomSkillArchiveRequest) (*provider.VisibleSkillPackage, error) {
-	trimmedPath := strings.TrimSpace(request.FilePath)
-	if trimmedPath == "" {
-		return nil, fmt.Errorf("技能 ZIP 文件路径不能为空")
+	var zipReader io.Reader
+	var zipFileName string
+
+	// 优先使用内存中的 ZIP 数据
+	if len(request.ZipData) > 0 {
+		zipReader = bytes.NewReader(request.ZipData)
+		zipFileName = strings.TrimSpace(request.ZipFileName)
+		if zipFileName == "" {
+			zipFileName = "skill.zip"
+		}
+	} else {
+		// 回退到从文件路径读取
+		trimmedPath := strings.TrimSpace(request.FilePath)
+		if trimmedPath == "" {
+			return nil, fmt.Errorf("技能 ZIP 文件路径不能为空")
+		}
+		file, err := os.Open(trimmedPath)
+		if err != nil {
+			return nil, fmt.Errorf("打开技能 ZIP 文件失败: %w", err)
+		}
+		defer file.Close()
+		zipReader = file
+		zipFileName = filepath.Base(trimmedPath)
 	}
-	file, err := os.Open(trimmedPath)
-	if err != nil {
-		return nil, fmt.Errorf("打开技能 ZIP 文件失败: %w", err)
-	}
-	defer file.Close()
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -2506,11 +2521,11 @@ func (c *Client) UploadCustomSkillArchive(ctx context.Context, request provider.
 			return nil, fmt.Errorf("构造上传表单失败: %w", err)
 		}
 	}
-	part, err := writer.CreateFormFile("file", filepath.Base(trimmedPath))
+	part, err := writer.CreateFormFile("package_file", zipFileName)
 	if err != nil {
 		return nil, fmt.Errorf("构造上传文件字段失败: %w", err)
 	}
-	if _, err := io.Copy(part, file); err != nil {
+	if _, err := io.Copy(part, zipReader); err != nil {
 		return nil, fmt.Errorf("写入上传文件内容失败: %w", err)
 	}
 	if err := writer.Close(); err != nil {

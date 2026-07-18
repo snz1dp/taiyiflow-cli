@@ -502,6 +502,48 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 				"additionalProperties": false,
 			},
 		},
+		{
+			"name":                 "skill_create",
+			"description":          "在工作区目录下创建技能包骨架文件 SKILL.md。默认写入 <workdir>/.snz1dp/skills/<slug>/SKILL.md；传入 scope=\"user\" 时写入 ~/.snz1dp/skills/。创建后可通过 write_file 编辑内容，或通过 skill_upload 上传到后端。",
+			"waiting_for_response": true,
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":      map[string]any{"type": "string", "description": "技能名称，会自动转换为 slug 风格目录名。"},
+					"scope":     map[string]any{"type": "string", "enum": []string{"workspace", "user"}, "description": "可选，默认 workspace。workspace 写入工作区 .snz1dp/skills/，user 写入用户目录 ~/.snz1dp/skills/。"},
+					"overwrite": map[string]any{"type": "boolean", "default": false, "description": "同名技能已存在时是否覆盖。默认 false，不覆盖时同名技能已存在会报错。"},
+				},
+				"required":             []string{"name"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			"name":                 "skill_upload",
+			"description":          "将本地已创建的技能上传到后台服务，使其成为后端注册的自定义技能。上传后技能可在其他设备上同步安装。需要提供本地技能名称（与 skill_create 时使用的 name 一致）。",
+			"waiting_for_response": true,
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{"type": "string", "description": "要上传的本地技能名称。"},
+				},
+				"required":             []string{"name"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			"name":                 "skill_delete",
+			"description":          "删除本地已创建的技能目录。默认删除工作区范围（<workdir>/.snz1dp/skills/<slug>/）下的技能；传入 scope=\"user\" 时删除用户目录（~/.snz1dp/skills/<slug>/）下的技能。仅删除本地文件，不影响已上传到后端的技能。",
+			"waiting_for_response": true,
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":  map[string]any{"type": "string", "description": "要删除的技能名称，会自动转换为 slug 风格目录名。"},
+					"scope": map[string]any{"type": "string", "enum": []string{"workspace", "user"}, "description": "可选，默认 workspace。workspace 删除工作区 .snz1dp/skills/ 下的技能，user 删除用户目录 ~/.snz1dp/skills/ 下的技能。"},
+				},
+				"required":             []string{"name"},
+				"additionalProperties": false,
+			},
+		},
 	}
 	definitions = append(definitions, browserClientToolDefinitions()...)
 	definitions = append(definitions, computerClientToolDefinitions()...)
@@ -569,6 +611,9 @@ func allowedClientToolSetForMode(mode string) map[string]bool {
 		"search_files":              true,
 		"read_file":                 true,
 		"skill":                     true,
+		"skill_create":              true,
+		"skill_upload":              true,
+		"skill_delete":              true,
 		"switch_to_agent":           true,
 		browserToolTabsContext:      true,
 		browserToolReadText:         true,
@@ -730,7 +775,7 @@ func mutatingClientTool(toolName string) bool {
 		return !computerReadOnlyTool(toolName)
 	}
 	switch canonicalClientToolName(toolName) {
-	case "shell_exec", "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit", "document_unstructured", "write_file":
+	case "shell_exec", "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit", "document_unstructured", "write_file", "skill_create", "skill_upload", "skill_delete":
 		return true
 	default:
 		return false
@@ -824,6 +869,24 @@ func previewClientTool(toolName string, arguments map[string]any) string {
 		return fmt.Sprintf("document_unstructured %d 文件", len(paths))
 	case "skill":
 		return fmt.Sprintf("skill %s", fallbackString(name, "<missing>"))
+	case "skill_create":
+		scope := argumentString(arguments, "scope")
+		if scope == "" {
+			scope = "workspace"
+		}
+		overwrite := argumentBool(arguments, "overwrite")
+		if overwrite {
+			return fmt.Sprintf("skill_create %s (%s, overwrite)", fallbackString(name, "<missing>"), scope)
+		}
+		return fmt.Sprintf("skill_create %s (%s)", fallbackString(name, "<missing>"), scope)
+	case "skill_upload":
+		return fmt.Sprintf("skill_upload %s", fallbackString(name, "<missing>"))
+	case "skill_delete":
+		scope := argumentString(arguments, "scope")
+		if scope == "" {
+			scope = "workspace"
+		}
+		return fmt.Sprintf("skill_delete %s (%s)", fallbackString(name, "<missing>"), scope)
 	case "switch_to_agent":
 		reason := argumentString(arguments, "reason")
 		if reason != "" {
@@ -983,6 +1046,86 @@ func (r *ClientRuntime) skill(config internalconfig.Config, arguments map[string
 		"metadata":     item.Metadata,
 		"requires_env": skills.RequiredEnvKeys(*item),
 		"kind":         "prompt",
+	}, nil
+}
+
+func (r *ClientRuntime) skillCreate(config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
+	name := argumentString(arguments, "name")
+	if name == "" {
+		return nil, newToolError("PARAM_ERROR", "skill_create 缺少 name")
+	}
+	scope := argumentString(arguments, "scope")
+	overwrite := argumentBool(arguments, "overwrite")
+	result, err := skills.CreateSkillScaffold(config, name, scope, overwrite)
+	if err != nil {
+		return nil, newToolError("EXECUTION_FAILED", "%v", err)
+	}
+	r.writeStreamEventf(r.stdout, "[本地工具] skill_create %s -> %s\n", result.Name, result.FilePath)
+	_ = appendAuditLog(config, "skill_create", map[string]any{
+		"name":      result.Name,
+		"slug":      result.Slug,
+		"file_path": result.FilePath,
+		"skill_dir": result.SkillDir,
+		"scope":     result.Scope,
+	})
+	return map[string]any{
+		"name":      result.Name,
+		"slug":      result.Slug,
+		"file_path": result.FilePath,
+		"skill_dir": result.SkillDir,
+		"scope":     result.Scope,
+		"kind":      "created",
+	}, nil
+}
+
+func (r *ClientRuntime) skillUpload(ctx context.Context, providerClient provider.Provider, config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
+	name := argumentString(arguments, "name")
+	if name == "" {
+		return nil, newToolError("PARAM_ERROR", "skill_upload 缺少 name")
+	}
+	result, err := skills.UploadLocalSkillToBackend(ctx, providerClient, config, name)
+	if err != nil {
+		return nil, newToolError("EXECUTION_FAILED", "%v", err)
+	}
+	r.writeStreamEventf(r.stdout, "[本地工具] skill_upload %s -> skill_id=%s\n", result.Name, result.SkillID)
+	_ = appendAuditLog(config, "skill_upload", map[string]any{
+		"name":         result.Name,
+		"skill_id":     result.SkillID,
+		"display_name": result.DisplayName,
+		"version":      result.Version,
+	})
+	return map[string]any{
+		"name":         result.Name,
+		"skill_id":     result.SkillID,
+		"display_name": result.DisplayName,
+		"version":      result.Version,
+		"kind":         "uploaded",
+	}, nil
+}
+
+func (r *ClientRuntime) skillDelete(config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
+	name := argumentString(arguments, "name")
+	if name == "" {
+		return nil, newToolError("PARAM_ERROR", "skill_delete 缺少 name")
+	}
+	scope := argumentString(arguments, "scope")
+	result, err := skills.DeleteSkillScaffold(config, name, scope)
+	if err != nil {
+		return nil, newToolError("EXECUTION_FAILED", "%v", err)
+	}
+	r.writeStreamEventf(r.stdout, "[本地工具] skill_delete %s -> removed %s\n", result.Name, result.SkillDir)
+	_ = appendAuditLog(config, "skill_delete", map[string]any{
+		"name":      result.Name,
+		"slug":      result.Slug,
+		"skill_dir": result.SkillDir,
+		"scope":     result.Scope,
+	})
+	return map[string]any{
+		"name":      result.Name,
+		"slug":      result.Slug,
+		"skill_dir": result.SkillDir,
+		"scope":     result.Scope,
+		"kind":      "deleted",
 	}, nil
 }
 

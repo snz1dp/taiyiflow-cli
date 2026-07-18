@@ -67,6 +67,7 @@ func renderSkillsUsage(synopsis string) string {
 		"  taiyiflow-cli skills backend list",
 		"  taiyiflow-cli skills backend install my-skill",
 		"  taiyiflow-cli skills backend upload my-local-skill",
+
 	}
 	return strings.Join(lines, "\n")
 }

@@ -233,7 +233,7 @@ func RemoveBackendSkill(
 	}, nil
 }
 
-// UploadLocalSkillToBackend 读取本地技能内容并上传到后端
+// UploadLocalSkillToBackend 读取本地技能内容，打包为 ZIP 后上传到后端
 func UploadLocalSkillToBackend(
 	ctx context.Context,
 	client provider.Provider,
@@ -246,29 +246,34 @@ func UploadLocalSkillToBackend(
 		return BackendUploadResult{}, fmt.Errorf("未找到本地技能 %s: %w", skillName, err)
 	}
 
-	// 2. 读取 SKILL.md 原文内容
-	skillContent := Markdown(*item)
+	// 2. 禁止上传内置技能
+	if item.Source == "bundled" || IsBundledSkill(item.Name) {
+		return BackendUploadResult{}, fmt.Errorf("不允许上传内置技能 %q", skillName)
+	}
 
 	// 3. 构造 slug 风格名称
-	slugName := SlugifySkillName(item.Name)
+	// 优先使用技能磁盘目录名（CreateSkillScaffold 已通过 SlugifySkillName 生成），
+	// 保证 ZIP 顶层目录名与磁盘目录一致；目录名无效时回退到技能名称，再保底。
+	slugName := SlugifySkillName(filepath.Base(SkillDir(*item)))
 	if slugName == "" {
-		slugName = filepath.Base(SkillDir(*item))
+		slugName = SlugifySkillName(item.Name)
+	}
+	if slugName == "" {
+		slugName = "custom-skill"
 	}
 
-	// 4. 上传到后端
-	version := "1.0.0"
-	if item.Metadata != nil {
-		if v, ok := item.Metadata["version"].(string); ok && strings.TrimSpace(v) != "" {
-			version = strings.TrimSpace(v)
-		}
+	// 4. 将技能目录打包为内存 ZIP
+	zipData, err := PackSkillToZip(*item, slugName)
+	if err != nil {
+		return BackendUploadResult{}, fmt.Errorf("打包技能 %s 为 ZIP 失败: %w", skillName, err)
 	}
 
-	result, err := client.UploadCustomSkill(ctx, provider.UploadCustomSkillRequest{
+	// 5. 通过 multipart/form-data 上传 ZIP 到后端
+	result, err := client.UploadCustomSkillArchive(ctx, provider.UploadCustomSkillArchiveRequest{
+		ZipData:     zipData,
+		ZipFileName: slugName + ".zip",
 		Name:        slugName,
-		Content:     skillContent,
 		DisplayName: item.Name,
-		Summary:     item.Summary,
-		Version:     version,
 	})
 	if err != nil {
 		return BackendUploadResult{}, fmt.Errorf("上传技能 %s 失败: %w", skillName, err)
@@ -499,7 +504,7 @@ func SlugifySkillName(name string) string {
 	for strings.Contains(result, "--") {
 		result = strings.ReplaceAll(result, "--", "-")
 	}
-	// 去除非字母数字横线和中文字符
+	// 只保留小写字母、数字和横线，过滤中文字符及其他非 ASCII 字符
 	var builder strings.Builder
 	for _, r := range result {
 		switch {
@@ -508,8 +513,6 @@ func SlugifySkillName(name string) string {
 		case r >= '0' && r <= '9':
 			builder.WriteRune(r)
 		case r == '-':
-			builder.WriteRune(r)
-		case r >= 0x4e00 && r <= 0x9fff:
 			builder.WriteRune(r)
 		}
 	}

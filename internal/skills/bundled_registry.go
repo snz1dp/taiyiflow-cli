@@ -50,3 +50,10 @@ func bundledSkillDefinitionByName(name string) (BundledSkillDefinition, bool) {
 	}
 	return BundledSkillDefinition{}, false
 }
+
+// IsBundledSkill 判断指定名称是否为内置（bundled）技能。
+// 内置技能不允许通过 skill_create 覆盖、skill_delete 删除或 skill_upload 上传。
+func IsBundledSkill(name string) bool {
+	_, ok := bundledSkillDefinitionByName(name)
+	return ok
+}
