@@ -9969,6 +9969,8 @@ func isExecutableSlashCommandInput(input string) bool {
 		return true
 	case strings.EqualFold(trimmed, "/new"):
 		return true
+	case strings.HasPrefix(strings.ToLower(trimmed), "/new "):
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "/new ")) != ""
 	case strings.EqualFold(trimmed, "/session"):
 		return true
 	case strings.EqualFold(trimmed, "/session title"):
