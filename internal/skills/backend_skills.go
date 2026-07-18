@@ -14,11 +14,11 @@ import (
 
 // BackendInstallResult 后端技能安装结果
 type BackendInstallResult struct {
-	Name        string
-	SkillID     string
-	Version     string
-	TargetDir   string
-	RecordID    string
+	Name      string
+	SkillID   string
+	Version   string
+	TargetDir string
+	RecordID  string
 }
 
 // BackendRemoveResult 后端技能卸载结果
@@ -114,12 +114,12 @@ func InstallBackendSkill(
 		installSource = "manual"
 	}
 	record, err := client.ReportInstallation(ctx, provider.ReportInstallationRequest{
-		SkillPackageID:  skill.ID,
-		ClientID:        clientInfo.ClientID,
-		DeviceID:        clientInfo.DeviceID,
-		InstallSource:   installSource,
-		ClientPlatform:  clientInfo.ClientPlatform,
-		ClientVersion:   clientInfo.ClientVersion,
+		SkillPackageID: skill.ID,
+		ClientID:       clientInfo.ClientID,
+		DeviceID:       clientInfo.DeviceID,
+		InstallSource:  installSource,
+		ClientPlatform: clientInfo.ClientPlatform,
+		ClientVersion:  clientInfo.ClientVersion,
 	})
 	if err != nil {
 		// 上报失败不阻塞安装，仅记录警告

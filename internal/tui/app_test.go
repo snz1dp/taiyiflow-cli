@@ -732,7 +732,7 @@ func TestFitOverlayContentKeepsFocusedConfigFieldVisible(t *testing.T) {
 			Workdir:                  "/workspace/demo",
 			StreamIdleTimeoutSeconds: "300",
 			OutputLanguage:           "zh-CN",
-			DocUnstructuredExts:       ".pdf, .docx",
+			DocUnstructuredExts:      ".pdf, .docx",
 		},
 	})
 	state.cursor = configFieldDocUnstructuredExts
@@ -4979,4 +4979,3 @@ func TestToolSummarySegmentPrefersCurrentToolLabel(t *testing.T) {
 		t.Fatalf("expected toolSummarySegment to not show summary when currentToolLabel is set, got %q", got)
 	}
 }
-

@@ -137,7 +137,7 @@ func TestClientPackagesIncludeMarkdownAndContent(t *testing.T) {
 			continue
 		}
 		for _, candidate := range skillsPayload {
-			if candidate["name"] == "reviewer" {
+			if candidate["name"] == "Code Review" {
 				skillPayload = candidate
 				break
 			}

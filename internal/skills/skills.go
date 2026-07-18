@@ -494,9 +494,6 @@ func ClientPackages(items []Skill, rootDir string) any {
 		}
 		skillsValue, _ := packages[index]["skills"].([]map[string]any)
 		skillName := item.Name
-		if item.Source != "bundled" {
-			skillName = filepath.Base(SkillDir(item))
-		}
 		// 默认启用的内置技能携带完整内容（summary=false），
 		// 默认不启用的内置技能及其他来源技能只发送摘要（summary=true），
 		// 由后端按需拉取全文。

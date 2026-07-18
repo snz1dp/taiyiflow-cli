@@ -67,7 +67,6 @@ func renderSkillsUsage(synopsis string) string {
 		"  taiyiflow-cli skills backend list",
 		"  taiyiflow-cli skills backend install my-skill",
 		"  taiyiflow-cli skills backend upload my-local-skill",
-
 	}
 	return strings.Join(lines, "\n")
 }
@@ -763,7 +762,7 @@ func (a *App) buildBackendClientInfo(config internalconfig.Config) skills.Client
 	platform := "darwin/arm64"
 	return skills.ClientInfo{
 		ClientID:       config.ClientID,
-		DeviceID:      config.DeviceID,
+		DeviceID:       config.DeviceID,
 		ClientPlatform: platform,
 		ClientVersion:  version,
 		InstallSource:  "cli-manual",
