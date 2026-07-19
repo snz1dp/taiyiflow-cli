@@ -16,6 +16,14 @@ LINUX_386_CC ?= i686-linux-gnu-gcc
 LINUX_386_MUSL_CGO_ENABLED ?= 1
 ALPINE_GO_IMAGE ?= docker.m.daocloud.io/golang:1.25-alpine
 GO_RELEASE_FLAGS ?= -trimpath -buildvcs=false
+# Overlay 补丁：针对 iSH（iPad 上的 x86 Linux 模拟器）环境，完全禁用
+# linux/386 的 pidfd 支持。iSH 不实现 pidfd_open（syscall #434），且旧版
+# （2023年10月前）对未实现系统调用发送 SIGSYS 信号，但 Go 的
+# ignoreSIGSYS() 因 iSH 不设置 si_code=SYS_SECCOMP 而无法生效。
+# 补丁使 checkPidfd() 直接返回 ENOSYS，让 Go 回退到 waitpid 方式。
+# 仅在 linux/386 musl 构建中启用，通过 build-release-386-musl-local 传入。
+# 注意：此处使用容器内路径，因为 build-release-386-musl-local 在 Docker 容器中执行。
+PIDFD_OVERLAY_JSON ?= $(DOCKER_WORKDIR)/build/overlay/pidfd_overlay.json
 BUILDINFO_PKG := snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo
 BUILD_COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -148,7 +156,9 @@ build-release-386-musl-local: check-go check-browser-extension-dist
 	@output='$(RELEASE_DIR)/$(APP_NAME)-linux-386-musl'; \
 	echo "==> $$output"; \
 	CGO_ENABLED=$(LINUX_386_MUSL_CGO_ENABLED) GOOS=linux GOARCH=386 \
-		"$(GO)" build $(GO_RELEASE_FLAGS) $(GO_BUILDINFO_FLAGS) -o "$$output" .
+		"$(GO)" build $(GO_RELEASE_FLAGS) $(GO_BUILDINFO_FLAGS) \
+		-overlay "$(PIDFD_OVERLAY_JSON)" \
+		-o "$$output" .
 
 build-release-darwin-native: check-go check-browser-extension-dist
 	@if [[ "$$(uname -s)" != 'Darwin' ]]; then echo 'build-release-darwin-native 仅支持在 macOS 构建机上执行'; exit 1; fi
