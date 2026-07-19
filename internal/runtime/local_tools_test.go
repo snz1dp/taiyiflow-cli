@@ -307,16 +307,27 @@ func TestWriteAndReadFile(t *testing.T) {
 // sandbox escape rejection.
 func createNonTempDir(t *testing.T) string {
 	t.Helper()
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("get home dir failed: %v", err)
+	tempDir := os.TempDir()
+	// tryDirs lists candidate base directories that are outside os.TempDir().
+	// On macOS, the home directory may be blocked by TCC or sandbox-exec,
+	// so we also try the current working directory as a fallback.
+	var tryDirs []string
+	if homeDir, err := os.UserHomeDir(); err == nil && !strings.HasPrefix(homeDir, tempDir) {
+		tryDirs = append(tryDirs, homeDir)
 	}
-	dir, err := os.MkdirTemp(homeDir, ".taiyiflow-test-*")
-	if err != nil {
-		t.Fatalf("create non-temp dir failed: %v", err)
+	if wd, err := os.Getwd(); err == nil && !strings.HasPrefix(wd, tempDir) {
+		tryDirs = append(tryDirs, wd)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
+	for _, base := range tryDirs {
+		dir, err := os.MkdirTemp(base, ".taiyiflow-test-*")
+		if err != nil {
+			continue
+		}
+		t.Cleanup(func() { os.RemoveAll(dir) })
+		return dir
+	}
+	t.Fatalf("create non-temp dir failed: no writable base directory outside %s", tempDir)
+	return ""
 }
 
 func TestResolveAllowedPathRejectsEscape(t *testing.T) {

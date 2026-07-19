@@ -927,6 +927,23 @@ func (r *ClientRuntime) executeCommandWithSandboxRetry(
 		return nil, err, nil, false
 	}
 
+	// Pre-cache host stdin content if it will be used, so that sandbox
+	// retry can reuse the same stdin data. Without this, the first
+	// (sandboxed) execution consumes r.stdin, and the retry gets an empty
+	// stdin, causing child processes to receive no input.
+	var cachedStdin string
+	needsStdinCache := !payload.HasStdin &&
+		strings.TrimSpace(payload.StdinPrompt) == "" &&
+		r.interactivePromptsEnabled && r.stdin != nil
+	if needsStdinCache {
+		content, readErr := io.ReadAll(r.stdin)
+		if readErr != nil {
+			return nil, fmt.Errorf("读取 stdin 缓存失败: %w", readErr), nil, false
+		}
+		cachedStdin = string(content)
+		r.stdin = strings.NewReader(cachedStdin)
+	}
+
 	result, startErr, waitErr := r.runSingleCommand(timeoutCtx, command, payload, arguments, config)
 
 	// Check if the failure is due to a sandbox runtime error.
@@ -947,6 +964,11 @@ func (r *ClientRuntime) executeCommandWithSandboxRetry(
 			rawCommand, rawErr := buildRawCommand(timeoutCtx, rawPayload)
 			if rawErr != nil {
 				return nil, rawErr, nil, false
+			}
+			// Restore cached stdin for retry if it was consumed by the
+			// failed sandboxed execution.
+			if needsStdinCache {
+				r.stdin = strings.NewReader(cachedStdin)
 			}
 			result2, startErr2, waitErr2 := r.runSingleCommand(timeoutCtx, rawCommand, rawPayload, arguments, config)
 			return result2, startErr2, waitErr2, true
