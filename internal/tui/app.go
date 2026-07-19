@@ -1327,13 +1327,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	case streamEventBatchMsg:
-		if !m.matchesStreamRun(typed.runID) {
+		// 当 RunID 不匹配但 TUI 仍处于忙碌状态时，仍需应用批次中的事件，
+		// 否则 EventAutoLoopResult 等关键事件会被丢弃，导致续跑不触发。
+		// 这与 streamDoneMsg/streamFailedMsg 中 RunID 不匹配但忙碌时 fall through 的逻辑一致。
+		if !m.matchesStreamRun(typed.runID) && !m.isBusy() {
+			// TUI 不在忙碌状态，丢弃过期批次
 			if typed.pending != nil {
 				pendingMsg := typed.pending
 				return m, func() tea.Msg { return pendingMsg }
-			}
-			if m.isBusy() {
-				return m, waitForStream(m.eventCh)
 			}
 			return m, nil
 		}
