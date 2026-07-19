@@ -207,12 +207,8 @@ func (m *localTaskManager) startTask(
 	// 后台任务不使用 host 的共享 stdin reader（r.stdin），
 	// 因为多个后台任务可能并发启动，共享同一个 io.Reader 会导致 data race。
 	// 仅接受通过 payload 显式传入的 stdin。
-	var stdin io.Reader
 	if payload.HasStdin {
-		stdin = strings.NewReader(payload.Stdin)
-	}
-	if stdin != nil {
-		command.Stdin = stdin
+		command.Stdin = strings.NewReader(payload.Stdin)
 	}
 
 	stdoutPipe, err := command.StdoutPipe()
@@ -225,9 +221,41 @@ func (m *localTaskManager) startTask(
 		cancel()
 		return nil, fmt.Errorf("创建任务错误输出失败: %w", err)
 	}
+
 	if err := command.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("启动后台任务失败: %w", err)
+		// In auto sandbox mode, if the sandbox fails at runtime, retry
+		// without the sandbox wrapper.
+		if payload.Sandbox != nil && payload.Sandbox.Mode == internalconfig.ShellSandboxModeAuto && isSandboxRuntimeError(err) {
+			rawPayload := payload
+			rawPayload.Sandbox = nil
+			command, err = buildRawCommand(backgroundCtx, rawPayload)
+			if err != nil {
+				cancel()
+				return nil, err
+			}
+			command.Dir = rawPayload.WorkingDirectory
+			command.Env = mergeEnv(rawPayload.EnvOverrides)
+			if rawPayload.HasStdin {
+				command.Stdin = strings.NewReader(rawPayload.Stdin)
+			}
+			stdoutPipe, err = command.StdoutPipe()
+			if err != nil {
+				cancel()
+				return nil, fmt.Errorf("创建任务标准输出失败: %w", err)
+			}
+			stderrPipe, err = command.StderrPipe()
+			if err != nil {
+				cancel()
+				return nil, fmt.Errorf("创建任务错误输出失败: %w", err)
+			}
+			if err := command.Start(); err != nil {
+				cancel()
+				return nil, fmt.Errorf("启动后台任务失败: %w", err)
+			}
+		} else {
+			cancel()
+			return nil, fmt.Errorf("启动后台任务失败: %w", err)
+		}
 	}
 
 	storeDir, err := defaultTaskStoreDir()

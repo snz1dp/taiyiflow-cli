@@ -1272,7 +1272,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		previousReason := strings.TrimSpace(m.snapshot.BackendStatusReason)
 		m.snapshot = typed.snapshot
 		m.historyLoading = false
-		m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
+		// 当 TUI 处于忙碌状态（正在发送/流式接收/确认/执行）时，
+		// 保留当前 requestStats.RunID，避免快照刷新覆盖 startRequestStats 设置的 RunID，
+		// 否则后续 SSE 事件的 matchesStreamRun 校验会失败，导致消息无法输出到 TUI 消息区。
+		// 此场景主要发生在自动续跑：streamDoneMsg 处理中同时启动了新的 startRequest
+		// 和 maybeRefreshSessionSnapshot，快照刷新返回时可能覆盖新设置的 RunID。
+		if m.isBusy() {
+			currentRunID := strings.TrimSpace(m.requestStats.RunID)
+			snapshotStats := cloneRequestMetrics(m.snapshot.RequestStats)
+			if strings.TrimSpace(currentRunID) != "" {
+				snapshotStats.RunID = currentRunID
+			}
+			m.requestStats = snapshotStats
+		} else {
+			m.requestStats = cloneRequestMetrics(m.snapshot.RequestStats)
+		}
 		m.flows = typed.flows
 		if replaceInitialEntries {
 			m.entries = buildInitialEntries(m.snapshot)

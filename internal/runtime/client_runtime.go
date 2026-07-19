@@ -886,16 +886,90 @@ func (r *ClientRuntime) runCommand(
 	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(payload.Timeout)*time.Second)
 	defer cancel()
 
-	command, err := buildCommand(timeoutCtx, payload)
-	if err != nil {
-		return nil, err
+	// executeWithSandboxRetry attempts to run the command with the sandbox
+	// enabled. If the sandbox fails at runtime (Start or Wait) and the mode
+	// is "auto", it retries without the sandbox. In "enforce" mode, the
+	// error is surfaced directly.
+	//
+	// The function returns the result map, the start error (if any), the
+	// wait error (if any), and a flag indicating whether a sandbox retry
+	// was performed.
+	result, startErr, waitErr, _ := r.executeCommandWithSandboxRetry(timeoutCtx, payload, arguments, config)
+
+	// If we got a result, handle success path.
+	if result != nil && startErr == nil && waitErr == nil {
+		return result, nil
 	}
 
+	// If start or wait failed and we already retried (or can't retry),
+	// surface the error.
+	if startErr != nil {
+		return nil, startErr
+	}
+	if waitErr != nil {
+		return nil, waitErr
+	}
+
+	// result is non-nil but had some other issue — return it.
+	return result, nil
+}
+
+// executeCommandWithSandboxRetry runs the command, and if it fails due to a
+// sandbox runtime error in "auto" mode, retries without the sandbox.
+func (r *ClientRuntime) executeCommandWithSandboxRetry(
+	timeoutCtx context.Context,
+	payload commandArguments,
+	arguments map[string]any,
+	config internalconfig.Config,
+) (map[string]any, error, error, bool) {
+	command, err := buildCommand(timeoutCtx, payload)
+	if err != nil {
+		return nil, err, nil, false
+	}
+
+	result, startErr, waitErr := r.runSingleCommand(timeoutCtx, command, payload, arguments, config)
+
+	// Check if the failure is due to a sandbox runtime error.
+	// In auto mode, retry without sandbox.
+	sb := payload.Sandbox
+	if sb != nil && sb.Mode == internalconfig.ShellSandboxModeAuto {
+		sandboxFailed := false
+		if startErr != nil && isSandboxRuntimeError(startErr) {
+			sandboxFailed = true
+		}
+		if waitErr != nil && isSandboxRuntimeError(waitErr) {
+			sandboxFailed = true
+		}
+		if sandboxFailed {
+			// Retry without sandbox: build a raw command (no sandbox wrapping).
+			rawPayload := payload
+			rawPayload.Sandbox = nil
+			rawCommand, rawErr := buildRawCommand(timeoutCtx, rawPayload)
+			if rawErr != nil {
+				return nil, rawErr, nil, false
+			}
+			result2, startErr2, waitErr2 := r.runSingleCommand(timeoutCtx, rawCommand, rawPayload, arguments, config)
+			return result2, startErr2, waitErr2, true
+		}
+	}
+
+	return result, startErr, waitErr, false
+}
+
+// runSingleCommand executes a single *exec.Cmd and returns the result,
+// along with separate start and wait errors for sandbox retry detection.
+func (r *ClientRuntime) runSingleCommand(
+	timeoutCtx context.Context,
+	command *exec.Cmd,
+	payload commandArguments,
+	arguments map[string]any,
+	config internalconfig.Config,
+) (map[string]any, error, error) {
 	command.Dir = payload.WorkingDirectory
 	command.Env = mergeEnv(payload.EnvOverrides)
-	stdin, err := r.resolveCommandStdin(ctx, payload)
+	stdin, err := r.resolveCommandStdin(timeoutCtx, payload)
 	if err != nil {
-		return nil, err
+		return nil, err, nil
 	}
 	if stdin != nil {
 		command.Stdin = stdin
@@ -914,15 +988,15 @@ func (r *ClientRuntime) runCommand(
 
 	stdoutPipe, err := command.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("创建命令标准输出失败: %w", err)
+		return nil, fmt.Errorf("创建命令标准输出失败: %w", err), nil
 	}
 	stderrPipe, err := command.StderrPipe()
 	if err != nil {
-		return nil, fmt.Errorf("创建命令错误输出失败: %w", err)
+		return nil, fmt.Errorf("创建命令错误输出失败: %w", err), nil
 	}
 
 	if err := command.Start(); err != nil {
-		return nil, fmt.Errorf("启动命令失败: %w", err)
+		return nil, fmt.Errorf("启动命令失败: %w", err), nil
 	}
 
 	if r.streamCallback == nil {
@@ -974,7 +1048,7 @@ func (r *ClientRuntime) runCommand(
 		if r.streamCallback == nil {
 			r.writeStreamEventf(r.stdout, "[本地命令] %s（超时，>%ds）\n", commandPreview(arguments), payload.Timeout)
 		}
-		return nil, fmt.Errorf("命令执行超时，超过 %d 秒", payload.Timeout)
+		return nil, nil, fmt.Errorf("命令执行超时，超过 %d 秒", payload.Timeout)
 	}
 	if waitErr != nil {
 		message := strings.TrimSpace(stderr)
@@ -1000,13 +1074,13 @@ func (r *ClientRuntime) runCommand(
 		if r.streamCallback == nil {
 			r.writeStreamEventf(r.stdout, "[本地命令] %s（失败，%s，退出码 %d）\n", commandPreview(arguments), formatCommandDuration(time.Since(startedAt)), command.ProcessState.ExitCode())
 		}
-		return nil, fmt.Errorf("命令执行失败: %s", message)
+		return nil, nil, fmt.Errorf("命令执行失败: %s", message)
 	}
 
 	if payload.ExpectJSON {
 		var decoded any
 		if err := json.Unmarshal([]byte(stdout), &decoded); err != nil {
-			return nil, fmt.Errorf("命令输出了不合法的JSON数据")
+			return nil, nil, fmt.Errorf("命令输出了不合法的JSON数据")
 		}
 		result["json"] = decoded
 	}
@@ -1033,7 +1107,7 @@ func (r *ClientRuntime) runCommand(
 		r.writeStreamEventf(r.stdout, "[本地命令] %s（成功，%s，退出码 %d）\n", commandPreview(arguments), formatCommandDuration(time.Since(startedAt)), command.ProcessState.ExitCode())
 	}
 
-	return result, nil
+	return result, nil, nil
 }
 
 func formatCommandDuration(duration time.Duration) string {

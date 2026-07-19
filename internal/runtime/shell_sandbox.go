@@ -90,17 +90,62 @@ func resolveShellSandbox(config internalconfig.Config, workDir string) *shellSan
 	}
 }
 
+// isSandboxRuntimeError checks whether an error message indicates a
+// sandbox runtime failure (e.g., sandbox-exec failed to apply the profile,
+// or bwrap failed to set up the namespace). This is used to trigger auto
+// mode runtime degradation: if the sandbox fails at execution time (not at
+// command construction time), auto mode retries without the sandbox.
+func isSandboxRuntimeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	// macOS sandbox-exec runtime errors.
+	if strings.Contains(msg, "sandbox_apply") ||
+		strings.Contains(msg, "sandbox-exec") ||
+		strings.Contains(msg, "operation not permitted") {
+		return true
+	}
+	// Linux bwrap runtime errors.
+	if strings.Contains(msg, "bwrap") ||
+		strings.Contains(msg, "bubblewrap") ||
+		strings.Contains(msg, "failed to create namespace") {
+		return true
+	}
+	return false
+}
+
 // sensitivePaths returns absolute paths that should always be denied
-// regardless of sandbox roots.
+// regardless of sandbox roots. Includes both user-level and system-level
+// sensitive paths, with platform-specific entries.
 func sensitivePaths() []string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil
 	}
-	return []string{
+	paths := []string{
 		filepath.Join(homeDir, ".ssh"),
 		filepath.Join(homeDir, ".gnupg"),
 		filepath.Join(homeDir, ".aws"),
-		filepath.Join(homeDir, "Library", "Keychains"),
 	}
+	switch runtime.GOOS {
+	case "darwin":
+		paths = append(paths,
+			filepath.Join(homeDir, "Library", "Keychains"),
+			"/etc/passwd",
+			"/etc/master.passwd",
+			"/etc/sudoers",
+			"/private/etc/passwd",
+			"/private/etc/master.passwd",
+			"/private/etc/sudoers",
+		)
+	case "linux":
+		paths = append(paths,
+			"/etc/passwd",
+			"/etc/shadow",
+			"/etc/gshadow",
+			"/etc/sudoers",
+		)
+	}
+	return paths
 }

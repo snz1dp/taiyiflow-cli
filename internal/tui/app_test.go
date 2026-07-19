@@ -4568,6 +4568,96 @@ func TestStartRequestStatsPreservesKnownContextAndCompressionHints(t *testing.T)
 	}
 }
 
+func TestSnapshotRefreshPreservesRunIDWhenBusy(t *testing.T) {
+	initial := Snapshot{
+		BackendAvailable: true,
+		SessionID:        "session-123",
+	}
+	// 快照中携带旧的 RunID（上一个请求的）
+	updated := initial
+	updated.RequestStats = &RequestMetrics{
+		RunID: "old-run-id",
+		TokenUsage: &TokenUsage{
+			ContextWindow: &ContextWindow{
+				MaxInputTokens:           4000,
+				NextRoundAvailableTokens: 3200,
+			},
+		},
+	}
+
+	appModel := model{
+		snapshot: initial,
+		entries:  buildInitialEntries(initial),
+		input:    textarea.New(),
+		viewport: viewport.New(0, 0),
+		state:    newProgressState(progressStreaming),
+		// startRequestStats 已设置的新 RunID
+		requestStats: RequestMetrics{
+			RunID: "new-run-id",
+			TokenUsage: &TokenUsage{
+				ContextWindow: &ContextWindow{
+					MaxInputTokens:           8192,
+					NextRoundAvailableTokens: 6144,
+				},
+			},
+		},
+	}
+
+	updatedModel, _ := appModel.Update(snapshotRefreshedMsg{snapshot: updated})
+	result := updatedModel.(model)
+
+	// 忙碌状态下，RunID 不应被快照覆盖
+	if result.requestStats.RunID != "new-run-id" {
+		t.Fatalf("expected RunID preserved as %q during busy state, got %q", "new-run-id", result.requestStats.RunID)
+	}
+	// 但 TokenUsage 等其他统计信息应从快照更新
+	if result.requestStats.TokenUsage == nil {
+		t.Fatalf("expected TokenUsage updated from snapshot")
+	}
+	if result.requestStats.TokenUsage.ContextWindow == nil {
+		t.Fatalf("expected ContextWindow updated from snapshot")
+	}
+	if result.requestStats.TokenUsage.ContextWindow.MaxInputTokens != 4000 {
+		t.Fatalf("expected MaxInputTokens from snapshot (4000), got %d", result.requestStats.TokenUsage.ContextWindow.MaxInputTokens)
+	}
+}
+
+func TestSnapshotRefreshOverwritesRunIDWhenIdle(t *testing.T) {
+	initial := Snapshot{
+		BackendAvailable: true,
+		SessionID:        "session-123",
+	}
+	updated := initial
+	updated.RequestStats = &RequestMetrics{
+		RunID: "snapshot-run-id",
+		TokenUsage: &TokenUsage{
+			ContextWindow: &ContextWindow{
+				MaxInputTokens:           4000,
+				NextRoundAvailableTokens: 3200,
+			},
+		},
+	}
+
+	appModel := model{
+		snapshot: initial,
+		entries:  buildInitialEntries(initial),
+		input:    textarea.New(),
+		viewport: viewport.New(0, 0),
+		state:    newProgressState(progressIdle),
+		requestStats: RequestMetrics{
+			RunID: "previous-run-id",
+		},
+	}
+
+	updatedModel, _ := appModel.Update(snapshotRefreshedMsg{snapshot: updated})
+	result := updatedModel.(model)
+
+	// 空闲状态下，RunID 应从快照覆盖
+	if result.requestStats.RunID != "snapshot-run-id" {
+		t.Fatalf("expected RunID from snapshot %q when idle, got %q", "snapshot-run-id", result.requestStats.RunID)
+	}
+}
+
 func TestStartRequestAssumesCompressionWhenConversationHistoryExists(t *testing.T) {
 	model := model{
 		ctx:      context.Background(),
