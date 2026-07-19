@@ -31,7 +31,7 @@ NODE_IMAGE ?= snz1.cn/base/node:20-alpine
 CONTAINER_GO_BIN_DIR ?= /usr/local/go/bin
 TAIYIFLOW_COMPUTER_LIVE_BROWSER ?= chrome
 
-RELEASE_CROSS_PLATFORMS ?= linux/amd64 linux/arm64 windows/amd64 windows/arm64
+RELEASE_CROSS_PLATFORMS ?= linux/amd64 linux/386 linux/arm64 windows/amd64 windows/386 windows/arm64
 RELEASE_DARWIN_PLATFORMS ?= darwin/amd64 darwin/arm64
 
 .PHONY: help build build-all build-release build-release-cross build-release-darwin-native verify-computer-live-darwin release browser-extension-dist browser-extension-dist-docker test clean check-go check-npm check-docker check-browser-extension-dist
