@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -477,10 +478,33 @@ func isSensitivePath(target string) bool {
 		filepath.Join(homeDir, ".ssh"),
 		filepath.Join(homeDir, ".gnupg"),
 		filepath.Join(homeDir, ".aws"),
-		filepath.Join(homeDir, "Library", "Keychains"),
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		blocked = append(blocked,
+			filepath.Join(homeDir, "Library", "Keychains"),
+			"/etc/passwd",
+			"/etc/master.passwd",
+			"/etc/sudoers",
+			"/private/etc/passwd",
+			"/private/etc/master.passwd",
+			"/private/etc/sudoers",
+		)
+	case "linux":
+		blocked = append(blocked,
+			"/etc/passwd",
+			"/etc/shadow",
+			"/etc/gshadow",
+			"/etc/sudoers",
+		)
+	}
+	// 解析符号链接，确保 /private/etc/* 等链接路径也能被拦截。
+	cleanTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		cleanTarget = target
 	}
 	for _, item := range blocked {
-		if isWithinRoot(target, item) || target == item {
+		if isWithinRoot(cleanTarget, item) || cleanTarget == item {
 			return true
 		}
 	}

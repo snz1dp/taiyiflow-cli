@@ -1385,7 +1385,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.Focus()
 		// 自动续跑优先于用户排队输入（失败时不续跑，仅检查排队输入）
 		if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
-			return m, tea.Batch(queuedCmd, m.maybeRefreshSnapshot())
+			// 排队输入场景下不并行执行 maybeRefreshSnapshot，避免同样的状态竞争。
+			return m, queuedCmd
 		}
 		progressCmd := m.transitionProgress(progressFailed)
 		return m, tea.Batch(progressCmd, m.maybeRefreshSnapshot())
@@ -1420,10 +1421,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.Focus()
 		// 自动续跑优先于用户排队输入
 		if autoLoopCmd := m.startAutoLoopRequest(); autoLoopCmd != nil {
-			return m, tea.Batch(autoLoopCmd, m.maybeRefreshSessionSnapshot())
+			// 续跑场景下不并行执行 maybeRefreshSessionSnapshot，
+			// 避免快照刷新回调覆盖 requestStats 导致续跑 SSE 事件的 matchesStreamRun 校验失败。
+			// 快照刷新会在续跑请求的 streamDoneMsg 处理中重新触发。
+			return m, autoLoopCmd
 		}
 		if queuedCmd := m.startQueuedRequest(); queuedCmd != nil {
-			return m, tea.Batch(queuedCmd, m.maybeRefreshSessionSnapshot())
+			// 排队输入场景下同样不并行执行 maybeRefreshSessionSnapshot，避免同样的状态竞争。
+			return m, queuedCmd
 		}
 		progressCmd := m.transitionProgress(progressIdle)
 		return m, tea.Batch(progressCmd, m.maybeRefreshSessionSnapshot())

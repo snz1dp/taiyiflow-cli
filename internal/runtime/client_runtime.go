@@ -954,8 +954,20 @@ func (r *ClientRuntime) executeCommandWithSandboxRetry(
 		if startErr != nil && isSandboxRuntimeError(startErr) {
 			sandboxFailed = true
 		}
-		if waitErr != nil && isSandboxRuntimeError(waitErr) {
-			sandboxFailed = true
+		if waitErr != nil {
+			if isSandboxRuntimeError(waitErr) {
+				sandboxFailed = true
+			} else if result != nil {
+				// 分别检查 stderr 和 stdout，避免短路遮蔽。
+				// runSingleCommand 构建错误消息时优先取 stderr，
+				// 如果 stderr 非空但不含沙盒关键词，会遮蔽
+				// 可能出现在 stdout 或原始 waitErr 中的沙盒错误。
+				if stderrStr, ok := result["stderr"].(string); ok && isSandboxRuntimeError(fmt.Errorf("%s", stderrStr)) {
+					sandboxFailed = true
+				} else if stdoutStr, ok := result["stdout"].(string); ok && isSandboxRuntimeError(fmt.Errorf("%s", stdoutStr)) {
+					sandboxFailed = true
+				}
+			}
 		}
 		if sandboxFailed {
 			// Retry without sandbox: build a raw command (no sandbox wrapping).
@@ -1096,7 +1108,7 @@ func (r *ClientRuntime) runSingleCommand(
 		if r.streamCallback == nil {
 			r.writeStreamEventf(r.stdout, "[本地命令] %s（失败，%s，退出码 %d）\n", commandPreview(arguments), formatCommandDuration(time.Since(startedAt)), command.ProcessState.ExitCode())
 		}
-		return nil, nil, fmt.Errorf("命令执行失败: %s", message)
+		return result, nil, fmt.Errorf("命令执行失败: %s", message)
 	}
 
 	if payload.ExpectJSON {
