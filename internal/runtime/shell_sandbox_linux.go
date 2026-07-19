@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 )
 
 // buildSandboxedCommandPlatform wraps the command with Linux bwrap (bubblewrap).
