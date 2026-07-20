@@ -575,7 +575,16 @@ func guardDangerousCommand(payload commandArguments, config internalconfig.Confi
 		}
 	}
 	preview := strings.ToLower(strings.TrimSpace(payload.RawCommand + " " + payload.Command + " " + strings.Join(payload.Args, " ")))
-	highRiskPatterns := []string{"rm -rf /", "mkfs", "shutdown", "reboot", "dd if=", "killall", "sudo "}
+	highRiskPatterns := []string{
+		"rm -rf /", "mkfs", "shutdown", "reboot", "dd if=", "killall", "sudo ",
+		// Fork bomb 变体
+		":(){",       // bash 经典写法 :(){ :|:& };:
+		":|:&",       // bash fork bomb 管道递归片段（无空格变体）
+		": () {",     // bash fork bomb 带空格变体 : () { : | : & } ; :
+		"fork while fork", // perl fork bomb
+		"os.fork()",  // python fork bomb
+		"while true: os.fork", // python fork bomb 显式循环
+	}
 	for _, pattern := range highRiskPatterns {
 		if strings.Contains(preview, pattern) && strings.TrimSpace(config.ApprovalMode) == "auto" {
 			return newToolError("PERMISSION_DENIED", "检测到高风险命令，请切换到允许模式后再执行")
