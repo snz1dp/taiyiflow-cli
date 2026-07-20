@@ -112,7 +112,7 @@ build-release-cross: check-go check-browser-extension-dist
 		goarch=$${platform#*/}; \
 		ext=''; \
 		if [[ "$$goos" == 'windows' ]]; then ext='.exe'; fi; \
-		output='$(RELEASE_DIR)/$(APP_NAME)-'"$$goos"'-'"$$goarch"'"$$ext"; \
+		output="$(RELEASE_DIR)/$(APP_NAME)-$${goos}-$${goarch}$${ext}"; \
 		echo "==> $$output"; \
 		CGO_ENABLED=$(CGO_ENABLED) GOOS=$$goos GOARCH=$$goarch "$(GO)" build $(GO_RELEASE_FLAGS) $(GO_BUILDINFO_FLAGS) -o "$$output" .; \
 	done
@@ -162,7 +162,7 @@ build-release-darwin-native: check-go check-browser-extension-dist
 	@set -e; \
 	for platform in $(RELEASE_DARWIN_PLATFORMS); do \
 		goarch=$${platform#*/}; \
-		output='$(RELEASE_DIR)/$(APP_NAME)-darwin-'"$$goarch"; \
+		output="$(RELEASE_DIR)/$(APP_NAME)-darwin-$${goarch}"; \
 		echo "==> $$output"; \
 		CGO_ENABLED=$(DARWIN_CGO_ENABLED) GOOS=darwin GOARCH=$$goarch "$(GO)" build $(GO_RELEASE_FLAGS) $(GO_BUILDINFO_FLAGS) -o "$$output" .; \
 	done
