@@ -12,6 +12,17 @@ import (
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 )
 
+// AuthError 表示鉴权失败错误（HTTP 401/403）。
+// 调用方可通过 errors.As 检测此类型来决定是否回退到 manifest 流程。
+type AuthError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *AuthError) Error() string {
+	return fmt.Sprintf("check-update 返回 HTTP %d: %s", e.StatusCode, e.Body)
+}
+
 // DefaultHTTPTimeout check-update / report-status 请求超时。
 const DefaultHTTPTimeout = 30 * time.Second
 
@@ -77,6 +88,10 @@ func (u *Updater) CheckUpdate(ctx context.Context, req *CheckUpdateRequest) (*Ch
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		// 鉴权失败时返回 AuthError，调用方可据此回退到 manifest 流程
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, &AuthError{StatusCode: resp.StatusCode, Body: string(respBody)}
+		}
 		return nil, fmt.Errorf("check-update 返回 HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 

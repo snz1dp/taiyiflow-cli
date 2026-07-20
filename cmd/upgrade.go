@@ -74,10 +74,15 @@ func (a *App) runUpgrade(ctx context.Context, args []string) error {
 	if manifestURL == "" {
 		apiUpgraded, err = a.runUpgradeViaAPI(ctx, config, force)
 		if err != nil {
-			if checkAPIOnly {
+			// 检测鉴权失败（HTTP 401/403），即使 --check-api=true 也自动回退到 manifest 流程
+			var authErr *updater.AuthError
+			if errors.As(err, &authErr) {
+				fmt.Fprintf(a.stderr, "check-update API 鉴权失败（HTTP %d），自动回退到 manifest 流程\n", authErr.StatusCode)
+			} else if checkAPIOnly {
 				return err
+			} else {
+				fmt.Fprintf(a.stderr, "check-update API 不可用，回退到 manifest 流程: %v\n", err)
 			}
-			fmt.Fprintf(a.stderr, "check-update API 不可用，回退到 manifest 流程: %v\n", err)
 		} else if apiUpgraded {
 			return nil
 		} else {
