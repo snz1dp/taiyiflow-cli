@@ -15,6 +15,7 @@ import (
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/workspaceinstance"
@@ -328,6 +329,7 @@ func buildPrimaryClientWebSocketURL(config internalconfig.Config, instanceID str
 	queryValues.Set("device_type", goruntime.GOOS)
 	queryValues.Set("platform", goruntime.GOOS+"-"+goruntime.GOARCH)
 	queryValues.Set("connection_role", primaryClientConnectionRole)
+	queryValues.Set("client_version", buildinfo.Version)
 	queryValues.Set("instance_id", strings.TrimSpace(instanceID))
 	if strings.TrimSpace(sessionID) != "" {
 		queryValues.Set("session_id", strings.TrimSpace(sessionID))
