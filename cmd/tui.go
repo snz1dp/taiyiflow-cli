@@ -4621,13 +4621,28 @@ func buildTUISkillsPicker(
 	installedMap := map[string]skills.InstalledRemoteSkill{}
 	if installedErr == nil {
 		for _, item := range installedItems {
-			installedMap[strings.ToLower(strings.TrimSpace(item.Slug))] = item
+			// origin.json 中的 Slug 是 SlugifySkillName(skill.Name) 的结果，
+			// 而后端 VisibleSkillPackage.Name 就是技能包的 name（slug 风格），
+			// 因此需要同时用 Slug 和 Name 作为 key 以便后续匹配。
+			for _, key := range []string{item.Slug, item.Name} {
+				trimmed := strings.ToLower(strings.TrimSpace(key))
+				if trimmed == "" {
+					continue
+				}
+				installedMap[trimmed] = item
+			}
 		}
 	}
 	registryLabel := "后端"
 	remoteItems := make([]tui.RemoteSkillItem, 0, len(allBackendSkills))
 	for _, item := range allBackendSkills {
-		installed, ok := installedMap[strings.ToLower(strings.TrimSpace(item.ID))]
+		// 后端返回的 ID 是 UUID，而 installedMap 的 key 是 origin.json 中的
+		// Slug（即 SlugifySkillName(item.Name)），两者不同；
+		// 需要同时用 ID 和 Name 查找以正确匹配已安装状态。
+		installed, ok := installedMap[strings.ToLower(strings.TrimSpace(item.Name))]
+		if !ok {
+			installed, ok = installedMap[strings.ToLower(strings.TrimSpace(item.ID))]
+		}
 		remoteItems = append(remoteItems, tui.RemoteSkillItem{
 			Slug:             strings.TrimSpace(item.ID),
 			DisplayName:      strings.TrimSpace(item.DisplayName),
@@ -4751,7 +4766,13 @@ func (a *App) executeTUISkillsPickerCommand(ctx context.Context, client provider
 		installedFound := false
 		if installedErr == nil {
 			for _, item := range installedItems {
-				if strings.EqualFold(strings.TrimSpace(item.Slug), strings.TrimSpace(slug)) {
+				// slug 参数来自 RemoteSkillItem.Slug（即后端 ID/UUID），
+				// 而 origin.json 的 Slug 是 SlugifySkillName(skill.Name)。
+				// 需要同时匹配 Slug、Name 和 detail.Name 以正确判断安装状态。
+				if strings.EqualFold(strings.TrimSpace(item.Slug), strings.TrimSpace(slug)) ||
+					strings.EqualFold(strings.TrimSpace(item.Name), strings.TrimSpace(slug)) ||
+					strings.EqualFold(strings.TrimSpace(item.Slug), strings.TrimSpace(detail.Name)) ||
+					strings.EqualFold(strings.TrimSpace(item.Name), strings.TrimSpace(detail.Name)) {
 					installed = item
 					installedFound = true
 					break
