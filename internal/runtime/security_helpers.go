@@ -143,6 +143,33 @@ func (r *ClientRuntime) resolveAllowedPathWithPolicy(config internalconfig.Confi
 	return resolved, nil
 }
 
+// readStdinWithTimeout 从 stdin 读取一行，超时后返回空字符串和 nil error。
+// timeoutSeconds <= 0 表示不启用超时。
+func (r *ClientRuntime) readStdinWithTimeout(timeoutSeconds int) (string, error) {
+	if timeoutSeconds <= 0 {
+		reader := bufio.NewReader(r.stdin)
+		line, err := reader.ReadString('\n')
+		return line, err
+	}
+	type readResult struct {
+		line string
+		err  error
+	}
+	ch := make(chan readResult, 1)
+	go func() {
+		reader := bufio.NewReader(r.stdin)
+		line, err := reader.ReadString('\n')
+		ch <- readResult{line: line, err: err}
+	}()
+	select {
+	case res := <-ch:
+		return res.line, res.err
+	case <-time.After(time.Duration(timeoutSeconds) * time.Second):
+		fmt.Fprintf(r.stdout, "\n⏱ 等待用户确认超时（%d 秒），已自动拒绝。\n", timeoutSeconds)
+		return "", nil
+	}
+}
+
 func (r *ClientRuntime) confirmSandboxEscapePath(path string) (bool, bool, error) {
 	if !r.interactivePromptsEnabled {
 		return false, false, nil
@@ -155,8 +182,7 @@ func (r *ClientRuntime) confirmSandboxEscapePath(path string) (bool, bool, error
 		return approved, true, nil
 	}
 	fmt.Fprintf(r.stdout, "\n[路径越界确认]\n目标路径位于当前工作目录外: %s\n是否允许本次访问？[y/N]: ", path)
-	reader := bufio.NewReader(r.stdin)
-	answerLine, err := reader.ReadString('\n')
+	answerLine, err := r.readStdinWithTimeout(r.toolConfirmTimeoutSeconds)
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			answer := strings.TrimSpace(strings.ToLower(answerLine))

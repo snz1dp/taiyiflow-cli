@@ -131,7 +131,13 @@ func NewApp() (*App, error) {
 		stdout:        os.Stdout,
 		stderr:        os.Stderr,
 		stdin:         os.Stdin,
-		runtime:       clientruntime.NewClientRuntime(os.Stdin, os.Stdout, os.Stderr),
+		runtime:       func() *clientruntime.ClientRuntime {
+		r := clientruntime.NewClientRuntime(os.Stdin, os.Stdout, os.Stderr)
+		if loaded, err := configManager.Load(); err == nil {
+			r.SetToolConfirmTimeoutSeconds(loaded.ToolConfirmTimeoutSeconds)
+		}
+		return r
+	}(),
 	}, nil
 }
 

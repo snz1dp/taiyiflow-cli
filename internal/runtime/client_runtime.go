@@ -92,6 +92,8 @@ type ClientRuntime struct {
 	computerToolExecutor        ComputerToolExecutor
 	sandboxEscapeConfirmer      func(path string) (bool, error)
 	sandboxEscapePolicyOverride string
+	// toolConfirmTimeoutSeconds 为 stdio 模式下确认弹窗的超时秒数；<=0 表示不启用
+	toolConfirmTimeoutSeconds   int
 	streamEventLogsEnabled      bool
 	interactivePromptsEnabled   bool
 	hookHandlers                []HookHandler
@@ -143,6 +145,10 @@ func (r *ClientRuntime) SetAskUserPrompter(prompter AskUserPrompter) {
 
 func (r *ClientRuntime) SetSandboxEscapePolicyOverride(policy string) {
 	r.sandboxEscapePolicyOverride = strings.TrimSpace(policy)
+}
+
+func (r *ClientRuntime) SetToolConfirmTimeoutSeconds(seconds int) {
+	r.toolConfirmTimeoutSeconds = seconds
 }
 
 func (r *ClientRuntime) SetStreamEventLogsEnabled(enabled bool) {
@@ -229,6 +235,7 @@ func (r *ClientRuntime) cloneRuntime() *ClientRuntime {
 		computerToolExecutor:        r.computerToolExecutor,
 		sandboxEscapeConfirmer:      r.sandboxEscapeConfirmer,
 		sandboxEscapePolicyOverride: r.sandboxEscapePolicyOverride,
+		toolConfirmTimeoutSeconds:   r.toolConfirmTimeoutSeconds,
 		streamEventLogsEnabled:      r.streamEventLogsEnabled,
 		interactivePromptsEnabled:   r.interactivePromptsEnabled,
 		hookHandlers:                append([]HookHandler(nil), r.hookHandlers...),
@@ -845,8 +852,7 @@ func (r *ClientRuntime) confirmCommand(arguments map[string]any, config internal
 
 	commandPreview := commandPreview(arguments)
 	fmt.Fprintf(r.stdout, "\n[客户端命令]\n%s\n是否执行？[y/N]: ", commandPreview)
-	reader := bufio.NewReader(r.stdin)
-	answerLine, err := reader.ReadString('\n')
+	answerLine, err := r.readStdinWithTimeout(r.toolConfirmTimeoutSeconds)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return false, fmt.Errorf("读取命令确认输入失败: %w", err)
 	}

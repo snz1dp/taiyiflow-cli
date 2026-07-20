@@ -358,6 +358,12 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("qr_wait_timeout_seconds 仅支持大于等于 0 的整数秒，0 表示禁用")
 		}
 		config.QRWaitTimeoutSeconds = seconds
+	case "tool_confirm_timeout_seconds":
+		seconds, err := strconv.Atoi(trimmedValue)
+		if err != nil || seconds < 0 || seconds > internalconfig.MaxToolConfirmTimeoutSeconds {
+			return fmt.Errorf("tool_confirm_timeout_seconds 仅支持 0-%d 的整数秒，0 表示禁止倒计时", internalconfig.MaxToolConfirmTimeoutSeconds)
+		}
+		config.ToolConfirmTimeoutSeconds = seconds
 	case "agent_auto_loop_max_rounds":
 		rounds, err := strconv.Atoi(trimmedValue)
 		if err != nil || rounds < 0 || rounds > internalconfig.MaxAgentAutoLoopMaxRounds {
@@ -488,6 +494,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.CrossSessionMemoryEnabled = defaults.CrossSessionMemoryEnabled
 	case "qr_wait_timeout_seconds":
 		config.QRWaitTimeoutSeconds = defaults.QRWaitTimeoutSeconds
+	case "tool_confirm_timeout_seconds":
+		config.ToolConfirmTimeoutSeconds = defaults.ToolConfirmTimeoutSeconds
 	case "agent_auto_loop_max_rounds":
 		config.AgentAutoLoopMaxRounds = defaults.AgentAutoLoopMaxRounds
 	case "output_language":
@@ -582,6 +590,8 @@ func normalizeConfigKey(key string) string {
 		return "default_request_mode"
 	case "auto_switch_request_mode", "auto_request_mode_switch", "request_mode_auto":
 		return "request_mode_auto_switch"
+	case "confirm_timeout", "confirm_timeout_seconds", "tool_confirm_timeout":
+		return "tool_confirm_timeout_seconds"
 	default:
 		return normalized
 	}
@@ -630,6 +640,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("流式空闲超时: %d 秒", config.StreamIdleTimeoutSeconds),
 		fmt.Sprintf("跨会话记忆: %t", config.CrossSessionMemoryEnabled),
 		fmt.Sprintf("扫码等待超时: %d 秒", config.QRWaitTimeoutSeconds),
+		fmt.Sprintf("确认超时: %d 秒（0 表示禁止倒计时）", config.ToolConfirmTimeoutSeconds),
 		fmt.Sprintf("智能体自动续跑最大轮数: %d（0 表示禁用）", config.AgentAutoLoopMaxRounds),
 		fmt.Sprintf("输出语言: %s", fallbackConfigValue(config.OutputLanguage, internalconfig.Default().OutputLanguage)),
 		fmt.Sprintf("审计日志: %t", config.AuditEnabled),

@@ -274,6 +274,7 @@ type ConfigFormValues struct {
 	ShellSandboxMode          string
 	DefaultRequestMode        string
 	RequestModeAutoSwitch     bool
+	ConfirmTimeoutSeconds     string
 }
 
 type ConfigChoice struct {
@@ -486,6 +487,10 @@ type ConfirmRequest struct {
 	AllowAllLabel               string
 	AllowAll                    func(context.Context) error
 	DisableDefaultAlwaysApprove bool
+	// TimeoutSeconds 为确认弹窗倒计时秒数；<=0 表示不启用倒计时
+	TimeoutSeconds int
+	// ToolName 关联的工具名，用于超时话术
+	ToolName string
 }
 
 type AskUserFormState struct {
@@ -579,6 +584,12 @@ type confirmState struct {
 	request    ConfirmRequest
 	responseCh chan bool
 	cursor     int
+	// deadline 为确认倒计时截止时间；IsZero() 表示不启用倒计时
+	deadline time.Time
+	// ticker 为倒计时定时器；nil 表示未启用
+	ticker *time.Ticker
+	// closed 防止 responseCh 被重复写入或关闭
+	closed bool
 }
 
 type confirmOption struct {
@@ -611,6 +622,16 @@ type confirmRequestMsg struct {
 	runID      string
 	request    ConfirmRequest
 	responseCh chan bool
+}
+
+// confirmCountdownTickMsg 倒计时每秒触发一次，用于刷新弹窗剩余时间显示
+type confirmCountdownTickMsg struct {
+	runID string
+}
+
+// confirmTimeoutMsg 倒计时归零后触发，自动拒绝确认
+type confirmTimeoutMsg struct {
+	runID string
 }
 
 type askUserResult struct {
@@ -901,6 +922,7 @@ const (
 	configFieldSubtaskTimeout
 	configFieldCrossSessionMemory
 	configFieldQRWaitTimeout
+	configFieldConfirmTimeout
 	configFieldAgentAutoLoopMaxRounds
 	configFieldOutputLanguage
 	configFieldComputerEnabled
@@ -1443,9 +1465,72 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.pendingConfirm = &confirmState{request: typed.request, responseCh: typed.responseCh, cursor: 0}
+		// 初始化倒计时
+		if typed.request.TimeoutSeconds > 0 {
+			m.pendingConfirm.deadline = time.Now().Add(time.Duration(typed.request.TimeoutSeconds) * time.Second)
+			ticker := time.NewTicker(time.Second)
+			m.pendingConfirm.ticker = ticker
+			m.resetOverlayScroll()
+			m.input.Blur()
+			return m, tea.Batch(m.transitionProgress(progressConfirming), countdownTickCmd(typed.runID, ticker.C))
+		}
 		m.resetOverlayScroll()
 		m.input.Blur()
 		return m, m.transitionProgress(progressConfirming)
+	case confirmCountdownTickMsg:
+		if m.pendingConfirm == nil || !m.matchesStreamRun(typed.runID) {
+			return m, nil
+		}
+		// 检查 deadline 是否已到期
+		if !m.pendingConfirm.deadline.IsZero() && time.Now().After(m.pendingConfirm.deadline) {
+			// 倒计时到期，执行超时处理
+			if m.pendingConfirm.ticker != nil {
+				m.pendingConfirm.ticker.Stop()
+			}
+			if !m.pendingConfirm.closed {
+				m.pendingConfirm.responseCh <- false
+				close(m.pendingConfirm.responseCh)
+				m.pendingConfirm.closed = true
+			}
+			toolName := strings.TrimSpace(m.pendingConfirm.request.ToolName)
+			timeoutMsg := "等待用户确认超时，已自动拒绝。"
+			if toolName != "" {
+				timeoutMsg = fmt.Sprintf("等待用户确认 %s 超时，已自动拒绝。", toolName)
+			}
+			m.entries = append(m.entries, entry{role: "system", content: timeoutMsg})
+			m.pendingConfirm = nil
+			m.syncViewport()
+			return m, tea.Batch(m.transitionProgress(progressStreaming), waitForStream(m.eventCh))
+		}
+		// 未到期：触发重绘显示剩余时间，并调度下一次 tick
+		if m.pendingConfirm.ticker != nil {
+			return m, countdownTickCmd(typed.runID, m.pendingConfirm.ticker.C)
+		}
+		return m, nil
+	case confirmTimeoutMsg:
+		// confirmTimeoutMsg 来自 startStream goroutine 的 time.After 超时。
+		// 正常情况下 TUI 已在 confirmCountdownTickMsg 中处理了超时，
+		// 此消息作为后备：如果 pendingConfirm 仍存在则执行同样的超时处理。
+		if m.pendingConfirm == nil || !m.matchesStreamRun(typed.runID) {
+			return m, nil
+		}
+		if m.pendingConfirm.ticker != nil {
+			m.pendingConfirm.ticker.Stop()
+		}
+		if !m.pendingConfirm.closed {
+			m.pendingConfirm.responseCh <- false
+			close(m.pendingConfirm.responseCh)
+			m.pendingConfirm.closed = true
+		}
+		toolName := strings.TrimSpace(m.pendingConfirm.request.ToolName)
+		timeoutMsg := "等待用户确认超时，已自动拒绝。"
+		if toolName != "" {
+			timeoutMsg = fmt.Sprintf("等待用户确认 %s 超时，已自动拒绝。", toolName)
+		}
+		m.entries = append(m.entries, entry{role: "system", content: timeoutMsg})
+		m.pendingConfirm = nil
+		m.syncViewport()
+		return m, tea.Batch(m.transitionProgress(progressStreaming), waitForStream(m.eventCh))
 	case askUserRequestMsg:
 		if !m.matchesStreamRun(typed.runID) {
 			typed.responseCh <- askUserResult{err: context.Canceled}
@@ -2266,8 +2351,16 @@ func (m *model) applyConfirmSelection(option confirmOption) (tea.Model, tea.Cmd)
 	if option.approved && option.onSelect != nil {
 		actionCmd = option.onSelect()
 	}
-	m.pendingConfirm.responseCh <- option.approved
-	close(m.pendingConfirm.responseCh)
+	// 停止倒计时 ticker
+	if m.pendingConfirm.ticker != nil {
+		m.pendingConfirm.ticker.Stop()
+	}
+	// 使用 closed 标志防止重复写入（超时和用户操作可能同时到达）
+	if !m.pendingConfirm.closed {
+		m.pendingConfirm.responseCh <- option.approved
+		close(m.pendingConfirm.responseCh)
+		m.pendingConfirm.closed = true
+	}
 	m.pendingConfirm = nil
 	if option.approved {
 		return m, tea.Batch(actionCmd, m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
@@ -4658,6 +4751,16 @@ func (m model) renderConfirmOverlay() string {
 			lines = append(lines, markOverlayFocus(row, index == focusRow))
 		}
 	}
+	// 倒计时显示
+	if !m.pendingConfirm.deadline.IsZero() {
+		remaining := time.Until(m.pendingConfirm.deadline)
+		if remaining < 0 {
+			remaining = 0
+		}
+		remainingSecs := int(remaining.Round(time.Second).Seconds())
+		countdownText := fmt.Sprintf("⏱ 剩余 %d 秒，超时将自动拒绝", remainingSecs)
+		lines = append(lines, "", hintStyle.Render(hardWrapText(countdownText, previewWidth)))
+	}
 	hint := strings.TrimSpace(request.Hint)
 	if hint == "" {
 		hint = confirmHintForOptionCount(len(options))
@@ -6604,6 +6707,18 @@ func leadingIndent(line string) string {
 	return line
 }
 
+// countdownTickCmd 每秒从 ticker.C 读取一个 tick，发送 confirmCountdownTickMsg。
+// 当 ticker 停止时（channel 关闭或 drained），goroutine 自然退出。
+func countdownTickCmd(runID string, tickerC <-chan time.Time) tea.Cmd {
+	return func() tea.Msg {
+		_, ok := <-tickerC
+		if !ok {
+			return nil
+		}
+		return confirmCountdownTickMsg{runID: runID}
+	}
+}
+
 func startStream(ctx context.Context, request Request, runner Runner, eventCh chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		runID := strings.TrimSpace(request.RunID)
@@ -6613,6 +6728,19 @@ func startStream(ctx context.Context, request Request, runner Runner, eventCh ch
 			}, func(request ConfirmRequest) bool {
 				responseCh := make(chan bool, 1)
 				eventCh <- confirmRequestMsg{runID: runID, request: request, responseCh: responseCh}
+				timeout := request.TimeoutSeconds
+				if timeout > 0 {
+					select {
+					case resp := <-responseCh:
+						return resp
+					case <-time.After(time.Duration(timeout) * time.Second):
+						// TUI 的 confirmCountdownTickMsg 会在 deadline 到期时处理超时（关闭弹窗、发拒绝响应）。
+						// 这里作为后备：如果 TUI 尚未处理（如 ticker 未启动），直接返回 false。
+						// 不再向 eventCh 发送 confirmTimeoutMsg，因为在 confirm 状态下 TUI 不 drain eventCh，
+						// 会导致 confirmTimeoutMsg 永远不会被处理。
+						return false
+					}
+				}
 				return <-responseCh
 			}, func(request clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error) {
 				responseCh := make(chan askUserResult, 1)
@@ -8390,6 +8518,7 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "子智能体超时（秒）", placeholder: "0", description: "子智能体执行超时时间，范围 0-6000 秒，0 表示不限制。"},
 		{label: "跨会话记忆", placeholder: "", description: "左右键或空格切换是否允许后端启用跨会话记忆。命令行(CLI)参数可覆盖该系统配置。"},
 		{label: "扫码等待超时（秒）", placeholder: "30", description: "二维码登录在自动轮询时使用该默认值；大于等于 0 的整数秒，0 表示持续等待直到手动取消。"},
+		{label: "确认超时（秒）", placeholder: "120", description: "工具确认弹窗倒计时秒数，范围 30-300 秒；填 0 或留空表示禁止倒计时，必须等待用户确认。"},
 		{label: "智能体自动续跑最大轮数", placeholder: "0", description: "仅对智能体模式生效；填写 0-10000 的整数，0 表示禁用。"},
 		{label: "输出语言", placeholder: "zh-CN", description: "留空会恢复默认输出语言。"},
 		{label: "桌面操作", placeholder: "", description: "左右键或空格切换开启或关闭。关闭后不再向后端暴露桌面操作工具，并拒绝执行已有桌面工具调用。"},
@@ -8420,7 +8549,7 @@ func configFormFieldGroup(index int) string {
 		return "服务端与智能体"
 	case configFieldApprovalMode, configFieldSandboxPolicy, configFieldSkillReviewPolicy, configFieldWriteConfirmationPolicy, configFieldSandboxRoots, configFieldPermissionRules:
 		return "权限与审查"
-	case configFieldReasoningMode, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldSubtaskTimeout, configFieldCrossSessionMemory, configFieldQRWaitTimeout:
+	case configFieldReasoningMode, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldSubtaskTimeout, configFieldCrossSessionMemory, configFieldQRWaitTimeout, configFieldConfirmTimeout:
 		return "运行与超时"
 	case configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage:
 		return "会话与输出"
@@ -8517,6 +8646,8 @@ func configFormFieldValue(index int, values ConfigFormValues) string {
 		return ""
 	case configFieldRequestModeAutoSwitch:
 		return ""
+	case configFieldConfirmTimeout:
+		return strings.TrimSpace(values.ConfirmTimeoutSeconds)
 	default:
 		return ""
 	}
@@ -8593,12 +8724,15 @@ func configFormValuesFromInputs(inputs []textinput.Model) ConfigFormValues {
 	if len(inputs) > configFieldDocUnstructuredExts {
 		values.DocUnstructuredExts = strings.TrimSpace(inputs[configFieldDocUnstructuredExts].Value())
 	}
+	if len(inputs) > configFieldConfirmTimeout {
+		values.ConfirmTimeoutSeconds = strings.TrimSpace(inputs[configFieldConfirmTimeout].Value())
+	}
 	return values
 }
 
 func isConfigTextField(index int) bool {
 	switch index {
-	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldSubtaskTimeout, configFieldQRWaitTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldBrowserExecutablePath, configFieldBrowserProfileDir, configFieldBrowserConnectTimeout, configFieldBrowserSocketDir, configFieldBrowserRemoteDebuggingURL, configFieldDocUnstructuredExts:
+	case configFieldBackendBaseURL, configFieldSandboxRoots, configFieldPermissionRules, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldSubtaskTimeout, configFieldQRWaitTimeout, configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage, configFieldBrowserExecutablePath, configFieldBrowserProfileDir, configFieldBrowserConnectTimeout, configFieldBrowserSocketDir, configFieldBrowserRemoteDebuggingURL, configFieldDocUnstructuredExts, configFieldConfirmTimeout:
 		return true
 	default:
 		return false
@@ -8681,6 +8815,8 @@ func configFieldKey(index int) string {
 		return "default_request_mode"
 	case configFieldRequestModeAutoSwitch:
 		return "request_mode_auto_switch"
+	case configFieldConfirmTimeout:
+		return "tool_confirm_timeout_seconds"
 	default:
 		return ""
 	}

@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -766,8 +765,7 @@ func (r *ClientRuntime) confirmClientTool(toolName string, arguments map[string]
 	}
 	preview := previewClientTool(toolName, arguments)
 	fmt.Fprintf(r.stdout, "\n[客户端工具]\n%s\n是否执行？[y/N]: ", preview)
-	reader := bufio.NewReader(r.stdin)
-	answerLine, err := reader.ReadString('\n')
+	answerLine, err := r.readStdinWithTimeout(r.toolConfirmTimeoutSeconds)
 	if err != nil && !errors.Is(err, os.ErrClosed) && !errors.Is(err, fs.ErrClosed) {
 		if !errors.Is(err, bytes.ErrTooLarge) {
 			if !errors.Is(err, io.EOF) {

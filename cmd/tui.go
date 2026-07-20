@@ -176,8 +176,16 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		persistModeSwitchAlwaysAllow := a.persistConfigValue("mode_switch_confirmation_policy", internalconfig.ModeSwitchConfirmationPolicySkip)
 		persistSkillAutoInstallAlwaysAllow := a.persistConfigValue("skill_review_policy", internalconfig.SkillReviewPolicyIgnore)
 		persistApprovalModeAuto := a.persistConfigValue("approval_mode", "auto")
+		// confirmWithTimeout 包装 confirm，从配置中读取超时秒数并填充到 ConfirmRequest
+		confirmWithTimeout := func(req tui.ConfirmRequest) bool {
+			loadedConfig, configErr := a.configManager.Load()
+			if configErr == nil && loadedConfig.ToolConfirmTimeoutSeconds > 0 {
+				req.TimeoutSeconds = loadedConfig.ToolConfirmTimeoutSeconds
+			}
+			return confirm(req)
+		}
 		sandboxEscapeConfirmer := func(path string) (bool, error) {
-			return confirm(buildTUISandboxEscapeConfirmRequest(path, persistSandboxEscapeAlwaysAllow)), nil
+			return confirmWithTimeout(buildTUISandboxEscapeConfirmRequest(path, persistSandboxEscapeAlwaysAllow)), nil
 		}
 		runtimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
 		quietRuntimeClient.SetSandboxEscapeConfirmer(sandboxEscapeConfirmer)
@@ -378,7 +386,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					emit(tui.Event{Kind: tui.EventBuiltInCall, Text: previewBuiltInCommand(event.Data)})
 					emit(tui.Event{Kind: tui.EventProgressNote, Text: "正在执行本地命令..."})
 					if requiresTUICommandConfirmation(localConfig, event.Data) {
-						approved := confirm(buildTUIConfirmRequest(event.Data, persistApprovalModeAuto))
+						approved := confirmWithTimeout(buildTUIConfirmRequest(event.Data, persistApprovalModeAuto))
 						if !approved {
 							emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端命令执行。"})
 							if err := submitClientCallFailure(runCtx, callbackProvider, localConfig, event.Data, "用户拒绝执行客户端命令"); err != nil {
@@ -426,7 +434,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 							appendApprovedSkillName(&sessionState, skillName)
 							return a.sessionStore.Save(sessionState)
 						}
-						approved := confirm(buildTUIClientToolConfirmRequest(localConfig, sessionState.ContextDir, event.Data, persistApprovedSkillReview, persistSkillReviewAllowAll, persistBrowserToolAlwaysAllow, persistComputerToolAlwaysAllow, persistWriteToolAlwaysAllow, persistModeSwitchAlwaysAllow, persistApprovalModeAuto))
+						approved := confirmWithTimeout(buildTUIClientToolConfirmRequest(localConfig, sessionState.ContextDir, event.Data, persistApprovedSkillReview, persistSkillReviewAllowAll, persistBrowserToolAlwaysAllow, persistComputerToolAlwaysAllow, persistWriteToolAlwaysAllow, persistModeSwitchAlwaysAllow, persistApprovalModeAuto))
 						if !approved {
 							emit(tui.Event{Kind: tui.EventErrorNote, Text: "已拒绝本次客户端工具执行。"})
 							if err := submitClientCallFailure(runCtx, callbackProvider, localConfig, event.Data, "用户拒绝执行客户端工具"); err != nil {
@@ -477,7 +485,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 								requestedSkillNames,
 								missingSkillNames,
 								func(approval skillInstallApprovalRequest) bool {
-									return confirm(buildTUISkillAutoInstallConfirmRequest(approval, persistSkillAutoInstallAlwaysAllow))
+									return confirmWithTimeout(buildTUISkillAutoInstallConfirmRequest(approval, persistSkillAutoInstallAlwaysAllow))
 								},
 								func(text string) {
 									if strings.TrimSpace(text) != "" {
@@ -1955,6 +1963,7 @@ func buildTUIConfirmRequest(payload map[string]any, alwaysApprove func(context.C
 		RejectLabel:                 "取消本次命令",
 		AlwaysApproveLabel:          "切换为自动执行",
 		AlwaysApprove:               alwaysApprove,
+		ToolName:                    "shell_exec",
 		DisableDefaultAlwaysApprove: true,
 	}
 	return request
@@ -1981,6 +1990,7 @@ func buildTUIClientToolConfirmRequest(
 		Hint:         "Y 允许本次执行，N 本次拒绝，A 切换为自动执行；方向键或 Tab 选择，Enter 确认。",
 		ApproveLabel: "允许本次执行",
 		RejectLabel:  "本次拒绝",
+		ToolName:     toolName,
 	}
 	switch strings.TrimSpace(toolName) {
 	case "skill":
@@ -3439,6 +3449,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			ShellSandboxMode:          strings.TrimSpace(config.ShellSandboxMode),
 			DefaultRequestMode:        strings.TrimSpace(config.DefaultRequestMode),
 			RequestModeAutoSwitch:     config.RequestModeAutoSwitch,
+			ConfirmTimeoutSeconds:     strconv.Itoa(config.ToolConfirmTimeoutSeconds),
 		},
 	}, nil
 }
@@ -3651,6 +3662,12 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 
 	if err := assignConfigValue(&config, "request_mode_auto_switch", strconv.FormatBool(submission.Values.RequestModeAutoSwitch)); err != nil {
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "request_mode_auto_switch", Message: err.Error()}
+	}
+
+	if strings.TrimSpace(submission.Values.ConfirmTimeoutSeconds) == "" {
+		config.ToolConfirmTimeoutSeconds = 0
+	} else if err := assignConfigValue(&config, "tool_confirm_timeout_seconds", submission.Values.ConfirmTimeoutSeconds); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "tool_confirm_timeout_seconds", Message: err.Error()}
 	}
 
 	if err := a.configManager.Save(config); err != nil {

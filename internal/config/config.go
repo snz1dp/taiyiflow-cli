@@ -32,6 +32,9 @@ const (
 	MaxSubtaskTimeoutSeconds         = 6000
 	DefaultStreamIdleTimeoutSeconds  = 1200
 	DefaultQRWaitTimeoutSeconds      = 120
+	DefaultToolConfirmTimeoutSeconds = 120
+	MinToolConfirmTimeoutSeconds     = 30
+	MaxToolConfirmTimeoutSeconds     = 300
 	DefaultAgentAutoLoopMaxRounds    = 0
 	MaxAgentAutoLoopMaxRounds        = 10000
 	encryptedConfigValuePrefix       = "enc:v1:"
@@ -172,6 +175,7 @@ type Config struct {
 	SubtaskTimeoutSeconds     int              `yaml:"subtask_timeout_seconds,omitempty"`
 	StreamIdleTimeoutSeconds  int              `yaml:"stream_idle_timeout_seconds,omitempty"`
 	QRWaitTimeoutSeconds      int              `yaml:"qr_wait_timeout_seconds,omitempty"`
+	ToolConfirmTimeoutSeconds int              `yaml:"tool_confirm_timeout_seconds,omitempty"`
 	AgentAutoLoopEnabled      bool             `yaml:"agent_auto_loop_enabled,omitempty"`
 	AgentAutoLoopMaxRounds    int              `yaml:"agent_auto_loop_max_rounds,omitempty"`
 	LoopDecideFlowID          string           `yaml:"loop_decide_flow_id,omitempty"`
@@ -252,6 +256,7 @@ func Default() Config {
 		SubtaskTimeoutSeconds:     DefaultSubtaskTimeoutSeconds,
 		StreamIdleTimeoutSeconds:  DefaultStreamIdleTimeoutSeconds,
 		QRWaitTimeoutSeconds:      DefaultQRWaitTimeoutSeconds,
+		ToolConfirmTimeoutSeconds: DefaultToolConfirmTimeoutSeconds,
 		AgentAutoLoopEnabled:      false,
 		AgentAutoLoopMaxRounds:    DefaultAgentAutoLoopMaxRounds,
 		CrossSessionMemoryEnabled: true,
@@ -619,6 +624,22 @@ func NormalizeQRWaitTimeoutSeconds(value int) int {
 	return value
 }
 
+// NormalizeToolConfirmTimeoutSeconds 规范化工具确认超时秒数。
+// 若 value <= 0，返回 0，表示禁止倒计时，必须等待用户确认。
+// 若 value > 0，在 [Min, Max] 范围内取值。
+func NormalizeToolConfirmTimeoutSeconds(value int) int {
+	if value <= 0 {
+		return 0
+	}
+	if value < MinToolConfirmTimeoutSeconds {
+		return MinToolConfirmTimeoutSeconds
+	}
+	if value > MaxToolConfirmTimeoutSeconds {
+		return MaxToolConfirmTimeoutSeconds
+	}
+	return value
+}
+
 func NormalizeAgentAutoLoopMaxRounds(value int) int {
 	if value < 0 {
 		return DefaultAgentAutoLoopMaxRounds
@@ -762,6 +783,7 @@ func (m *Manager) Load() (Config, error) {
 	config.SubtaskTimeoutSeconds = NormalizeSubtaskTimeoutSeconds(config.SubtaskTimeoutSeconds)
 	config.StreamIdleTimeoutSeconds = NormalizeStreamIdleTimeoutSeconds(config.StreamIdleTimeoutSeconds)
 	config.QRWaitTimeoutSeconds = NormalizeQRWaitTimeoutSeconds(config.QRWaitTimeoutSeconds)
+	config.ToolConfirmTimeoutSeconds = NormalizeToolConfirmTimeoutSeconds(config.ToolConfirmTimeoutSeconds)
 	config.AgentAutoLoopMaxRounds = NormalizeAgentAutoLoopMaxRounds(config.AgentAutoLoopMaxRounds)
 	if config.OutputLanguage == "" {
 		config.OutputLanguage = Default().OutputLanguage
