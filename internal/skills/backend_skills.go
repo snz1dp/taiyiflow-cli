@@ -158,7 +158,8 @@ func RemoveBackendSkill(
 		Limit: 200,
 	})
 	if err != nil {
-		return BackendRemoveResult{}, fmt.Errorf("查询安装记录失败: %w", err)
+		// 网络请求失败时，尝试本地清理
+		return removeLocalInstalledSkill(config, skillNameOrID)
 	}
 
 	// 2. 查找匹配的安装记录
@@ -186,51 +187,107 @@ func RemoveBackendSkill(
 			}
 		}
 	}
-	if matchedRecord == nil {
-		return BackendRemoveResult{}, fmt.Errorf("未找到已安装的技能: %s", skillNameOrID)
+	if matchedRecord != nil {
+		// 3. 标记卸载
+		updated, err := client.UninstallSkillRecord(ctx, matchedRecord.ID)
+		if err != nil {
+			return BackendRemoveResult{}, fmt.Errorf("标记技能卸载失败: %w", err)
+		}
+
+		// 4. 清除本地缓存
+		skillName := matchedRecord.SkillName
+		if skillName == "" && updated != nil {
+			skillName = updated.SkillName
+		}
+		if skillName == "" && visibleSkills != nil {
+			for _, vs := range visibleSkills {
+				if vs.ID == matchedRecord.SkillPackageID {
+					skillName = vs.Name
+					break
+				}
+			}
+		}
+
+		skillDirName := SlugifySkillName(skillName)
+		if skillDirName == "" {
+			skillDirName = matchedRecord.SkillPackageID
+		}
+		installDir, err := ResolveInstallDirectory(config)
+		if err == nil && skillDirName != "" {
+			targetDir := filepath.Join(installDir, skillDirName)
+			_ = os.RemoveAll(targetDir)
+			return BackendRemoveResult{
+				Name:      skillName,
+				SkillID:   matchedRecord.SkillPackageID,
+				RecordID:  matchedRecord.ID,
+				TargetDir: targetDir,
+			}, nil
+		}
+
+		return BackendRemoveResult{
+			Name:     skillName,
+			SkillID:  matchedRecord.SkillPackageID,
+			RecordID: matchedRecord.ID,
+		}, nil
 	}
 
-	// 3. 标记卸载
-	updated, err := client.UninstallSkillRecord(ctx, matchedRecord.ID)
-	if err != nil {
-		return BackendRemoveResult{}, fmt.Errorf("标记技能卸载失败: %w", err)
-	}
+	// 5. 服务端安装记录不存在时，回退到本地扫描清理
+	// 适用于技能在服务端已被删除但本地仍残留的情况
+	return removeLocalInstalledSkill(config, skillNameOrID)
+}
 
-	// 4. 清除本地缓存
-	skillName := matchedRecord.SkillName
-	if skillName == "" && updated != nil {
-		skillName = updated.SkillName
-	}
-	if skillName == "" && visibleSkills != nil {
-		for _, vs := range visibleSkills {
-			if vs.ID == matchedRecord.SkillPackageID {
-				skillName = vs.Name
-				break
+// removeLocalInstalledSkill 在服务端无安装记录或网络不可用时，
+// 扫描本地技能并清除匹配项。
+// 先查有 origin.json 的远程安装技能，再回退到全量 Discover 扫描，
+// 确保纯本地手动创建的技能也能被删除。
+func removeLocalInstalledSkill(config internalconfig.Config, skillNameOrID string) (BackendRemoveResult, error) {
+	// 1. 先扫描有 origin.json 的远程安装技能
+	installedItems, localErr := ListInstalledRemoteSkills(config)
+	if localErr == nil {
+		for _, item := range installedItems {
+			if strings.EqualFold(item.Slug, skillNameOrID) ||
+				strings.EqualFold(item.Name, skillNameOrID) ||
+				strings.EqualFold(filepath.Base(strings.TrimSpace(item.TargetDir)), skillNameOrID) {
+				targetDir := strings.TrimSpace(item.TargetDir)
+				if targetDir != "" {
+					_ = os.RemoveAll(targetDir)
+				}
+				return BackendRemoveResult{
+					Name:      item.Name,
+					SkillID:   item.Slug,
+					TargetDir: targetDir,
+				}, nil
 			}
 		}
 	}
 
-	skillDirName := SlugifySkillName(skillName)
-	if skillDirName == "" {
-		skillDirName = matchedRecord.SkillPackageID
+	// 2. 回退到全量 Discover 扫描，匹配无 origin.json 的纯本地技能
+	discoveredItems, _, discoverErr := Discover(config)
+	if discoverErr != nil {
+		return BackendRemoveResult{}, fmt.Errorf("未找到已安装的技能: %s", skillNameOrID)
 	}
-	installDir, err := ResolveInstallDirectory(config)
-	if err == nil && skillDirName != "" {
-		targetDir := filepath.Join(installDir, skillDirName)
-		_ = os.RemoveAll(targetDir)
-		return BackendRemoveResult{
-			Name:      skillName,
-			SkillID:   matchedRecord.SkillPackageID,
-			RecordID:  matchedRecord.ID,
-			TargetDir: targetDir,
-		}, nil
+	for _, item := range discoveredItems {
+		// 跳过内置技能
+		if IsBundledSkill(item.Name) {
+			continue
+		}
+		skillDir := SkillDir(item)
+		dirBase := filepath.Base(strings.TrimSpace(skillDir))
+		slugName := SlugifySkillName(item.Name)
+		if strings.EqualFold(item.Name, skillNameOrID) ||
+			strings.EqualFold(slugName, skillNameOrID) ||
+			strings.EqualFold(dirBase, skillNameOrID) {
+			if skillDir != "" {
+				_ = os.RemoveAll(skillDir)
+			}
+			return BackendRemoveResult{
+				Name:      item.Name,
+				SkillID:   slugName,
+				TargetDir: skillDir,
+			}, nil
+		}
 	}
-
-	return BackendRemoveResult{
-		Name:     skillName,
-		SkillID:  matchedRecord.SkillPackageID,
-		RecordID: matchedRecord.ID,
-	}, nil
+	return BackendRemoveResult{}, fmt.Errorf("未找到已安装的技能: %s", skillNameOrID)
 }
 
 // UploadLocalSkillToBackend 读取本地技能内容，打包为 ZIP 后上传到后端

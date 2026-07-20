@@ -5034,6 +5034,9 @@ func resolveInstalledRemoteSkillSlug(item skills.Skill, installedLookup map[stri
 	if strings.EqualFold(strings.TrimSpace(item.Source), "bundled") {
 		return ""
 	}
+	if skills.IsBundledSkill(item.Name) {
+		return ""
+	}
 	for _, candidate := range []string{item.Name, item.RelativeDir, filepath.Base(strings.TrimSpace(item.RootDir))} {
 		trimmed := strings.ToLower(strings.TrimSpace(candidate))
 		if trimmed == "" {
@@ -5044,7 +5047,16 @@ func resolveInstalledRemoteSkillSlug(item skills.Skill, installedLookup map[stri
 			return strings.TrimSpace(installed.Slug)
 		}
 	}
-	return ""
+	// 非远程安装的本地技能（如手动创建的）也允许删除，
+	// 返回技能名称作为删除目标
+	skillDirName := skills.SlugifySkillName(item.Name)
+	if skillDirName == "" {
+		skillDirName = filepath.Base(strings.TrimSpace(item.RootDir))
+	}
+	if skillDirName == "" || skillDirName == "." {
+		skillDirName = filepath.Base(skills.SkillDir(item))
+	}
+	return strings.TrimSpace(skillDirName)
 }
 
 func resolveTUISkillsContextDir(snapshot tui.Snapshot) string {
