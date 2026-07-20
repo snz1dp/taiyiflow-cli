@@ -622,6 +622,30 @@ func guardDangerousCommand(payload commandArguments, config internalconfig.Confi
 			return err
 		}
 	}
+	// 符号链接逃逸拦截：检测通过 ln -s 创建指向敏感路径的符号链接。
+	if strings.TrimSpace(config.ApprovalMode) == "auto" {
+		if err := guardSymlinkEscape(payload, preview); err != nil {
+			return err
+		}
+	}
+	// 脚本语言敏感文件访问拦截：检测通过 python/perl/ruby 等脚本语言读取敏感文件。
+	if strings.TrimSpace(config.ApprovalMode) == "auto" {
+		if err := guardScriptSensitiveAccess(payload, preview); err != nil {
+			return err
+		}
+	}
+	// Base64 编码绕过拦截：检测通过 base64 编码/解码访问敏感文件。
+	if strings.TrimSpace(config.ApprovalMode) == "auto" {
+		if err := guardBase64Bypass(payload, preview); err != nil {
+			return err
+		}
+	}
+	// 网络下载拦截：沙盒模式下不允许下载外部文件。
+	if strings.TrimSpace(config.ApprovalMode) == "auto" {
+		if err := guardNetworkDownload(payload, preview, config); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -712,7 +736,29 @@ func guardSensitiveFileAccess(payload commandArguments, preview string) error {
 		"base64 ", "tee ", "dd ", "grep ", "awk ", "sed ", "ls ",
 	}
 	// 敏感路径片段（小写匹配），覆盖系统密码文件和用户隐私/密钥目录。
-	sensitivePathFragments := []string{
+	sensitivePathFragments := sensitivePathFragmentsForGuard()
+	// 检查命令预览中是否同时包含读取类命令和敏感路径片段。
+	hasReadCommand := false
+	for _, cmd := range readCommands {
+		if strings.Contains(preview, cmd) {
+			hasReadCommand = true
+			break
+		}
+	}
+	if !hasReadCommand {
+		return nil
+	}
+	for _, fragment := range sensitivePathFragments {
+		if strings.Contains(preview, fragment) {
+			return newToolError("PERMISSION_DENIED", "检测到敏感文件访问（%s），请切换到允许模式后再执行", fragment)
+		}
+	}
+	return nil
+}
+
+// sensitivePathFragmentsForGuard 返回敏感路径片段列表，供各 guard 函数复用。
+func sensitivePathFragmentsForGuard() []string {
+	return []string{
 		// 系统密码文件
 		"/etc/passwd", "/etc/shadow", "/etc/gshadow", "/etc/sudoers",
 		"/etc/master.passwd",
@@ -729,20 +775,153 @@ func guardSensitiveFileAccess(payload commandArguments, preview string) error {
 		// macOS 钥匙串
 		"library/keychains",
 	}
-	// 检查命令预览中是否同时包含读取类命令和敏感路径片段。
-	hasReadCommand := false
-	for _, cmd := range readCommands {
-		if strings.Contains(preview, cmd) {
-			hasReadCommand = true
+}
+
+// guardSymlinkEscape 检测通过 ln -s 创建指向敏感路径的符号链接。
+// 攻击者可在工作目录内创建指向 /etc/passwd、~/.ssh/id_rsa 等敏感文件的符号链接，
+// 然后通过正常文件读取工具间接访问敏感内容，绕过路径检查。
+// 检测模式：ln -s <敏感路径> <目标> 或 ln -sf <敏感路径> <目标>
+func guardSymlinkEscape(payload commandArguments, preview string) error {
+	lnPatterns := []string{"ln -s ", "ln -sf "}
+	hasLn := false
+	for _, p := range lnPatterns {
+		if strings.Contains(preview, p) {
+			hasLn = true
 			break
 		}
 	}
-	if !hasReadCommand {
+	if !hasLn {
 		return nil
 	}
-	for _, fragment := range sensitivePathFragments {
+	for _, fragment := range sensitivePathFragmentsForGuard() {
 		if strings.Contains(preview, fragment) {
-			return newToolError("PERMISSION_DENIED", "检测到敏感文件访问（%s），请切换到允许模式后再执行", fragment)
+			return newToolError("PERMISSION_DENIED", "检测到符号链接指向敏感路径（%s），请切换到允许模式后再执行", fragment)
+		}
+	}
+	return nil
+}
+
+// guardScriptSensitiveAccess 检测通过脚本语言（Python/Perl/Ruby/PHP/Node.js）
+// 读取或复制敏感文件的行为。攻击者可绕过 cat/cp 等命令级拦截，
+// 使用 python -c 'open("/etc/passwd").read()' 等方式读取敏感文件。
+func guardScriptSensitiveAccess(payload commandArguments, preview string) error {
+	// 脚本语言执行关键词
+	scriptIndicators := []string{
+		"python ", "python3 ", "python2 ",
+		"perl ", "perl -e",
+		"ruby ", "ruby -e",
+		"php ", "php -r",
+		"node ", "node -e",
+	}
+	hasScript := false
+	for _, s := range scriptIndicators {
+		if strings.Contains(preview, s) {
+			hasScript = true
+			break
+		}
+	}
+	if !hasScript {
+		return nil
+	}
+	// 脚本语言中常见的文件操作模式
+	fileAccessPatterns := []string{
+		"open(", "open (",          // Python open()
+		"io.read",                   // Python io.read()
+		"fileinput",                 // Python fileinput
+		"shutil.copy", "shutil.move", // Python shutil
+		"os.path.join",              // Python os.path
+		"subprocess",                // Python subprocess
+		"open(my $fh",               // Perl open
+		"open(file",                 // Perl/PHP open
+		"file.open",                 // Ruby File.open
+		"file.read",                 // Ruby File.read
+		"require('fs')", "require(\"fs\")", // Node.js fs
+		"readfilesync",              // Node.js readFileSync
+		"createReadStream",          // Node.js createReadStream
+		"file_get_contents",         // PHP file_get_contents
+		"fopen(",                    // PHP/C fopen
+	}
+	hasFileAccess := false
+	for _, p := range fileAccessPatterns {
+		if strings.Contains(preview, p) {
+			hasFileAccess = true
+			break
+		}
+	}
+	if !hasFileAccess {
+		return nil
+	}
+	for _, fragment := range sensitivePathFragmentsForGuard() {
+		if strings.Contains(preview, fragment) {
+			return newToolError("PERMISSION_DENIED", "检测到脚本语言访问敏感文件（%s），请切换到允许模式后再执行", fragment)
+		}
+	}
+	return nil
+}
+
+// guardBase64Bypass 检测通过 base64 编码/解码绕过敏感文件访问防护的行为。
+// 攻击者可使用 base64 /etc/passwd 或 cat /etc/passwd | base64 等方式
+// 将敏感文件内容编码后输出，试图绕过基于命令名的检测。
+func guardBase64Bypass(payload commandArguments, preview string) error {
+	// base64 命令直接跟文件路径
+	if strings.Contains(preview, "base64 ") {
+		for _, fragment := range sensitivePathFragmentsForGuard() {
+			if strings.Contains(preview, fragment) {
+				return newToolError("PERMISSION_DENIED", "检测到通过 base64 编码访问敏感文件（%s），请切换到允许模式后再执行", fragment)
+			}
+		}
+	}
+	// 管道组合：敏感文件 | base64 或 cat 敏感文件 | base64
+	pipeBase64Patterns := []string{
+		"| base64", "| base64 ", "| b64encode", "| b64decode",
+		"| openssl base64", "| openssl enc -base64",
+	}
+	for _, p := range pipeBase64Patterns {
+		if strings.Contains(preview, p) {
+			for _, fragment := range sensitivePathFragmentsForGuard() {
+				if strings.Contains(preview, fragment) {
+					return newToolError("PERMISSION_DENIED", "检测到通过管道 base64 编码访问敏感文件（%s），请切换到允许模式后再执行", fragment)
+				}
+			}
+		}
+	}
+	// xxd/hexdump 编码绕过
+	encodeCmds := []string{"| xxd", "| hexdump", "| od "}
+	for _, p := range encodeCmds {
+		if strings.Contains(preview, p) {
+			for _, fragment := range sensitivePathFragmentsForGuard() {
+				if strings.Contains(preview, fragment) {
+					return newToolError("PERMISSION_DENIED", "检测到通过编码绕过访问敏感文件（%s），请切换到允许模式后再执行", fragment)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// guardNetworkDownload 在沙盒模式下拦截下载外部文件的行为。
+// 当 ShellSandboxMode 不为 off 时，不允许通过 curl/wget/ftp/scp/rsync 等
+// 命令从外部下载文件到本地。
+func guardNetworkDownload(payload commandArguments, preview string, config internalconfig.Config) error {
+	// 仅在沙盒模式开启时拦截
+	sandboxMode := internalconfig.NormalizeShellSandboxMode(config.ShellSandboxMode)
+	if sandboxMode == internalconfig.ShellSandboxModeOff {
+		return nil
+	}
+	// 网络下载命令模式
+	downloadPatterns := []string{
+		"curl -o ", "curl -o\t", "curl --output",
+		"wget ", "wget -o", "wget -o ",
+		"scp ",               // 远程复制到本地
+		"rsync -r ", "rsync -a ",
+		"ftp ", "sftp ",
+		"fetch ",             // FreeBSD fetch
+		"aria2c ",            // aria2 下载工具
+		"axel ",              // axel 多线程下载
+	}
+	for _, pattern := range downloadPatterns {
+		if strings.Contains(preview, pattern) {
+			return newToolError("PERMISSION_DENIED", "沙盒模式下不允许下载外部文件（%s），请关闭沙盒或切换到允许模式后再执行", pattern)
 		}
 	}
 	return nil

