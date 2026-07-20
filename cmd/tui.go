@@ -158,6 +158,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			runtimeClient.EmitOnComplete(config, currentFlow, sessionState.SessionID, firstNonEmpty(sessionState.LastRunID, request.RunID), sessionState.LastMessageID, normalizeRequestMode(request.RequestMode), returnErr == nil, errorMessage)
 		}()
 		runtimeClient.SetAskUserPrompter(func(_ context.Context, request clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error) {
+			// 从配置中读取超时秒数并注入到 AskUserRequest
+			if loadedConfig, configErr := a.configManager.Load(); configErr == nil && loadedConfig.ToolConfirmTimeoutSeconds > 0 {
+				request.TimeoutSeconds = loadedConfig.ToolConfirmTimeoutSeconds
+			}
 			return askUser(request)
 		})
 		persistSandboxEscapeAlwaysAllow := func(context.Context) error {

@@ -645,6 +645,16 @@ type askUserRequestMsg struct {
 	responseCh chan askUserResult
 }
 
+// askUserCountdownTickMsg 倒计时每秒触发一次，用于刷新 ask_user 弹窗剩余时间显示
+type askUserCountdownTickMsg struct {
+	runID string
+}
+
+// askUserTimeoutMsg 倒计时归零后触发，自动取消 ask_user
+type askUserTimeoutMsg struct {
+	runID string
+}
+
 type flowChangedMsg struct {
 	snapshot Snapshot
 	err      error
@@ -890,6 +900,12 @@ type askUserFormState struct {
 	responseCh chan askUserResult
 	questions  []askUserFormQuestionState
 	cursor     int
+	// deadline 为 ask_user 倒计时截止时间；IsZero() 表示不启用倒计时
+	deadline time.Time
+	// ticker 为倒计时定时器；nil 表示未启用
+	ticker *time.Ticker
+	// closed 防止 responseCh 被重复写入或关闭
+	closed bool
 }
 
 type askUserFormQuestionState struct {
@@ -1541,9 +1557,62 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.askUserForm = newAskUserFormState(typed.request, typed.responseCh)
+		// 初始化倒计时
+		if typed.request.TimeoutSeconds > 0 {
+			m.askUserForm.deadline = time.Now().Add(time.Duration(typed.request.TimeoutSeconds) * time.Second)
+			ticker := time.NewTicker(time.Second)
+			m.askUserForm.ticker = ticker
+			m.resetOverlayScroll()
+			m.input.Blur()
+			return m, tea.Batch(m.transitionProgress(progressConfirming), askUserCountdownTickCmd(typed.runID, ticker.C))
+		}
 		m.resetOverlayScroll()
 		m.input.Blur()
 		return m, tea.Batch(m.transitionProgress(progressConfirming), textinput.Blink)
+	case askUserCountdownTickMsg:
+		if m.askUserForm == nil || !m.matchesStreamRun(typed.runID) {
+			return m, nil
+		}
+		// 检查 deadline 是否已到期
+		if !m.askUserForm.deadline.IsZero() && time.Now().After(m.askUserForm.deadline) {
+			// 倒计时到期，执行超时处理
+			if m.askUserForm.ticker != nil {
+				m.askUserForm.ticker.Stop()
+			}
+			if !m.askUserForm.closed {
+				m.askUserForm.responseCh <- askUserResult{err: fmt.Errorf("等待用户输入超时，已自动取消 ask_user")}
+				close(m.askUserForm.responseCh)
+				m.askUserForm.closed = true
+			}
+			m.entries = append(m.entries, entry{role: "system", content: "等待用户输入超时，已自动取消 ask_user。"})
+			m.askUserForm = nil
+			m.syncViewport()
+			return m, tea.Batch(m.transitionProgress(progressStreaming), waitForStream(m.eventCh))
+		}
+		// 未到期：触发重绘显示剩余时间，并调度下一次 tick
+		if m.askUserForm.ticker != nil {
+			return m, askUserCountdownTickCmd(typed.runID, m.askUserForm.ticker.C)
+		}
+		return m, nil
+	case askUserTimeoutMsg:
+		// askUserTimeoutMsg 来自 startStream goroutine 的 time.After 超时。
+		// 正常情况下 TUI 已在 askUserCountdownTickMsg 中处理了超时，
+		// 此消息作为后备：如果 askUserForm 仍存在则执行同样的超时处理。
+		if m.askUserForm == nil || !m.matchesStreamRun(typed.runID) {
+			return m, nil
+		}
+		if m.askUserForm.ticker != nil {
+			m.askUserForm.ticker.Stop()
+		}
+		if !m.askUserForm.closed {
+			m.askUserForm.responseCh <- askUserResult{err: fmt.Errorf("等待用户输入超时，已自动取消 ask_user")}
+			close(m.askUserForm.responseCh)
+			m.askUserForm.closed = true
+		}
+		m.entries = append(m.entries, entry{role: "system", content: "等待用户输入超时，已自动取消 ask_user。"})
+		m.askUserForm = nil
+		m.syncViewport()
+		return m, tea.Batch(m.transitionProgress(progressStreaming), waitForStream(m.eventCh))
 	case flowChangedMsg:
 		if typed.err != nil {
 			m.entries = append(m.entries, entry{role: "error", content: typed.err.Error()})
@@ -2266,8 +2335,14 @@ func (m *model) applyAskUserFormResult(result askUserResult) (tea.Model, tea.Cmd
 	if m.askUserForm == nil {
 		return m, nil
 	}
-	m.askUserForm.responseCh <- result
-	close(m.askUserForm.responseCh)
+	if m.askUserForm.ticker != nil {
+		m.askUserForm.ticker.Stop()
+	}
+	if !m.askUserForm.closed {
+		m.askUserForm.responseCh <- result
+		close(m.askUserForm.responseCh)
+		m.askUserForm.closed = true
+	}
 	m.askUserForm = nil
 	if result.err != nil {
 		return m, tea.Batch(m.transitionProgress(progressStreaming), waitForStream(m.eventCh))
@@ -4615,6 +4690,16 @@ func (m model) renderAskUserForm() string {
 		}
 		lines = append(lines, "  "+renderedValue)
 	}
+	// 倒计时显示
+	if !form.deadline.IsZero() {
+		remaining := time.Until(form.deadline)
+		if remaining < 0 {
+			remaining = 0
+		}
+		remainingSecs := int(remaining.Round(time.Second).Seconds())
+		countdownText := fmt.Sprintf("⏱ 剩余 %d 秒，超时将自动取消", remainingSecs)
+		lines = append(lines, "", hintStyle.Render(hardWrapText(countdownText, wrapWidth)))
+	}
 	hint := strings.TrimSpace(form.definition.Hint)
 	if hint == "" {
 		hint = askUserFormHint(form.questions[form.cursor].question, form.cursor, len(form.questions))
@@ -6719,6 +6804,17 @@ func countdownTickCmd(runID string, tickerC <-chan time.Time) tea.Cmd {
 	}
 }
 
+// askUserCountdownTickCmd 每秒从 ticker.C 读取一个 tick，发送 askUserCountdownTickMsg。
+func askUserCountdownTickCmd(runID string, tickerC <-chan time.Time) tea.Cmd {
+	return func() tea.Msg {
+		_, ok := <-tickerC
+		if !ok {
+			return nil
+		}
+		return askUserCountdownTickMsg{runID: runID}
+	}
+}
+
 func startStream(ctx context.Context, request Request, runner Runner, eventCh chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		runID := strings.TrimSpace(request.RunID)
@@ -6745,6 +6841,17 @@ func startStream(ctx context.Context, request Request, runner Runner, eventCh ch
 			}, func(request clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error) {
 				responseCh := make(chan askUserResult, 1)
 				eventCh <- askUserRequestMsg{runID: runID, request: request, responseCh: responseCh}
+				timeout := request.TimeoutSeconds
+				if timeout > 0 {
+					select {
+					case result := <-responseCh:
+						return result.response, result.err
+					case <-time.After(time.Duration(timeout) * time.Second):
+						// TUI 的 askUserCountdownTickMsg 会在 deadline 到期时处理超时（关闭弹窗、发取消响应）。
+						// 这里作为后备：如果 TUI 尚未处理（如 ticker 未启动），直接返回超时错误。
+						return clientruntime.AskUserResponse{}, fmt.Errorf("等待用户输入超时，已自动取消 ask_user")
+					}
+				}
 				result := <-responseCh
 				return result.response, result.err
 			})

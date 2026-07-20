@@ -75,6 +75,8 @@ type AskUserQuestion struct {
 
 type AskUserRequest struct {
 	Questions []AskUserQuestion
+	// TimeoutSeconds 为 ask_user 弹窗倒计时秒数；<=0 表示不启用倒计时
+	TimeoutSeconds int
 }
 
 type AskUserResponse struct {
