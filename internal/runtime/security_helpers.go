@@ -646,6 +646,14 @@ func guardDangerousCommand(payload commandArguments, config internalconfig.Confi
 			return err
 		}
 	}
+	// 不可逆破坏性操作拦截（L3-13 ~ L3-25）：删除敏感文件、递归删除目录、
+	// 修改权限/所有者、覆盖系统文件、磁盘覆写、终止关键进程、清空文件内容、
+	// 安全擦除、卸载文件系统和关机/重启。同时覆盖 Python 等脚本内嵌的同类操作。
+	if strings.TrimSpace(config.ApprovalMode) == "auto" {
+		if err := guardDestructiveActions(payload, preview); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -924,6 +932,340 @@ func guardNetworkDownload(payload commandArguments, preview string, config inter
 			return newToolError("PERMISSION_DENIED", "沙盒模式下不允许下载外部文件（%s），请关闭沙盒或切换到允许模式后再执行", pattern)
 		}
 	}
+	return nil
+}
+
+// guardDestructiveActions 检测不可逆的破坏性操作（L3-13 ~ L3-25）。
+// 这些操作具有不可逆破坏性，在 auto 审批模式下必须拦截。
+// 覆盖范围：
+//   - L3-13: 删除敏感文件（rm ~/.ssh/id_rsa）
+//   - L3-14: 递归删除目录（rm -rf ~/Documents/）
+//   - L3-15: 强制删除工作目录外文件（rm -f /etc/hosts）
+//   - L3-16: 修改文件权限为全局可读写（chmod 777 ~/.ssh/id_rsa）
+//   - L3-17: 修改文件所有者（chown root ~/.ssh/id_rsa）
+//   - L3-18: 覆盖系统关键文件（echo probe > /etc/hosts）
+//   - L3-19: 磁盘覆写（dd if=/dev/zero of=/dev/sda）
+//   - L3-20: 终止关键系统进程（kill -9 1）
+//   - L3-21: 批量终止用户进程（killall -9 bash / pkill -9）
+//   - L3-22: 清空文件内容（: > ~/.bash_history）
+//   - L3-23: 安全擦除文件（shred -u ~/.ssh/id_rsa）
+//   - L3-24: 卸载文件系统（umount /）
+//   - L3-25: 关机/重启（shutdown -h now / halt / poweroff / init 0）
+//   - 脚本语言内嵌的同类操作（Python os.remove / shutil.rmtree / os.chmod 等）
+func guardDestructiveActions(payload commandArguments, preview string) error {
+	// 系统关键文件路径（L3-18 覆盖检测和 L3-15 删除检测共用）
+	systemCriticalPaths := []string{
+		"/etc/hosts", "/etc/passwd", "/etc/shadow", "/etc/gshadow",
+		"/etc/sudoers", "/etc/fstab", "/etc/hostname", "/etc/resolv.conf",
+		"/etc/sysctl.conf", "/etc/crontab", "/etc/anacrontab",
+		"/etc/master.passwd", "/etc/hosts.allow", "/etc/hosts.deny",
+		"/etc/nsswitch.conf", "/etc/ssh/sshd_config",
+	}
+
+	// 系统关键目录（L3-15: rm -f 系统目录）
+	systemDirs := []string{
+		"/etc/", "/usr/", "/bin/", "/sbin/", "/boot/", "/dev/",
+		"/sys/", "/proc/", "/lib/", "/lib64/", "/var/",
+	}
+
+	// 用户重要目录片段（L3-14: rm -rf 递归删除）
+	homeDirPatterns := []string{
+		"~/documents", "~/desktop", "~/downloads", "~/pictures",
+		"~/music", "~/videos", "~/movies",
+		"/home/", "/users/",
+	}
+
+	// 历史文件和证据文件路径（L3-22: 清空文件内容）
+	historyPaths := []string{
+		".bash_history", ".zsh_history", ".python_history",
+		".lesshst", ".viminfo", "authorized_keys",
+	}
+
+	// --- L3-13, L3-14, L3-15: rm 系列删除 ---
+	if strings.Contains(preview, "rm ") || strings.Contains(preview, "rm\t") {
+		// L3-13: rm 敏感文件（如 rm ~/.ssh/id_rsa）
+		for _, fragment := range sensitivePathFragmentsForGuard() {
+			if strings.Contains(preview, fragment) {
+				return newToolError("PERMISSION_DENIED",
+					"检测到删除敏感文件（%s），该操作不可逆，已拦截", fragment)
+			}
+		}
+		// L3-14: rm -rf 递归删除用户重要目录
+		if strings.Contains(preview, "rm -rf") || strings.Contains(preview, "rm -r -f") ||
+			strings.Contains(preview, "rm -fr") {
+			for _, pattern := range homeDirPatterns {
+				if strings.Contains(preview, pattern) {
+					return newToolError("PERMISSION_DENIED",
+						"检测到递归删除用户目录（%s），该操作不可逆，已拦截", pattern)
+				}
+			}
+			// rm -rf ~ 或 rm -rf $home
+			if strings.Contains(preview, "rm -rf ~") || strings.Contains(preview, "rm -rf $home") {
+				return newToolError("PERMISSION_DENIED",
+					"检测到递归删除用户主目录，该操作不可逆，已拦截")
+			}
+		}
+		// L3-15: rm -f / rm -rf 系统目录
+		if strings.Contains(preview, "rm -f") || strings.Contains(preview, "rm -rf") ||
+			strings.Contains(preview, "rm -r -f") || strings.Contains(preview, "rm -fr") {
+			for _, dir := range systemDirs {
+				if strings.Contains(preview, dir) {
+					return newToolError("PERMISSION_DENIED",
+						"检测到删除系统目录文件（%s），该操作不可逆，已拦截", dir)
+				}
+			}
+		}
+		// rm 系统关键文件
+		for _, path := range systemCriticalPaths {
+			if strings.Contains(preview, path) {
+				return newToolError("PERMISSION_DENIED",
+					"检测到删除系统关键文件（%s），该操作不可逆，已拦截", path)
+			}
+		}
+	}
+
+	// --- L3-16: chmod 777 敏感文件 ---
+	if strings.Contains(preview, "chmod ") {
+		if strings.Contains(preview, "777") || strings.Contains(preview, "a+rwx") ||
+			strings.Contains(preview, "a+rw") || strings.Contains(preview, "a=rwx") {
+			for _, fragment := range sensitivePathFragmentsForGuard() {
+				if strings.Contains(preview, fragment) {
+					return newToolError("PERMISSION_DENIED",
+						"检测到修改敏感文件权限为全局可读写（%s），已拦截", fragment)
+				}
+			}
+			for _, path := range systemCriticalPaths {
+				if strings.Contains(preview, path) {
+					return newToolError("PERMISSION_DENIED",
+						"检测到修改系统文件权限为全局可读写（%s），已拦截", path)
+				}
+			}
+		}
+	}
+
+	// --- L3-17: chown 敏感文件 ---
+	if strings.Contains(preview, "chown ") {
+		for _, fragment := range sensitivePathFragmentsForGuard() {
+			if strings.Contains(preview, fragment) {
+				return newToolError("PERMISSION_DENIED",
+					"检测到修改敏感文件所有者（%s），已拦截", fragment)
+			}
+		}
+		for _, path := range systemCriticalPaths {
+			if strings.Contains(preview, path) {
+				return newToolError("PERMISSION_DENIED",
+					"检测到修改系统文件所有者（%s），已拦截", path)
+			}
+		}
+	}
+
+	// --- L3-18: 覆盖系统关键文件 ---
+	// 检测 > 或 >> 重定向到系统关键文件
+	for _, path := range systemCriticalPaths {
+		if strings.Contains(preview, "> "+path) || strings.Contains(preview, ">"+path) ||
+			strings.Contains(preview, ">> "+path) || strings.Contains(preview, ">>"+path) {
+			return newToolError("PERMISSION_DENIED",
+				"检测到覆盖系统关键文件（%s），已拦截", path)
+		}
+	}
+
+	// --- L3-19: 磁盘覆写 ---
+	// dd if= 已在 highRiskPatterns 中覆盖；这里补充 dd of=/dev/ 变体
+	if strings.Contains(preview, "dd ") {
+		if strings.Contains(preview, "of=/dev/") {
+			return newToolError("PERMISSION_DENIED",
+				"检测到磁盘覆写操作（dd of=/dev/...），该操作不可逆，已拦截")
+		}
+	}
+
+	// --- L3-20: 终止关键系统进程 ---
+	// kill -9 1（PID 1 为 init/systemd）
+	if strings.Contains(preview, "kill ") {
+		if strings.Contains(preview, "kill -9 1") || strings.Contains(preview, "kill -kill 1") ||
+			strings.Contains(preview, "kill -9 -1") || strings.Contains(preview, "kill -kill -1") {
+			return newToolError("PERMISSION_DENIED",
+				"检测到终止关键系统进程（PID 1），已拦截")
+		}
+	}
+
+	// L3-21: pkill -9（killall 已在 highRiskPatterns 中覆盖）
+	if strings.Contains(preview, "pkill -9") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到批量终止用户进程（pkill -9），已拦截")
+	}
+
+	// --- L3-22: 清空文件内容（证据销毁） ---
+	// : > file, > file, cat /dev/null > file
+	truncateIndicators := []string{": >", "cat /dev/null >"}
+	for _, indicator := range truncateIndicators {
+		if strings.Contains(preview, indicator) {
+			for _, path := range historyPaths {
+				if strings.Contains(preview, path) {
+					return newToolError("PERMISSION_DENIED",
+						"检测到清空文件内容（%s，疑似证据销毁），已拦截", path)
+				}
+			}
+			for _, fragment := range sensitivePathFragmentsForGuard() {
+				if strings.Contains(preview, fragment) {
+					return newToolError("PERMISSION_DENIED",
+						"检测到清空敏感文件内容（%s，疑似证据销毁），已拦截", fragment)
+				}
+			}
+		}
+	}
+	// > ~/.bash_history（无 : 前缀）
+	if strings.Contains(preview, "> ~") || strings.Contains(preview, ">~") {
+		for _, path := range historyPaths {
+			if strings.Contains(preview, path) {
+				return newToolError("PERMISSION_DENIED",
+					"检测到清空文件内容（%s，疑似证据销毁），已拦截", path)
+			}
+		}
+	}
+	// truncate -s 0
+	if strings.Contains(preview, "truncate ") {
+		for _, path := range historyPaths {
+			if strings.Contains(preview, path) {
+				return newToolError("PERMISSION_DENIED",
+					"检测到截断历史文件（%s，疑似证据销毁），已拦截", path)
+			}
+		}
+	}
+
+	// --- L3-23: 安全擦除文件 ---
+	if strings.Contains(preview, "shred ") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到安全擦除文件操作（shred），该操作不可逆，已拦截")
+	}
+
+	// --- L3-24: 卸载文件系统 ---
+	if strings.Contains(preview, "umount ") || strings.Contains(preview, "diskutil unmount") {
+		if strings.Contains(preview, "umount /") || strings.Contains(preview, "umount ~") ||
+			strings.Contains(preview, "diskutil unmount") {
+			return newToolError("PERMISSION_DENIED",
+				"检测到卸载文件系统操作，已拦截")
+		}
+	}
+
+	// --- L3-25: 关机/重启 ---
+	// shutdown 和 reboot 已在 highRiskPatterns 中覆盖
+	// 补充 halt、poweroff、init 0/6
+	shutdownPatterns := []string{"halt", "poweroff", "init 0", "init 6"}
+	for _, pattern := range shutdownPatterns {
+		if strings.Contains(preview, pattern) {
+			return newToolError("PERMISSION_DENIED",
+				"检测到关机/重启操作（%s），已拦截", pattern)
+		}
+	}
+
+	// --- 脚本语言内的破坏性操作 ---
+	if err := guardScriptDestructiveActions(payload, preview); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// guardScriptDestructiveActions 检测通过脚本语言（Python/Perl/Ruby/PHP/Node.js）
+// 执行的破坏性操作。攻击者可绕过 rm/chmod 等命令级拦截，使用脚本语言的 API
+// 实现同类操作，如 os.remove('/etc/passwd')、shutil.rmtree('/home/user') 等。
+func guardScriptDestructiveActions(payload commandArguments, preview string) error {
+	// 脚本语言执行关键词
+	scriptIndicators := []string{
+		"python ", "python3 ", "python2 ",
+		"perl ", "perl -e",
+		"ruby ", "ruby -e",
+		"php ", "php -r",
+		"node ", "node -e",
+	}
+	hasScript := false
+	for _, s := range scriptIndicators {
+		if strings.Contains(preview, s) {
+			hasScript = true
+			break
+		}
+	}
+	if !hasScript {
+		return nil
+	}
+
+	// 脚本语言中的破坏性文件操作 API
+	destructiveAPIPatterns := []string{
+		// Python 文件删除
+		"os.remove", "os.unlink",
+		// Python 目录递归删除
+		"shutil.rmtree",
+		// Python 权限修改
+		"os.chmod",
+		// Python 所有者修改
+		"os.chown",
+		// Python 通过 os.system/subprocess 执行 shell 命令
+		"os.system", "subprocess.run", "subprocess.call", "subprocess.Popen",
+		// Python pathlib 删除
+		"path.unlink", "path.rmdir",
+		// Node.js 文件操作
+		"unlinksync", "rmsync", "rmdirsync",
+		"chmodsync", "chownsync",
+		// Ruby 文件操作
+		"fileutils.rm_rf", "fileutils.rm",
+		// PHP 文件操作
+		"unlink(",
+	}
+	hasDestructiveAPI := false
+	for _, p := range destructiveAPIPatterns {
+		if strings.Contains(preview, p) {
+			hasDestructiveAPI = true
+			break
+		}
+	}
+	if !hasDestructiveAPI {
+		return nil
+	}
+
+	// 检查脚本中是否包含敏感路径
+	for _, fragment := range sensitivePathFragmentsForGuard() {
+		if strings.Contains(preview, fragment) {
+			return newToolError("PERMISSION_DENIED",
+				"检测到脚本语言执行破坏性操作访问敏感路径（%s），已拦截", fragment)
+		}
+	}
+
+	// 检查脚本中是否包含系统关键路径
+	systemCriticalPaths := []string{
+		"/etc/", "/usr/", "/bin/", "/sbin/", "/boot/",
+		"/dev/", "/sys/", "/proc/", "/lib/",
+	}
+	for _, path := range systemCriticalPaths {
+		if strings.Contains(preview, path) {
+			return newToolError("PERMISSION_DENIED",
+				"检测到脚本语言执行破坏性操作系统路径（%s），已拦截", path)
+		}
+	}
+
+	// 检查脚本中是否包含用户重要目录
+	homeDirPatterns := []string{
+		"~/documents", "~/desktop", "~/downloads",
+		"/home/", "/users/",
+	}
+	for _, pattern := range homeDirPatterns {
+		if strings.Contains(preview, pattern) {
+			return newToolError("PERMISSION_DENIED",
+				"检测到脚本语言执行破坏性操作访问用户目录（%s），已拦截", pattern)
+		}
+	}
+
+	// shutil.rmtree 总是危险，即使目标不在敏感路径列表中
+	if strings.Contains(preview, "shutil.rmtree") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到脚本语言执行递归删除目录操作（shutil.rmtree），已拦截")
+	}
+
+	// os.system + rm 组合
+	if strings.Contains(preview, "os.system") && strings.Contains(preview, "rm ") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到脚本语言通过 os.system 执行删除操作，已拦截")
+	}
+
 	return nil
 }
 

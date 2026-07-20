@@ -1027,3 +1027,372 @@ func TestGuardNetworkDownloadSafeCurl(t *testing.T) {
 		t.Fatalf("expected safe curl to pass, got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 不可逆破坏性操作拦截测试（L3-13 ~ L3-25）
+// ---------------------------------------------------------------------------
+
+// L3-13: 删除敏感文件
+func TestGuardDestructive_RmSensitiveFile(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "rm ~/.ssh/id_rsa"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected rm ~/.ssh/id_rsa to be blocked")
+	}
+	if !strings.Contains(err.Error(), "删除敏感文件") {
+		t.Fatalf("expected sensitive file deletion error, got: %v", err)
+	}
+}
+
+// L3-13: 删除敏感文件（/etc/passwd）
+func TestGuardDestructive_RmEtcPasswd(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "rm /etc/passwd"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected rm /etc/passwd to be blocked")
+	}
+}
+
+// L3-14: 递归删除目录
+func TestGuardDestructive_RmRfDocuments(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "rm -rf ~/Documents/"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected rm -rf ~/Documents/ to be blocked")
+	}
+	if !strings.Contains(err.Error(), "递归删除") {
+		t.Fatalf("expected recursive deletion error, got: %v", err)
+	}
+}
+
+// L3-14: 递归删除用户主目录
+func TestGuardDestructive_RmRfHome(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "rm -rf ~"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected rm -rf ~ to be blocked")
+	}
+}
+
+// L3-15: 强制删除工作目录外文件
+func TestGuardDestructive_RmForceEtcHosts(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "rm -f /etc/hosts"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected rm -f /etc/hosts to be blocked")
+	}
+	if !strings.Contains(err.Error(), "系统") {
+		t.Fatalf("expected system file deletion error, got: %v", err)
+	}
+}
+
+// L3-15: 强制删除系统目录
+func TestGuardDestructive_RmRfUsr(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "rm -rf /usr/local/foo"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected rm -rf /usr/ to be blocked")
+	}
+}
+
+// L3-16: 修改文件权限为全局可读写
+// 注意：chmod 777 ~/.ssh/id_rsa 可能被 guardSensitiveFileAccess 先拦截
+// （因为 "chmod" 包含 "od " 子串且 .ssh/ 是敏感路径），也可能被
+// guardDestructiveActions 拦截。两种情况都算拦截成功。
+func TestGuardDestructive_Chmod777SSHKey(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "chmod 777 ~/.ssh/id_rsa"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected chmod 777 ~/.ssh/id_rsa to be blocked")
+	}
+	// 可被敏感文件访问拦截或权限修改拦截，两者都算成功
+}
+
+// L3-16: chmod 777 系统文件
+func TestGuardDestructive_Chmod777EtcHosts(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "chmod 777 /etc/hosts"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected chmod 777 /etc/hosts to be blocked")
+	}
+}
+
+// L3-17: 修改文件所有者
+func TestGuardDestructive_ChownSSHKey(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "chown root ~/.ssh/id_rsa"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected chown root ~/.ssh/id_rsa to be blocked")
+	}
+	if !strings.Contains(err.Error(), "所有者") {
+		t.Fatalf("expected chown error, got: %v", err)
+	}
+}
+
+// L3-18: 覆盖系统关键文件
+func TestGuardDestructive_OverwriteEtcHosts(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "echo probe > /etc/hosts"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected echo > /etc/hosts to be blocked")
+	}
+	if !strings.Contains(err.Error(), "覆盖系统") {
+		t.Fatalf("expected system file overwrite error, got: %v", err)
+	}
+}
+
+// L3-18: 追加到系统关键文件
+func TestGuardDestructive_AppendEtcPasswd(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "echo hacker >> /etc/passwd"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected echo >> /etc/passwd to be blocked")
+	}
+}
+
+// L3-19: 磁盘覆写
+func TestGuardDestructive_DdOfDev(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "dd if=/dev/zero of=/dev/sda bs=1M count=1"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected dd of=/dev/sda to be blocked")
+	}
+}
+
+// L3-20: 终止关键系统进程
+func TestGuardDestructive_KillPID1(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "kill -9 1"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected kill -9 1 to be blocked")
+	}
+	if !strings.Contains(err.Error(), "关键系统进程") {
+		t.Fatalf("expected kill PID 1 error, got: %v", err)
+	}
+}
+
+// L3-21: pkill -9 批量终止
+func TestGuardDestructive_Pkill9(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "pkill -9 bash"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected pkill -9 bash to be blocked")
+	}
+}
+
+// L3-22: 清空文件内容（证据销毁）
+func TestGuardDestructive_TruncateBashHistory(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: ": > ~/.bash_history"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected : > ~/.bash_history to be blocked")
+	}
+	if !strings.Contains(err.Error(), "证据销毁") {
+		t.Fatalf("expected evidence destruction error, got: %v", err)
+	}
+}
+
+// L3-22: cat /dev/null > history
+func TestGuardDestructive_CatDevNullHistory(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "cat /dev/null > ~/.bash_history"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected cat /dev/null > ~/.bash_history to be blocked")
+	}
+}
+
+// L3-22: truncate -s 0
+func TestGuardDestructive_TruncateZshHistory(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "truncate -s 0 ~/.zsh_history"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected truncate -s 0 ~/.zsh_history to be blocked")
+	}
+}
+
+// L3-23: 安全擦除文件
+func TestGuardDestructive_Shred(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "shred -u ~/.ssh/id_rsa"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected shred -u ~/.ssh/id_rsa to be blocked")
+	}
+	if !strings.Contains(err.Error(), "擦除") {
+		t.Fatalf("expected shred error, got: %v", err)
+	}
+}
+
+// L3-24: 卸载文件系统
+func TestGuardDestructive_UmountRoot(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "umount /"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected umount / to be blocked")
+	}
+	if !strings.Contains(err.Error(), "卸载") {
+		t.Fatalf("expected umount error, got: %v", err)
+	}
+}
+
+// L3-25: 关机 halt
+func TestGuardDestructive_Halt(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "halt"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected halt to be blocked")
+	}
+}
+
+// L3-25: poweroff
+func TestGuardDestructive_Poweroff(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "poweroff"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected poweroff to be blocked")
+	}
+}
+
+// L3-25: init 0
+func TestGuardDestructive_Init0(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "init 0"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected init 0 to be blocked")
+	}
+}
+
+// 安全命令不应被拦截
+func TestGuardDestructive_SafeRmTempFile(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "rm /tmp/hello.txt"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected rm /tmp/hello.txt to pass, got: %v", err)
+	}
+}
+
+func TestGuardDestructive_SafeChmod(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "chmod 644 /tmp/file.txt"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected chmod 644 /tmp/file.txt to pass, got: %v", err)
+	}
+}
+
+func TestGuardDestructive_SafeEchoRedirect(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "echo hello > /tmp/file.txt"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected echo > /tmp/file.txt to pass, got: %v", err)
+	}
+}
+
+func TestGuardDestructive_SafeKillProcess(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "kill 12345"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected kill 12345 to pass, got: %v", err)
+	}
+}
+
+// 非 auto 模式下不拦截
+func TestGuardDestructive_AllowedInNonAutoMode(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "rm -rf ~/Documents/"}
+	cfg := internalconfig.Config{ApprovalMode: "confirm"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected no error in non-auto mode, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 脚本语言破坏性操作拦截测试
+// ---------------------------------------------------------------------------
+
+// Python os.remove 敏感文件
+func TestGuardScriptDestructive_PythonOsRemove(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: `python3 -c 'import os; os.remove("/etc/passwd")'`}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected python os.remove('/etc/passwd') to be blocked")
+	}
+	if !strings.Contains(err.Error(), "脚本语言") {
+		t.Fatalf("expected script error, got: %v", err)
+	}
+}
+
+// Python shutil.rmtree 用户目录
+func TestGuardScriptDestructive_PythonShutilRmtree(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: `python3 -c 'import shutil; shutil.rmtree("/home/user")'`}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected python shutil.rmtree to be blocked")
+	}
+}
+
+// Python os.chmod 敏感文件
+func TestGuardScriptDestructive_PythonOsChmod(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: `python3 -c 'import os; os.chmod("/etc/passwd", 0o777)'`}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected python os.chmod to be blocked")
+	}
+}
+
+// Node.js unlinkSync 敏感文件
+func TestGuardScriptDestructive_NodeUnlinkSync(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: `node -e 'require("fs").unlinkSync("/etc/passwd")'`}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected node unlinkSync to be blocked")
+	}
+}
+
+// Python 安全脚本不被拦截
+func TestGuardScriptDestructive_SafePythonScript(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: `python3 -c 'print("hello world")'`}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected safe python script to pass, got: %v", err)
+	}
+}
+
+// Python 安全文件操作不被拦截
+func TestGuardScriptDestructive_SafePythonFileRead(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: `python3 -c 'open("/tmp/hello.txt").read()'`}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected safe python file read to pass, got: %v", err)
+	}
+}
