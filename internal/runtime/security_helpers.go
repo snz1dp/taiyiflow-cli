@@ -1302,6 +1302,111 @@ func guardScriptDestructiveActions(payload commandArguments, preview string) err
 	return nil
 }
 
+// windowsDrivePathPattern 返回所有可能的 Windows 盘符路径前缀（如 "c:\\" ~ "z:\\"）。
+// 用于盘符无关的路径匹配，避免硬编码 C 盘导致遗漏安装在 D 盘或其他盘符的 Windows 系统。
+// 仅作为环境变量不可用时的兜底方案。
+func windowsDrivePathPattern(suffix string) []string {
+	var result []string
+	for c := byte('c'); c <= 'z'; c++ {
+		result = append(result, string(c)+":\\"+suffix)
+	}
+	return result
+}
+
+// previewContainsAny 检查 preview 是否包含 patterns 中任一项。
+func previewContainsAny(preview string, patterns []string) bool {
+	for _, p := range patterns {
+		if strings.Contains(preview, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// windowsSystemRootPaths 返回 Windows 系统目录路径列表，优先从 SystemRoot 和 WINDIR
+// 环境变量读取真实路径（如 "C:\\Windows"），回退到全盘符扫描作为兜底。
+// 这样可以精确匹配当前系统真实的安装路径，而非盲猜所有盘符。
+func windowsSystemRootPaths() []string {
+	var paths []string
+	seen := map[string]struct{}{}
+	addPath := func(p string) {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == "" {
+			return
+		}
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		paths = append(paths, p)
+	}
+	// 优先从环境变量读取真实路径
+	addPath(os.Getenv("SystemRoot"))
+	addPath(os.Getenv("WINDIR"))
+	// 兜底：如果环境变量不可用（如非 Windows 平台测试场景），回退到全盘符扫描
+	if len(paths) == 0 {
+		paths = windowsDrivePathPattern("windows")
+	}
+	return paths
+}
+
+// windowsProgramFilesPaths 返回 Program Files 目录路径列表，优先从环境变量读取。
+func windowsProgramFilesPaths() []string {
+	var paths []string
+	seen := map[string]struct{}{}
+	addPath := func(p string) {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == "" {
+			return
+		}
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		paths = append(paths, p)
+	}
+	addPath(os.Getenv("ProgramFiles"))
+	addPath(os.Getenv("ProgramFiles(x86)"))
+	addPath(os.Getenv("PROGRAMFILES"))
+	// 兜底
+	if len(paths) == 0 {
+		paths = windowsDrivePathPattern("program files")
+	}
+	return paths
+}
+
+// windowsUserDirPaths 返回 Windows 用户目录路径列表，优先从环境变量读取。
+// 覆盖 USERPROFILE、HOMEDRIVE+HOMEPATH 组合，以及全盘符 \users 兜底。
+func windowsUserDirPaths() []string {
+	var paths []string
+	seen := map[string]struct{}{}
+	addPath := func(p string) {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == "" {
+			return
+		}
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		paths = append(paths, p)
+	}
+	addPath(os.Getenv("USERPROFILE"))
+	// HOMEDRIVE + HOMEPATH 组合（如 C: + \Users\user）
+	homeDrive := os.Getenv("HOMEDRIVE")
+	homePath := os.Getenv("HOMEPATH")
+	if homeDrive != "" && homePath != "" {
+		addPath(strings.ToLower(homeDrive + homePath))
+		// 同时添加 \users 前缀，用于匹配 rmdir /s \\users 场景
+		addPath(strings.ToLower(homeDrive + "\\users"))
+	}
+	// 兜底
+	if len(paths) == 0 {
+		paths = windowsDrivePathPattern("users")
+	}
+	return paths
+}
+
 // guardWindowsDestructiveActions 检测 Windows 平台特有的破坏性操作。
 // 覆盖范围：
 //   - CMD 命令：del/erase, rmdir/rd /s, format, diskpart, taskkill /f,
@@ -1332,8 +1437,9 @@ func guardWindowsDestructiveActions(payload commandArguments, preview string) er
 			strings.Contains(preview, "del /s") || strings.Contains(preview, "del /a") {
 			windowsSysDirs := []string{
 				"system32", "windows", "boot", "programdata",
-				"\\windows\\", "c:\\windows",
+				"\\windows\\",
 			}
+			windowsSysDirs = append(windowsSysDirs, windowsSystemRootPaths()...)
 			for _, dir := range windowsSysDirs {
 				if strings.Contains(preview, dir) {
 					return newToolError("PERMISSION_DENIED",
@@ -1357,8 +1463,9 @@ func guardWindowsDestructiveActions(payload commandArguments, preview string) er
 			windowsUserDirs := []string{
 				"\\users\\", "\\desktop", "\\documents", "\\downloads",
 				"\\pictures", "\\music", "\\videos",
-				"c:\\users", "%userprofile%",
+				"%userprofile%",
 			}
+			windowsUserDirs = append(windowsUserDirs, windowsUserDirPaths()...)
 			for _, dir := range windowsUserDirs {
 				if strings.Contains(preview, dir) {
 					return newToolError("PERMISSION_DENIED",
@@ -1366,8 +1473,9 @@ func guardWindowsDestructiveActions(payload commandArguments, preview string) er
 				}
 			}
 			windowsSysDirs := []string{
-				"system32", "\\windows\\", "c:\\windows", "bootmgr",
+				"system32", "\\windows\\", "bootmgr",
 			}
+			windowsSysDirs = append(windowsSysDirs, windowsSystemRootPaths()...)
 			for _, dir := range windowsSysDirs {
 				if strings.Contains(preview, dir) {
 					return newToolError("PERMISSION_DENIED",
@@ -1379,11 +1487,28 @@ func guardWindowsDestructiveActions(payload commandArguments, preview string) er
 
 	// format 格式化磁盘
 	if strings.Contains(preview, "format ") {
-		if strings.Contains(preview, "format c") || strings.Contains(preview, "format d") ||
-			strings.Contains(preview, "format e") || strings.Contains(preview, "format /fs") ||
-			strings.Contains(preview, "format -") {
+		// 检查是否包含盘符（如 format c: / format d: 等），或使用 /fs 参数
+		if strings.Contains(preview, "format /fs") || strings.Contains(preview, "format -") {
 			return newToolError("PERMISSION_DENIED",
 				"检测到格式化磁盘操作（format），该操作不可逆，已拦截")
+		}
+		// 优先检查从环境变量推断的系统盘
+		for _, sysPath := range windowsSystemRootPaths() {
+			// sysPath 形如 "c:\windows"，提取盘符前缀 "c:"
+			if len(sysPath) >= 2 && sysPath[1] == ':' {
+				driveLetter := sysPath[:2]
+				if strings.Contains(preview, "format "+driveLetter) {
+					return newToolError("PERMISSION_DENIED",
+						"检测到格式化磁盘操作（format），该操作不可逆，已拦截")
+				}
+			}
+		}
+		// 兜底：检查 format <盘符>: 模式，覆盖 a-z 所有盘符
+		for c := byte('a'); c <= 'z'; c++ {
+			if strings.Contains(preview, "format "+string(c)+":") {
+				return newToolError("PERMISSION_DENIED",
+					"检测到格式化磁盘操作（format），该操作不可逆，已拦截")
+			}
 		}
 	}
 
@@ -1451,9 +1576,11 @@ func guardWindowsDestructiveActions(payload commandArguments, preview string) er
 			strings.Contains(preview, "/remove") || strings.Contains(preview, "/reset") {
 			// 检查是否修改系统目录权限
 			windowsSysPaths := []string{
-				"system32", "\\windows\\", "c:\\windows", "bootmgr",
+				"system32", "\\windows\\",
 				"\\program files\\",
 			}
+			windowsSysPaths = append(windowsSysPaths, windowsSystemRootPaths()...)
+			windowsSysPaths = append(windowsSysPaths, windowsProgramFilesPaths()...)
 			for _, path := range windowsSysPaths {
 				if strings.Contains(preview, path) {
 					return newToolError("PERMISSION_DENIED",
@@ -1472,9 +1599,11 @@ func guardWindowsDestructiveActions(payload commandArguments, preview string) er
 	if strings.Contains(preview, "takeown ") {
 		if strings.Contains(preview, "/r") || strings.Contains(preview, "/d") {
 			windowsSysPaths := []string{
-				"system32", "\\windows\\", "c:\\windows",
+				"system32", "\\windows\\",
 				"\\program files\\",
 			}
+			windowsSysPaths = append(windowsSysPaths, windowsSystemRootPaths()...)
+			windowsSysPaths = append(windowsSysPaths, windowsProgramFilesPaths()...)
 			for _, path := range windowsSysPaths {
 				if strings.Contains(preview, path) {
 					return newToolError("PERMISSION_DENIED",
@@ -1541,9 +1670,11 @@ func guardWindowsDestructiveActions(payload commandArguments, preview string) er
 			}
 			// 检查系统目录
 			windowsSysPaths := []string{
-				"system32", "\\windows\\", "c:\\windows",
-				"\\users\\", "c:\\users",
+				"system32", "\\windows\\",
+				"\\users\\",
 			}
+			windowsSysPaths = append(windowsSysPaths, windowsSystemRootPaths()...)
+			windowsSysPaths = append(windowsSysPaths, windowsUserDirPaths()...)
 			for _, path := range windowsSysPaths {
 				if strings.Contains(preview, path) {
 					return newToolError("PERMISSION_DENIED",

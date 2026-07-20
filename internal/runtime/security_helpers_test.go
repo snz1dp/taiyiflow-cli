@@ -1935,3 +1935,227 @@ func TestGuardWindows_BackslashHostsPath(t *testing.T) {
 		t.Fatal("expected system32\\drivers\\etc\\hosts access to be blocked")
 	}
 }
+
+// --- 非 C 盘安装测试（Windows 不一定装在 C 盘）---
+
+// W-Drive-1: D 盘 rmdir /s /q 递归删除用户目录
+func TestGuardWindows_NonCDrive_RmdirUsers(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "rmdir /s /q D:\\Users"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected rmdir /s /q D:\\Users to be blocked")
+	}
+}
+
+// W-Drive-2: E 盘 rmdir /s /q 递归删除系统目录
+func TestGuardWindows_NonCDrive_RmdirSystem32(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "rmdir /s /q E:\\Windows\\System32"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected rmdir /s /q E:\\Windows\\System32 to be blocked")
+	}
+}
+
+// W-Drive-3: D 盘 del /f /q 强制删除系统目录
+func TestGuardWindows_NonCDrive_DelForceSystemDir(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "del /f /q D:\\Windows\\System32\\foo.dll"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected del /f D:\\Windows\\System32 to be blocked")
+	}
+}
+
+// W-Drive-4: F 盘 format 格式化
+func TestGuardWindows_NonCDrive_FormatF(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "format F: /fs:ntfs"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected format F: to be blocked")
+	}
+}
+
+// W-Drive-5: D 盘 icacls 修改系统目录权限
+func TestGuardWindows_NonCDrive_IcaclsSystemDir(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "icacls D:\\Windows\\System32 /grant Everyone:F /t"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected icacls D:\\Windows\\System32 to be blocked")
+	}
+}
+
+// W-Drive-6: E 盘 takeown 递归夺取所有权
+func TestGuardWindows_NonCDrive_TakeownSystemDir(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "takeown /f E:\\Windows\\System32 /r /d y"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected takeown E:\\Windows\\System32 to be blocked")
+	}
+}
+
+// W-Drive-7: D 盘 PowerShell Remove-Item 递归删除系统目录
+func TestGuardWindows_NonCDrive_PSRemoveItemSystemDir(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Remove-Item -Recurse -Force D:\\Windows\\System32\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Remove-Item D:\\Windows\\System32 to be blocked")
+	}
+}
+
+// W-Drive-8: D 盘 PowerShell Remove-Item 递归删除用户目录
+func TestGuardWindows_NonCDrive_PSRemoveItemUsers(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Remove-Item -Recurse -Force D:\\Users\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Remove-Item D:\\Users to be blocked")
+	}
+}
+
+// W-Drive-9: D 盘 del 删除 .ssh 密钥
+func TestGuardWindows_NonCDrive_DelSSHKey(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "del D:\\Users\\user\\.ssh\\id_rsa"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected del D:\\Users\\user\\.ssh\\id_rsa to be blocked")
+	}
+}
+
+// W-Drive-10: D 盘 type 读取 SAM 文件
+func TestGuardWindows_NonCDrive_TypeSAM(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "type D:\\Windows\\System32\\config\\SAM"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected type D:\\Windows\\System32\\config\\SAM to be blocked")
+	}
+}
+
+// W-Drive-11: 安全命令不误拦 — D 盘 dir 列目录
+func TestGuardWindows_NonCDrive_SafeDir(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "dir D:\\Users\\user\\Documents"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected dir D:\\Users\\user\\Documents to be allowed, got %v", err)
+	}
+}
+
+// W-Drive-12: 安全命令不误拦 — D 盘 del 临时文件
+func TestGuardWindows_NonCDrive_SafeDelTemp(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "del D:\\Users\\user\\AppData\\Local\\Temp\\test.tmp"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected del D:\\Users\\user\\AppData\\Local\\Temp\\test.tmp to be allowed, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 环境变量优先匹配测试：模拟 SystemRoot 指向非 C 盘
+// ---------------------------------------------------------------------------
+
+// W-Env-1: 模拟 SystemRoot=D:\Windows，验证 del /f D:\Windows\System32 被拦截
+func TestGuardWindows_EnvVar_SystemRoot_DDrive(t *testing.T) {
+	t.Setenv("SystemRoot", `D:\Windows`)
+	t.Setenv("WINDIR", `D:\Windows`)
+	payload := commandArguments{Mode: "shell", RawCommand: "del /f /q D:\\Windows\\System32\\foo.dll"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected del /f D:\\Windows\\System32 to be blocked via SystemRoot env var")
+	}
+}
+
+// W-Env-2: 模拟 SystemRoot=E:\Windows，验证 rmdir /s E:\Windows\System32 被拦截
+func TestGuardWindows_EnvVar_SystemRoot_EDrive(t *testing.T) {
+	t.Setenv("SystemRoot", `E:\Windows`)
+	t.Setenv("WINDIR", `E:\Windows`)
+	payload := commandArguments{Mode: "shell", RawCommand: "rmdir /s /q E:\\Windows\\System32"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected rmdir /s E:\\Windows\\System32 to be blocked via SystemRoot env var")
+	}
+}
+
+// W-Env-3: 模拟 ProgramFiles=D:\Program Files，验证 icacls 修改权限被拦截
+func TestGuardWindows_EnvVar_ProgramFiles_DDrive(t *testing.T) {
+	t.Setenv("ProgramFiles", `D:\Program Files`)
+	t.Setenv("ProgramFiles(x86)", `D:\Program Files (x86)`)
+	payload := commandArguments{Mode: "shell", RawCommand: "icacls D:\\Program Files /grant Everyone:F /t"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected icacls D:\\Program Files to be blocked via ProgramFiles env var")
+	}
+}
+
+// W-Env-4: 模拟 USERPROFILE=D:\Users\test，验证 rmdir /s D:\Users 被拦截
+func TestGuardWindows_EnvVar_UserProfile_DDrive(t *testing.T) {
+	t.Setenv("USERPROFILE", `D:\Users\test`)
+	t.Setenv("HOMEDRIVE", "D:")
+	t.Setenv("HOMEPATH", `\Users\test`)
+	payload := commandArguments{Mode: "shell", RawCommand: "rmdir /s /q D:\\Users"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected rmdir /s D:\\Users to be blocked via USERPROFILE env var")
+	}
+}
+
+// W-Env-5: 模拟 SystemRoot=D:\Windows，验证 format D: 被拦截
+func TestGuardWindows_EnvVar_Format_DDrive(t *testing.T) {
+	t.Setenv("SystemRoot", `D:\Windows`)
+	t.Setenv("WINDIR", `D:\Windows`)
+	payload := commandArguments{Mode: "shell", RawCommand: "format D: /fs:ntfs /q"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected format D: to be blocked via SystemRoot env var")
+	}
+}
+
+// W-Env-6: 模拟 SystemRoot=E:\Windows，验证 takeown /r E:\Windows 被拦截
+func TestGuardWindows_EnvVar_Takeown_EDrive(t *testing.T) {
+	t.Setenv("SystemRoot", `E:\Windows`)
+	t.Setenv("WINDIR", `E:\Windows`)
+	payload := commandArguments{Mode: "shell", RawCommand: "takeown /f E:\\Windows\\System32 /r /d y"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected takeown E:\\Windows\\System32 to be blocked via SystemRoot env var")
+	}
+}
+
+// W-Env-7: 模拟 SystemRoot=D:\Windows，验证 PowerShell Remove-Item D:\Windows 被拦截
+func TestGuardWindows_EnvVar_PSRemoveItem_DDrive(t *testing.T) {
+	t.Setenv("SystemRoot", `D:\Windows`)
+	t.Setenv("WINDIR", `D:\Windows`)
+	payload := commandArguments{Mode: "shell", RawCommand: `powershell -c "Remove-Item -Recurse -Force D:\Windows\System32"`}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Remove-Item D:\\Windows\\System32 to be blocked via SystemRoot env var")
+	}
+}
+
+// W-Env-8: 模拟环境变量指向 D 盘，安全命令不误拦
+func TestGuardWindows_EnvVar_SafeCommand_DDrive(t *testing.T) {
+	t.Setenv("SystemRoot", `D:\Windows`)
+	t.Setenv("WINDIR", `D:\Windows`)
+	t.Setenv("USERPROFILE", `D:\Users\test`)
+	payload := commandArguments{Mode: "shell", RawCommand: "dir D:\\Users\\test\\Documents"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected dir D:\\Users\\test\\Documents to be allowed, got %v", err)
+	}
+}
