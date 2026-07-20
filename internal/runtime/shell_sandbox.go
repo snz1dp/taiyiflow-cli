@@ -127,6 +127,17 @@ func sensitivePaths() []string {
 		filepath.Join(homeDir, ".ssh"),
 		filepath.Join(homeDir, ".gnupg"),
 		filepath.Join(homeDir, ".aws"),
+		// 云平台凭证目录
+		filepath.Join(homeDir, ".kube"),
+		filepath.Join(homeDir, ".docker"),
+		filepath.Join(homeDir, ".azure"),
+		filepath.Join(homeDir, ".config", "gcloud"),
+		filepath.Join(homeDir, ".config", "azure"),
+		// Git 与包管理器凭证文件
+		filepath.Join(homeDir, ".git-credentials"),
+		filepath.Join(homeDir, ".netrc"),
+		filepath.Join(homeDir, ".npmrc"),
+		filepath.Join(homeDir, ".pypirc"),
 	}
 	switch runtime.GOOS {
 	case "darwin":
@@ -145,6 +156,17 @@ func sensitivePaths() []string {
 			"/etc/shadow",
 			"/etc/gshadow",
 			"/etc/sudoers",
+		)
+	case "windows":
+		systemRoot := os.Getenv("SystemRoot")
+		if systemRoot == "" {
+			systemRoot = `C:\Windows`
+		}
+		paths = append(paths,
+			filepath.Join(systemRoot, "System32", "config", "SAM"),
+			filepath.Join(systemRoot, "System32", "config", "SYSTEM"),
+			filepath.Join(systemRoot, "System32", "config", "SECURITY"),
+			filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Credentials"),
 		)
 	}
 	return paths

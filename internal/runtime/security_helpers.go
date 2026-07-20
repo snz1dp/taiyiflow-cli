@@ -478,6 +478,17 @@ func isSensitivePath(target string) bool {
 		filepath.Join(homeDir, ".ssh"),
 		filepath.Join(homeDir, ".gnupg"),
 		filepath.Join(homeDir, ".aws"),
+		// 云平台凭证目录
+		filepath.Join(homeDir, ".kube"),
+		filepath.Join(homeDir, ".docker"),
+		filepath.Join(homeDir, ".azure"),
+		filepath.Join(homeDir, ".config", "gcloud"),
+		filepath.Join(homeDir, ".config", "azure"),
+		// Git 与包管理器凭证文件
+		filepath.Join(homeDir, ".git-credentials"),
+		filepath.Join(homeDir, ".netrc"),
+		filepath.Join(homeDir, ".npmrc"),
+		filepath.Join(homeDir, ".pypirc"),
 	}
 	switch runtime.GOOS {
 	case "darwin":
@@ -496,6 +507,14 @@ func isSensitivePath(target string) bool {
 			"/etc/shadow",
 			"/etc/gshadow",
 			"/etc/sudoers",
+		)
+	case "windows":
+		// Windows 敏感注册表蜂巢文件和凭证目录
+		blocked = append(blocked,
+			filepath.Join(os.Getenv("SystemRoot"), "System32", "config", "SAM"),
+			filepath.Join(os.Getenv("SystemRoot"), "System32", "config", "SYSTEM"),
+			filepath.Join(os.Getenv("SystemRoot"), "System32", "config", "SECURITY"),
+			filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Credentials"),
 		)
 	}
 	// 解析符号链接，确保 /private/etc/* 等链接路径也能被拦截。
@@ -588,6 +607,63 @@ func guardDangerousCommand(payload commandArguments, config internalconfig.Confi
 	for _, pattern := range highRiskPatterns {
 		if strings.Contains(preview, pattern) && strings.TrimSpace(config.ApprovalMode) == "auto" {
 			return newToolError("PERMISSION_DENIED", "检测到高风险命令，请切换到允许模式后再执行")
+		}
+	}
+	// 敏感文件访问拦截：检测通过 shell 命令读取系统密码文件、
+	// SSH 密钥、云平台凭证等敏感路径的行为。
+	if strings.TrimSpace(config.ApprovalMode) == "auto" {
+		if err := guardSensitiveFileAccess(payload, preview); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// guardSensitiveFileAccess 检测 shell 命令中是否包含对敏感文件路径的访问。
+// 敏感路径包括：系统密码文件（/etc/passwd、/etc/shadow）、SSH 密钥目录、
+// 云平台凭证目录（.aws、.kube、.docker 等）、Git/包管理器凭证文件等。
+// 该检测在 auto 审批模式下生效，拦截通过 cat/less/head/tail/xxd/strings/cp
+// 等命令读取或复制敏感文件的行为。
+func guardSensitiveFileAccess(payload commandArguments, preview string) error {
+	// 读取类命令关键词，这些命令如果出现在 shell 命令中且参数包含敏感路径则拦截。
+	// 使用子串匹配而非精确分词，因为命令可能通过管道组合。
+	readCommands := []string{
+		"cat ", "less ", "more ", "head ", "tail ", "vi ", "vim ", "nano ",
+		"xxd ", "hexdump ", "od ", "strings ", "cp ", "mv ", "scp ", "rsync ",
+		"base64 ", "tee ", "dd ", "grep ", "awk ", "sed ", "ls ",
+	}
+	// 敏感路径片段（小写匹配），覆盖系统密码文件和用户隐私/密钥目录。
+	sensitivePathFragments := []string{
+		// 系统密码文件
+		"/etc/passwd", "/etc/shadow", "/etc/gshadow", "/etc/sudoers",
+		"/etc/master.passwd",
+		// SSH 密钥与配置
+		".ssh/", "id_rsa", "id_ecdsa", "id_ed25519", "id_dsa",
+		"authorized_keys", "known_hosts",
+		// GPG 密钥
+		".gnupg/",
+		// 云平台凭证
+		".aws/", ".kube/", ".docker/",
+		".config/gcloud/", ".azure/", ".config/azure/",
+		// Git 与包管理器凭证
+		".git-credentials", ".netrc", ".npmrc", ".pypirc",
+		// macOS 钥匙串
+		"library/keychains",
+	}
+	// 检查命令预览中是否同时包含读取类命令和敏感路径片段。
+	hasReadCommand := false
+	for _, cmd := range readCommands {
+		if strings.Contains(preview, cmd) {
+			hasReadCommand = true
+			break
+		}
+	}
+	if !hasReadCommand {
+		return nil
+	}
+	for _, fragment := range sensitivePathFragments {
+		if strings.Contains(preview, fragment) {
+			return newToolError("PERMISSION_DENIED", "检测到敏感文件访问（%s），请切换到允许模式后再执行", fragment)
 		}
 	}
 	return nil
