@@ -654,6 +654,14 @@ func guardDangerousCommand(payload commandArguments, config internalconfig.Confi
 			return err
 		}
 	}
+	// Windows 平台破坏性操作拦截：CMD 命令（del, format, reg delete, sc delete,
+	// bcdedit, vssadmin, diskpart 等）和 PowerShell Cmdlet（Remove-Item,
+	// Format-Volume, Stop-Computer 等）。
+	if strings.TrimSpace(config.ApprovalMode) == "auto" {
+		if err := guardWindowsDestructiveActions(payload, preview); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -742,6 +750,7 @@ func guardSensitiveFileAccess(payload commandArguments, preview string) error {
 		"cat ", "less ", "more ", "head ", "tail ", "vi ", "vim ", "nano ",
 		"xxd ", "hexdump ", "od ", "strings ", "cp ", "mv ", "scp ", "rsync ",
 		"base64 ", "tee ", "dd ", "grep ", "awk ", "sed ", "ls ",
+		"type ", // Windows CMD type 命令（等同于 cat）
 	}
 	// 敏感路径片段（小写匹配），覆盖系统密码文件和用户隐私/密钥目录。
 	sensitivePathFragments := sensitivePathFragmentsForGuard()
@@ -765,23 +774,34 @@ func guardSensitiveFileAccess(payload commandArguments, preview string) error {
 }
 
 // sensitivePathFragmentsForGuard 返回敏感路径片段列表，供各 guard 函数复用。
+// 包含正斜杠（Unix/macOS）和反斜杠（Windows）两种变体，确保跨平台匹配。
 func sensitivePathFragmentsForGuard() []string {
 	return []string{
-		// 系统密码文件
+		// 系统密码文件（Unix/macOS）
 		"/etc/passwd", "/etc/shadow", "/etc/gshadow", "/etc/sudoers",
 		"/etc/master.passwd",
-		// SSH 密钥与配置
-		".ssh/", "id_rsa", "id_ecdsa", "id_ed25519", "id_dsa",
+		// SSH 密钥与配置（正斜杠 + 反斜杠变体）
+		".ssh/", ".ssh\\",
+		"id_rsa", "id_ecdsa", "id_ed25519", "id_dsa",
 		"authorized_keys", "known_hosts",
-		// GPG 密钥
-		".gnupg/",
-		// 云平台凭证
-		".aws/", ".kube/", ".docker/",
-		".config/gcloud/", ".azure/", ".config/azure/",
+		// GPG 密钥（正斜杠 + 反斜杠变体）
+		".gnupg/", ".gnupg\\",
+		// 云平台凭证（正斜杠 + 反斜杠变体）
+		".aws/", ".aws\\",
+		".kube/", ".kube\\",
+		".docker/", ".docker\\",
+		".config/gcloud/", ".config\\gcloud\\",
+		".azure/", ".azure\\",
+		".config/azure/", ".config\\azure\\",
 		// Git 与包管理器凭证
 		".git-credentials", ".netrc", ".npmrc", ".pypirc",
 		// macOS 钥匙串
 		"library/keychains",
+		// Windows 系统关键文件
+		"system32\\config\\sam", "system32\\config\\system", "system32\\config\\security",
+		"system32\\drivers\\etc\\hosts",
+		// Windows 凭证目录
+		"microsoft\\credentials",
 	}
 }
 
@@ -820,6 +840,8 @@ func guardScriptSensitiveAccess(payload commandArguments, preview string) error 
 		"ruby ", "ruby -e",
 		"php ", "php -r",
 		"node ", "node -e",
+		"powershell ", "powershell.exe ",
+		"pwsh ", "pwsh.exe ",
 	}
 	hasScript := false
 	for _, s := range scriptIndicators {
@@ -848,6 +870,10 @@ func guardScriptSensitiveAccess(payload commandArguments, preview string) error 
 		"createReadStream",          // Node.js createReadStream
 		"file_get_contents",         // PHP file_get_contents
 		"fopen(",                    // PHP/C fopen
+		"get-content",               // PowerShell Get-Content
+		"get-item",                  // PowerShell Get-Item
+		"copy-item",                 // PowerShell Copy-Item
+		"import-csv",                // PowerShell Import-Csv
 	}
 	hasFileAccess := false
 	for _, p := range fileAccessPatterns {
@@ -1177,6 +1203,8 @@ func guardScriptDestructiveActions(payload commandArguments, preview string) err
 		"ruby ", "ruby -e",
 		"php ", "php -r",
 		"node ", "node -e",
+		"powershell ", "powershell.exe ",
+		"pwsh ", "pwsh.exe ",
 	}
 	hasScript := false
 	for _, s := range scriptIndicators {
@@ -1210,6 +1238,11 @@ func guardScriptDestructiveActions(payload commandArguments, preview string) err
 		"fileutils.rm_rf", "fileutils.rm",
 		// PHP 文件操作
 		"unlink(",
+		// PowerShell 破坏性 Cmdlet（小写匹配）
+		"remove-item", "clear-content", "set-content",
+		"stop-process", "format-volume", "clear-disk",
+		"remove-partition", "stop-computer", "restart-computer",
+		"remove-itemproperty", "clear-item",
 	}
 	hasDestructiveAPI := false
 	for _, p := range destructiveAPIPatterns {
@@ -1264,6 +1297,347 @@ func guardScriptDestructiveActions(payload commandArguments, preview string) err
 	if strings.Contains(preview, "os.system") && strings.Contains(preview, "rm ") {
 		return newToolError("PERMISSION_DENIED",
 			"检测到脚本语言通过 os.system 执行删除操作，已拦截")
+	}
+
+	return nil
+}
+
+// guardWindowsDestructiveActions 检测 Windows 平台特有的破坏性操作。
+// 覆盖范围：
+//   - CMD 命令：del/erase, rmdir/rd /s, format, diskpart, taskkill /f,
+//     sc delete, reg delete, bcdedit, vssadmin delete, cipher /w,
+//     mountvol /d, icacls /grant, takeown /r, fsutil, sdelete, wmic,
+//     netsh firewall, net user /add
+//   - PowerShell Cmdlet：Remove-Item, Clear-Content, Set-Content,
+//     Stop-Process, Format-Volume, Clear-Disk, Remove-Partition,
+//     Stop-Computer, Restart-Computer, Set-ExecutionPolicy,
+//     Remove-ItemProperty, Clear-Item
+//   - PowerShell 反向 Shell（TCPClient）已在 guardReverseShell 中覆盖
+//   - PowerShell -enc Base64 编码命令绕过
+// 该检测在 auto 审批模式下生效。
+func guardWindowsDestructiveActions(payload commandArguments, preview string) error {
+	// --- CMD 破坏性命令 ---
+
+	// del / erase 删除文件
+	if strings.Contains(preview, "del ") || strings.Contains(preview, "erase ") {
+		// 检查是否删除敏感路径
+		for _, fragment := range sensitivePathFragmentsForGuard() {
+			if strings.Contains(preview, fragment) {
+				return newToolError("PERMISSION_DENIED",
+					"检测到删除敏感文件（%s），该操作不可逆，已拦截", fragment)
+			}
+		}
+		// del /f /q 强制删除系统目录
+		if strings.Contains(preview, "del /f") || strings.Contains(preview, "del /q") ||
+			strings.Contains(preview, "del /s") || strings.Contains(preview, "del /a") {
+			windowsSysDirs := []string{
+				"system32", "windows", "boot", "programdata",
+				"\\windows\\", "c:\\windows",
+			}
+			for _, dir := range windowsSysDirs {
+				if strings.Contains(preview, dir) {
+					return newToolError("PERMISSION_DENIED",
+						"检测到删除 Windows 系统目录文件（%s），已拦截", dir)
+				}
+			}
+		}
+	}
+
+	// rmdir / rd /s /q 递归删除目录
+	if strings.Contains(preview, "rmdir ") || strings.Contains(preview, "rd /") {
+		if strings.Contains(preview, "/s") || strings.Contains(preview, "-s") {
+			// 递归删除，检查敏感路径
+			for _, fragment := range sensitivePathFragmentsForGuard() {
+				if strings.Contains(preview, fragment) {
+					return newToolError("PERMISSION_DENIED",
+						"检测到递归删除敏感目录（%s），已拦截", fragment)
+				}
+			}
+			// 递归删除用户目录或系统目录
+			windowsUserDirs := []string{
+				"\\users\\", "\\desktop", "\\documents", "\\downloads",
+				"\\pictures", "\\music", "\\videos",
+				"c:\\users", "%userprofile%",
+			}
+			for _, dir := range windowsUserDirs {
+				if strings.Contains(preview, dir) {
+					return newToolError("PERMISSION_DENIED",
+						"检测到递归删除用户目录（%s），已拦截", dir)
+				}
+			}
+			windowsSysDirs := []string{
+				"system32", "\\windows\\", "c:\\windows", "bootmgr",
+			}
+			for _, dir := range windowsSysDirs {
+				if strings.Contains(preview, dir) {
+					return newToolError("PERMISSION_DENIED",
+						"检测到递归删除系统目录（%s），已拦截", dir)
+				}
+			}
+		}
+	}
+
+	// format 格式化磁盘
+	if strings.Contains(preview, "format ") {
+		if strings.Contains(preview, "format c") || strings.Contains(preview, "format d") ||
+			strings.Contains(preview, "format e") || strings.Contains(preview, "format /fs") ||
+			strings.Contains(preview, "format -") {
+			return newToolError("PERMISSION_DENIED",
+				"检测到格式化磁盘操作（format），该操作不可逆，已拦截")
+		}
+	}
+
+	// diskpart 磁盘分区操作
+	if strings.Contains(preview, "diskpart ") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到磁盘分区操作（diskpart），该操作不可逆，已拦截")
+	}
+
+	// taskkill /f 强制终止进程
+	if strings.Contains(preview, "taskkill ") {
+		if strings.Contains(preview, "/f") || strings.Contains(preview, "-f") {
+			// taskkill /f /pid 1 终止关键系统进程
+			if strings.Contains(preview, "/pid 1") || strings.Contains(preview, "-pid 1") ||
+				strings.Contains(preview, "/im ") || strings.Contains(preview, "-im ") {
+				return newToolError("PERMISSION_DENIED",
+					"检测到强制终止进程操作（taskkill /f），已拦截")
+			}
+		}
+	}
+
+	// sc delete 删除系统服务
+	if strings.Contains(preview, "sc delete") || strings.Contains(preview, "sc config") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到修改/删除系统服务（sc），已拦截")
+	}
+
+	// reg delete 删除注册表项
+	if strings.Contains(preview, "reg delete") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到删除注册表项操作（reg delete），已拦截")
+	}
+
+	// bcdedit 修改启动配置
+	if strings.Contains(preview, "bcdedit ") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到修改启动配置（bcdedit），已拦截")
+	}
+
+	// vssadmin delete shadows 删除卷影副本
+	if strings.Contains(preview, "vssadmin delete") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到删除卷影副本（vssadmin delete shadows），已拦截")
+	}
+
+	// cipher /w 擦除空闲空间
+	if strings.Contains(preview, "cipher ") {
+		if strings.Contains(preview, "/w:") || strings.Contains(preview, "/w ") {
+			return newToolError("PERMISSION_DENIED",
+				"检测到擦除空闲空间操作（cipher /w），已拦截")
+		}
+	}
+
+	// mountvol /d 卸载卷
+	if strings.Contains(preview, "mountvol ") {
+		if strings.Contains(preview, "/d") || strings.Contains(preview, "/n") {
+			return newToolError("PERMISSION_DENIED",
+				"检测到卸载卷操作（mountvol），已拦截")
+		}
+	}
+
+	// icacls /grant 修改权限
+	if strings.Contains(preview, "icacls ") {
+		if strings.Contains(preview, "/grant") || strings.Contains(preview, "/deny") ||
+			strings.Contains(preview, "/remove") || strings.Contains(preview, "/reset") {
+			// 检查是否修改系统目录权限
+			windowsSysPaths := []string{
+				"system32", "\\windows\\", "c:\\windows", "bootmgr",
+				"\\program files\\",
+			}
+			for _, path := range windowsSysPaths {
+				if strings.Contains(preview, path) {
+					return newToolError("PERMISSION_DENIED",
+						"检测到修改系统目录权限（icacls %s），已拦截", path)
+				}
+			}
+			// 检查是否授予 Everyone 完全控制
+			if strings.Contains(preview, "everyone") && strings.Contains(preview, ":f") {
+				return newToolError("PERMISSION_DENIED",
+					"检测到授予 Everyone 完全控制权限（icacls），已拦截")
+			}
+		}
+	}
+
+	// takeown /r 递归夺取所有权
+	if strings.Contains(preview, "takeown ") {
+		if strings.Contains(preview, "/r") || strings.Contains(preview, "/d") {
+			windowsSysPaths := []string{
+				"system32", "\\windows\\", "c:\\windows",
+				"\\program files\\",
+			}
+			for _, path := range windowsSysPaths {
+				if strings.Contains(preview, path) {
+					return newToolError("PERMISSION_DENIED",
+						"检测到夺取系统目录所有权（takeown %s），已拦截", path)
+				}
+			}
+		}
+	}
+
+	// fsutil 文件系统操作
+	if strings.Contains(preview, "fsutil ") {
+		if strings.Contains(preview, "createnew") || strings.Contains(preview, "truncate") ||
+			strings.Contains(preview, "zero") || strings.Contains(preview, "setzerosdata") {
+			return newToolError("PERMISSION_DENIED",
+				"检测到文件系统破坏性操作（fsutil），已拦截")
+		}
+	}
+
+	// sdelete 安全擦除
+	if strings.Contains(preview, "sdelete ") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到安全擦除文件操作（sdelete），该操作不可逆，已拦截")
+	}
+
+	// wmic process call terminate / service delete
+	if strings.Contains(preview, "wmic ") {
+		if strings.Contains(preview, "call terminate") || strings.Contains(preview, "service delete") ||
+			strings.Contains(preview, "process delete") {
+			return newToolError("PERMISSION_DENIED",
+				"检测到通过 wmic 终止进程或删除服务，已拦截")
+		}
+	}
+
+	// netsh firewall 禁用防火墙
+	if strings.Contains(preview, "netsh ") {
+		if strings.Contains(preview, "firewall set opmode disable") ||
+			strings.Contains(preview, "advfirewall set allprofiles state off") ||
+			strings.Contains(preview, "set opmode mode=disable") {
+			return newToolError("PERMISSION_DENIED",
+				"检测到禁用防火墙操作（netsh），已拦截")
+		}
+	}
+
+	// net user /add 添加用户
+	if strings.Contains(preview, "net user ") {
+		if strings.Contains(preview, "/add") {
+			return newToolError("PERMISSION_DENIED",
+				"检测到添加用户操作（net user /add），已拦截")
+		}
+	}
+
+	// --- PowerShell 破坏性 Cmdlet ---
+
+	// Remove-Item（别名 ri/rm/del/rd/erase）递归强制删除
+	if strings.Contains(preview, "remove-item") {
+		if strings.Contains(preview, "-recurse") || strings.Contains(preview, "-force") ||
+			strings.Contains(preview, "-r ") || strings.Contains(preview, "-f ") {
+			// 检查敏感路径
+			for _, fragment := range sensitivePathFragmentsForGuard() {
+				if strings.Contains(preview, fragment) {
+					return newToolError("PERMISSION_DENIED",
+						"检测到 PowerShell 递归删除敏感路径（%s），已拦截", fragment)
+				}
+			}
+			// 检查系统目录
+			windowsSysPaths := []string{
+				"system32", "\\windows\\", "c:\\windows",
+				"\\users\\", "c:\\users",
+			}
+			for _, path := range windowsSysPaths {
+				if strings.Contains(preview, path) {
+					return newToolError("PERMISSION_DENIED",
+						"检测到 PowerShell 递归删除系统路径（%s），已拦截", path)
+				}
+			}
+		}
+	}
+
+	// Clear-Content 清空文件内容
+	if strings.Contains(preview, "clear-content") || strings.Contains(preview, "clc ") {
+		for _, fragment := range sensitivePathFragmentsForGuard() {
+			if strings.Contains(preview, fragment) {
+				return newToolError("PERMISSION_DENIED",
+					"检测到 PowerShell 清空敏感文件内容（%s），已拦截", fragment)
+			}
+		}
+	}
+
+	// Set-Content 覆盖文件内容
+	if strings.Contains(preview, "set-content") {
+		for _, fragment := range sensitivePathFragmentsForGuard() {
+			if strings.Contains(preview, fragment) {
+				return newToolError("PERMISSION_DENIED",
+					"检测到 PowerShell 覆盖敏感文件内容（%s），已拦截", fragment)
+			}
+		}
+	}
+
+	// Stop-Process 终止进程
+	if strings.Contains(preview, "stop-process") || strings.Contains(preview, "spps ") {
+		if strings.Contains(preview, "-id 1") || strings.Contains(preview, "-id  1") ||
+			strings.Contains(preview, "-force") {
+			return newToolError("PERMISSION_DENIED",
+				"检测到 PowerShell 终止进程操作（Stop-Process），已拦截")
+		}
+	}
+
+	// Format-Volume 格式化卷
+	if strings.Contains(preview, "format-volume") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到 PowerShell 格式化卷操作（Format-Volume），已拦截")
+	}
+
+	// Clear-Disk 清除磁盘
+	if strings.Contains(preview, "clear-disk") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到 PowerShell 清除磁盘操作（Clear-Disk），已拦截")
+	}
+
+	// Remove-Partition 删除分区
+	if strings.Contains(preview, "remove-partition") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到 PowerShell 删除分区操作（Remove-Partition），已拦截")
+	}
+
+	// Stop-Computer 关机
+	if strings.Contains(preview, "stop-computer") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到 PowerShell 关机操作（Stop-Computer），已拦截")
+	}
+
+	// Restart-Computer 重启
+	if strings.Contains(preview, "restart-computer") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到 PowerShell 重启操作（Restart-Computer），已拦截")
+	}
+
+	// Set-ExecutionPolicy 修改执行策略
+	if strings.Contains(preview, "set-executionpolicy") {
+		if strings.Contains(preview, "bypass") || strings.Contains(preview, "unrestricted") {
+			return newToolError("PERMISSION_DENIED",
+				"检测到 PowerShell 降低执行策略（Set-ExecutionPolicy），已拦截")
+		}
+	}
+
+	// Remove-ItemProperty 删除注册表属性
+	if strings.Contains(preview, "remove-itemproperty") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到 PowerShell 删除注册表属性（Remove-ItemProperty），已拦截")
+	}
+
+	// Clear-Item 清除注册表值
+	if strings.Contains(preview, "clear-item") {
+		return newToolError("PERMISSION_DENIED",
+			"检测到 PowerShell 清除注册表值（Clear-Item），已拦截")
+	}
+
+	// PowerShell -enc Base64 编码命令（绕过检测）
+	if strings.Contains(preview, "powershell ") || strings.Contains(preview, "pwsh ") {
+		if strings.Contains(preview, "-enc ") || strings.Contains(preview, "-encodedcommand ") {
+			return newToolError("PERMISSION_DENIED",
+				"检测到 PowerShell Base64 编码命令（-enc），可能用于绕过检测，已拦截")
+		}
 	}
 
 	return nil

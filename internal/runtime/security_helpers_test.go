@@ -1396,3 +1396,542 @@ func TestGuardScriptDestructive_SafePythonFileRead(t *testing.T) {
 		t.Fatalf("expected safe python file read to pass, got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Windows 平台 CMD 破坏性操作拦截测试
+// ---------------------------------------------------------------------------
+
+// W-CMD-1: del 删除敏感文件（.ssh\id_rsa）
+func TestGuardWindows_CmdDelSensitiveFile(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "del C:\\Users\\user\\.ssh\\id_rsa"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected del .ssh\\id_rsa to be blocked")
+	}
+	if !strings.Contains(err.Error(), "删除敏感文件") {
+		t.Fatalf("expected sensitive file deletion error, got: %v", err)
+	}
+}
+
+// W-CMD-2: del /f /q 强制删除系统目录
+func TestGuardWindows_CmdDelForceSystemDir(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "del /f /q C:\\Windows\\System32\\foo.dll"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected del /f System32 to be blocked")
+	}
+}
+
+// W-CMD-3: rmdir /s /q 递归删除用户目录
+func TestGuardWindows_CmdRmdirUsers(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "rmdir /s /q C:\\Users"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected rmdir /s /q C:\\Users to be blocked")
+	}
+}
+
+// W-CMD-4: rmdir /s /q 递归删除系统目录
+func TestGuardWindows_CmdRmdirSystem32(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "rmdir /s /q C:\\Windows\\System32"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected rmdir /s /q System32 to be blocked")
+	}
+}
+
+// W-CMD-5: format 格式化磁盘
+func TestGuardWindows_CmdFormat(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "format C: /fs:ntfs /q"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected format C: to be blocked")
+	}
+}
+
+// W-CMD-6: diskpart 磁盘分区操作
+func TestGuardWindows_CmdDiskpart(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "diskpart /s clean.txt"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected diskpart to be blocked")
+	}
+}
+
+// W-CMD-7: taskkill /f 强制终止进程
+func TestGuardWindows_CmdTaskkillForce(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "taskkill /f /im explorer.exe"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected taskkill /f to be blocked")
+	}
+}
+
+// W-CMD-8: sc delete 删除系统服务
+func TestGuardWindows_CmdScDelete(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "sc delete WinDefend"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected sc delete to be blocked")
+	}
+}
+
+// W-CMD-9: reg delete 删除注册表项
+func TestGuardWindows_CmdRegDelete(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "reg delete HKLM\\SOFTWARE\\Test /f"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected reg delete to be blocked")
+	}
+}
+
+// W-CMD-10: bcdedit 修改启动配置
+func TestGuardWindows_CmdBcdedit(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "bcdedit /set {default} recoveryenabled No"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected bcdedit to be blocked")
+	}
+}
+
+// W-CMD-11: vssadmin delete shadows 删除卷影副本
+func TestGuardWindows_CmdVssadminDelete(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "vssadmin delete shadows /all /quiet"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected vssadmin delete shadows to be blocked")
+	}
+}
+
+// W-CMD-12: cipher /w 擦除空闲空间
+func TestGuardWindows_CmdCipherWipe(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "cipher /w:C:\\"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected cipher /w to be blocked")
+	}
+}
+
+// W-CMD-13: mountvol /d 卸载卷
+func TestGuardWindows_CmdMountvol(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "mountvol C: /d"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected mountvol /d to be blocked")
+	}
+}
+
+// W-CMD-14: icacls /grant 修改系统目录权限
+func TestGuardWindows_CmdIcaclsSystemDir(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "icacls C:\\Windows\\System32 /grant Everyone:F /t"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected icacls System32 to be blocked")
+	}
+}
+
+// W-CMD-15: icacls 授予 Everyone 完全控制
+func TestGuardWindows_CmdIcaclsEveryone(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "icacls C:\\data /grant Everyone:F"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected icacls Everyone:F to be blocked")
+	}
+}
+
+// W-CMD-16: takeown /r 夺取系统目录所有权
+func TestGuardWindows_CmdTakeownSystemDir(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "takeown /f C:\\Windows\\System32 /r /d y"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected takeown System32 to be blocked")
+	}
+}
+
+// W-CMD-17: fsutil 文件系统破坏性操作
+func TestGuardWindows_CmdFsutilCreateNew(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "fsutil file createnew C:\\test.dat 1000"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected fsutil createnew to be blocked")
+	}
+}
+
+// W-CMD-18: sdelete 安全擦除
+func TestGuardWindows_CmdSdelete(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "sdelete -p 3 C:\\secret.txt"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected sdelete to be blocked")
+	}
+}
+
+// W-CMD-19: wmic 终止进程
+func TestGuardWindows_CmdWmicTerminate(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "wmic process where name='explorer.exe' call terminate"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected wmic call terminate to be blocked")
+	}
+}
+
+// W-CMD-20: netsh 禁用防火墙
+func TestGuardWindows_CmdNetshFirewallOff(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "netsh firewall set opmode disable"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected netsh firewall disable to be blocked")
+	}
+}
+
+// W-CMD-21: netsh advfirewall 关闭所有配置文件
+func TestGuardWindows_CmdNetshAdvfirewallOff(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "netsh advfirewall set allprofiles state off"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected netsh advfirewall off to be blocked")
+	}
+}
+
+// W-CMD-22: net user /add 添加用户
+func TestGuardWindows_CmdNetUserAdd(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "net user hacker P@ssw0rd /add"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected net user /add to be blocked")
+	}
+}
+
+// W-CMD-23: taskkill /f /pid 1 终止关键进程
+func TestGuardWindows_CmdTaskkillPID1(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "taskkill /f /pid 1"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected taskkill /f /pid 1 to be blocked")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Windows 平台 PowerShell 破坏性 Cmdlet 拦截测试
+// ---------------------------------------------------------------------------
+
+// W-PS-1: Remove-Item -Recurse -Force 删除系统目录
+func TestGuardWindows_PSRemoveItemSystemDir(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Remove-Item -Recurse -Force C:\\Windows\\System32\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Remove-Item System32 to be blocked")
+	}
+}
+
+// W-PS-2: Remove-Item -Recurse -Force 删除用户目录
+func TestGuardWindows_PSRemoveItemUsers(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Remove-Item -Recurse -Force C:\\Users\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Remove-Item C:\\Users to be blocked")
+	}
+}
+
+// W-PS-3: Clear-Content 清空敏感文件
+func TestGuardWindows_PSClearContentSensitive(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Clear-Content C:\\Users\\user\\.ssh\\id_rsa\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Clear-Content .ssh\\id_rsa to be blocked")
+	}
+}
+
+// W-PS-4: Set-Content 覆盖敏感文件
+func TestGuardWindows_PSSetContentSensitive(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Set-Content C:\\Users\\user\\.ssh\\id_rsa ''\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Set-Content .ssh\\id_rsa to be blocked")
+	}
+}
+
+// W-PS-5: Stop-Process -Force 终止进程
+func TestGuardWindows_PSStopProcessForce(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Stop-Process -Force -Id 1234\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Stop-Process -Force to be blocked")
+	}
+}
+
+// W-PS-6: Stop-Process -Id 1 终止关键进程
+func TestGuardWindows_PSStopProcessPID1(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Stop-Process -Id 1\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Stop-Process -Id 1 to be blocked")
+	}
+}
+
+// W-PS-7: Format-Volume 格式化卷
+func TestGuardWindows_PSFormatVolume(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Format-Volume -DriveLetter C\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Format-Volume to be blocked")
+	}
+}
+
+// W-PS-8: Clear-Disk 清除磁盘
+func TestGuardWindows_PSClearDisk(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Clear-Disk -Number 0 -RemoveData\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Clear-Disk to be blocked")
+	}
+}
+
+// W-PS-9: Remove-Partition 删除分区
+func TestGuardWindows_PSRemovePartition(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Remove-Partition -DriveLetter D\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Remove-Partition to be blocked")
+	}
+}
+
+// W-PS-10: Stop-Computer 关机
+func TestGuardWindows_PSStopComputer(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Stop-Computer -Force\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Stop-Computer to be blocked")
+	}
+}
+
+// W-PS-11: Restart-Computer 重启
+func TestGuardWindows_PSRestartComputer(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Restart-Computer -Force\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Restart-Computer to be blocked")
+	}
+}
+
+// W-PS-12: Set-ExecutionPolicy Bypass 降低执行策略
+func TestGuardWindows_PSSetExecutionPolicyBypass(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Set-ExecutionPolicy Bypass -Scope Process\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Set-ExecutionPolicy Bypass to be blocked")
+	}
+}
+
+// W-PS-13: Remove-ItemProperty 删除注册表属性
+func TestGuardWindows_PSRemoveItemProperty(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Remove-ItemProperty -Path HKLM:\\SOFTWARE\\Test -Name Foo\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Remove-ItemProperty to be blocked")
+	}
+}
+
+// W-PS-14: Clear-Item 清除注册表值
+func TestGuardWindows_PSClearItem(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Clear-Item -Path HKLM:\\SOFTWARE\\Test\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected Clear-Item to be blocked")
+	}
+}
+
+// W-PS-15: PowerShell -enc Base64 编码命令绕过
+func TestGuardWindows_PSEncodedCommand(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -enc SQBFAFgA"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected powershell -enc to be blocked")
+	}
+}
+
+// W-PS-16: pwsh -encodedcommand 绕过
+func TestGuardWindows_PwshEncodedCommand(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "pwsh -encodedcommand SQBFAFgA"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected pwsh -encodedcommand to be blocked")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Windows 平台安全命令不误拦测试
+// ---------------------------------------------------------------------------
+
+// W-Safe-1: dir 列目录不拦截
+func TestGuardWindows_SafeDir(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "dir C:\\Users\\user\\Documents"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected dir to pass, got: %v", err)
+	}
+}
+
+// W-Safe-2: del 删除临时文件不拦截
+func TestGuardWindows_SafeDelTemp(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "del C:\\Users\\user\\AppData\\Local\\Temp\\test.tmp"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected del temp file to pass, got: %v", err)
+	}
+}
+
+// W-Safe-3: echo 重定向到临时文件不拦截
+func TestGuardWindows_SafeEchoRedirect(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "echo hello > C:\\Users\\user\\test.txt"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected echo > test.txt to pass, got: %v", err)
+	}
+}
+
+// W-Safe-4: PowerShell 安全命令不拦截
+func TestGuardWindows_SafePowerShell(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "powershell -c \"Get-Process | Select-Object -First 5\""}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected safe PowerShell to pass, got: %v", err)
+	}
+}
+
+// W-Safe-5: 非 auto 模式下 Windows 破坏性命令不拦截
+func TestGuardWindows_NonAutoMode(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "format C: /fs:ntfs /q"}
+	cfg := internalconfig.Config{ApprovalMode: "confirm"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected no error in non-auto mode, got: %v", err)
+	}
+}
+
+// W-Safe-6: taskkill 无 /f 不拦截
+func TestGuardWindows_SafeTaskkillNoForce(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "taskkill /pid 1234"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected taskkill without /f to pass, got: %v", err)
+	}
+}
+
+// W-Safe-7: icacls 查看权限不拦截
+func TestGuardWindows_SafeIcaclsQuery(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "icacls C:\\Users\\user\\Documents"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected icacls query to pass, got: %v", err)
+	}
+}
+
+// W-Safe-8: reg query 查询注册表不拦截
+func TestGuardWindows_SafeRegQuery(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "reg query HKLM\\SOFTWARE\\Microsoft"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected reg query to pass, got: %v", err)
+	}
+}
+
+// W-Safe-9: sc query 查询服务不拦截
+func TestGuardWindows_SafeScQuery(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "sc query WinDefend"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected sc query to pass, got: %v", err)
+	}
+}
+
+// W-Safe-10: net user 查看用户列表不拦截
+func TestGuardWindows_SafeNetUserList(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "net user"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err != nil {
+		t.Fatalf("expected net user list to pass, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Windows 反斜杠敏感路径匹配测试
+// ---------------------------------------------------------------------------
+
+// W-Path-1: cat .ssh\id_rsa（反斜杠路径）被拦截
+func TestGuardWindows_BackslashSSHPath(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "type C:\\Users\\user\\.ssh\\id_rsa"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected .ssh\\id_rsa access to be blocked")
+	}
+}
+
+// W-Path-2: system32\config\sam 被拦截
+func TestGuardWindows_BackslashSAMPath(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "type C:\\Windows\\System32\\config\\SAM"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected system32\\config\\sam access to be blocked")
+	}
+}
+
+// W-Path-3: system32\drivers\etc\hosts 被拦截
+func TestGuardWindows_BackslashHostsPath(t *testing.T) {
+	payload := commandArguments{Mode: "shell", RawCommand: "type C:\\Windows\\System32\\drivers\\etc\\hosts"}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected system32\\drivers\\etc\\hosts access to be blocked")
+	}
+}
