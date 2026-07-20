@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -532,8 +531,8 @@ func (a *App) confirmSkillAutoInstall(request skillInstallApprovalRequest) bool 
 		_, _ = fmt.Fprintf(a.stdout, "摘要: %s\n", request.Candidate.Summary)
 	}
 	_, _ = fmt.Fprintf(a.stdout, "安装位置: %s\n目标目录: %s\n是否安装? [y/N]: ", skillInstallScopeLabelText(request.Scope), request.InstallPath)
-	reader := bufio.NewReader(a.stdin)
-	line, err := reader.ReadString('\n')
+	// 使用带超时的读取，与 confirm 系列操作对齐
+	line, err := a.runtime.ReadStdinWithTimeout()
 	if err != nil && err != io.EOF {
 		return false
 	}

@@ -153,6 +153,12 @@ func (r *ClientRuntime) SetToolConfirmTimeoutSeconds(seconds int) {
 	r.toolConfirmTimeoutSeconds = seconds
 }
 
+// ReadStdinWithTimeout 从 stdin 读取一行，超时后返回空字符串和 nil error。
+// timeoutSeconds <= 0 表示不启用超时。公开方法，供 cmd 层复用。
+func (r *ClientRuntime) ReadStdinWithTimeout() (string, error) {
+	return r.readStdinWithTimeout(r.toolConfirmTimeoutSeconds)
+}
+
 func (r *ClientRuntime) SetStreamEventLogsEnabled(enabled bool) {
 	r.streamEventLogsEnabled = enabled
 }
@@ -745,7 +751,15 @@ func (r *ClientRuntime) promptAskUserLine(ctx context.Context, reader *bufio.Rea
 	default:
 	}
 	fmt.Fprint(r.stdout, prompt)
-	answerLine, err := reader.ReadString('\n')
+	var answerLine string
+	var err error
+	if r.toolConfirmTimeoutSeconds > 0 {
+		// 启用超时时使用 readStdinWithTimeout（内部创建独立 reader）
+		answerLine, err = r.readStdinWithTimeout(r.toolConfirmTimeoutSeconds)
+	} else {
+		// 未启用超时时复用共享 reader，避免 bufio 缓冲导致多问题场景丢数据
+		answerLine, err = reader.ReadString('\n')
+	}
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
 		return "", fmt.Errorf("读取 ask_user 输入失败: %w", err)
 	}
@@ -755,6 +769,10 @@ func (r *ClientRuntime) promptAskUserLine(ctx context.Context, reader *bufio.Rea
 	}
 	if errors.Is(err, io.EOF) && answer == "" {
 		return "", newToolError("USER_ABORTED", "用户取消 ask_user")
+	}
+	// 超时返回空字符串且无 error，此处将其转为超时错误
+	if answer == "" && err == nil && r.toolConfirmTimeoutSeconds > 0 {
+		return "", newToolError("USER_ABORTED", "等待用户输入超时，已自动取消 ask_user")
 	}
 	return answer, nil
 }
