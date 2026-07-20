@@ -333,3 +333,95 @@ func TestIsBundledSkill(t *testing.T) {
 		t.Error("did not expect empty string to be a bundled skill")
 	}
 }
+
+// TestCreateSkillScaffold_NameNotEqualSlug 验证 name（人类友好名称）与 slug（机器标识符）可以不同。
+// 当 name 包含非 ASCII 字符（如中文）时，slug 可能为空导致创建失败；
+// 当 name 包含空格或大写字母时，slug 应为小写横线风格。
+func TestCreateSkillScaffold_NameNotEqualSlug(t *testing.T) {
+	tempDir := t.TempDir()
+	config := internalconfig.Config{}
+	config.Workdir = tempDir
+
+	// 名称包含空格和大写：slug 应为小写横线风格，name 保持原文
+	result, err := CreateSkillScaffold(config, "My Cool Skill", internalconfig.SkillInstallScopeWorkspace, false)
+	if err != nil {
+		t.Fatalf("CreateSkillScaffold failed: %v", err)
+	}
+
+	// name 应保持原文
+	if result.Name != "My Cool Skill" {
+		t.Errorf("expected name 'My Cool Skill', got %q", result.Name)
+	}
+
+	// slug 应为小写横线风格
+	if result.Slug != "my-cool-skill" {
+		t.Errorf("expected slug 'my-cool-skill', got %q", result.Slug)
+	}
+
+	// name 和 slug 不应相同
+	if result.Name == result.Slug {
+		t.Errorf("name and slug should differ, both are %q", result.Name)
+	}
+
+	// 验证 SKILL.md frontmatter 中 name 字段保持原文
+	content, err := os.ReadFile(result.FilePath)
+	if err != nil {
+		t.Fatalf("read skill file failed: %v", err)
+	}
+	if !strings.Contains(string(content), "name: My Cool Skill") {
+		t.Errorf("skill file should contain 'name: My Cool Skill' in frontmatter, got: %s", string(content))
+	}
+
+	// 验证骨架模板中包含 slug 说明注释
+	if !strings.Contains(string(content), "slug") {
+		t.Errorf("skill file should mention slug in comments, got: %s", string(content))
+	}
+}
+
+// TestCreateSkillScaffold_ChineseNameRejected 验证纯中文名称无法生成有效 slug 时应报错。
+func TestCreateSkillScaffold_ChineseNameRejected(t *testing.T) {
+	tempDir := t.TempDir()
+	config := internalconfig.Config{}
+	config.Workdir = tempDir
+
+	// 纯中文名称无法生成有效 slug，应报错
+	_, err := CreateSkillScaffold(config, "沙盒安全防护测试", internalconfig.SkillInstallScopeWorkspace, false)
+	if err == nil {
+		t.Fatal("expected error for Chinese-only name (no valid slug), got nil")
+	}
+	if !strings.Contains(err.Error(), "slug") {
+		t.Errorf("expected error mentioning slug, got: %v", err)
+	}
+}
+
+// TestCreateSkillScaffold_MixedNameSlug 验证混合名称（含中文和英文）的 slug 生成。
+func TestCreateSkillScaffold_MixedNameSlug(t *testing.T) {
+	tempDir := t.TempDir()
+	config := internalconfig.Config{}
+	config.Workdir = tempDir
+
+	// 名称包含中文和英文：slug 应只保留英文部分
+	result, err := CreateSkillScaffold(config, "沙盒安全 sandbox-security-test", internalconfig.SkillInstallScopeWorkspace, false)
+	if err != nil {
+		t.Fatalf("CreateSkillScaffold failed: %v", err)
+	}
+
+	// name 应保持原文
+	if result.Name != "沙盒安全 sandbox-security-test" {
+		t.Errorf("expected name '沙盒安全 sandbox-security-test', got %q", result.Name)
+	}
+
+	// slug 应只包含英文部分
+	if result.Slug != "sandbox-security-test" {
+		t.Errorf("expected slug 'sandbox-security-test', got %q", result.Slug)
+	}
+
+	// 验证 frontmatter 中 name 保持原文
+	content, err := os.ReadFile(result.FilePath)
+	if err != nil {
+		t.Fatalf("read skill file failed: %v", err)
+	}
+	if !strings.Contains(string(content), "name: 沙盒安全 sandbox-security-test") {
+		t.Errorf("skill file should contain original name in frontmatter")
+	}
+}

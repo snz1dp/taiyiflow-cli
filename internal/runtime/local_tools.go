@@ -504,12 +504,12 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "skill_create",
-			"description":          "在工作区目录下创建技能包骨架文件 SKILL.md。默认写入 <workdir>/.snz1dp/skills/<slug>/SKILL.md；传入 scope=\"user\" 时写入 ~/.snz1dp/skills/。创建后可通过 write_file 编辑内容，或通过 skill_upload 上传到后端。",
+			"description":          "在工作区目录下创建技能包骨架文件 SKILL.md。默认写入 <workdir>/.snz1dp/skills/<slug>/SKILL.md；传入 scope=\"user\" 时写入 ~/.snz1dp/skills/。创建后可通过 write_file 编辑内容，或通过 skill_upload 上传到后端。\n\n重要：name 是人类友好阅读名称（支持中文、英文、空格等），slug 是由 name 自动生成的机器标识符（仅小写字母、数字、横线），用作磁盘目录名。两者不需要保持一致。例如 name=\"沙盒安全防护测试\" 时 slug=\"sandbox-security-test\"（若 name 不含 ASCII 字符则 slug 可能为空导致创建失败，此时请使用英文 name）。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"name":      map[string]any{"type": "string", "description": "技能名称，会自动转换为 slug 风格目录名。"},
+					"name":      map[string]any{"type": "string", "description": "技能名称（人类友好阅读名称，支持中文、英文、空格等），会自动转换为 slug 风格目录名。name 会写入 SKILL.md frontmatter 的 name 字段，slug 用作磁盘目录名和后端标识符。"},
 					"scope":     map[string]any{"type": "string", "enum": []string{"workspace", "user"}, "description": "可选，默认 workspace。workspace 写入工作区 .snz1dp/skills/，user 写入用户目录 ~/.snz1dp/skills/。"},
 					"overwrite": map[string]any{"type": "boolean", "default": false, "description": "同名技能已存在时是否覆盖。默认 false，不覆盖时同名技能已存在会报错。"},
 				},
@@ -519,12 +519,12 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "skill_upload",
-			"description":          "将本地已创建的技能上传到后台服务，使其成为后端注册的自定义技能。上传后技能可在其他设备上同步安装。需要提供本地技能名称（与 skill_create 时使用的 name 一致）。",
+			"description":          "将本地已创建的技能上传到后台服务，使其成为后端注册的自定义技能。上传后技能可在其他设备上同步安装。需要提供本地技能名称（与 skill_create 时使用的 name 一致，是人类友好阅读名称，会自动转换为 slug 来定位磁盘目录）。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"name": map[string]any{"type": "string", "description": "要上传的本地技能名称。"},
+					"name": map[string]any{"type": "string", "description": "要上传的本地技能名称（人类友好阅读名称，与 skill_create 时使用的 name 一致）。"},
 				},
 				"required":             []string{"name"},
 				"additionalProperties": false,
@@ -532,12 +532,12 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "skill_delete",
-			"description":          "删除本地已创建的技能目录。默认删除工作区范围（<workdir>/.snz1dp/skills/<slug>/）下的技能；传入 scope=\"user\" 时删除用户目录（~/.snz1dp/skills/<slug>/）下的技能。仅删除本地文件，不影响已上传到后端的技能。",
+			"description":          "删除本地已创建的技能目录。默认删除工作区范围（<workdir>/.snz1dp/skills/<slug>/）下的技能；传入 scope=\"user\" 时删除用户目录（~/.snz1dp/skills/<slug>/）下的技能。仅删除本地文件，不影响已上传到后端的技能。\n\n注意：name 参数是人类友好阅读名称，会自动转换为 slug 来定位磁盘目录。如果原技能的 name 与 slug 不同（如中文名称），传入 name 仍可正确定位。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"name":  map[string]any{"type": "string", "description": "要删除的技能名称，会自动转换为 slug 风格目录名。"},
+					"name":  map[string]any{"type": "string", "description": "要删除的技能名称（人类友好阅读名称），会自动转换为 slug 风格目录名来定位磁盘目录。"},
 					"scope": map[string]any{"type": "string", "enum": []string{"workspace", "user"}, "description": "可选，默认 workspace。workspace 删除工作区 .snz1dp/skills/ 下的技能，user 删除用户目录 ~/.snz1dp/skills/ 下的技能。"},
 				},
 				"required":             []string{"name"},

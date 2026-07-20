@@ -89,7 +89,7 @@ func CreateSkillScaffold(config internalconfig.Config, rawName string, scope str
 	}
 
 	// 生成骨架内容
-	content := renderSkillScaffold(name)
+	content := renderSkillScaffold(name, slug)
 
 	if err := os.WriteFile(skillFilePath, []byte(content), 0o644); err != nil {
 		return CreateSkillScaffoldResult{}, fmt.Errorf("写入技能文件失败: %w", err)
@@ -187,7 +187,7 @@ func DeleteSkillScaffold(config internalconfig.Config, rawName string, scope str
 	}, nil
 }
 
-func renderSkillScaffold(name string) string {
+func renderSkillScaffold(name string, slug string) string {
 	return fmt.Sprintf(`---
 name: %s
 description: 在此处填写技能描述（场景导向，如"当…时使用"）
@@ -197,6 +197,15 @@ category: general
 # %s
 
 在此处编写技能正文内容。
+
+<!--
+  说明：
+  - name（上方 frontmatter 中的）是人类友好阅读名称，可使用任意语言文字。
+  - slug 是机器标识符，由技能名称自动生成，仅包含小写字母、数字和横线，
+    用作磁盘目录名和后端技能唯一标识。
+  - 两者不需要保持一致。例如 name 可以是"沙盒安全防护测试"，slug 则为"sandbox-security-test"。
+  - 当前 slug: %s
+-->
 
 ## 触发条件
 
@@ -210,5 +219,5 @@ category: general
 ## 验证方式
 
 描述如何确认技能执行成功。
-`, name, name)
+`, name, name, slug)
 }
