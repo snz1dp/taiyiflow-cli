@@ -47,7 +47,7 @@ NODE_IMAGE ?= snz1.cn/base/node:20-alpine
 CONTAINER_GO_BIN_DIR ?= /usr/local/go/bin
 TAIYIFLOW_COMPUTER_LIVE_BROWSER ?= chrome
 
-RELEASE_CROSS_PLATFORMS ?= linux/amd64 linux/386 linux/arm64 windows/amd64 windows/386 windows/arm64
+RELEASE_CROSS_PLATFORMS ?= linux/amd64 linux/arm64 windows/amd64 windows/386 windows/arm64
 RELEASE_DARWIN_PLATFORMS ?= darwin/amd64 darwin/arm64
 
 .PHONY: help build build-all build-release build-release-cross build-release-386 build-release-386-local build-release-386-musl build-release-386-musl-local build-release-darwin-native verify-computer-live-darwin release browser-extension-dist browser-extension-dist-docker test clean check-go check-npm check-docker check-browser-extension-dist
@@ -114,11 +114,7 @@ build-release-cross: check-go check-browser-extension-dist
 		if [[ "$$goos" == 'windows' ]]; then ext='.exe'; fi; \
 		output='$(RELEASE_DIR)/$(APP_NAME)-'"$$goos"'-'"$$goarch"'"$$ext"; \
 		echo "==> $$output"; \
-		cgo=$(CGO_ENABLED); cc=''; \
-		if [[ "$$goos" == 'linux' && "$$goarch" == '386' ]]; then \
-			cgo=$(LINUX_386_CGO_ENABLED); cc=$(LINUX_386_CC); \
-		fi; \
-		CGO_ENABLED=$$cgo CC=$$cc GOOS=$$goos GOARCH=$$goarch "$(GO)" build $(GO_RELEASE_FLAGS) $(GO_BUILDINFO_FLAGS) -o "$$output" .; \
+		CGO_ENABLED=$(CGO_ENABLED) GOOS=$$goos GOARCH=$$goarch "$(GO)" build $(GO_RELEASE_FLAGS) $(GO_BUILDINFO_FLAGS) -o "$$output" .; \
 	done
 
 build-release-386: check-docker check-browser-extension-dist
@@ -179,11 +175,8 @@ release: check-docker browser-extension-dist-docker
 	@if [[ "$$(uname -s)" != 'Darwin' ]]; then echo 'make release 需要在 macOS 构建机上执行，以生成原生 darwin 发布产物'; exit 1; fi
 	@$(DOCKER_CMD) run --rm -v "$(ROOT_DIR):$(DOCKER_WORKDIR)" \
 		-e CGO_ENABLED=$(CGO_ENABLED) \
-		-e LINUX_386_CGO_ENABLED=$(LINUX_386_CGO_ENABLED) \
-		-e LINUX_386_CC=$(LINUX_386_CC) \
 		-e BUILD_COMMIT="$(BUILD_COMMIT)" \
 		-e BUILD_DATE="$(BUILD_DATE)" \
-		-e GODEBUG="invalidcpu=ignore" \
 		$(GO_IMAGE) \
 		bash -lc 'export PATH="$(CONTAINER_GO_BIN_DIR):$$PATH"; cd $(DOCKER_WORKDIR) && touch -d "@$$(date +%s)" Makefile && make build-release-cross'
 	@$(MAKE) build-release-darwin-native
