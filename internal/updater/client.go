@@ -25,7 +25,7 @@ const ClientGroup = "taiyiflow-cli"
 type Updater struct {
 	baseURL    string // 后端基地址（如 https://snz1.cn）
 	apiPrefix  string // API 前缀（如 /taiyi/composer/api/v1）
-	apiKey     string // Bearer token（可空，check-update/report-status 不鉴权）
+	apiKey     string // Bearer token（可空）
 	httpClient *http.Client
 }
 
@@ -41,8 +41,15 @@ func NewUpdater(baseURL, apiPrefix, apiKey string) *Updater {
 	}
 }
 
+// applyAuth 在 apiKey 非空时为请求添加 Authorization: Bearer 头。
+func (u *Updater) applyAuth(req *http.Request) {
+	if trimmed := strings.TrimSpace(u.apiKey); trimmed != "" {
+		req.Header.Set("Authorization", "Bearer "+trimmed)
+	}
+}
+
 // CheckUpdate 调用后端 POST /agents/client/check-update 接口检查更新。
-// 此接口不需要登录鉴权。
+// 当 apiKey 非空时会携带 Authorization: Bearer 鉴权头。
 func (u *Updater) CheckUpdate(ctx context.Context, req *CheckUpdateRequest) (*CheckUpdateResponse, error) {
 	endpoint := u.baseURL + u.apiPrefix + "/agents/client/check-update"
 
@@ -60,6 +67,7 @@ func (u *Updater) CheckUpdate(ctx context.Context, req *CheckUpdateRequest) (*Ch
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("User-Agent", buildUserAgent())
+	u.applyAuth(httpReq)
 
 	resp, err := u.httpClient.Do(httpReq)
 	if err != nil {
@@ -81,7 +89,7 @@ func (u *Updater) CheckUpdate(ctx context.Context, req *CheckUpdateRequest) (*Ch
 }
 
 // ReportStatus 调用后端 POST /agents/client/release/report-status 接口上报状态。
-// 此接口不需要登录鉴权。
+// 当 apiKey 非空时会携带 Authorization: Bearer 鉴权头。
 func (u *Updater) ReportStatus(ctx context.Context, req *ReportStatusRequest) error {
 	endpoint := u.baseURL + u.apiPrefix + "/agents/client/release/report-status"
 
@@ -99,6 +107,7 @@ func (u *Updater) ReportStatus(ctx context.Context, req *ReportStatusRequest) er
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("User-Agent", buildUserAgent())
+	u.applyAuth(httpReq)
 
 	resp, err := u.httpClient.Do(httpReq)
 	if err != nil {
