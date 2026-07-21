@@ -2010,7 +2010,7 @@ func buildTUIClientToolConfirmRequest(
 		ToolName:     toolName,
 	}
 	switch strings.TrimSpace(toolName) {
-	case "skill":
+	case "skill_fetch":
 		request.Title = "技能包审查(skill package review)"
 		request.Detail = "该技能会把本地技能包内容注入当前会话，确认后即可在当前对话中使用。"
 		request.PreviewTitle = "技能摘要(skill summary)"
@@ -2205,7 +2205,7 @@ func buildTUISkillAutoInstallConfirmRequest(request skillInstallApprovalRequest,
 
 func applyEffectiveSkillReviewForPayload(config internalconfig.Config, contextDir string, sessionState agent.SessionState, payload map[string]any) internalconfig.Config {
 	updated := applyEffectiveSkillReviewPolicy(config, sessionState.SkillReviewPolicyOverride)
-	if !strings.EqualFold(strings.TrimSpace(nestedStringValue(payload, "function", "name")), "skill") {
+	if !strings.EqualFold(strings.TrimSpace(nestedStringValue(payload, "function", "name")), "skill_fetch") {
 		return updated
 	}
 	if len(sessionState.ApprovedSkillNames) == 0 {
@@ -2261,7 +2261,7 @@ func emitTUIClientToolResultEvents(emit func(tui.Event), config internalconfig.C
 	// 不在消息区展示工具调用的原始错误信息。
 	// 错误已通过 SubmitClientToolCallback 提交给服务端，
 	// 由模型提炼关键信息后通过对话输出告知用户。
-	if strings.TrimSpace(toolName) == "skill" {
+	if strings.TrimSpace(toolName) == "skill_fetch" {
 		if toolErr == nil {
 			skillName := ""
 			if resultMap, ok := result.(map[string]any); ok {
@@ -2524,7 +2524,7 @@ func buildTUIClientToolPanel(toolName string, result any, toolErr error) *tui.To
 			Body:    strings.Join(lines, "\n\n"),
 			Hint:    "Todo 会保存在当前会话状态中，后续请求可继续覆盖更新。",
 		}
-	case "skill":
+	case "skill_fetch":
 		if prompt := strings.TrimSpace(stringMapValue(resultMap, "prompt")); prompt != "" {
 			return &tui.ToolPanel{
 				Title:   "技能装载(skill)结果",

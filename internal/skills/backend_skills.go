@@ -636,7 +636,7 @@ func unzipSkillArchive(zipData []byte, targetDir string) error {
 	return nil
 }
 
-// SyncMissingBackendSkills 在对话开始前自动同步服务端已安装但本地缺失的技能。
+// SyncMissingBackendSkills 在对话开始前自动同步服务端已安装但本地缺失或过期的技能。
 //
 // 受 skills_auto_install_policy 策略控制：
 //   - off：不同步，直接返回空结果

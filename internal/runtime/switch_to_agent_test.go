@@ -308,7 +308,7 @@ func TestAdditionalAgentToolDescriptionsExcludesAskModeTools(t *testing.T) {
 	r.SetCurrentRequestMode(provider.RequestTypeAsk)
 	additional := r.additionalAgentToolDescriptions()
 	// ask 模式已有的工具不应出现在新增列表中
-	askOnlyTools := []string{"ask_user", "lsp_query", "glob_files", "search_files", "read_file", "skill"}
+	askOnlyTools := []string{"ask_user", "lsp_query", "glob_files", "search_files", "read_file", "skill_fetch"}
 	for _, tool := range additional {
 		name, _ := tool["name"].(string)
 		for _, askOnly := range askOnlyTools {

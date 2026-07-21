@@ -896,8 +896,11 @@ func TestCanonicalClientToolNameUsesSnakeCaseNamesOnly(t *testing.T) {
 	if got := canonicalClientToolName("shell_exec"); got != "shell_exec" {
 		t.Fatalf("unexpected canonical shell_exec name: %s", got)
 	}
-	if got := canonicalClientToolName("skill"); got != "skill" {
+	if got := canonicalClientToolName("skill"); got != "skill_fetch" {
 		t.Fatalf("unexpected canonical skill name: %s", got)
+	}
+	if got := canonicalClientToolName("skill_fetch"); got != "skill_fetch" {
+		t.Fatalf("unexpected canonical skill_fetch name: %s", got)
 	}
 	if got := canonicalClientToolName("LSP"); got != "LSP" {
 		t.Fatalf("legacy alias should not be normalized: %s", got)
@@ -919,7 +922,7 @@ func TestCanonicalClientToolNameUsesSnakeCaseNamesOnly(t *testing.T) {
 func TestRequiresClientToolConfirmationRespectsSkillAndWritePolicies(t *testing.T) {
 	skillPayload := map[string]any{
 		"function": map[string]any{
-			"name":      "skill",
+			"name":      "skill_fetch",
 			"arguments": map[string]any{"name": "demo"},
 		},
 	}
@@ -1790,7 +1793,7 @@ func TestExecuteClientToolPayloadAutoModeBypassesSkillReview(t *testing.T) {
 	_, result, err := runtimeClient.ExecuteClientToolPayload(context.Background(), config, map[string]any{
 		"server": map[string]any{"name": "local"},
 		"function": map[string]any{
-			"name": "skill",
+			"name": "skill_fetch",
 			"arguments": map[string]any{
 				"name": "Context Review",
 			},

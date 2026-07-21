@@ -434,7 +434,7 @@ func (r *ClientRuntime) executeClientToolPayload(
 		result, err = r.documentUnstructured(ctx, providerClient, config, arguments)
 	case "write_file":
 		result, err = r.writeFile(config, arguments)
-	case "skill":
+	case "skill_fetch":
 		result, err = r.skill(config, arguments)
 	case "skill_create":
 		result, err = r.skillCreate(config, arguments)

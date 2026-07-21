@@ -50,8 +50,8 @@ func newToolError(code string, format string, args ...any) error {
 
 func canonicalClientToolName(toolName string) string {
 	switch strings.TrimSpace(toolName) {
-	case "skill":
-		return "skill"
+	case "skill", "skill_fetch":
+		return "skill_fetch"
 	case "ask_user":
 		return "ask_user"
 	case "switch_to_agent":
@@ -488,7 +488,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 			},
 		},
 		{
-			"name":                 "skill",
+			"name":                 "skill_fetch",
 			"description":          "按名称装载本地技能(skill)，返回可立即执行的技能提示内容(prompt)，并附带 source_skill、requires_env、metadata 等上下文，供后续 shell_exec 等工具做受控能力补全。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
@@ -609,7 +609,7 @@ func allowedClientToolSetForMode(mode string) map[string]bool {
 		"terminal_capture":          true,
 		"search_files":              true,
 		"read_file":                 true,
-		"skill":                     true,
+		"skill_fetch":               true,
 		"skill_create":              true,
 		"skill_upload":              true,
 		"skill_delete":              true,
@@ -641,7 +641,7 @@ func RequiresClientToolConfirmation(config internalconfig.Config, payload map[st
 	if action, matched := evaluatePermissionAction(config, toolName, commandPreview(arguments)); matched {
 		return action == "ask"
 	}
-	if toolName == "skill" {
+	if toolName == "skill_fetch" {
 		return internalconfig.NormalizeSkillReviewPolicy(config.SkillReviewPolicy) == internalconfig.SkillReviewPolicyConfirm
 	}
 	if toolName == "switch_to_agent" {
@@ -709,7 +709,7 @@ func (r *ClientRuntime) authorizeClientTool(toolName string, arguments map[strin
 			return nil
 		}
 	}
-	if canonicalClientToolName(toolName) == "skill" {
+	if canonicalClientToolName(toolName) == "skill_fetch" {
 		if internalconfig.NormalizeSkillReviewPolicy(config.SkillReviewPolicy) != internalconfig.SkillReviewPolicyConfirm {
 			return nil
 		}
@@ -884,8 +884,8 @@ func previewClientTool(toolName string, arguments map[string]any) string {
 			return fmt.Sprintf("document_unstructured %s", paths[0])
 		}
 		return fmt.Sprintf("document_unstructured %d 文件", len(paths))
-	case "skill":
-		return fmt.Sprintf("skill %s", fallbackString(name, "<missing>"))
+	case "skill_fetch":
+		return fmt.Sprintf("skill_fetch %s", fallbackString(name, "<missing>"))
 	case "skill_create":
 		scope := argumentString(arguments, "scope")
 		if scope == "" {

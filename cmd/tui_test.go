@@ -1633,7 +1633,7 @@ func TestEmitTUIClientToolResultEventsSkipsPanelForSkill(t *testing.T) {
 	events := []internaltui.Event{}
 	emitTUIClientToolResultEvents(func(event internaltui.Event) {
 		events = append(events, event)
-	}, internalconfig.Default(), "skill", map[string]any{
+	}, internalconfig.Default(), "skill_fetch", map[string]any{
 		"name":   "Context Review",
 		"prompt": "技能主体内容",
 	}, nil)
@@ -1917,7 +1917,7 @@ func TestBuildTUIClientToolConfirmRequestUsesSkillAndWritePolicies(t *testing.T)
 	config.Workdir = workspaceDir
 	skillRequest := buildTUIClientToolConfirmRequest(config, workspaceDir, map[string]any{
 		"function": map[string]any{
-			"name":      "skill",
+			"name":      "skill_fetch",
 			"arguments": map[string]any{"name": "Context Review"},
 		},
 	}, func(context.Context) error { return nil }, func(context.Context) error { return nil }, nil, nil, nil, nil, nil)
@@ -2062,7 +2062,7 @@ func TestApplyEffectiveSkillReviewForPayloadUsesApprovedSkillNames(t *testing.T)
 		ApprovedSkillNames: []string{"Context Review"},
 	}, map[string]any{
 		"function": map[string]any{
-			"name":      "skill",
+			"name":      "skill_fetch",
 			"arguments": map[string]any{"name": "context-review"},
 		},
 	})
