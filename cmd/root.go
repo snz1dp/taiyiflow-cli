@@ -860,8 +860,13 @@ func (a *App) streamTaskWithSkillRetry(
 	resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir))
 	skillConfig := a.resolveEffectiveSkillConfig(config, resolvedContextDir)
 	// 尝试恢复 SKILL.md 损坏或缺失的远程安装技能
-	if recoverResult, recoverErr := skills.RecoverBrokenRemoteSkills(ctx, providerClient, skillConfig, a.buildBackendClientInfo(skillConfig)); recoverErr == nil && len(recoverResult.Installed) > 0 {
-		fmt.Fprintf(a.stderr, "已恢复 %d 个损坏的远程技能: %s\n", len(recoverResult.Installed), strings.Join(recoverResult.Installed, ", "))
+	if recoverResult, recoverErr := skills.RecoverBrokenRemoteSkills(ctx, providerClient, skillConfig, a.buildBackendClientInfo(skillConfig)); recoverErr == nil {
+		if len(recoverResult.Installed) > 0 {
+			fmt.Fprintf(a.stderr, "已恢复 %d 个损坏的远程技能: %s\n", len(recoverResult.Installed), strings.Join(recoverResult.Installed, ", "))
+		}
+		if len(recoverResult.Failed) > 0 {
+			fmt.Fprintf(a.stderr, "警告: %d 个远程技能恢复失败: %s\n", len(recoverResult.Failed), strings.Join(recoverResult.Failed, ", "))
+		}
 	}
 	// 自动同步服务端已安装但本地缺失的技能（受 skills_auto_install_policy 策略控制）
 	if syncResult, syncErr := skills.SyncMissingBackendSkills(ctx, providerClient, skillConfig, a.buildBackendClientInfo(skillConfig)); syncErr == nil {
@@ -874,7 +879,12 @@ func (a *App) streamTaskWithSkillRetry(
 	}
 	requestedSkillNames, clientSkillPackages, err := loadSkillPayloadWithConfig(skillConfig, sessionState.RequestMode)
 	if err != nil {
-		return sessionState, err
+		// Discover 失败时降级为空技能列表，不中断整个请求流程。
+		// 可能是技能目录权限问题或临时文件系统异常，
+		// 用户仍然可以进行不依赖技能的对话。
+		fmt.Fprintf(a.stderr, "警告: 加载技能列表失败，本次请求将不携带技能: %v\n", err)
+		requestedSkillNames = []string{}
+		clientSkillPackages = nil
 	}
 	clientContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir))
 	// Load project-level instruction files (CLAUDE.md, AGENT.md, etc.)

@@ -218,15 +218,34 @@ func ResolveDirectories(config internalconfig.Config) ([]string, error) {
 	return result, nil
 }
 
+// DiscoverResult 包含发现的所有技能以及加载失败的远程技能信息。
+type DiscoverResult struct {
+	Items                []Skill
+	Directory            string
+	BrokenRemoteSkills   []InstalledRemoteSkill
+}
+
+// Discover 发现本地技能目录中的所有技能，返回技能列表和目录信息。
+// 加载失败的远程安装技能会记录在 BrokenRemoteSkills 中，供调用方触发重新下载。
 func Discover(config internalconfig.Config) ([]Skill, string, error) {
-	directories, err := ResolveDirectories(config)
+	result, err := DiscoverDetailed(config)
 	if err != nil {
 		return nil, "", err
+	}
+	return result.Items, result.Directory, nil
+}
+
+// DiscoverDetailed 发现本地技能目录中的所有技能，返回包含加载失败远程技能信息的详细结果。
+func DiscoverDetailed(config internalconfig.Config) (DiscoverResult, error) {
+	directories, err := ResolveDirectories(config)
+	if err != nil {
+		return DiscoverResult{}, err
 	}
 
 	enabled := enabledSet(config.Skills.Enabled)
 	disabled := enabledSet(config.Skills.Disabled)
 	items := []Skill{}
+	brokenRemoteSkills := []InstalledRemoteSkill{}
 	seenNames := map[string]bool{}
 	seenPaths := map[string]bool{}
 	availableDirectories := []string{}
@@ -236,10 +255,10 @@ func Discover(config internalconfig.Config) ([]Skill, string, error) {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, "", fmt.Errorf("读取技能目录失败: %w", err)
+			return DiscoverResult{}, fmt.Errorf("读取技能目录失败: %w", err)
 		}
 		if !info.IsDir() {
-			return nil, "", fmt.Errorf("技能目录不是有效目录: %s", directory)
+			return DiscoverResult{}, fmt.Errorf("技能目录不是有效目录: %s", directory)
 		}
 		availableDirectories = append(availableDirectories, directory)
 		err = filepath.WalkDir(directory, func(path string, entry os.DirEntry, walkErr error) error {
@@ -255,7 +274,19 @@ func Discover(config internalconfig.Config) ([]Skill, string, error) {
 			}
 			skill, err := LoadFile(directory, path)
 			if err != nil {
-				// 单个技能文件加载失败时跳过，不中断整个发现流程
+				// 单个技能文件加载失败时跳过，不中断整个发现流程。
+				// 如果该技能目录下存在 origin.json（说明是远程安装的技能），
+				// 记录到 brokenRemoteSkills 供调用方触发重新下载。
+				skillDir := filepath.Dir(path)
+				if origin, originErr := readRemoteOrigin(skillDir); originErr == nil && origin != nil {
+					brokenRemoteSkills = append(brokenRemoteSkills, InstalledRemoteSkill{
+						Name:    origin.Slug,
+						Slug:    origin.Slug,
+						TargetDir: skillDir,
+						RegistryURL: origin.Registry,
+						InstalledVersion: origin.InstalledVersion,
+					})
+				}
 				return nil
 			}
 			identity := fileIdentity(path)
@@ -274,7 +305,7 @@ func Discover(config internalconfig.Config) ([]Skill, string, error) {
 			return nil
 		})
 		if err != nil {
-			return nil, "", err
+			return DiscoverResult{}, err
 		}
 	}
 
@@ -300,7 +331,11 @@ func Discover(config internalconfig.Config) ([]Skill, string, error) {
 		}
 		return strings.ToLower(items[left].Name) < strings.ToLower(items[right].Name)
 	})
-	return items, strings.Join(availableDirectories, " -> "), nil
+	return DiscoverResult{
+		Items:              items,
+		Directory:          strings.Join(availableDirectories, " -> "),
+		BrokenRemoteSkills: brokenRemoteSkills,
+	}, nil
 }
 
 func LoadByName(config internalconfig.Config, name string) (*Skill, string, error) {

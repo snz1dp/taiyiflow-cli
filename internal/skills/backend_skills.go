@@ -668,9 +668,9 @@ func SyncMissingBackendSkills(
 // 尝试从服务端重新下载并恢复。
 //
 // 流程：
-//  1. 通过 ScanRemoteOrigins 扫描所有有 origin.json 的远程技能
-//  2. 通过 Discover 获取成功加载的技能名称集合
-//  3. 对比找出 origin.json 存在但 SKILL.md 加载失败的技能
+//  1. 通过 DiscoverDetailed 获取已加载技能和加载失败的远程技能（BrokenRemoteSkills）
+//  2. 通过 ScanRemoteOrigins 补充扫描 origin.json 存在但 SKILL.md 完全不存在的技能
+//  3. 合并去重后得到完整的损坏远程技能列表
 //  4. 从服务端获取可见技能列表，匹配后重新安装
 //
 // 恢复失败的技能会被跳过，不会中断整个流程。
@@ -686,43 +686,58 @@ func RecoverBrokenRemoteSkills(
 		Failed:    []string{},
 		Skipped:   []string{},
 	}
-
-	// 1. 扫描所有有 origin.json 的远程技能
-	remoteItems, err := ScanRemoteOrigins(config)
-	if err != nil {
-		return result, fmt.Errorf("扫描远程技能来源失败: %w", err)
-	}
-	if len(remoteItems) == 0 {
-		return result, nil
-	}
-
-	// 2. 获取成功加载的技能名称集合
-	discoveredItems, _, err := Discover(config)
-	if err != nil {
-		// Discover 失败时，所有远程技能都可能是损坏的，全部尝试恢复
-		discoveredItems = nil
-	}
-	discoveredNames := map[string]bool{}
-	for _, item := range discoveredItems {
-		lowerName := strings.ToLower(strings.TrimSpace(item.Name))
-		if lowerName != "" {
-			discoveredNames[lowerName] = true
-		}
-		slug := SlugifySkillName(item.Name)
-		if slug != "" {
-			discoveredNames[strings.ToLower(slug)] = true
-		}
-	}
-
-	// 3. 找出 origin.json 存在但 Discover 中不存在的技能
 	var broken []InstalledRemoteSkill
-	for _, remote := range remoteItems {
-		lowerSlug := strings.ToLower(strings.TrimSpace(remote.Slug))
-		lowerName := strings.ToLower(strings.TrimSpace(remote.Name))
-		if discoveredNames[lowerSlug] || discoveredNames[lowerName] {
-			continue
+
+	// 1. 使用 DiscoverDetailed 一次性获取已加载技能和加载失败的远程技能
+	discoverResult, err := DiscoverDetailed(config)
+	if err != nil {
+		// Discover 失败时回退到 ScanRemoteOrigins 全量扫描
+		remoteItems, scanErr := ScanRemoteOrigins(config)
+		if scanErr != nil {
+			return result, fmt.Errorf("扫描远程技能来源失败: %w", scanErr)
 		}
-		broken = append(broken, remote)
+		if len(remoteItems) == 0 {
+			return result, nil
+		}
+		// 全部远程技能都可能是损坏的
+		broken = remoteItems
+	} else {
+		// 直接使用 DiscoverDetailed 已收集的加载失败远程技能
+		broken = discoverResult.BrokenRemoteSkills
+		// 同时也用 ScanRemoteOrigins 补充 DiscoverDetailed 可能遗漏的情况
+		// （如 SKILL.md 完全不存在但 origin.json 存在的场景）
+		discoveredNames := map[string]bool{}
+		for _, item := range discoverResult.Items {
+			lowerName := strings.ToLower(strings.TrimSpace(item.Name))
+			if lowerName != "" {
+				discoveredNames[lowerName] = true
+			}
+			slug := SlugifySkillName(item.Name)
+			if slug != "" {
+				discoveredNames[strings.ToLower(slug)] = true
+			}
+		}
+		remoteItems, scanErr := ScanRemoteOrigins(config)
+		if scanErr == nil {
+			for _, remote := range remoteItems {
+				lowerSlug := strings.ToLower(strings.TrimSpace(remote.Slug))
+				lowerName := strings.ToLower(strings.TrimSpace(remote.Name))
+				if discoveredNames[lowerSlug] || discoveredNames[lowerName] {
+					continue
+				}
+				// 检查是否已在 broken 列表中
+				alreadyBroken := false
+				for _, b := range broken {
+					if strings.EqualFold(b.Slug, remote.Slug) {
+						alreadyBroken = true
+						break
+					}
+				}
+				if !alreadyBroken {
+					broken = append(broken, remote)
+				}
+			}
+		}
 	}
 	if len(broken) == 0 {
 		return result, nil
