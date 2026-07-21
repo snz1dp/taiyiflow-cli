@@ -244,7 +244,8 @@ func Discover(config internalconfig.Config) ([]Skill, string, error) {
 		availableDirectories = append(availableDirectories, directory)
 		err = filepath.WalkDir(directory, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
-				return walkErr
+				// 遍历过程中的子项错误（如权限不足）跳过，不中断整个发现流程
+				return nil
 			}
 			if entry.IsDir() {
 				return nil
@@ -254,7 +255,8 @@ func Discover(config internalconfig.Config) ([]Skill, string, error) {
 			}
 			skill, err := LoadFile(directory, path)
 			if err != nil {
-				return err
+				// 单个技能文件加载失败时跳过，不中断整个发现流程
+				return nil
 			}
 			identity := fileIdentity(path)
 			if seenPaths[identity] {

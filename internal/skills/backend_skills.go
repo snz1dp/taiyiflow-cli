@@ -635,3 +635,131 @@ func unzipSkillArchive(zipData []byte, targetDir string) error {
 	}
 	return nil
 }
+
+// SyncMissingBackendSkills 在对话开始前自动同步服务端已安装但本地缺失的技能。
+//
+// 受 skills_auto_install_policy 策略控制：
+//   - off：不同步，直接返回空结果
+//   - confirm：不同步（对话开始前不适合弹确认框）
+//   - allow：直接执行同步
+//
+// 内置技能（source == "bundled"）已被 SyncBackendSkills 内部排除。
+// 同步失败不中断请求流程，仅返回错误信息供调用方记录。
+func SyncMissingBackendSkills(
+	ctx context.Context,
+	client provider.Provider,
+	config internalconfig.Config,
+	clientInfo ClientInfo,
+) (BackendSyncResult, error) {
+	result := BackendSyncResult{
+		Installed: []string{},
+		Updated:   []string{},
+		Failed:    []string{},
+		Skipped:   []string{},
+	}
+	policy := internalconfig.NormalizeSkillAutoInstallPolicy(config.Skills.AutoInstallPolicy)
+	if policy != internalconfig.SkillAutoInstallPolicyAllow {
+		return result, nil
+	}
+	return SyncBackendSkills(ctx, client, config, clientInfo)
+}
+
+// RecoverBrokenRemoteSkills 检测本地 SKILL.md 损坏或缺失但 origin.json 仍存在的远程安装技能，
+// 尝试从服务端重新下载并恢复。
+//
+// 流程：
+//  1. 通过 ScanRemoteOrigins 扫描所有有 origin.json 的远程技能
+//  2. 通过 Discover 获取成功加载的技能名称集合
+//  3. 对比找出 origin.json 存在但 SKILL.md 加载失败的技能
+//  4. 从服务端获取可见技能列表，匹配后重新安装
+//
+// 恢复失败的技能会被跳过，不会中断整个流程。
+func RecoverBrokenRemoteSkills(
+	ctx context.Context,
+	client provider.Provider,
+	config internalconfig.Config,
+	clientInfo ClientInfo,
+) (BackendSyncResult, error) {
+	result := BackendSyncResult{
+		Installed: []string{},
+		Updated:   []string{},
+		Failed:    []string{},
+		Skipped:   []string{},
+	}
+
+	// 1. 扫描所有有 origin.json 的远程技能
+	remoteItems, err := ScanRemoteOrigins(config)
+	if err != nil {
+		return result, fmt.Errorf("扫描远程技能来源失败: %w", err)
+	}
+	if len(remoteItems) == 0 {
+		return result, nil
+	}
+
+	// 2. 获取成功加载的技能名称集合
+	discoveredItems, _, err := Discover(config)
+	if err != nil {
+		// Discover 失败时，所有远程技能都可能是损坏的，全部尝试恢复
+		discoveredItems = nil
+	}
+	discoveredNames := map[string]bool{}
+	for _, item := range discoveredItems {
+		lowerName := strings.ToLower(strings.TrimSpace(item.Name))
+		if lowerName != "" {
+			discoveredNames[lowerName] = true
+		}
+		slug := SlugifySkillName(item.Name)
+		if slug != "" {
+			discoveredNames[strings.ToLower(slug)] = true
+		}
+	}
+
+	// 3. 找出 origin.json 存在但 Discover 中不存在的技能
+	var broken []InstalledRemoteSkill
+	for _, remote := range remoteItems {
+		lowerSlug := strings.ToLower(strings.TrimSpace(remote.Slug))
+		lowerName := strings.ToLower(strings.TrimSpace(remote.Name))
+		if discoveredNames[lowerSlug] || discoveredNames[lowerName] {
+			continue
+		}
+		broken = append(broken, remote)
+	}
+	if len(broken) == 0 {
+		return result, nil
+	}
+
+	// 4. 从服务端获取可见技能列表
+	visibleSkills, err := client.FetchVisibleSkills(ctx, provider.FetchVisibleSkillsParams{})
+	if err != nil {
+		for _, item := range broken {
+			result.Failed = append(result.Failed, item.Name)
+		}
+		return result, fmt.Errorf("获取可见技能列表失败: %w", err)
+	}
+
+	// 5. 逐个匹配并重新安装
+	for _, item := range broken {
+		var matched *provider.VisibleSkillPackage
+		for i := range visibleSkills {
+			vs := &visibleSkills[i]
+			if strings.EqualFold(vs.Name, item.Slug) ||
+				strings.EqualFold(vs.Name, item.Name) ||
+				strings.EqualFold(vs.DisplayName, item.Name) {
+				matched = vs
+				break
+			}
+		}
+		if matched == nil {
+			result.Failed = append(result.Failed, item.Name)
+			continue
+		}
+		installResult, err := InstallBackendSkill(ctx, client, config, *matched, clientInfo)
+		if err != nil {
+			result.Failed = append(result.Failed, item.Name)
+			continue
+		}
+		result.Installed = append(result.Installed, installResult.Name)
+	}
+
+	return result, nil
+}

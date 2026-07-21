@@ -53,7 +53,8 @@ func listInstalledRemoteSkills(config internalconfig.Config) ([]InstalledRemoteS
 		skillDir := filepath.Dir(item.Path)
 		origin, err := readRemoteOrigin(skillDir)
 		if err != nil {
-			return nil, err
+			// origin.json 读取或解析失败时跳过，不中断整个扫描
+			continue
 		}
 		if origin == nil {
 			continue
@@ -129,4 +130,62 @@ func compactStrings(items []string) []string {
 		result = append(result, trimmed)
 	}
 	return result
+}
+
+// ScanRemoteOrigins 直接扫描技能安装目录下的 .snz1dp/origin.json，
+// 不依赖 Discover（不要求 SKILL.md 可解析）。
+// 用于发现 SKILL.md 损坏或缺失但 origin.json 仍存在的远程安装技能，
+// 以便后续重新从服务端下载恢复。
+func ScanRemoteOrigins(config internalconfig.Config) ([]InstalledRemoteSkill, error) {
+	directories, err := ResolveDirectories(config)
+	if err != nil {
+		return nil, err
+	}
+	results := []InstalledRemoteSkill{}
+	seen := map[string]bool{}
+	for _, directory := range directories {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			skillDir := filepath.Join(directory, entry.Name())
+			origin, err := readRemoteOrigin(skillDir)
+			if err != nil || origin == nil {
+				continue
+			}
+			key := filepath.Clean(skillDir)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			// 尝试从 SKILL.md 读取技能名称，若失败则用 slug 作为名称
+			name := origin.Slug
+			skillFilePath := filepath.Join(skillDir, skillFileName)
+			if content, err := os.ReadFile(skillFilePath); err == nil {
+				if manifest, _, pErr := parseSkillDocument(string(content)); pErr == nil && strings.TrimSpace(manifest.Name) != "" {
+					name = manifest.Name
+				}
+			}
+			results = append(results, InstalledRemoteSkill{
+				Name:             strings.TrimSpace(name),
+				Slug:             strings.TrimSpace(origin.Slug),
+				InstalledVersion: strings.TrimSpace(origin.InstalledVersion),
+				TargetDir:        skillDir,
+				RegistryURL:      strings.TrimSpace(origin.Registry),
+			})
+		}
+	}
+	sort.Slice(results, func(left int, right int) bool {
+		leftSlug := strings.ToLower(results[left].Slug)
+		rightSlug := strings.ToLower(results[right].Slug)
+		return leftSlug < rightSlug
+	})
+	return results, nil
 }

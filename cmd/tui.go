@@ -206,6 +206,19 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			}
 			resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
 			skillConfig := a.resolveEffectiveSkillConfig(config, resolvedContextDir)
+			// 尝试恢复 SKILL.md 损坏或缺失的远程安装技能
+			if recoverResult, recoverErr := skills.RecoverBrokenRemoteSkills(runCtx, callbackProvider, skillConfig, a.buildBackendClientInfo(skillConfig)); recoverErr == nil && len(recoverResult.Installed) > 0 {
+				fmt.Fprintf(os.Stderr, "已恢复 %d 个损坏的远程技能: %s\n", len(recoverResult.Installed), strings.Join(recoverResult.Installed, ", "))
+			}
+			// 自动同步服务端已安装但本地缺失的技能（受 skills_auto_install_policy 策略控制）
+			if syncResult, syncErr := skills.SyncMissingBackendSkills(runCtx, callbackProvider, skillConfig, a.buildBackendClientInfo(skillConfig)); syncErr == nil {
+				if len(syncResult.Installed) > 0 {
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("已自动补装 %d 个缺失技能: %s", len(syncResult.Installed), strings.Join(syncResult.Installed, ", "))})
+				}
+				if len(syncResult.Updated) > 0 {
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("已自动更新 %d 个过期技能: %s", len(syncResult.Updated), strings.Join(syncResult.Updated, ", "))})
+				}
+			}
 			requestedSkillNames, clientSkillPackages, skillErr := loadSkillPayloadWithConfig(skillConfig, request.RequestMode)
 			if skillErr != nil {
 				return skillErr

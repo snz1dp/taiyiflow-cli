@@ -24,6 +24,7 @@ import (
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/textsanitize"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/workspaceinstance"
 )
@@ -858,6 +859,19 @@ func (a *App) streamTaskWithSkillRetry(
 	runtimeConfig = applyEffectiveSkillReviewPolicy(runtimeConfig, sessionState.SkillReviewPolicyOverride)
 	resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, config.Workdir))
 	skillConfig := a.resolveEffectiveSkillConfig(config, resolvedContextDir)
+	// 尝试恢复 SKILL.md 损坏或缺失的远程安装技能
+	if recoverResult, recoverErr := skills.RecoverBrokenRemoteSkills(ctx, providerClient, skillConfig, a.buildBackendClientInfo(skillConfig)); recoverErr == nil && len(recoverResult.Installed) > 0 {
+		fmt.Fprintf(a.stderr, "已恢复 %d 个损坏的远程技能: %s\n", len(recoverResult.Installed), strings.Join(recoverResult.Installed, ", "))
+	}
+	// 自动同步服务端已安装但本地缺失的技能（受 skills_auto_install_policy 策略控制）
+	if syncResult, syncErr := skills.SyncMissingBackendSkills(ctx, providerClient, skillConfig, a.buildBackendClientInfo(skillConfig)); syncErr == nil {
+		if len(syncResult.Installed) > 0 {
+			fmt.Fprintf(a.stderr, "已自动补装 %d 个缺失技能: %s\n", len(syncResult.Installed), strings.Join(syncResult.Installed, ", "))
+		}
+		if len(syncResult.Updated) > 0 {
+			fmt.Fprintf(a.stderr, "已自动更新 %d 个过期技能: %s\n", len(syncResult.Updated), strings.Join(syncResult.Updated, ", "))
+		}
+	}
 	requestedSkillNames, clientSkillPackages, err := loadSkillPayloadWithConfig(skillConfig, sessionState.RequestMode)
 	if err != nil {
 		return sessionState, err
