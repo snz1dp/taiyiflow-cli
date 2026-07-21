@@ -1,8 +1,11 @@
 package skills
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,13 +90,21 @@ func InstallBackendSkill(
 	}
 	targetDir := filepath.Join(installDir, skillDirName)
 
-	// 4. 写入 SKILL.md
+	// 4. 写入技能文件
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return BackendInstallResult{}, fmt.Errorf("创建技能目录失败: %w", err)
 	}
-	skillFilePath := filepath.Join(targetDir, skillFileName)
-	if err := os.WriteFile(skillFilePath, []byte(content.Content), 0o644); err != nil {
-		return BackendInstallResult{}, fmt.Errorf("写入技能文件失败: %w", err)
+	if content.IsZip && len(content.RawBytes) > 0 {
+		// ZIP 模式：解压全部文件到目标目录
+		if err := unzipSkillArchive(content.RawBytes, targetDir); err != nil {
+			return BackendInstallResult{}, fmt.Errorf("解压技能 ZIP 失败: %w", err)
+		}
+	} else {
+		// 回退模式：仅写入 SKILL.md
+		skillFilePath := filepath.Join(targetDir, skillFileName)
+		if err := os.WriteFile(skillFilePath, []byte(content.Content), 0o644); err != nil {
+			return BackendInstallResult{}, fmt.Errorf("写入技能文件失败: %w", err)
+		}
 	}
 
 	// 5. 写入来源元数据
@@ -577,4 +588,50 @@ func SlugifySkillName(name string) string {
 	// 去首尾横线
 	result = strings.Trim(result, "-")
 	return result
+}
+
+// unzipSkillArchive 将 ZIP 字节解压到目标目录
+//
+// ZIP 结构约定：顶层目录名/SKILL.md、顶层目录名/references/...
+// 解压时去掉 ZIP 内的顶层目录名，将文件直接写入 targetDir。
+// 跳过目录条目和隐藏文件（以 . 开头）。
+func unzipSkillArchive(zipData []byte, targetDir string) error {
+	reader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	if err != nil {
+		return fmt.Errorf("打开 ZIP 失败: %w", err)
+	}
+	for _, file := range reader.File {
+		if file.FileInfo().IsDir() {
+			continue
+		}
+		entryName := filepath.FromSlash(file.Name)
+		// 去掉 ZIP 内顶层目录名（slug/SKILL.md → SKILL.md）
+		if idx := strings.IndexByte(entryName, '/'); idx >= 0 {
+			entryName = entryName[idx+1:]
+		}
+		if entryName == "" || strings.HasPrefix(filepath.Base(entryName), ".") {
+			continue
+		}
+		destPath := filepath.Join(targetDir, entryName)
+		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+			return fmt.Errorf("创建目录 %s 失败: %w", filepath.Dir(destPath), err)
+		}
+		rc, err := file.Open()
+		if err != nil {
+			return fmt.Errorf("打开 ZIP 条目 %s 失败: %w", file.Name, err)
+		}
+		out, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+		if err != nil {
+			rc.Close()
+			return fmt.Errorf("创建文件 %s 失败: %w", destPath, err)
+		}
+		if _, err := io.Copy(out, rc); err != nil {
+			rc.Close()
+			out.Close()
+			return fmt.Errorf("写入文件 %s 失败: %w", destPath, err)
+		}
+		rc.Close()
+		out.Close()
+	}
+	return nil
 }

@@ -1,6 +1,7 @@
 package taiyiflow
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"context"
@@ -2327,7 +2328,7 @@ type skillInstallationRecordResponse struct {
 
 type skillInstallationPageResponse struct {
 	Data  []skillInstallationRecordResponse `json:"data"`
-	Total int                                `json:"total"`
+	Total int                               `json:"total"`
 }
 
 type uploadCustomSkillRequestBody struct {
@@ -2342,9 +2343,9 @@ type reportInstallationRequestBody struct {
 	SkillPackageID string `json:"skill_package_id"`
 	ClientID       string `json:"client_id,omitempty"`
 	DeviceID       string `json:"device_id,omitempty"`
-	InstallSource string `json:"install_source,omitempty"`
+	InstallSource  string `json:"install_source,omitempty"`
 	ClientPlatform string `json:"client_platform,omitempty"`
-	ClientVersion string `json:"client_version,omitempty"`
+	ClientVersion  string `json:"client_version,omitempty"`
 }
 
 func (c *Client) FetchVisibleSkills(ctx context.Context, params provider.FetchVisibleSkillsParams) ([]provider.VisibleSkillPackage, error) {
@@ -2359,9 +2360,8 @@ func (c *Client) FetchVisibleSkills(ctx context.Context, params provider.FetchVi
 	if trimmed := strings.TrimSpace(params.SessionID); trimmed != "" {
 		query.Set("session_id", trimmed)
 	}
-	if trimmed := strings.TrimSpace(params.CommandExecutionTarget); trimmed != "" {
-		query.Set("command_execution_target", trimmed)
-	}
+	// CLI默认允许有风险的技能包
+	query.Set("allow_elevated_risk", "true")
 	if trimmed := strings.TrimSpace(params.TerminalType); trimmed != "" {
 		query.Set("terminal_type", trimmed)
 	}
@@ -2414,12 +2414,12 @@ func (c *Client) DownloadSkillContent(ctx context.Context, skillID string) (*pro
 	if trimmedID == "" {
 		return nil, fmt.Errorf("技能 ID 不能为空")
 	}
-	endpoint := c.apiURL(fmt.Sprintf("/agents/skills/%s", url.PathEscape(trimmedID)))
+	// 优先请求 format=raw 获取原始产物（ZIP），保留附属脚本文件
+	endpoint := c.apiURL(fmt.Sprintf("/agents/skills/%s?format=raw", url.PathEscape(trimmedID)))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建技能内容下载请求失败: %w", err)
 	}
-	req.Header.Set("Accept", "application/json")
 	c.applyAuth(req)
 
 	resp, err := c.httpClient.Do(req)
@@ -2431,14 +2431,75 @@ func (c *Client) DownloadSkillContent(ctx context.Context, skillID string) (*pro
 		return nil, readHTTPError("下载技能内容失败", resp)
 	}
 
-	var payload skillPackageContentResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("解析技能内容响应失败: %w", err)
+	rawBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取技能内容响应失败: %w", err)
 	}
+
+	contentType := resp.Header.Get("Content-Type")
+	isZip := strings.Contains(contentType, "application/zip") || isZipBytes(rawBytes)
+
+	if isZip {
+		skillMd, version, err := extractSkillMdFromZip(rawBytes)
+		if err != nil {
+			return nil, fmt.Errorf("从 ZIP 提取 SKILL.md 失败: %w", err)
+		}
+		return &provider.SkillPackageContent{
+			Content:  skillMd,
+			Version:  version,
+			RawBytes: rawBytes,
+			IsZip:    true,
+		}, nil
+	}
+
+	// 非 ZIP 响应：可能是纯文本 SKILL.md 或 JSON
+	// 尝试 JSON 解析（后端 format=content 的 JSON 响应）
+	var payload skillPackageContentResponse
+	if jsonErr := json.Unmarshal(rawBytes, &payload); jsonErr == nil && payload.Content != "" {
+		return &provider.SkillPackageContent{
+			Content:  payload.Content,
+			Version:  strings.TrimSpace(payload.Version),
+			RawBytes: rawBytes,
+			IsZip:    false,
+		}, nil
+	}
+
+	// 回退：纯文本 SKILL.md
 	return &provider.SkillPackageContent{
-		Content: payload.Content,
-		Version: strings.TrimSpace(payload.Version),
+		Content:  string(rawBytes),
+		RawBytes: rawBytes,
+		IsZip:    false,
 	}, nil
+}
+
+// isZipBytes 通过魔术字节判断数据是否为 ZIP 格式
+func isZipBytes(data []byte) bool {
+	return len(data) >= 4 && data[0] == 'P' && data[1] == 'K' && data[2] == 0x03 && data[3] == 0x04
+}
+
+// extractSkillMdFromZip 从 ZIP 字节中提取 SKILL.md 文本和版本号
+func extractSkillMdFromZip(zipData []byte) (string, string, error) {
+	reader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	if err != nil {
+		return "", "", fmt.Errorf("打开 ZIP 失败: %w", err)
+	}
+	for _, file := range reader.File {
+		baseName := filepath.Base(file.Name)
+		if baseName == "SKILL.md" || baseName == "skill.md" {
+			rc, err := file.Open()
+			if err != nil {
+				return "", "", fmt.Errorf("打开 %s 失败: %w", file.Name, err)
+			}
+			defer rc.Close()
+			data, err := io.ReadAll(rc)
+			if err != nil {
+				return "", "", fmt.Errorf("读取 %s 失败: %w", file.Name, err)
+			}
+			// 版本号从 frontmatter 解析太复杂，留空由调用方从 VisibleSkillPackage 获取
+			return string(data), "", nil
+		}
+	}
+	return "", "", fmt.Errorf("ZIP 中未找到 SKILL.md")
 }
 
 func (c *Client) UploadCustomSkill(ctx context.Context, request provider.UploadCustomSkillRequest) (*provider.VisibleSkillPackage, error) {

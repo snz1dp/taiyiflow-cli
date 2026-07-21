@@ -520,9 +520,16 @@ type VisibleSkillPackage struct {
 }
 
 // SkillPackageContent 对应后端 SkillPackageContentRead
+//
+// Content 为 SKILL.md 文本内容（从 ZIP 中提取或后端直接返回）；
+// Version 为技能版本号；
+// RawBytes 为后端返回的原始产物字节（ZIP 格式），非空时 IsZip 为 true；
+// IsZip 标记 RawBytes 是否为 ZIP 格式，安装时据此决定是解压还是仅写入 SKILL.md。
 type SkillPackageContent struct {
-	Content string
-	Version string
+	Content  string
+	Version  string
+	RawBytes []byte
+	IsZip    bool
 }
 
 // SkillInstallationRecord 对应后端 SkillInstallationRecordRead
