@@ -435,7 +435,7 @@ func (r *ClientRuntime) executeClientToolPayload(
 	case "write_file":
 		result, err = r.writeFile(config, arguments)
 	case "skill_fetch":
-		result, err = r.skill(config, arguments)
+		result, err = r.skill(ctx, providerClient, config, arguments)
 	case "skill_create":
 		result, err = r.skillCreate(config, arguments)
 	case "skill_upload":

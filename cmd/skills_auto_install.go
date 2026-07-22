@@ -500,16 +500,24 @@ func isSkillSearchStopWord(word string) bool {
 
 func normalizeSkillLookupKey(value string) string {
 	trimmed := strings.ToLower(strings.TrimSpace(value))
-	return strings.Map(func(r rune) rune {
+	// 优先尝试 slug 化（仅保留 [a-z0-9-]）
+	slug := strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z':
 			return r
 		case r >= '0' && r <= '9':
 			return r
+		case r == '-':
+			return r
 		default:
 			return -1
 		}
 	}, trimmed)
+	if slug != "" {
+		return slug
+	}
+	// slug 化后为空（纯中文名称等场景），返回原始小写值用于中文匹配
+	return trimmed
 }
 
 func candidateLabel(candidate skillInstallCandidate) string {

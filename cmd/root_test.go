@@ -3021,7 +3021,7 @@ func TestStreamTaskInstallsMissingSkillBeforeRequest(t *testing.T) {
 	providerStub := &stubProvider{
 		stream: stream,
 		fetchSkillsResult: []provider.VisibleSkillPackage{
-			{ID: "remote-skill", Name: "Remote Skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
+			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
 		},
 		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
 		reportInstallResult: &provider.SkillInstallationRecord{},
@@ -3113,7 +3113,7 @@ func TestStreamTaskInstallsMissingSkillWithStructuredErrorPayload(t *testing.T) 
 	providerStub := &stubProvider{
 		stream: stream,
 		fetchSkillsResult: []provider.VisibleSkillPackage{
-			{ID: "remote-skill", Name: "Remote Skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
+			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
 		},
 		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
 		reportInstallResult: &provider.SkillInstallationRecord{},
@@ -3170,7 +3170,7 @@ func TestStreamTaskUsesFreeTextSearchForUniqueSkillCandidate(t *testing.T) {
 	providerStub := &stubProvider{
 		stream: stream,
 		fetchSkillsResult: []provider.VisibleSkillPackage{
-			{ID: "remote-skill", Name: "Remote Skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
+			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
 		},
 		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
 		reportInstallResult: &provider.SkillInstallationRecord{},
@@ -3229,7 +3229,7 @@ func TestStreamTaskInstallsMissingSkillIntoLegacyGlobalDirectoryAndReloadsReques
 	providerStub := &stubProvider{
 		stream: stream,
 		fetchSkillsResult: []provider.VisibleSkillPackage{
-			{ID: "remote-skill", Name: "Remote Skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
+			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
 		},
 		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
 		reportInstallResult: &provider.SkillInstallationRecord{},
@@ -3299,7 +3299,7 @@ func TestStreamTaskAutoInstallUsesPinnedSessionInstallScope(t *testing.T) {
 	providerStub := &stubProvider{
 		stream: stream,
 		fetchSkillsResult: []provider.VisibleSkillPackage{
-			{ID: "remote-skill", Name: "Remote Skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
+			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
 		},
 		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
 		reportInstallResult: &provider.SkillInstallationRecord{},

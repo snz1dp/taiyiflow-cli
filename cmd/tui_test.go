@@ -71,7 +71,7 @@ func TestBuildTUISkillsPickerLoadsRemoteItems(t *testing.T) {
 
 	stubClient := &stubProvider{
 		fetchSkillsResult: []provider.VisibleSkillPackage{
-			{ID: "remote-skill", Name: "Remote Skill", DisplayName: "Remote Skill", Summary: "远程技能摘要", Version: "1.2.3"},
+			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "远程技能摘要", Version: "1.2.3"},
 		},
 	}
 	picker, err := buildTUISkillsPicker(context.Background(), stubClient, config, "", "remote")
@@ -464,7 +464,7 @@ func TestExecuteTUISkillsPickerInstallDetailRefreshesPickerAndPanel(t *testing.T
 	skillContent := "---\nname: Remote Skill\ndescription: 远程技能摘要\ncategory: remote\n---\n\n远程技能正文详情\n"
 	stubClient := &stubProvider{
 		fetchSkillsResult: []provider.VisibleSkillPackage{
-			{ID: "remote-skill", Name: "Remote Skill", DisplayName: "Remote Skill", Summary: "远程技能摘要", Version: "1.2.3"},
+			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "远程技能摘要", Version: "1.2.3"},
 		},
 		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.2.3"},
 		reportInstallResult: &provider.SkillInstallationRecord{},
@@ -543,7 +543,7 @@ func TestExecuteTUISkillsPickerInstallSelectUsesRememberedSessionScope(t *testin
 	skillContent := "---\nname: Remote Skill\ndescription: 远程技能摘要\ncategory: remote\n---\n\nRemote skill body\n"
 	stubClient := &stubProvider{
 		fetchSkillsResult: []provider.VisibleSkillPackage{
-			{ID: "remote-skill", Name: "Remote Skill", DisplayName: "Remote Skill", Summary: "远程技能摘要", Version: "1.2.3"},
+			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "远程技能摘要", Version: "1.2.3"},
 		},
 		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.2.3"},
 		reportInstallResult: &provider.SkillInstallationRecord{},
@@ -603,7 +603,7 @@ func TestExecuteTUISkillsPickerRemoveLocalDetailRefreshesPickerAndClosesPanel(t 
 	app := &App{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, configManager: manager, skillInstallScopeSession: internalconfig.SkillInstallScopeWorkspace, skillInstallScopePinned: true}
 	stubClient := &stubProvider{
 		fetchSkillsResult: []provider.VisibleSkillPackage{
-			{ID: "remote-skill", Name: "Remote Skill", DisplayName: "Remote Skill", Summary: "远程技能摘要", Version: "1.2.3"},
+			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "远程技能摘要", Version: "1.2.3"},
 		},
 	}
 
@@ -692,7 +692,7 @@ func TestExecuteTUISkillsPickerDisableLocalDetailRefreshesPickerAndKeepsSkillIns
 	app := &App{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, configManager: manager, skillInstallScopeSession: internalconfig.SkillInstallScopeWorkspace, skillInstallScopePinned: true}
 	stubClient := &stubProvider{
 		fetchSkillsResult: []provider.VisibleSkillPackage{
-			{ID: "remote-skill", Name: "Remote Skill", DisplayName: "Remote Skill", Summary: "远程技能摘要", Version: "1.2.3"},
+			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "远程技能摘要", Version: "1.2.3"},
 		},
 	}
 

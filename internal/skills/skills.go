@@ -344,16 +344,30 @@ func LoadByName(config internalconfig.Config, name string) (*Skill, string, erro
 		return nil, "", err
 	}
 	trimmed := strings.TrimSpace(name)
+	// 第一轮：精确匹配 SKILL.md frontmatter 中的 name（友好名称，对应服务端 display_name）
 	for _, item := range items {
 		if strings.EqualFold(item.Name, trimmed) {
 			copyItem := item
 			return &copyItem, directory, nil
 		}
 	}
+	// 第二轮：匹配别名（RelativeDir、目录名等）
 	for _, item := range items {
 		if matchesSkillAlias(item, trimmed) {
 			copyItem := item
 			return &copyItem, directory, nil
+		}
+	}
+	// 第三轮：用 SlugifySkillName 匹配目录名（slug，对应服务端 name）
+	// 适用于模型传入 slug 风格名称的场景
+	targetSlug := SlugifySkillName(trimmed)
+	if targetSlug != "" {
+		for _, item := range items {
+			dirBase := filepath.Base(SkillDir(item))
+			if strings.EqualFold(dirBase, targetSlug) {
+				copyItem := item
+				return &copyItem, directory, nil
+			}
 		}
 	}
 	return nil, directory, fmt.Errorf("未找到技能: %s", trimmed)

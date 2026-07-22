@@ -83,8 +83,13 @@ func InstallBackendSkill(
 		return BackendInstallResult{}, fmt.Errorf("解析技能安装目录失败: %w", err)
 	}
 
-	// 3. 构造目标目录（使用 slug 风格的 name）
-	skillDirName := SlugifySkillName(skill.Name)
+	// 3. 构造目标目录
+	// 服务端 VisibleSkillPackage.Name 即为 slug（对应本地安装目录名），
+	// 直接用作目录名，不再二次 SlugifySkillName，避免中文名称被过滤为空。
+	skillDirName := strings.TrimSpace(skill.Name)
+	if skillDirName == "" {
+		skillDirName = SlugifySkillName(skill.DisplayName)
+	}
 	if skillDirName == "" {
 		skillDirName = skill.ID
 	}
@@ -135,8 +140,9 @@ func InstallBackendSkill(
 	if err != nil {
 		// 上报失败不阻塞安装，仅记录警告
 		// 返回安装结果但不含记录 ID
+		// Name 返回友好名称（DisplayName），供调用方记录已批准技能名称
 		return BackendInstallResult{
-			Name:      skill.Name,
+			Name:      skill.DisplayName,
 			SkillID:   skill.ID,
 			Version:   content.Version,
 			TargetDir: targetDir,
@@ -149,7 +155,7 @@ func InstallBackendSkill(
 	}
 
 	return BackendInstallResult{
-		Name:      skill.Name,
+		Name:      skill.DisplayName,
 		SkillID:   skill.ID,
 		Version:   content.Version,
 		TargetDir: targetDir,
@@ -441,6 +447,7 @@ func SyncBackendSkills(
 	}
 
 	// 1. 获取本地已发现技能名称集合
+	// 以 slug（目录名）为主键，name（友好名称）为辅助键
 	localItems, _, err := Discover(config)
 	if err != nil {
 		return result, fmt.Errorf("发现本地技能失败: %w", err)
@@ -451,13 +458,15 @@ func SyncBackendSkills(
 		if item.Source == "bundled" {
 			continue
 		}
-		lowerName := strings.ToLower(strings.TrimSpace(item.Name))
-		if lowerName != "" {
-			localNames[lowerName] = true
-		}
+		// slug（目录名）作为主键，对应服务端 name
 		dirName := filepath.Base(SkillDir(item))
 		if dirName != "" && dirName != "." {
 			localNames[strings.ToLower(dirName)] = true
+		}
+		// name（友好名称）作为辅助键，对应服务端 display_name
+		lowerName := strings.ToLower(strings.TrimSpace(item.Name))
+		if lowerName != "" {
+			localNames[lowerName] = true
 		}
 		// 提取版本
 		version := ""
@@ -467,8 +476,10 @@ func SyncBackendSkills(
 			}
 		}
 		if version != "" {
-			localVersions[lowerName] = version
 			localVersions[strings.ToLower(dirName)] = version
+			if lowerName != "" {
+				localVersions[lowerName] = version
+			}
 		}
 	}
 
@@ -492,18 +503,24 @@ func SyncBackendSkills(
 	}
 
 	// 4. 筛选缺失和过期技能
+	// 匹配优先级：服务端 vs.Name（slug）> record.SkillName > vs.DisplayName
 	var missing []provider.SkillInstallationRecord
 	var outdated []provider.SkillInstallationRecord
 	for _, record := range records.Items {
 		if record.Status != "installed" {
 			continue
 		}
-		// 解析技能名称
-		skillName := strings.ToLower(strings.TrimSpace(record.SkillName))
+		// 解析技能名称：优先用 vs.Name（slug，对应本地目录名）
+		var vs provider.VisibleSkillPackage
+		if v, ok := visibleSkillMap[record.SkillPackageID]; ok {
+			vs = v
+		}
+		skillName := strings.ToLower(strings.TrimSpace(vs.Name))
 		if skillName == "" {
-			if vs, ok := visibleSkillMap[record.SkillPackageID]; ok {
-				skillName = strings.ToLower(strings.TrimSpace(vs.Name))
-			}
+			skillName = strings.ToLower(strings.TrimSpace(record.SkillName))
+		}
+		if skillName == "" {
+			skillName = strings.ToLower(strings.TrimSpace(vs.DisplayName))
 		}
 		if skillName == "" {
 			continue
@@ -595,19 +612,46 @@ func SlugifySkillName(name string) string {
 // ZIP 结构约定：顶层目录名/SKILL.md、顶层目录名/references/...
 // 解压时去掉 ZIP 内的顶层目录名，将文件直接写入 targetDir。
 // 跳过目录条目和隐藏文件（以 . 开头）。
+//
+// 兼容处理：当 ZIP 内不存在统一顶层目录时（如后端直接打包的 ZIP），
+// 不截断路径首段，保留原始目录结构写入 targetDir。
 func unzipSkillArchive(zipData []byte, targetDir string) error {
 	reader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
 		return fmt.Errorf("打开 ZIP 失败: %w", err)
+	}
+	// 检测是否存在统一的顶层目录前缀
+	// 仅当所有文件条目都以同一个顶层目录名开头时才剥离
+	topLevelPrefix := ""
+	for _, file := range reader.File {
+		if file.FileInfo().IsDir() {
+			continue
+		}
+		entryName := filepath.ToSlash(file.Name)
+		if idx := strings.IndexByte(entryName, '/'); idx >= 0 {
+			prefix := entryName[:idx]
+			if topLevelPrefix == "" {
+				topLevelPrefix = prefix
+			} else if prefix != topLevelPrefix {
+				topLevelPrefix = ""
+				break
+			}
+		} else {
+			// 存在不以顶层目录开头的条目，说明没有统一顶层目录
+			topLevelPrefix = ""
+			break
+		}
 	}
 	for _, file := range reader.File {
 		if file.FileInfo().IsDir() {
 			continue
 		}
 		entryName := filepath.FromSlash(file.Name)
-		// 去掉 ZIP 内顶层目录名（slug/SKILL.md → SKILL.md）
-		if idx := strings.IndexByte(entryName, '/'); idx >= 0 {
-			entryName = entryName[idx+1:]
+		// 仅当检测到统一顶层目录时才剥离
+		if topLevelPrefix != "" {
+			if idx := strings.IndexByte(entryName, '/'); idx >= 0 {
+				entryName = entryName[idx+1:]
+			}
 		}
 		if entryName == "" || strings.HasPrefix(filepath.Base(entryName), ".") {
 			continue

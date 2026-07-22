@@ -850,11 +850,11 @@ func TestSkillReturnsInvocationPayload(t *testing.T) {
 	configValue := internalconfig.Config{Workdir: workdir, ApprovalMode: "auto"}
 	configValue.Skills.Directory = skillDir
 
-	if _, err := runtimeClient.skill(configValue, map[string]any{}); err == nil {
+	if _, err := runtimeClient.skill(context.Background(), nil, configValue, map[string]any{}); err == nil {
 		t.Fatal("expected Skill to require name")
 	}
 
-	result, err := runtimeClient.skill(configValue, map[string]any{"name": "Code Review", "input": "检查 cmd/root.go"})
+	result, err := runtimeClient.skill(context.Background(), nil, configValue, map[string]any{"name": "Code Review", "input": "检查 cmd/root.go"})
 	if err != nil {
 		t.Fatalf("skill failed: %v", err)
 	}
@@ -985,7 +985,7 @@ func TestBundledSkillReturnsExtractedFiles(t *testing.T) {
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	configValue := internalconfig.Config{ApprovalMode: "auto"}
 
-	result, err := runtimeClient.skill(configValue, map[string]any{"name": "taiyiflow-api"})
+	result, err := runtimeClient.skill(context.Background(), nil, configValue, map[string]any{"name": "taiyiflow-api"})
 	if err != nil {
 		t.Fatalf("bundled skill failed: %v", err)
 	}

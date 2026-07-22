@@ -1037,14 +1037,26 @@ func (r *ClientRuntime) writeFile(config internalconfig.Config, arguments map[st
 	}, nil
 }
 
-func (r *ClientRuntime) skill(config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
+func (r *ClientRuntime) skill(
+	ctx context.Context,
+	providerClient provider.Provider,
+	config internalconfig.Config,
+	arguments map[string]any,
+) (map[string]any, error) {
 	name := argumentString(arguments, "name")
 	if name == "" {
 		return nil, newToolError("PARAM_ERROR", "skill 缺少 name")
 	}
 	item, _, err := skills.LoadByName(config, name)
 	if err != nil {
-		return nil, newToolError("EXECUTION_FAILED", "%v", err)
+		// 本地未找到，尝试从后端下载安装
+		if providerClient == nil {
+			return nil, newToolError("EXECUTION_FAILED", "%v", err)
+		}
+		item, err = r.fetchSkillFromBackend(ctx, providerClient, config, name)
+		if err != nil {
+			return nil, newToolError("EXECUTION_FAILED", "%v", err)
+		}
 	}
 	return map[string]any{
 		"name":         item.Name,
@@ -1064,6 +1076,85 @@ func (r *ClientRuntime) skill(config internalconfig.Config, arguments map[string
 		"requires_env": skills.RequiredEnvKeys(*item),
 		"kind":         "prompt",
 	}, nil
+}
+
+// fetchSkillFromBackend 从后端查找并安装技能，安装完成后重新从本地加载。
+// 匹配优先级：服务端 name（即 slug）> display_name > ID。
+func (r *ClientRuntime) fetchSkillFromBackend(
+	ctx context.Context,
+	providerClient provider.Provider,
+	config internalconfig.Config,
+	name string,
+) (*skills.Skill, error) {
+	allSkills, err := skills.FetchBackendSkills(ctx, providerClient, provider.FetchVisibleSkillsParams{})
+	if err != nil {
+		return nil, fmt.Errorf("获取后端技能列表失败: %w", err)
+	}
+	trimmedName := strings.TrimSpace(name)
+	var matched *provider.VisibleSkillPackage
+	for i := range allSkills {
+		vs := &allSkills[i]
+		// 优先匹配服务端 name（即 slug，对应本地安装目录名）
+		if strings.EqualFold(vs.Name, trimmedName) {
+			matched = vs
+			break
+		}
+	}
+	if matched == nil {
+		for i := range allSkills {
+			vs := &allSkills[i]
+			// 其次匹配 display_name（对应 SKILL.md frontmatter 中的 name）
+			if strings.EqualFold(vs.DisplayName, trimmedName) {
+				matched = vs
+				break
+			}
+		}
+	}
+	if matched == nil {
+		for i := range allSkills {
+			vs := &allSkills[i]
+			// 最后匹配 ID
+			if strings.EqualFold(vs.ID, trimmedName) {
+				matched = vs
+				break
+			}
+		}
+	}
+	if matched == nil {
+		return nil, fmt.Errorf("未找到技能: %s", trimmedName)
+	}
+	clientInfo := skills.ClientInfo{
+		ClientID:       config.ClientID,
+		DeviceID:       config.DeviceID,
+		ClientPlatform: runtime.GOOS + "/" + runtime.GOARCH,
+		ClientVersion:  "dev",
+		InstallSource:  "skill_fetch_auto",
+		InstallScope:   config.Skills.InstallScope,
+	}
+	if _, err := skills.InstallBackendSkill(ctx, providerClient, config, *matched, clientInfo); err != nil {
+		return nil, fmt.Errorf("自动安装技能 %s 失败: %w", trimmedName, err)
+	}
+	// 安装后重新从本地加载
+	// 优先用原始名称匹配（对应 SKILL.md frontmatter name）
+	item, _, err := skills.LoadByName(config, trimmedName)
+	if err == nil {
+		return item, nil
+	}
+	// 回退用服务端 name（slug）匹配目录名
+	if matched.Name != "" {
+		item, _, err = skills.LoadByName(config, matched.Name)
+		if err == nil {
+			return item, nil
+		}
+	}
+	// 回退用 display_name 匹配
+	if matched.DisplayName != "" {
+		item, _, err = skills.LoadByName(config, matched.DisplayName)
+		if err == nil {
+			return item, nil
+		}
+	}
+	return nil, fmt.Errorf("技能 %s 安装后加载失败: %w", trimmedName, err)
 }
 
 func (r *ClientRuntime) skillCreate(config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
