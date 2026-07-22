@@ -1244,7 +1244,9 @@ func (r *ClientRuntime) normalizeCommandArguments(arguments map[string]any, conf
 	rawStdin, hasStdin := firstArgument(arguments, "stdin")
 	stdin := ""
 	if hasStdin {
-		stdin = stringValue(rawStdin)
+		// 对 stdin 应用传输层转义归一化，将字面 \n（反斜杠+n）转换为真实换行符。
+		// 与 rawCommand、args 的处理保持一致，修复 LLM JSON 双重转义导致的字面 \n 问题。
+		stdin = normalizeTransportEscapes(stringValue(rawStdin))
 	}
 	stdinPrompt := argumentString(arguments, "stdinPrompt", "stdin_prompt")
 
