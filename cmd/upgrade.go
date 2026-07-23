@@ -185,19 +185,21 @@ func (a *App) runUpgradeViaManifest(ctx context.Context, config internalConfig.C
 	fmt.Fprintf(a.stdout, "远程版本: %s\n", manifest.GeneratedAt)
 	fmt.Fprintf(a.stdout, "目标文件: %s (%s)\n", artifact.Name, formatUpgradeSize(artifact.SizeBytes))
 
+	// 以 manifest.json 所在目录作为 bundle_base_url
+	manifestDir := resolvedManifestURL
+	if idx := strings.LastIndex(manifestDir, "/"); idx >= 0 {
+		manifestDir = manifestDir[:idx]
+	}
+
 	// 确定 checksums 文件 URL
-	// - manifest.Checksums 有值时：视为相对路径，基于 manifest 所在目录拼接
-	// - manifest.Checksums 为空时：回退到默认绝对路径，基于 baseURL（scheme+host）拼接
+	// - manifest.Checksums 有值时：按相对路径/绝对路径/URL 规则解析
+	// - manifest.Checksums 为空时：回退到默认路径，基于后端根路径拼接
 	baseURL := strings.TrimRight(config.BackendBaseURL, "/")
 	var checksumsURL string
 	if checksumsRelPath := strings.TrimSpace(manifest.Checksums); checksumsRelPath != "" {
-		manifestDir := resolvedManifestURL
-		if idx := strings.LastIndex(manifestDir, "/"); idx >= 0 {
-			manifestDir = manifestDir[:idx]
-		}
-		checksumsURL = manifestDir + "/" + strings.TrimLeft(checksumsRelPath, "/")
+		checksumsURL = resolveBundleURL(manifestDir, checksumsRelPath)
 	} else {
-		checksumsURL = baseURL + upgradeChecksumsPath
+		checksumsURL = baseURL + "/" + upgradeChecksumsPath
 	}
 
 	// 下载并解析远程 checksums 文件
@@ -238,17 +240,8 @@ func (a *App) runUpgradeViaManifest(ctx context.Context, config internalConfig.C
 		}
 	}
 
-	// 构造下载 URL（复用上方已声明的 baseURL）
-	downloadURL := baseURL + "/" + strings.TrimLeft(artifact.Path, "/")
-	if strings.TrimSpace(manifestURL) != "" {
-		// 如果使用了自定义 manifest URL，基于 manifest 所在目录推算下载路径
-		manifestDir := strings.TrimRight(resolvedManifestURL, "/")
-		lastSlash := strings.LastIndex(manifestDir, "/")
-		if lastSlash >= 0 {
-			manifestDir = manifestDir[:lastSlash]
-		}
-		downloadURL = manifestDir + "/" + strings.TrimLeft(artifact.Path, "/")
-	}
+	// 构造下载 URL：以 manifest.json 所在目录为起点，按相对路径/绝对路径/URL 规则解析
+	downloadURL := resolveBundleURL(manifestDir, artifact.Path)
 
 	fmt.Fprintf(a.stdout, "正在下载: %s\n", downloadURL)
 
@@ -523,4 +516,38 @@ func (a *App) verifyStartupUpdate() {
 	} else {
 		fmt.Fprintf(a.stderr, "警告: 上次更新到 %s 可能未完成（当前版本: %s）\n", targetVersion, buildinfo.Version)
 	}
+}
+
+// resolveBundleURL 根据 manifest.json 所在目录（bundleBaseURL）解析路径。
+//   - 如果 path 是完整 URL（http:// 或 https://），直接返回。
+//   - 如果 path 是绝对路径（以 / 开头），使用 bundleBaseURL 的根路径（scheme://host）拼接。
+//   - 如果 path 是相对路径，使用 bundleBaseURL + "/" + path 拼接。
+func resolveBundleURL(bundleBaseURL, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	// 完整 URL，直接使用
+	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+		return path
+	}
+	// 绝对路径：提取 bundleBaseURL 的根路径（scheme://host）拼接
+	if strings.HasPrefix(path, "/") {
+		return bundleRootFromURL(bundleBaseURL) + path
+	}
+	// 相对路径：基于 manifest 所在目录拼接
+	return bundleBaseURL + "/" + path
+}
+
+// bundleRootFromURL 从 URL 中提取根路径（scheme://host）。
+// 例如 "https://example.com/taiyi/bundles" → "https://example.com"
+func bundleRootFromURL(rawURL string) string {
+	if idx := strings.Index(rawURL, "://"); idx >= 0 {
+		rest := rawURL[idx+3:]
+		if slashIdx := strings.Index(rest, "/"); slashIdx >= 0 {
+			return rawURL[:idx+3+slashIdx]
+		}
+		return rawURL
+	}
+	return rawURL
 }
