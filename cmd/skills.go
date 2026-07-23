@@ -704,7 +704,7 @@ func (a *App) backendSkillsUpload(ctx context.Context, config internalconfig.Con
 		return "", err
 	}
 
-	result, err := skills.UploadLocalSkillToBackend(ctx, client, config, localSkillName)
+	result, err := skills.UploadLocalSkillToBackend(ctx, client, config, localSkillName, "", "")
 	if err != nil {
 		return "", err
 	}

@@ -20,16 +20,21 @@ type CreateSkillScaffoldResult struct {
 
 // CreateSkillScaffold 在指定目录下创建技能包骨架文件 SKILL.md
 // scope 为 "workspace" 或 "user"，workspace 时写入 <workdir>/.snz1dp/skills/，user 时写入 ~/.snz1dp/skills/
+// explicitDir 为非空时直接用作技能根目录，忽略 scope
 // overwrite 为 true 时，同名技能已存在则覆盖；为 false 时，同名技能已存在则报错
-func CreateSkillScaffold(config internalconfig.Config, rawName string, scope string, overwrite bool) (CreateSkillScaffoldResult, error) {
+// explicitSlug 为非空时直接用作 slug（磁盘目录名），为空时由 name 自动生成
+func CreateSkillScaffold(config internalconfig.Config, rawName string, explicitSlug string, scope string, explicitDir string, overwrite bool) (CreateSkillScaffoldResult, error) {
 	name := strings.TrimSpace(rawName)
 	if name == "" {
 		return CreateSkillScaffoldResult{}, fmt.Errorf("技能名称不能为空")
 	}
 
-	slug := SlugifySkillName(name)
+	slug := strings.TrimSpace(explicitSlug)
 	if slug == "" {
-		return CreateSkillScaffoldResult{}, fmt.Errorf("技能名称 %q 无法转换为有效的 slug（仅允许字母、数字、横线）", name)
+		slug = SlugifySkillName(name)
+	}
+	if slug == "" {
+		return CreateSkillScaffoldResult{}, fmt.Errorf("技能名称 %q 无法转换为有效的 slug（仅允许字母、数字、横线），请通过 slug 参数显式指定", name)
 	}
 
 	// 禁止覆盖内置技能
@@ -38,37 +43,46 @@ func CreateSkillScaffold(config internalconfig.Config, rawName string, scope str
 	}
 
 	// 确定目标目录
-	// 默认使用 workspace 范围；仅在显式传入 user 时才使用用户目录
-	normalizedScope := internalconfig.NormalizeSkillInstallScope(scope)
-	if strings.TrimSpace(scope) == "" {
-		normalizedScope = internalconfig.SkillInstallScopeWorkspace
-	}
 	var baseDir string
-	if normalizedScope == internalconfig.SkillInstallScopeWorkspace {
-		workdir := resolveSkillWorkdir(config.Workdir)
-		if strings.TrimSpace(workdir) == "" {
-			return CreateSkillScaffoldResult{}, fmt.Errorf("未找到可写入的工作区目录")
+	if trimmedDir := strings.TrimSpace(explicitDir); trimmedDir != "" {
+		// explicitDir 优先：直接用作技能根目录
+		resolved, err := filepath.Abs(trimmedDir)
+		if err != nil {
+			return CreateSkillScaffoldResult{}, fmt.Errorf("解析 skill_dir 路径失败: %w", err)
 		}
-		baseDir = filepath.Join(workdir, ".snz1dp", "skills")
+		baseDir = filepath.Clean(resolved)
 	} else {
-		// user scope
-		directory := strings.TrimSpace(config.Skills.Directory)
-		if directory != "" {
-			resolved, err := filepath.Abs(directory)
-			if err != nil {
-				return CreateSkillScaffoldResult{}, err
+		// 默认使用 workspace 范围；仅在显式传入 user 时才使用用户目录
+		normalizedScope := internalconfig.NormalizeSkillInstallScope(scope)
+		if strings.TrimSpace(scope) == "" {
+			normalizedScope = internalconfig.SkillInstallScopeWorkspace
+		}
+		if normalizedScope == internalconfig.SkillInstallScopeWorkspace {
+			workdir := resolveSkillWorkdir(config.Workdir)
+			if strings.TrimSpace(workdir) == "" {
+				return CreateSkillScaffoldResult{}, fmt.Errorf("未找到可写入的工作区目录")
 			}
-			baseDir = filepath.Clean(resolved)
+			baseDir = filepath.Join(workdir, ".snz1dp", "skills")
 		} else {
-			defaultDir, err := internalconfig.DefaultSkillsDir()
-			if err != nil {
-				return CreateSkillScaffoldResult{}, err
+			// user scope
+			directory := strings.TrimSpace(config.Skills.Directory)
+			if directory != "" {
+				resolved, err := filepath.Abs(directory)
+				if err != nil {
+					return CreateSkillScaffoldResult{}, err
+				}
+				baseDir = filepath.Clean(resolved)
+			} else {
+				defaultDir, err := internalconfig.DefaultSkillsDir()
+				if err != nil {
+					return CreateSkillScaffoldResult{}, err
+				}
+				resolved, err := filepath.Abs(defaultDir)
+				if err != nil {
+					return CreateSkillScaffoldResult{}, err
+				}
+				baseDir = filepath.Clean(resolved)
 			}
-			resolved, err := filepath.Abs(defaultDir)
-			if err != nil {
-				return CreateSkillScaffoldResult{}, err
-			}
-			baseDir = filepath.Clean(resolved)
 		}
 	}
 
@@ -100,7 +114,7 @@ func CreateSkillScaffold(config internalconfig.Config, rawName string, scope str
 		Slug:     slug,
 		FilePath: skillFilePath,
 		SkillDir: skillDir,
-		Scope:    normalizedScope,
+		Scope:    scopeLabel(scope, explicitDir),
 	}, nil
 }
 
@@ -114,15 +128,20 @@ type DeleteSkillScaffoldResult struct {
 
 // DeleteSkillScaffold 删除指定名称和范围的本地技能目录
 // scope 为 "workspace" 或 "user"，workspace 时删除 <workdir>/.snz1dp/skills/<slug>/，user 时删除 ~/.snz1dp/skills/<slug>/
-func DeleteSkillScaffold(config internalconfig.Config, rawName string, scope string) (DeleteSkillScaffoldResult, error) {
+// explicitDir 为非空时直接用作技能根目录，忽略 scope
+// explicitSlug 为非空时直接用作 slug（磁盘目录名），为空时由 name 自动生成
+func DeleteSkillScaffold(config internalconfig.Config, rawName string, explicitSlug string, scope string, explicitDir string) (DeleteSkillScaffoldResult, error) {
 	name := strings.TrimSpace(rawName)
 	if name == "" {
 		return DeleteSkillScaffoldResult{}, fmt.Errorf("技能名称不能为空")
 	}
 
-	slug := SlugifySkillName(name)
+	slug := strings.TrimSpace(explicitSlug)
 	if slug == "" {
-		return DeleteSkillScaffoldResult{}, fmt.Errorf("技能名称 %q 无法转换为有效的 slug（仅允许字母、数字、横线）", name)
+		slug = SlugifySkillName(name)
+	}
+	if slug == "" {
+		return DeleteSkillScaffoldResult{}, fmt.Errorf("技能名称 %q 无法转换为有效的 slug（仅允许字母、数字、横线），请通过 slug 参数显式指定", name)
 	}
 
 	// 禁止删除内置技能
@@ -130,36 +149,46 @@ func DeleteSkillScaffold(config internalconfig.Config, rawName string, scope str
 		return DeleteSkillScaffoldResult{}, fmt.Errorf("不允许删除内置技能 %q", name)
 	}
 
-	// 确定目标目录，与 CreateSkillScaffold 保持一致的逻辑
-	normalizedScope := internalconfig.NormalizeSkillInstallScope(scope)
-	if strings.TrimSpace(scope) == "" {
-		normalizedScope = internalconfig.SkillInstallScopeWorkspace
-	}
+	// 确定目标目录
 	var baseDir string
-	if normalizedScope == internalconfig.SkillInstallScopeWorkspace {
-		workdir := resolveSkillWorkdir(config.Workdir)
-		if strings.TrimSpace(workdir) == "" {
-			return DeleteSkillScaffoldResult{}, fmt.Errorf("未找到可写入的工作区目录")
+	if trimmedDir := strings.TrimSpace(explicitDir); trimmedDir != "" {
+		// explicitDir 优先：直接用作技能根目录
+		resolved, err := filepath.Abs(trimmedDir)
+		if err != nil {
+			return DeleteSkillScaffoldResult{}, fmt.Errorf("解析 skill_dir 路径失败: %w", err)
 		}
-		baseDir = filepath.Join(workdir, ".snz1dp", "skills")
+		baseDir = filepath.Clean(resolved)
 	} else {
-		directory := strings.TrimSpace(config.Skills.Directory)
-		if directory != "" {
-			resolved, err := filepath.Abs(directory)
-			if err != nil {
-				return DeleteSkillScaffoldResult{}, err
+		// 与 CreateSkillScaffold 保持一致的逻辑
+		normalizedScope := internalconfig.NormalizeSkillInstallScope(scope)
+		if strings.TrimSpace(scope) == "" {
+			normalizedScope = internalconfig.SkillInstallScopeWorkspace
+		}
+		if normalizedScope == internalconfig.SkillInstallScopeWorkspace {
+			workdir := resolveSkillWorkdir(config.Workdir)
+			if strings.TrimSpace(workdir) == "" {
+				return DeleteSkillScaffoldResult{}, fmt.Errorf("未找到可写入的工作区目录")
 			}
-			baseDir = filepath.Clean(resolved)
+			baseDir = filepath.Join(workdir, ".snz1dp", "skills")
 		} else {
-			defaultDir, err := internalconfig.DefaultSkillsDir()
-			if err != nil {
-				return DeleteSkillScaffoldResult{}, err
+			directory := strings.TrimSpace(config.Skills.Directory)
+			if directory != "" {
+				resolved, err := filepath.Abs(directory)
+				if err != nil {
+					return DeleteSkillScaffoldResult{}, err
+				}
+				baseDir = filepath.Clean(resolved)
+			} else {
+				defaultDir, err := internalconfig.DefaultSkillsDir()
+				if err != nil {
+					return DeleteSkillScaffoldResult{}, err
+				}
+				resolved, err := filepath.Abs(defaultDir)
+				if err != nil {
+					return DeleteSkillScaffoldResult{}, err
+				}
+				baseDir = filepath.Clean(resolved)
 			}
-			resolved, err := filepath.Abs(defaultDir)
-			if err != nil {
-				return DeleteSkillScaffoldResult{}, err
-			}
-			baseDir = filepath.Clean(resolved)
 		}
 	}
 
@@ -183,8 +212,21 @@ func DeleteSkillScaffold(config internalconfig.Config, rawName string, scope str
 		Name:     name,
 		Slug:     slug,
 		SkillDir: skillDir,
-		Scope:    normalizedScope,
+		Scope:    scopeLabel(scope, explicitDir),
 	}, nil
+}
+
+// scopeLabel 返回用于结果中的 scope 标签。
+// 当 explicitDir 非空时返回 "custom"，表示使用了自定义目录。
+func scopeLabel(scope string, explicitDir string) string {
+	if strings.TrimSpace(explicitDir) != "" {
+		return "custom"
+	}
+	normalized := internalconfig.NormalizeSkillInstallScope(scope)
+	if strings.TrimSpace(scope) == "" {
+		normalized = internalconfig.SkillInstallScopeWorkspace
+	}
+	return normalized
 }
 
 func renderSkillScaffold(name string, slug string) string {

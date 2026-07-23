@@ -14,7 +14,7 @@ func TestCreateSkillScaffold_WorkspaceScope(t *testing.T) {
 	config := internalconfig.Config{}
 	config.Workdir = tempDir
 
-	result, err := CreateSkillScaffold(config, "my-test-skill", internalconfig.SkillInstallScopeWorkspace, false)
+	result, err := CreateSkillScaffold(config, "my-test-skill", "", internalconfig.SkillInstallScopeWorkspace, "", false)
 	if err != nil {
 		t.Fatalf("CreateSkillScaffold failed: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestCreateSkillScaffold_UserScope(t *testing.T) {
 	config.Workdir = tempDir
 	config.Skills.Directory = filepath.Join(tempDir, "user-skills")
 
-	result, err := CreateSkillScaffold(config, "user-skill", internalconfig.SkillInstallScopeUser, false)
+	result, err := CreateSkillScaffold(config, "user-skill", "", internalconfig.SkillInstallScopeUser, "", false)
 	if err != nil {
 		t.Fatalf("CreateSkillScaffold failed: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestCreateSkillScaffold_DefaultScopeIsWorkspace(t *testing.T) {
 	config.Workdir = tempDir
 
 	// 不传 scope，默认应该是 workspace
-	result, err := CreateSkillScaffold(config, "default-scope-test", "", false)
+	result, err := CreateSkillScaffold(config, "default-scope-test", "", "", "", false)
 	if err != nil {
 		t.Fatalf("CreateSkillScaffold failed: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestCreateSkillScaffold_DefaultScopeIsWorkspace(t *testing.T) {
 
 func TestCreateSkillScaffold_EmptyName(t *testing.T) {
 	config := internalconfig.Config{}
-	_, err := CreateSkillScaffold(config, "", internalconfig.SkillInstallScopeWorkspace, false)
+	_, err := CreateSkillScaffold(config, "", "", internalconfig.SkillInstallScopeWorkspace, "", false)
 	if err == nil {
 		t.Fatal("expected error for empty name, got nil")
 	}
@@ -104,13 +104,13 @@ func TestCreateSkillScaffold_AlreadyExists(t *testing.T) {
 	config.Workdir = tempDir
 
 	// 第一次创建
-	_, err := CreateSkillScaffold(config, "duplicate-skill", internalconfig.SkillInstallScopeWorkspace, false)
+	_, err := CreateSkillScaffold(config, "duplicate-skill", "", internalconfig.SkillInstallScopeWorkspace, "", false)
 	if err != nil {
 		t.Fatalf("first CreateSkillScaffold failed: %v", err)
 	}
 
 	// 第二次创建应该失败
-	_, err = CreateSkillScaffold(config, "duplicate-skill", internalconfig.SkillInstallScopeWorkspace, false)
+	_, err = CreateSkillScaffold(config, "duplicate-skill", "", internalconfig.SkillInstallScopeWorkspace, "", false)
 	if err == nil {
 		t.Fatal("expected error for duplicate skill, got nil")
 	}
@@ -125,7 +125,7 @@ func TestCreateSkillScaffold_SlugifyName(t *testing.T) {
 	config.Workdir = tempDir
 
 	// 名称包含空格和大写
-	result, err := CreateSkillScaffold(config, "My Cool Skill", internalconfig.SkillInstallScopeWorkspace, false)
+	result, err := CreateSkillScaffold(config, "My Cool Skill", "", internalconfig.SkillInstallScopeWorkspace, "", false)
 	if err != nil {
 		t.Fatalf("CreateSkillScaffold failed: %v", err)
 	}
@@ -147,13 +147,13 @@ func TestCreateSkillScaffold_OverwriteTrue(t *testing.T) {
 	config.Workdir = tempDir
 
 	// 第一次创建
-	_, err := CreateSkillScaffold(config, "overwrite-skill", internalconfig.SkillInstallScopeWorkspace, false)
+	_, err := CreateSkillScaffold(config, "overwrite-skill", "", internalconfig.SkillInstallScopeWorkspace, "", false)
 	if err != nil {
 		t.Fatalf("first CreateSkillScaffold failed: %v", err)
 	}
 
 	// 第二次创建，overwrite=true，应该成功覆盖
-	result, err := CreateSkillScaffold(config, "overwrite-skill", internalconfig.SkillInstallScopeWorkspace, true)
+	result, err := CreateSkillScaffold(config, "overwrite-skill", "", internalconfig.SkillInstallScopeWorkspace, "", true)
 	if err != nil {
 		t.Fatalf("CreateSkillScaffold with overwrite=true failed: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestDeleteSkillScaffold_WorkspaceScope(t *testing.T) {
 	config.Workdir = tempDir
 
 	// 先创建技能
-	_, err := CreateSkillScaffold(config, "delete-me", internalconfig.SkillInstallScopeWorkspace, false)
+	_, err := CreateSkillScaffold(config, "delete-me", "", internalconfig.SkillInstallScopeWorkspace, "", false)
 	if err != nil {
 		t.Fatalf("CreateSkillScaffold failed: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestDeleteSkillScaffold_WorkspaceScope(t *testing.T) {
 	}
 
 	// 删除技能
-	result, err := DeleteSkillScaffold(config, "delete-me", internalconfig.SkillInstallScopeWorkspace)
+	result, err := DeleteSkillScaffold(config, "delete-me", "", internalconfig.SkillInstallScopeWorkspace, "")
 	if err != nil {
 		t.Fatalf("DeleteSkillScaffold failed: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestDeleteSkillScaffold_NotExists(t *testing.T) {
 	config := internalconfig.Config{}
 	config.Workdir = tempDir
 
-	_, err := DeleteSkillScaffold(config, "nonexistent-skill", internalconfig.SkillInstallScopeWorkspace)
+	_, err := DeleteSkillScaffold(config, "nonexistent-skill", "", internalconfig.SkillInstallScopeWorkspace, "")
 	if err == nil {
 		t.Fatal("expected error for nonexistent skill, got nil")
 	}
@@ -229,7 +229,7 @@ func TestDeleteSkillScaffold_NotExists(t *testing.T) {
 
 func TestDeleteSkillScaffold_EmptyName(t *testing.T) {
 	config := internalconfig.Config{}
-	_, err := DeleteSkillScaffold(config, "", internalconfig.SkillInstallScopeWorkspace)
+	_, err := DeleteSkillScaffold(config, "", "", internalconfig.SkillInstallScopeWorkspace, "")
 	if err == nil {
 		t.Fatal("expected error for empty name, got nil")
 	}
@@ -242,13 +242,13 @@ func TestDeleteSkillScaffold_UserScope(t *testing.T) {
 	config.Skills.Directory = filepath.Join(tempDir, "user-skills")
 
 	// 先创建技能
-	_, err := CreateSkillScaffold(config, "user-delete", internalconfig.SkillInstallScopeUser, false)
+	_, err := CreateSkillScaffold(config, "user-delete", "", internalconfig.SkillInstallScopeUser, "", false)
 	if err != nil {
 		t.Fatalf("CreateSkillScaffold failed: %v", err)
 	}
 
 	// 删除技能
-	result, err := DeleteSkillScaffold(config, "user-delete", internalconfig.SkillInstallScopeUser)
+	result, err := DeleteSkillScaffold(config, "user-delete", "", internalconfig.SkillInstallScopeUser, "")
 	if err != nil {
 		t.Fatalf("DeleteSkillScaffold failed: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestCreateSkillScaffold_BundledSkillRejected(t *testing.T) {
 	config.Workdir = tempDir
 
 	// 尝试创建与内置技能同名的技能（即使 overwrite=true）
-	_, err := CreateSkillScaffold(config, "planner", internalconfig.SkillInstallScopeWorkspace, true)
+	_, err := CreateSkillScaffold(config, "planner", "", internalconfig.SkillInstallScopeWorkspace, "", true)
 	if err == nil {
 		t.Fatal("expected error when creating a bundled skill, got nil")
 	}
@@ -280,7 +280,7 @@ func TestCreateSkillScaffold_BundledSkillRejected(t *testing.T) {
 	}
 
 	// 尝试 overwrite=false 也应被拒绝
-	_, err = CreateSkillScaffold(config, "debug", internalconfig.SkillInstallScopeWorkspace, false)
+	_, err = CreateSkillScaffold(config, "debug", "", internalconfig.SkillInstallScopeWorkspace, "", false)
 	if err == nil {
 		t.Fatal("expected error when creating a bundled skill (overwrite=false), got nil")
 	}
@@ -295,7 +295,7 @@ func TestDeleteSkillScaffold_BundledSkillRejected(t *testing.T) {
 	config.Workdir = tempDir
 
 	// 尝试删除内置技能
-	_, err := DeleteSkillScaffold(config, "verify", internalconfig.SkillInstallScopeWorkspace)
+	_, err := DeleteSkillScaffold(config, "verify", "", internalconfig.SkillInstallScopeWorkspace, "")
 	if err == nil {
 		t.Fatal("expected error when deleting a bundled skill, got nil")
 	}
@@ -304,7 +304,7 @@ func TestDeleteSkillScaffold_BundledSkillRejected(t *testing.T) {
 	}
 
 	// user scope 也应被拒绝
-	_, err = DeleteSkillScaffold(config, "pua", internalconfig.SkillInstallScopeUser)
+	_, err = DeleteSkillScaffold(config, "pua", "", internalconfig.SkillInstallScopeUser, "")
 	if err == nil {
 		t.Fatal("expected error when deleting a bundled skill (user scope), got nil")
 	}
@@ -343,7 +343,7 @@ func TestCreateSkillScaffold_NameNotEqualSlug(t *testing.T) {
 	config.Workdir = tempDir
 
 	// 名称包含空格和大写：slug 应为小写横线风格，name 保持原文
-	result, err := CreateSkillScaffold(config, "My Cool Skill", internalconfig.SkillInstallScopeWorkspace, false)
+	result, err := CreateSkillScaffold(config, "My Cool Skill", "", internalconfig.SkillInstallScopeWorkspace, "", false)
 	if err != nil {
 		t.Fatalf("CreateSkillScaffold failed: %v", err)
 	}
@@ -385,7 +385,7 @@ func TestCreateSkillScaffold_ChineseNameRejected(t *testing.T) {
 	config.Workdir = tempDir
 
 	// 纯中文名称无法生成有效 slug，应报错
-	_, err := CreateSkillScaffold(config, "沙盒安全防护测试", internalconfig.SkillInstallScopeWorkspace, false)
+	_, err := CreateSkillScaffold(config, "沙盒安全防护测试", "", internalconfig.SkillInstallScopeWorkspace, "", false)
 	if err == nil {
 		t.Fatal("expected error for Chinese-only name (no valid slug), got nil")
 	}
@@ -401,7 +401,7 @@ func TestCreateSkillScaffold_MixedNameSlug(t *testing.T) {
 	config.Workdir = tempDir
 
 	// 名称包含中文和英文：slug 应只保留英文部分
-	result, err := CreateSkillScaffold(config, "沙盒安全 sandbox-security-test", internalconfig.SkillInstallScopeWorkspace, false)
+	result, err := CreateSkillScaffold(config, "沙盒安全 sandbox-security-test", "", internalconfig.SkillInstallScopeWorkspace, "", false)
 	if err != nil {
 		t.Fatalf("CreateSkillScaffold failed: %v", err)
 	}
@@ -423,5 +423,136 @@ func TestCreateSkillScaffold_MixedNameSlug(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "name: 沙盒安全 sandbox-security-test") {
 		t.Errorf("skill file should contain original name in frontmatter")
+	}
+}
+
+// TestCreateSkillScaffold_ExplicitSlug 验证通过 slug 参数显式指定 slug，
+// 而非由 name 自动生成。适用于 name 包含非 ASCII 字符导致自动 slug 为空的场景。
+func TestCreateSkillScaffold_ExplicitSlug(t *testing.T) {
+	tempDir := t.TempDir()
+	config := internalconfig.Config{}
+	config.Workdir = tempDir
+
+	// 纯中文名称 + 显式 slug
+	result, err := CreateSkillScaffold(config, "沙盒安全防护测试", "sandbox-security-test", internalconfig.SkillInstallScopeWorkspace, "", false)
+	if err != nil {
+		t.Fatalf("CreateSkillScaffold with explicit slug failed: %v", err)
+	}
+
+	// name 应保持中文原文
+	if result.Name != "沙盒安全防护测试" {
+		t.Errorf("expected name '沙盒安全防护测试', got %q", result.Name)
+	}
+
+	// slug 应为显式指定的值
+	if result.Slug != "sandbox-security-test" {
+		t.Errorf("expected slug 'sandbox-security-test', got %q", result.Slug)
+	}
+
+	// 验证目录名使用显式 slug
+	expectedDir := filepath.Join(tempDir, ".snz1dp", "skills", "sandbox-security-test")
+	if result.SkillDir != expectedDir {
+		t.Errorf("expected skill dir %q, got %q", expectedDir, result.SkillDir)
+	}
+
+	// 验证 frontmatter 中 name 保持原文
+	content, err := os.ReadFile(result.FilePath)
+	if err != nil {
+		t.Fatalf("read skill file failed: %v", err)
+	}
+	if !strings.Contains(string(content), "name: 沙盒安全防护测试") {
+		t.Errorf("skill file should contain original name in frontmatter")
+	}
+}
+
+// TestDeleteSkillScaffold_ExplicitSlug 验证通过 slug 参数显式指定 slug 来删除技能。
+func TestDeleteSkillScaffold_ExplicitSlug(t *testing.T) {
+	tempDir := t.TempDir()
+	config := internalconfig.Config{}
+	config.Workdir = tempDir
+
+	// 先用显式 slug 创建技能
+	_, err := CreateSkillScaffold(config, "沙盒安全防护测试", "sandbox-security-test", internalconfig.SkillInstallScopeWorkspace, "", false)
+	if err != nil {
+		t.Fatalf("CreateSkillScaffold failed: %v", err)
+	}
+
+	// 用显式 slug 删除技能（name 传入友好名称，slug 传入显式值）
+	result, err := DeleteSkillScaffold(config, "沙盒安全防护测试", "sandbox-security-test", internalconfig.SkillInstallScopeWorkspace, "")
+	if err != nil {
+		t.Fatalf("DeleteSkillScaffold with explicit slug failed: %v", err)
+	}
+
+	if result.Slug != "sandbox-security-test" {
+		t.Errorf("expected slug 'sandbox-security-test', got %q", result.Slug)
+	}
+
+	// 验证目录已删除
+	expectedDir := filepath.Join(tempDir, ".snz1dp", "skills", "sandbox-security-test")
+	if _, err := os.Stat(expectedDir); !os.IsNotExist(err) {
+		t.Errorf("expected skill dir to be deleted, got stat error: %v", err)
+	}
+}
+
+// TestCreateSkillScaffold_ExplicitDir 验证通过 skill_dir 参数显式指定技能根目录，
+// 技能直接创建在该目录下而非标准 workspace 或 user 目录。
+func TestCreateSkillScaffold_ExplicitDir(t *testing.T) {
+	tempDir := t.TempDir()
+	config := internalconfig.Config{}
+	config.Workdir = tempDir
+
+	customSkillDir := filepath.Join(tempDir, "custom-skills")
+
+	result, err := CreateSkillScaffold(config, "my-custom-skill", "", "", customSkillDir, false)
+	if err != nil {
+		t.Fatalf("CreateSkillScaffold with explicit dir failed: %v", err)
+	}
+
+	// 验证路径在自定义目录下
+	expectedFile := filepath.Join(customSkillDir, "my-custom-skill", "SKILL.md")
+	if result.FilePath != expectedFile {
+		t.Errorf("expected file path %q, got %q", expectedFile, result.FilePath)
+	}
+
+	// 验证 scope 为 custom
+	if result.Scope != "custom" {
+		t.Errorf("expected scope 'custom', got %q", result.Scope)
+	}
+
+	// 验证文件存在
+	if _, err := os.Stat(expectedFile); err != nil {
+		t.Fatalf("skill file not created: %v", err)
+	}
+}
+
+// TestDeleteSkillScaffold_ExplicitDir 验证通过 skill_dir 参数显式指定技能根目录来删除技能。
+func TestDeleteSkillScaffold_ExplicitDir(t *testing.T) {
+	tempDir := t.TempDir()
+	config := internalconfig.Config{}
+	config.Workdir = tempDir
+
+	customSkillDir := filepath.Join(tempDir, "custom-skills")
+
+	// 先用显式 dir 创建技能
+	_, err := CreateSkillScaffold(config, "delete-custom", "", "", customSkillDir, false)
+	if err != nil {
+		t.Fatalf("CreateSkillScaffold failed: %v", err)
+	}
+
+	// 用显式 dir 删除技能
+	result, err := DeleteSkillScaffold(config, "delete-custom", "", "", customSkillDir)
+	if err != nil {
+		t.Fatalf("DeleteSkillScaffold with explicit dir failed: %v", err)
+	}
+
+	// 验证 scope 为 custom
+	if result.Scope != "custom" {
+		t.Errorf("expected scope 'custom', got %q", result.Scope)
+	}
+
+	// 验证目录已删除
+	expectedDir := filepath.Join(customSkillDir, "delete-custom")
+	if _, err := os.Stat(expectedDir); !os.IsNotExist(err) {
+		t.Errorf("expected skill dir to be deleted, got stat error: %v", err)
 	}
 }

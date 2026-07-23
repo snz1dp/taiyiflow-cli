@@ -308,16 +308,48 @@ func removeLocalInstalledSkill(config internalconfig.Config, skillNameOrID strin
 }
 
 // UploadLocalSkillToBackend 读取本地技能内容，打包为 ZIP 后上传到后端
+// explicitSlug 为非空时优先用其定位本地技能磁盘目录，为空时由 name 自动转换
+// explicitDir 为非空时直接用作技能根目录，在该目录下查找 <slug>/SKILL.md
 func UploadLocalSkillToBackend(
 	ctx context.Context,
 	client provider.Provider,
 	config internalconfig.Config,
 	skillName string,
+	explicitSlug string,
+	explicitDir string,
 ) (BackendUploadResult, error) {
 	// 1. 从本地发现技能
-	item, _, err := LoadByName(config, skillName)
+	// 当 explicitDir 非空时，优先在指定目录下直接加载 SKILL.md
+	var item *Skill
+	var err error
+	if trimmedDir := strings.TrimSpace(explicitDir); trimmedDir != "" {
+		slugForDir := strings.TrimSpace(explicitSlug)
+		if slugForDir == "" {
+			slugForDir = SlugifySkillName(skillName)
+		}
+		if slugForDir == "" {
+			return BackendUploadResult{}, fmt.Errorf("无法确定技能 slug，请通过 slug 参数显式指定")
+		}
+		skillFilePath := filepath.Join(trimmedDir, slugForDir, skillFileName)
+		if _, statErr := os.Stat(skillFilePath); statErr == nil {
+			loaded, loadErr := LoadFile(trimmedDir, skillFilePath)
+			if loadErr == nil {
+				item = &loaded
+			}
+		}
+	}
+	if item == nil {
+		item, _, err = LoadByName(config, skillName)
+		if err != nil && explicitSlug != "" {
+			// name 匹配失败时，尝试用 explicitSlug 作为目录名匹配
+			item, _, err = LoadBySlug(config, explicitSlug)
+		}
+	}
 	if err != nil {
 		return BackendUploadResult{}, fmt.Errorf("未找到本地技能 %s: %w", skillName, err)
+	}
+	if item == nil {
+		return BackendUploadResult{}, fmt.Errorf("未找到本地技能 %s", skillName)
 	}
 
 	// 2. 禁止上传内置技能
@@ -326,9 +358,12 @@ func UploadLocalSkillToBackend(
 	}
 
 	// 3. 构造 slug 风格名称
-	// 优先使用技能磁盘目录名（CreateSkillScaffold 已通过 SlugifySkillName 生成），
+	// 优先使用显式传入的 slug，其次使用技能磁盘目录名（CreateSkillScaffold 已通过 SlugifySkillName 生成），
 	// 保证 ZIP 顶层目录名与磁盘目录一致；目录名无效时回退到技能名称，再保底。
-	slugName := SlugifySkillName(filepath.Base(SkillDir(*item)))
+	slugName := strings.TrimSpace(explicitSlug)
+	if slugName == "" {
+		slugName = SlugifySkillName(filepath.Base(SkillDir(*item)))
+	}
 	if slugName == "" {
 		slugName = SlugifySkillName(item.Name)
 	}

@@ -503,13 +503,15 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "skill_create",
-			"description":          "在工作区目录下创建技能包骨架文件 SKILL.md。默认写入 <workdir>/.snz1dp/skills/<slug>/SKILL.md；传入 scope=\"user\" 时写入 ~/.snz1dp/skills/。创建后可通过 write_file 编辑内容，或通过 skill_upload 上传到后端。\n\n重要：name 是人类友好阅读名称（支持中文、英文、空格等），slug 是由 name 自动生成的机器标识符（仅小写字母、数字、横线），用作磁盘目录名。两者不需要保持一致。例如 name=\"沙盒安全防护测试\" 时 slug=\"sandbox-security-test\"（若 name 不含 ASCII 字符则 slug 可能为空导致创建失败，此时请使用英文 name）。",
+			"description":          "在工作区目录下创建技能包骨架文件 SKILL.md。默认写入 <workdir>/.snz1dp/skills/<slug>/SKILL.md；传入 scope=\"user\" 时写入 ~/.snz1dp/skills/；传入 skill_dir 时直接写入指定目录下的 <slug>/SKILL.md。创建后可通过 write_file 编辑内容，或通过 skill_upload 上传到后端。\n\n重要：name 是 SKILL.md 中 frontmatter 的 name 字段，应使用人类友好阅读名称（支持中文、英文、空格等）。slug 是磁盘目录名和后端唯一标识符，仅允许小写字母、数字和横线。默认由 name 自动生成（中文字符会被过滤），也可通过 slug 参数显式指定。两者不需要保持一致，例如 name=\"沙盒安全防护测试\" 时可指定 slug=\"sandbox-security-test\"。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"name":      map[string]any{"type": "string", "description": "技能名称（人类友好阅读名称，支持中文、英文、空格等），会自动转换为 slug 风格目录名。name 会写入 SKILL.md frontmatter 的 name 字段，slug 用作磁盘目录名和后端标识符。"},
-					"scope":     map[string]any{"type": "string", "enum": []string{"workspace", "user"}, "description": "可选，默认 workspace。workspace 写入工作区 .snz1dp/skills/，user 写入用户目录 ~/.snz1dp/skills/。"},
+					"name":      map[string]any{"type": "string", "description": "技能名称，人类友好阅读名称，支持中文、英文、空格等。写入 SKILL.md frontmatter 的 name 字段。"},
+					"slug":      map[string]any{"type": "string", "description": "可选，技能的机器标识符，仅允许小写字母、数字和横线，用作磁盘目录名和后端唯一标识符。未提供时由 name 自动生成（中文字符会被过滤，可能为空导致创建失败，此时必须显式指定 slug）。"},
+					"scope":     map[string]any{"type": "string", "enum": []string{"workspace", "user"}, "description": "可选，默认 workspace。workspace 写入工作区 .snz1dp/skills/，user 写入用户目录 ~/.snz1dp/skills/。当 skill_dir 非空时，skill_dir 优先于 scope。"},
+					"skill_dir": map[string]any{"type": "string", "description": "可选，技能根目录的绝对路径。传入时直接在该目录下创建 <slug>/SKILL.md，忽略 scope。适用于将技能写入非标准目录的场景。"},
 					"overwrite": map[string]any{"type": "boolean", "default": false, "description": "同名技能已存在时是否覆盖。默认 false，不覆盖时同名技能已存在会报错。"},
 				},
 				"required":             []string{"name"},
@@ -518,12 +520,14 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "skill_upload",
-			"description":          "将本地已创建的技能上传到后台服务，使其成为后端注册的自定义技能。上传后技能可在其他设备上同步安装。需要提供本地技能名称（与 skill_create 时使用的 name 一致，是人类友好阅读名称，会自动转换为 slug 来定位磁盘目录）。",
+			"description":          "将本地已创建的技能上传到后台服务，使其成为后端注册的自定义技能。上传后技能可在其他设备上同步安装。\n\n参数说明：\n- name：技能的人类友好阅读名称（与 skill_create 时使用的 name 一致），用于匹配本地技能。\n- slug：可选，技能的机器标识符（磁盘目录名）。传入时优先用 slug 定位磁盘目录；未提供时由 name 自动转换为 slug 定位。\n- skill_dir：可选，技能根目录的绝对路径。传入时直接在该目录下查找 <slug>/SKILL.md，优先于 scope 和默认搜索路径。适用于技能不在标准目录下的场景。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"name": map[string]any{"type": "string", "description": "要上传的本地技能名称（人类友好阅读名称，与 skill_create 时使用的 name 一致）。"},
+					"name":      map[string]any{"type": "string", "description": "要上传的本地技能名称（人类友好阅读名称，与 skill_create 时使用的 name 一致）。"},
+					"slug":      map[string]any{"type": "string", "description": "可选，技能的机器标识符（磁盘目录名）。传入时优先用 slug 定位磁盘目录，而非从 name 自动转换。"},
+					"skill_dir": map[string]any{"type": "string", "description": "可选，技能根目录的绝对路径。传入时直接在该目录下查找技能，优先于默认搜索路径。"},
 				},
 				"required":             []string{"name"},
 				"additionalProperties": false,
@@ -531,13 +535,15 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		},
 		{
 			"name":                 "skill_delete",
-			"description":          "删除本地已创建的技能目录。默认删除工作区范围（<workdir>/.snz1dp/skills/<slug>/）下的技能；传入 scope=\"user\" 时删除用户目录（~/.snz1dp/skills/<slug>/）下的技能。仅删除本地文件，不影响已上传到后端的技能。\n\n注意：name 参数是人类友好阅读名称，会自动转换为 slug 来定位磁盘目录。如果原技能的 name 与 slug 不同（如中文名称），传入 name 仍可正确定位。",
+			"description":          "删除本地已创建的技能目录。默认删除工作区范围（<workdir>/.snz1dp/skills/<slug>/）下的技能；传入 scope=\"user\" 时删除用户目录（~/.snz1dp/skills/<slug>/）下的技能；传入 skill_dir 时删除指定目录下的 <slug>/。仅删除本地文件，不影响已上传到后端的技能。\n\n参数说明：\n- name：技能的人类友好阅读名称，会自动转换为 slug 来定位磁盘目录。\n- slug：可选，技能的机器标识符（磁盘目录名）。传入时优先用 slug 定位磁盘目录，而非从 name 自动转换。当原技能的 name 与 slug 不同（如中文名称）时，传入 slug 可更精确地定位。\n- skill_dir：可选，技能根目录的绝对路径。传入时在该目录下查找并删除 <slug>/，优先于 scope。当 skill_dir 非空时，scope 被忽略。",
 			"waiting_for_response": true,
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"name":  map[string]any{"type": "string", "description": "要删除的技能名称（人类友好阅读名称），会自动转换为 slug 风格目录名来定位磁盘目录。"},
-					"scope": map[string]any{"type": "string", "enum": []string{"workspace", "user"}, "description": "可选，默认 workspace。workspace 删除工作区 .snz1dp/skills/ 下的技能，user 删除用户目录 ~/.snz1dp/skills/ 下的技能。"},
+					"name":      map[string]any{"type": "string", "description": "要删除的技能名称（人类友好阅读名称），会自动转换为 slug 风格目录名来定位磁盘目录。"},
+					"slug":      map[string]any{"type": "string", "description": "可选，技能的机器标识符（磁盘目录名）。传入时优先用 slug 定位磁盘目录。"},
+					"scope":     map[string]any{"type": "string", "enum": []string{"workspace", "user"}, "description": "可选，默认 workspace。workspace 删除工作区 .snz1dp/skills/ 下的技能，user 删除用户目录 ~/.snz1dp/skills/ 下的技能。当 skill_dir 非空时，scope 被忽略。"},
+					"skill_dir": map[string]any{"type": "string", "description": "可选，技能根目录的绝对路径。传入时在该目录下查找并删除 <slug>/，优先于 scope。"},
 				},
 				"required":             []string{"name"},
 				"additionalProperties": false,
@@ -891,19 +897,50 @@ func previewClientTool(toolName string, arguments map[string]any) string {
 		if scope == "" {
 			scope = "workspace"
 		}
+		slug := argumentString(arguments, "slug")
+		skillDir := argumentString(arguments, "skill_dir")
 		overwrite := argumentBool(arguments, "overwrite")
-		if overwrite {
-			return fmt.Sprintf("skill_create %s (%s, overwrite)", fallbackString(name, "<missing>"), scope)
+		dirPart := ""
+		if skillDir != "" {
+			dirPart = skillDir
+		} else {
+			dirPart = scope
 		}
-		return fmt.Sprintf("skill_create %s (%s)", fallbackString(name, "<missing>"), scope)
+		if overwrite {
+			return fmt.Sprintf("skill_create %s (slug=%s, dir=%s, overwrite)", fallbackString(name, "<missing>"), fallbackString(slug, "<auto>"), dirPart)
+		}
+		return fmt.Sprintf("skill_create %s (slug=%s, dir=%s)", fallbackString(name, "<missing>"), fallbackString(slug, "<auto>"), dirPart)
 	case "skill_upload":
+		slug := argumentString(arguments, "slug")
+		skillDir := argumentString(arguments, "skill_dir")
+		parts := []string{}
+		if slug != "" {
+			parts = append(parts, fmt.Sprintf("slug=%s", slug))
+		}
+		if skillDir != "" {
+			parts = append(parts, fmt.Sprintf("dir=%s", skillDir))
+		}
+		if len(parts) > 0 {
+			return fmt.Sprintf("skill_upload %s (%s)", fallbackString(name, "<missing>"), strings.Join(parts, ", "))
+		}
 		return fmt.Sprintf("skill_upload %s", fallbackString(name, "<missing>"))
 	case "skill_delete":
 		scope := argumentString(arguments, "scope")
 		if scope == "" {
 			scope = "workspace"
 		}
-		return fmt.Sprintf("skill_delete %s (%s)", fallbackString(name, "<missing>"), scope)
+		slug := argumentString(arguments, "slug")
+		skillDir := argumentString(arguments, "skill_dir")
+		dirPart := ""
+		if skillDir != "" {
+			dirPart = skillDir
+		} else {
+			dirPart = scope
+		}
+		if slug != "" {
+			return fmt.Sprintf("skill_delete %s (slug=%s, dir=%s)", fallbackString(name, "<missing>"), slug, dirPart)
+		}
+		return fmt.Sprintf("skill_delete %s (dir=%s)", fallbackString(name, "<missing>"), dirPart)
 	case "switch_to_agent":
 		reason := argumentString(arguments, "reason")
 		if reason != "" {
@@ -1163,8 +1200,10 @@ func (r *ClientRuntime) skillCreate(config internalconfig.Config, arguments map[
 		return nil, newToolError("PARAM_ERROR", "skill_create 缺少 name")
 	}
 	scope := argumentString(arguments, "scope")
+	slug := argumentString(arguments, "slug")
+	skillDir := argumentString(arguments, "skill_dir")
 	overwrite := argumentBool(arguments, "overwrite")
-	result, err := skills.CreateSkillScaffold(config, name, scope, overwrite)
+	result, err := skills.CreateSkillScaffold(config, name, slug, scope, skillDir, overwrite)
 	if err != nil {
 		return nil, newToolError("EXECUTION_FAILED", "%v", err)
 	}
@@ -1191,7 +1230,9 @@ func (r *ClientRuntime) skillUpload(ctx context.Context, providerClient provider
 	if name == "" {
 		return nil, newToolError("PARAM_ERROR", "skill_upload 缺少 name")
 	}
-	result, err := skills.UploadLocalSkillToBackend(ctx, providerClient, config, name)
+	slug := argumentString(arguments, "slug")
+	skillDir := argumentString(arguments, "skill_dir")
+	result, err := skills.UploadLocalSkillToBackend(ctx, providerClient, config, name, slug, skillDir)
 	if err != nil {
 		return nil, newToolError("EXECUTION_FAILED", "%v", err)
 	}
@@ -1217,7 +1258,9 @@ func (r *ClientRuntime) skillDelete(config internalconfig.Config, arguments map[
 		return nil, newToolError("PARAM_ERROR", "skill_delete 缺少 name")
 	}
 	scope := argumentString(arguments, "scope")
-	result, err := skills.DeleteSkillScaffold(config, name, scope)
+	slug := argumentString(arguments, "slug")
+	skillDir := argumentString(arguments, "skill_dir")
+	result, err := skills.DeleteSkillScaffold(config, name, slug, scope, skillDir)
 	if err != nil {
 		return nil, newToolError("EXECUTION_FAILED", "%v", err)
 	}

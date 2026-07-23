@@ -139,7 +139,7 @@ func TestOrchestrator_VerifyStartup_Matched(t *testing.T) {
 
 	// 保存一个目标版本状态（与 buildinfo.Version 相同）
 	state := &PersistState{
-		TargetVersion: "0.1.2", // 与 buildinfo.Version 默认值一致
+		TargetVersion: "01.3", // 与 buildinfo.Version 默认值一致
 		UpdatePolicy:  "notify",
 	}
 	if err := stateMgr.SaveState(state); err != nil {
@@ -158,7 +158,7 @@ func TestOrchestrator_VerifyStartup_Matched(t *testing.T) {
 	if !matched {
 		t.Error("should be matched when target version equals current version")
 	}
-	if targetVersion != "0.1.2" {
+	if targetVersion != "01.3" {
 		t.Errorf("expected target version 0.1.0, got %s", targetVersion)
 	}
 

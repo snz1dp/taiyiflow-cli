@@ -373,6 +373,26 @@ func LoadByName(config internalconfig.Config, name string) (*Skill, string, erro
 	return nil, directory, fmt.Errorf("未找到技能: %s", trimmed)
 }
 
+// LoadBySlug 通过 slug（磁盘目录名）精确匹配本地技能
+func LoadBySlug(config internalconfig.Config, slug string) (*Skill, string, error) {
+	items, directory, err := Discover(config)
+	if err != nil {
+		return nil, "", err
+	}
+	trimmed := strings.TrimSpace(slug)
+	if trimmed == "" {
+		return nil, directory, fmt.Errorf("slug 不能为空")
+	}
+	for _, item := range items {
+		dirBase := filepath.Base(SkillDir(item))
+		if strings.EqualFold(dirBase, trimmed) {
+			copyItem := item
+			return &copyItem, directory, nil
+		}
+	}
+	return nil, directory, fmt.Errorf("未找到技能 (slug=%s)", trimmed)
+}
+
 func matchesSkillAlias(item Skill, target string) bool {
 	target = strings.TrimSpace(target)
 	if target == "" {
