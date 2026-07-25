@@ -1281,9 +1281,7 @@ func formatAuthRequiredStatusReason(reason string) string {
 
 func buildLocalShellCommandEvents(command string, result map[string]any) []tui.Event {
 	events := []tui.Event{}
-	if trimmed := strings.TrimSpace(command); trimmed != "" {
-		events = append(events, tui.Event{Kind: tui.EventSystemNote, Text: "! " + trimmed})
-	}
+	// 命令文本已在 handleLocalSlashCommand 中提前输出，此处不再重复。
 	if stdout, ok := result["stdout"].(string); ok {
 		stdout = strings.TrimRight(stdout, "\n")
 		if stdout != "" {

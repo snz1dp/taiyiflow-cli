@@ -7071,6 +7071,9 @@ func (m *model) handleLocalSlashCommand(command string) (bool, tea.Cmd) {
 	// ! 命令使用异步非流式执行路径：命令执行完毕后一次性显示全部输出，不阻塞 TUI。
 	if strings.HasPrefix(command, "!") {
 		m.input.SetValue("")
+		// 先输出要执行的命令文本，命令执行完后再输出结果。
+		m.entries = append(m.entries, entry{role: "system", content: command})
+		m.syncViewport()
 		// 在任务执行中（isBusy）时，不改变进度状态，避免 ! 命令完成后
 		// 将状态恢复为 progressIdle 而 runner goroutine 仍在运行。
 		var progressCmd tea.Cmd
