@@ -2183,10 +2183,25 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// stopAskUserCountdown 停止 ask_user 弹窗的倒计时定时器，并清除 deadline。
+// 用户与弹窗交互后调用，避免用户还在操作时弹窗被倒计时自动关闭。
+func (m *model) stopAskUserCountdown() {
+	if m.askUserForm == nil {
+		return
+	}
+	if m.askUserForm.ticker != nil {
+		m.askUserForm.ticker.Stop()
+		m.askUserForm.ticker = nil
+	}
+	m.askUserForm.deadline = time.Time{}
+}
+
 func (m model) handleAskUserFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.askUserForm == nil || len(m.askUserForm.questions) == 0 {
 		return m, nil
 	}
+	// 用户与弹窗交互时停止倒计时
+	m.stopAskUserCountdown()
 	current := &m.askUserForm.questions[m.askUserForm.cursor]
 	if current.question.InputFormat != "select" && shouldPrioritizeTextEntry(msg) {
 		previousValue := current.input.Value()
@@ -2353,12 +2368,27 @@ func (m *model) applyAskUserFormResult(result askUserResult) (tea.Model, tea.Cmd
 	return m, tea.Batch(m.transitionProgress(progressExecuting), waitForStream(m.eventCh))
 }
 
+// stopConfirmCountdown 停止确认弹窗的倒计时定时器，并清除 deadline。
+// 用户与弹窗交互后调用，避免用户还在操作时弹窗被倒计时自动关闭。
+func (m *model) stopConfirmCountdown() {
+	if m.pendingConfirm == nil {
+		return
+	}
+	if m.pendingConfirm.ticker != nil {
+		m.pendingConfirm.ticker.Stop()
+		m.pendingConfirm.ticker = nil
+	}
+	m.pendingConfirm.deadline = time.Time{}
+}
+
 func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	options := m.confirmOptions()
 	optionCount := len(options)
 	if optionCount == 0 {
 		return m, nil
 	}
+	// 用户与弹窗交互时停止倒计时
+	m.stopConfirmCountdown()
 	switch msg.String() {
 	case "left", "h", "up", "k":
 		m.resetOverlayScroll()
