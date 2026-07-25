@@ -717,6 +717,7 @@ type qrCodeWaitTickMsg struct {
 
 type backendRetryTickMsg struct{}
 type streamingIndicatorTickMsg struct{}
+type clockTickMsg struct{}
 
 type snapshotRefreshedMsg struct {
 	snapshot Snapshot
@@ -1245,7 +1246,7 @@ func relayExternalQueuedInputs(ctx context.Context, eventCh chan<- tea.Msg, queu
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{textinput.Blink, m.input.Focus(), m.progress.SetPercent(m.state.percent), m.scheduleBackendRetry()}
+	cmds := []tea.Cmd{textinput.Blink, m.input.Focus(), m.progress.SetPercent(m.state.percent), m.scheduleBackendRetry(), m.scheduleClockTick()}
 	if m.refreshSnapshot != nil {
 		cmds = append(cmds, refreshSnapshotCmd(m.ctx, m.snapshot, m.refreshSnapshot))
 	}
@@ -1277,6 +1278,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, refreshSnapshotCmd(m.ctx, m.snapshot, m.refreshSnapshot)
+	case clockTickMsg:
+		return m, m.scheduleClockTick()
 	case streamingIndicatorTickMsg:
 		if !m.shouldAnimateStreamingIndicator() || !m.streamingIndicatorActive {
 			return m, nil
@@ -4104,6 +4107,7 @@ func (m model) renderHeader() string {
 	flowLabel := fallback(m.snapshot.DefaultFlowLabel, "未配置")
 	clientVersion := fallback(m.snapshot.Version, "0.1.0")
 	serverVersion := formatHeaderServerVersion(m.serverVersionLabel())
+	clockDisplay := time.Now().Format("2006-01-02 15:04:05")
 	sessionTitle := strings.TrimSpace(m.snapshot.SessionTitle)
 	if sessionTitle == "" {
 		sessionTitle = fallback(m.snapshot.SessionID, "新会话")
@@ -4121,12 +4125,12 @@ func (m model) renderHeader() string {
 		lines := []string{
 			trimForWidth(sessionTitle, contentWidth),
 			trimForWidth(versionLine, contentWidth),
-			trimForWidth(flowLabelDisplay, contentWidth),
+			trimForWidth(clockDisplay+" "+flowLabelDisplay, contentWidth),
 			trimMiddleLeftForWidth(workdir, contentWidth),
 		}
 		return headerBarStyle.Width(renderWidth).Render(strings.Join(lines, "\n"))
 	}
-	line1 := renderHeaderLine(sessionTitle, flowLabelDisplay, contentWidth, false)
+	line1 := renderHeaderLine(sessionTitle, clockDisplay+" "+flowLabelDisplay, contentWidth, false)
 	line2 := renderHeaderLine(workdirDisplay, versionLine, contentWidth, true)
 	return headerBarStyle.Width(renderWidth).Render(strings.Join([]string{line1, line2}, "\n"))
 }
@@ -9614,6 +9618,12 @@ func (m *model) syncInputPlaceholder() {
 		return
 	}
 	m.input.Placeholder = "服务端不可用，当前为只读模式，仅支持 /config、/todo、/tasks、/skills、/reasoning、/help、/clear、/exit"
+}
+
+func (m model) scheduleClockTick() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+		return clockTickMsg{}
+	})
 }
 
 func (m model) scheduleBackendRetry() tea.Cmd {
