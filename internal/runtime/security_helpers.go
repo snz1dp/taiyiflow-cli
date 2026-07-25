@@ -309,6 +309,14 @@ func resolveSandboxRoots(config internalconfig.Config, baseDir string) ([]string
 			return nil, err
 		}
 	}
+	// 始终允许访问 CLI 根目录（~/.snz1dp 或 $SNZ1DP_HOME），无需审核。
+	// 该目录包含技能包、内置技能、配置文件、审计日志、浏览器/桌面截图等子目录，
+	// 均为 CLI 自身产物，不涉及用户工作区数据。
+	if rootDir, err := internalconfig.DefaultRootDir(); err == nil {
+		if err := appendRoot(rootDir); err != nil {
+			return nil, err
+		}
+	}
 	return roots, nil
 }
 
