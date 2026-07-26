@@ -11,8 +11,11 @@ import (
 )
 
 const (
-	vscodeKittyKeyboardEnable  = "\x1b[=1;2u"
-	vscodeKittyKeyboardDisable = "\x1b[=1;3u"
+	// 使用 kitty 键盘协议的 push/pop 机制（CSI > 和 CSI <），
+	// 而非直接设置机制（CSI =），因为部分终端（如 VSCode 的 xterm.js）
+	// 仅支持 push/pop 形式。flags 1=DISAMBIGUATE_ESCAPE_CODES，mode 2=按位设置。
+	vscodeKittyKeyboardEnable  = "\x1b[>1;2u"
+	vscodeKittyKeyboardDisable = "\x1b[<u"
 )
 
 var vscodeKittySequenceReplacements = []struct {
