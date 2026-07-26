@@ -150,6 +150,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		// TUI 模式下子智能体默认启用
 		runtimeClient.SetSubtaskEnabled(true)
 		quietRuntimeClient.SetSubtaskEnabled(true)
+		// 设置用户执行引导 channel，submitCallback 会在回调提交前排空。
+		runtimeClient.SetGuidanceChannel(request.GuidanceCh)
+		quietRuntimeClient.SetGuidanceChannel(request.GuidanceCh)
 		defer func() {
 			errorMessage := ""
 			if returnErr != nil {
@@ -316,6 +319,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				if configErr != nil {
 					return configErr
 				}
+				// 用户执行引导 channel 在 submitCallback 中排空，确保工具执行期间用户输入的引导能被及时消费。
 				switch event.Type {
 				case provider.EventMessage:
 					if metrics := buildTUIStreamStatsMetrics(event.Data); metrics != nil {

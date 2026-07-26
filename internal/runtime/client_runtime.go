@@ -129,6 +129,11 @@ type ClientRuntime struct {
 	// nonArtifactFiles 追踪 is_artifact=false 的文件路径，在 on_complete 时自动清理。
 	nonArtifactFiles []string
 	nonArtifactMu    sync.Mutex
+	// guidanceText 存储用户执行引导文本，在 submitCallback 中前置到回调结果的 Result 字段中，使用后清空。
+	guidanceText string
+	// guidanceCh 是从 TUI 接收用户执行引导文本的 channel。
+	// 在 submitCallback 中排空，确保工具执行期间用户输入的引导能在回调提交前被消费。
+	guidanceCh chan string
 }
 
 func NewClientRuntime(stdin io.Reader, stdout io.Writer, stderr io.Writer) *ClientRuntime {
@@ -165,6 +170,25 @@ func (r *ClientRuntime) SetStreamEventLogsEnabled(enabled bool) {
 
 func (r *ClientRuntime) SetStreamCallback(cb func(text string, isError bool)) {
 	r.streamCallback = cb
+}
+
+// SetGuidanceText 设置用户执行引导文本。
+// 该文本会在下一次 submitCallback 调用时前置到 Result 字段中，然后自动清空。
+// 用于在工具执行期间将用户通过 shift+enter 输入的引导文本注入到工具回调结果中。
+func (r *ClientRuntime) SetGuidanceText(text string) {
+	if r == nil {
+		return
+	}
+	r.guidanceText = strings.TrimSpace(text)
+}
+
+// SetGuidanceChannel 设置用户执行引导文本的 channel。
+// submitCallback 会在提交回调前排空此 channel，确保工具执行期间用户输入的引导能被及时消费。
+func (r *ClientRuntime) SetGuidanceChannel(ch chan string) {
+	if r == nil {
+		return
+	}
+	r.guidanceCh = ch
 }
 
 func (r *ClientRuntime) SetInteractivePromptsEnabled(enabled bool) {
@@ -817,6 +841,35 @@ func (r *ClientRuntime) submitCallback(
 	result any,
 	errorMessage string,
 ) error {
+	// 排空用户执行引导 channel，确保工具执行期间用户输入的引导能在回调提交前被消费。
+	if r.guidanceCh != nil {
+		select {
+		case text := <-r.guidanceCh:
+			r.guidanceText = strings.TrimSpace(text)
+		default:
+		}
+	}
+	// 如果存在用户执行引导文本，前置到 Result 中，作为提示词附加方式传递给模型。
+	// 对于成功和失败的回调都适用：模型在解析工具结果时会先看到引导文本，再看到原始结果。
+	// 使用后立即清空，确保每次引导只被消费一次。
+	if r.guidanceText != "" {
+		guidancePrefix := "[用户执行引导]\n" + r.guidanceText + "\n\n[以下是工具执行结果]\n"
+		if str, ok := result.(string); ok {
+			result = guidancePrefix + str
+		} else if m, ok := result.(map[string]any); ok {
+			cloned := make(map[string]any, len(m)+1)
+			for k, v := range m {
+				cloned[k] = v
+			}
+			cloned["_user_guidance_prefix"] = guidancePrefix
+			result = cloned
+		} else if result == nil {
+			result = guidancePrefix
+		} else {
+			result = guidancePrefix + fmt.Sprintf("%v", result)
+		}
+		r.guidanceText = ""
+	}
 	callback := provider.ClientCallResult{
 		FlowID:       stringValue(payload["flow_id"]),
 		SessionID:    nestedString(payload, "context", "session_id"),

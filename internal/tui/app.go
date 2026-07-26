@@ -423,6 +423,10 @@ type Request struct {
 	RequestMode      string
 	ReasoningEnabled bool
 	AutoLoopRound    int
+	// GuidanceCh 用于在任务执行期间从 TUI 向 runner 传递用户执行引导文本。
+	// TUI 在用户通过 shift+enter 输入引导后，将文本发送到此 channel；
+	// runner 在每次工具回调前排空此 channel，将引导文本前置到工具回调结果中。
+	GuidanceCh       chan string
 }
 
 type ContextWindow struct {
@@ -830,6 +834,9 @@ type model struct {
 	manualSnapshotRefresh      bool
 	historyLoading             bool
 	skipSyncViewport           bool
+	// currentGuidanceCh 是当前请求的引导文本 channel，在 startRequest 中创建。
+	// 任务执行中用户按 shift+enter 直接提交引导文本，通过此 channel 发送给 runner。
+	currentGuidanceCh         chan string
 }
 
 type configFormState struct {
@@ -1422,6 +1429,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentToolLabel = ""
 		m.requestCancel = nil
 		m.pendingAutoLoopPrompt = ""
+		m.currentGuidanceCh = nil
+		m.syncInputPlaceholder()
 		m.retryAvailable = m.lastRetryableRequest != nil
 		m.syncViewport()
 		m.input.Focus()
@@ -1459,6 +1468,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.compressionProgressSettled = false
 		m.currentToolLabel = ""
 		m.requestCancel = nil
+		m.currentGuidanceCh = nil
+		m.syncInputPlaceholder()
 		m.retryAvailable = false
 		m.input.Focus()
 		// 自动续跑优先于用户排队输入
@@ -2087,6 +2098,21 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "shift+enter", "alt+enter", "ctrl+j":
 		if m.isBusy() {
+			// 任务执行中按 shift+enter 直接提交用户执行引导文本
+			text := strings.TrimSpace(m.input.Value())
+			if text != "" {
+				if m.currentGuidanceCh != nil {
+					select {
+					case m.currentGuidanceCh <- text:
+					default:
+					}
+				}
+				m.entries = append(m.entries, entry{role: "system", content: "执行引导已添加: " + text})
+				m.syncViewport()
+				m.input.SetValue("")
+				m.syncInputPlaceholder()
+				m.syncLayout()
+			}
 			return m, nil
 		}
 		m.input.InsertString("\n")
@@ -3825,6 +3851,8 @@ func (m *model) completeInterruptedRequest() tea.Cmd {
 	m.currentToolLabel = ""
 	m.requestCancel = nil
 	m.interrupting = false
+	m.currentGuidanceCh = nil
+	m.syncInputPlaceholder()
 	m.entries = append(m.entries, entry{role: "system", content: "请求已中断"})
 	m.syncViewport()
 	return m.transitionProgress(progressIdle)
@@ -3895,6 +3923,11 @@ func (m *model) startRequest(request Request, appendUserEntry bool) tea.Cmd {
 	if request.AutoLoopRound == 0 {
 		m.autoLoopCurrentRound = 0
 	}
+	// 创建引导 channel（缓冲为 1，避免阻塞）
+	if request.GuidanceCh == nil {
+		request.GuidanceCh = make(chan string, 1)
+	}
+	m.currentGuidanceCh = request.GuidanceCh
 	assumeCompressionFromHistory := m.hasConversationHistory()
 	if appendUserEntry {
 		m.entries = append(m.entries, entry{role: "user", content: request.Input})
@@ -3925,6 +3958,8 @@ func cloneRequest(request Request) *Request {
 	cloned.InputFiles = append([]string(nil), request.InputFiles...)
 	cloned.KnowledgeScopes = append([]string(nil), request.KnowledgeScopes...)
 	cloned.KnowledgeDocs = append([]string(nil), request.KnowledgeDocs...)
+	// GuidanceCh 不应跨请求复用，置为 nil 由 startRequest 重新创建
+	cloned.GuidanceCh = nil
 	return &cloned
 }
 
