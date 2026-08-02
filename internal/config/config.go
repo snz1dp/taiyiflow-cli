@@ -37,6 +37,8 @@ const (
 	MaxToolConfirmTimeoutSeconds     = 300
 	DefaultAgentAutoLoopMaxRounds    = 0
 	MaxAgentAutoLoopMaxRounds        = 10000
+	DefaultMaxParallelismSubtask     = 3
+	MaxMaxParallelismSubtask         = 32
 	encryptedConfigValuePrefix       = "enc:v1:"
 	SandboxEscapePolicyConfirm       = "confirm"
 	SandboxEscapePolicyDeny          = "deny"
@@ -178,6 +180,7 @@ type Config struct {
 	ToolConfirmTimeoutSeconds int              `yaml:"tool_confirm_timeout_seconds,omitempty"`
 	AgentAutoLoopEnabled      bool             `yaml:"agent_auto_loop_enabled,omitempty"`
 	AgentAutoLoopMaxRounds    int              `yaml:"agent_auto_loop_max_rounds,omitempty"`
+	MaxParallelismSubtask     int              `yaml:"max_parallelism_subtask,omitempty"`
 	LoopDecideFlowID          string           `yaml:"loop_decide_flow_id,omitempty"`
 	CrossSessionMemoryEnabled bool             `yaml:"cross_session_memory_enabled,omitempty"`
 	OutputLanguage            string           `yaml:"output_language"`
@@ -259,6 +262,7 @@ func Default() Config {
 		ToolConfirmTimeoutSeconds: DefaultToolConfirmTimeoutSeconds,
 		AgentAutoLoopEnabled:      false,
 		AgentAutoLoopMaxRounds:    DefaultAgentAutoLoopMaxRounds,
+		MaxParallelismSubtask:     DefaultMaxParallelismSubtask,
 		CrossSessionMemoryEnabled: true,
 		OutputLanguage:            "zh-CN",
 		AuditEnabled:              false,
@@ -650,6 +654,16 @@ func NormalizeAgentAutoLoopMaxRounds(value int) int {
 	return value
 }
 
+func NormalizeMaxParallelismSubtask(value int) int {
+	if value < 1 {
+		return DefaultMaxParallelismSubtask
+	}
+	if value > MaxMaxParallelismSubtask {
+		return MaxMaxParallelismSubtask
+	}
+	return value
+}
+
 func NewManager() (*Manager, error) {
 	path, err := DefaultConfigPath()
 	if err != nil {
@@ -785,6 +799,7 @@ func (m *Manager) Load() (Config, error) {
 	config.QRWaitTimeoutSeconds = NormalizeQRWaitTimeoutSeconds(config.QRWaitTimeoutSeconds)
 	config.ToolConfirmTimeoutSeconds = NormalizeToolConfirmTimeoutSeconds(config.ToolConfirmTimeoutSeconds)
 	config.AgentAutoLoopMaxRounds = NormalizeAgentAutoLoopMaxRounds(config.AgentAutoLoopMaxRounds)
+	config.MaxParallelismSubtask = NormalizeMaxParallelismSubtask(config.MaxParallelismSubtask)
 	if config.OutputLanguage == "" {
 		config.OutputLanguage = Default().OutputLanguage
 	}

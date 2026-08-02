@@ -57,6 +57,9 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if a.runtime != nil {
+		a.runtime.SetMaxParallelismSubtask(config.MaxParallelismSubtask)
+	}
 	config, _, err = a.ensureClientIdentity(config)
 	if err != nil {
 		return err
@@ -150,6 +153,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		// TUI 模式下子智能体默认启用
 		runtimeClient.SetSubtaskEnabled(true)
 		quietRuntimeClient.SetSubtaskEnabled(true)
+		runtimeClient.SetMaxParallelismSubtask(config.MaxParallelismSubtask)
+		quietRuntimeClient.SetMaxParallelismSubtask(config.MaxParallelismSubtask)
 		// 设置用户执行引导 channel，submitCallback 会在回调提交前排空。
 		runtimeClient.SetGuidanceChannel(request.GuidanceCh)
 		quietRuntimeClient.SetGuidanceChannel(request.GuidanceCh)

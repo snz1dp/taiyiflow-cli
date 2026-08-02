@@ -387,7 +387,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 					"wait_for_completion": map[string]any{"type": "boolean", "description": "远端子任务是否等待完成；默认 true。本地串行执行始终等待。"},
 					"timeout_seconds":     map[string]any{"type": "integer", "minimum": 1, "maximum": internalconfig.MaxCommandTimeoutSeconds, "description": "本地执行或远端等待的超时时间。"},
 					"parallel":            map[string]any{"type": "boolean", "description": "是否启用批量并行调度；默认在提供 subtasks 时开启。"},
-					"max_parallelism":     map[string]any{"type": "integer", "minimum": 1, "maximum": 32, "description": "批量子任务的最大并发度；默认等于 subtasks 数量。"},
+					"max_parallelism":     map[string]any{"type": "integer", "minimum": 1, "maximum": r.MaxParallelismSubtask(), "description": "批量子任务的最大并发度；默认等于 subtasks 数量。"},
 					"serial":              map[string]any{"type": "boolean", "description": "兼容旧参数；在批量模式下传 true 会强制串行执行。"},
 				},
 				"anyOf":                []any{map[string]any{"required": []string{"prompt"}}, map[string]any{"required": []string{"subtasks"}}},

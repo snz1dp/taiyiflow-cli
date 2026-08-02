@@ -262,6 +262,9 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 	if err != nil {
 		return err
 	}
+	if a.runtime != nil {
+		a.runtime.SetMaxParallelismSubtask(config.MaxParallelismSubtask)
+	}
 	config, _, err = a.ensureClientIdentity(config)
 	if err != nil {
 		return err
@@ -658,6 +661,9 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 	if err != nil {
 		return err
 	}
+	if a.runtime != nil {
+		a.runtime.SetMaxParallelismSubtask(config.MaxParallelismSubtask)
+	}
 	config, _, err = a.ensureClientIdentity(config)
 	if err != nil {
 		return err
@@ -916,6 +922,7 @@ func (a *App) streamTaskWithSkillRetry(
 		nil,
 		nil,
 	)
+	a.runtime.SetMaxParallelismSubtask(config.MaxParallelismSubtask)
 	stream, streamSession, err := providerClient.Stream(ctx, provider.StreamRequest{
 		FlowID:                    flowID,
 		Input:                     strings.TrimSpace(task),

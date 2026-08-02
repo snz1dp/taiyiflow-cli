@@ -370,6 +370,12 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("agent_auto_loop_max_rounds 仅支持 0-%d 的整数，0 表示禁用", internalconfig.MaxAgentAutoLoopMaxRounds)
 		}
 		config.AgentAutoLoopMaxRounds = rounds
+	case "max_parallelism_subtask":
+		parallelism, err := strconv.Atoi(trimmedValue)
+		if err != nil || parallelism < 1 || parallelism > internalconfig.MaxMaxParallelismSubtask {
+			return fmt.Errorf("max_parallelism_subtask 仅支持 1-%d 的整数", internalconfig.MaxMaxParallelismSubtask)
+		}
+		config.MaxParallelismSubtask = parallelism
 	case "output_language":
 		if trimmedValue == "" {
 			return fmt.Errorf("output_language 不能为空，如需重置请使用 taiyiflow-cli config unset output_language")
@@ -498,6 +504,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.ToolConfirmTimeoutSeconds = defaults.ToolConfirmTimeoutSeconds
 	case "agent_auto_loop_max_rounds":
 		config.AgentAutoLoopMaxRounds = defaults.AgentAutoLoopMaxRounds
+	case "max_parallelism_subtask":
+		config.MaxParallelismSubtask = defaults.MaxParallelismSubtask
 	case "output_language":
 		config.OutputLanguage = defaults.OutputLanguage
 	case "audit_enabled":
@@ -574,6 +582,8 @@ func normalizeConfigKey(key string) string {
 		return "qr_wait_timeout_seconds"
 	case "agent_auto_continue_max_rounds", "agent_autoloop_max_rounds", "agent_auto_loop_rounds":
 		return "agent_auto_loop_max_rounds"
+	case "max_parallelism_subtask", "max_subtask_parallelism", "subtask_max_parallelism", "max_concurrent_subtask":
+		return "max_parallelism_subtask"
 	case "skills_directory":
 		return "skills_install_scope"
 	case "skills_auto_install", "skill_auto_install_policy":
@@ -642,6 +652,7 @@ func renderConfigSummary(path string, config internalconfig.Config) string {
 		fmt.Sprintf("扫码等待超时: %d 秒", config.QRWaitTimeoutSeconds),
 		fmt.Sprintf("确认超时: %d 秒（0 表示禁止倒计时）", config.ToolConfirmTimeoutSeconds),
 		fmt.Sprintf("智能体自动续跑最大轮数: %d（0 表示禁用）", config.AgentAutoLoopMaxRounds),
+		fmt.Sprintf("子智能体最大并发数: %d", config.MaxParallelismSubtask),
 		fmt.Sprintf("输出语言: %s", fallbackConfigValue(config.OutputLanguage, internalconfig.Default().OutputLanguage)),
 		fmt.Sprintf("审计日志: %t", config.AuditEnabled),
 		fmt.Sprintf("技能安装位置: %s", skillInstallScopeLabel(config)),

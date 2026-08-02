@@ -118,6 +118,9 @@ type ClientRuntime struct {
 	// subtaskEnabled 控制是否向模型暴露 run_subtask 工具。
 	// 非交互式模式默认 false，交互式模式和 TUI 默认 true。
 	subtaskEnabled bool
+	// maxParallelismSubtask 控制子智能体的最大并发数。
+	// 由 cmd 层从本地配置注入，用于工具定义的 maximum 约束和实际执行时的并发上限。
+	maxParallelismSubtask int
 	// pendingModeSwitch 存储 switch_to_agent 工具执行后待消费的模式切换请求。
 	// cmd 层在 HandleClientToolEvent 返回后通过 ConsumePendingModeSwitch 读取并更新会话状态。
 	// 非线程安全：仅限单 goroutine 事件循环内写入和消费（switchToAgent 写入、ConsumePendingModeSwitch 读取）。
@@ -218,6 +221,23 @@ func (r *ClientRuntime) SetSubtaskEnabled(enabled bool) {
 	r.subtaskEnabled = enabled
 }
 
+// SetMaxParallelismSubtask 设置子智能体的最大并发数。
+// 由 cmd 层从本地配置注入，用于工具定义的 maximum 约束和实际执行时的并发上限。
+func (r *ClientRuntime) SetMaxParallelismSubtask(maxParallelism int) {
+	if r == nil {
+		return
+	}
+	r.maxParallelismSubtask = maxParallelism
+}
+
+// MaxParallelismSubtask 返回子智能体的最大并发数。
+func (r *ClientRuntime) MaxParallelismSubtask() int {
+	if r == nil || r.maxParallelismSubtask < 1 {
+		return internalconfig.DefaultMaxParallelismSubtask
+	}
+	return r.maxParallelismSubtask
+}
+
 func (r *ClientRuntime) SubtaskEnabled() bool {
 	if r == nil {
 		return false
@@ -280,6 +300,7 @@ func (r *ClientRuntime) cloneRuntime() *ClientRuntime {
 		subtaskKnowledgeScopes:      append([]string(nil), r.subtaskKnowledgeScopes...),
 		subtaskKnowledgeDocs:        append([]string(nil), r.subtaskKnowledgeDocs...),
 		subtaskEnabled:              r.subtaskEnabled,
+		maxParallelismSubtask:       r.maxParallelismSubtask,
 		// pendingModeSwitch 被有意忽略：克隆运行时不应继承父运行时的模式切换请求，
 		// 模式切换仅由主运行时上的 switch_to_agent 工具触发，由 cmd 层消费主运行时的 pendingModeSwitch。
 		currentRequestMode:         r.currentRequestMode,

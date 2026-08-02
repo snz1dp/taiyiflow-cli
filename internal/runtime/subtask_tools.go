@@ -432,6 +432,11 @@ func (r *ClientRuntime) parseSubtaskExecutionRequests(
 	if !parallelEnabled {
 		maxParallelism = 1
 	}
+	// 用配置值限制最大并发数
+	configMax := r.MaxParallelismSubtask()
+	if maxParallelism > configMax {
+		maxParallelism = configMax
+	}
 	if maxParallelism > len(requests) {
 		maxParallelism = len(requests)
 	}
