@@ -292,8 +292,16 @@ async function handleNavigate(args: Record<string, unknown>): Promise<Record<str
 async function handleClick(args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const tab = await resolveTargetTab(args);
   const selector = readRequiredString(args, 'selector');
-  await runTabFunction(tab.id, (receivedSelector: string) => {
-    const element = document.querySelector<HTMLElement>(receivedSelector);
+  const waitTimeout = readNumber(args, 'wait_timeout', 5000);
+  await runTabFunction(tab.id, async (receivedSelector: string, timeout: number) => {
+    // 轮询等待元素出现，兼容动态渲染页面（SPA、延迟加载等）
+    const deadline = Date.now() + Math.max(timeout, 0);
+    let element: HTMLElement | null = null;
+    while (Date.now() < deadline) {
+      element = document.querySelector<HTMLElement>(receivedSelector);
+      if (element) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
     if (!element) {
       return { ok: false, message: `selector not found: ${receivedSelector}` };
     }
@@ -331,7 +339,7 @@ async function handleClick(args: Record<string, unknown>): Promise<Record<string
 
     element.click();
     return { ok: true, message: receivedSelector };
-  }, selector);
+  }, selector, waitTimeout);
   return { ...(await readTabState(tab.id)), selector };
 }
 
@@ -341,8 +349,16 @@ async function handleType(args: Record<string, unknown>): Promise<Record<string,
   const text = readRequiredString(args, 'text');
   const append = readBoolean(args, 'append', false);
   const pressEnter = readBoolean(args, 'press_enter', false);
-  await runTabFunction(tab.id, (receivedSelector: string, receivedText: string, shouldAppend: boolean, shouldPressEnter: boolean) => {
-    const element = document.querySelector<HTMLElement>(receivedSelector);
+  const waitTimeout = readNumber(args, 'wait_timeout', 5000);
+  await runTabFunction(tab.id, async (receivedSelector: string, receivedText: string, shouldAppend: boolean, shouldPressEnter: boolean, timeout: number) => {
+    // 轮询等待元素出现，兼容动态渲染页面（SPA、延迟加载等）
+    const deadline = Date.now() + Math.max(timeout, 0);
+    let element: HTMLElement | null = null;
+    while (Date.now() < deadline) {
+      element = document.querySelector<HTMLElement>(receivedSelector);
+      if (element) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
     if (!element) {
       return { ok: false, message: `selector not found: ${receivedSelector}` };
     }
@@ -417,7 +433,7 @@ async function handleType(args: Record<string, unknown>): Promise<Record<string,
     }
 
     return { ok: true, message: receivedSelector };
-  }, selector, text, append, pressEnter);
+  }, selector, text, append, pressEnter, waitTimeout);
   return { ...(await readTabState(tab.id)), selector, text_length: text.length };
 }
 
