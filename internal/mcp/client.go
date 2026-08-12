@@ -26,6 +26,8 @@ const (
 	fetchToolsTimeout = 30 * time.Second
 	// 工具调用超时
 	callToolTimeout = 120 * time.Second
+	// stdio 进程优雅退出等待时间
+	stdioGracefulTimeout = 3 * time.Second
 )
 
 // ToolDefinition 表示一个 MCP 工具定义，用于构建 client_mcp_servers 上送格式。
@@ -37,13 +39,12 @@ type ToolDefinition struct {
 
 // ServerConfig 表示一个 MCP 服务器的连接配置。
 type ServerConfig struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	ServerURL    string            `json:"server_url"`
-	ServerType   string            `json:"server_type"` // stdio / sse / streamable_http / other
-	AuthConfig   map[string]any    `json:"auth_config"`
-	Tools        []ToolDefinition  `json:"tools"`
-	Env          map[string]string `json:"-"` // 从 auth_config.env 提取
+	ID         string           `json:"id"`
+	Name       string           `json:"name"`
+	ServerURL  string           `json:"server_url"`
+	ServerType string           `json:"server_type"` // stdio / sse / streamable_http / other
+	AuthConfig map[string]any   `json:"auth_config"`
+	Tools      []ToolDefinition `json:"tools"`
 }
 
 // jsonRPCRequest 表示 JSON-RPC 2.0 请求。
@@ -73,14 +74,25 @@ func (e *jsonRPCError) Error() string {
 
 // Client 是 MCP 协议客户端，支持 stdio / streamable_http / SSE 三种传输方式。
 type Client struct {
-	httpClient *http.Client
-	mu         sync.Mutex
+	httpClient    *http.Client
+	sseHTTPClient *http.Client // SSE 连接专用，无全局超时（RISK-3 修复）
+	mu            sync.Mutex
 	// streamable_http 会话缓存
 	httpSessionIDs map[string]string
 	// SSE endpoint 缓存
 	sseEndpoints map[string]string
+	// SSE 连接保活（BUG-3 修复）
+	sseConnections map[string]*sseConnection
+	// SSE 连接互斥锁，防止 TOCTOU 竞态（BUG-5 修复）
+	sseConnectMu map[string]*sync.Mutex
 	// stdio 进程实例缓存
 	stdioInstances map[string]*stdioInstance
+}
+
+// sseConnection 保持 SSE 连接存活。
+type sseConnection struct {
+	body   io.ReadCloser
+	cancel context.CancelFunc
 }
 
 // NewClient 创建 MCP 协议客户端。
@@ -89,8 +101,12 @@ func NewClient() *Client {
 		httpClient: &http.Client{
 			Timeout: callToolTimeout,
 		},
+		// SSE 连接不设全局超时，由 context 控制生命周期
+		sseHTTPClient:  &http.Client{},
 		httpSessionIDs: make(map[string]string),
 		sseEndpoints:   make(map[string]string),
+		sseConnections: make(map[string]*sseConnection),
+		sseConnectMu:   make(map[string]*sync.Mutex),
 		stdioInstances: make(map[string]*stdioInstance),
 	}
 }
@@ -141,6 +157,11 @@ func (c *Client) Close() {
 		inst.destroy()
 	}
 	c.stdioInstances = make(map[string]*stdioInstance)
+	for _, conn := range c.sseConnections {
+		conn.cancel()
+		conn.body.Close()
+	}
+	c.sseConnections = make(map[string]*sseConnection)
 	c.httpSessionIDs = make(map[string]string)
 	c.sseEndpoints = make(map[string]string)
 }
@@ -154,14 +175,8 @@ func (c *Client) fetchStreamableHTTPTools(ctx context.Context, server ServerConf
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": mcpClientName, "version": mcpClientVersion},
 	}
-	initResp, err := c.httpJSONRPC(ctx, server, "initialize", initParams)
-	if err != nil {
+	if _, err := c.httpJSONRPC(ctx, server, "initialize", initParams); err != nil {
 		return nil, fmt.Errorf("MCP initialize 失败: %w", err)
-	}
-
-	// 缓存 session ID
-	if initResp != nil {
-		// session ID 从响应头获取，在 httpJSONRPC 内部处理
 	}
 
 	// notifications/initialized（无需响应）
@@ -320,10 +335,53 @@ func (c *Client) callSSETool(ctx context.Context, server ServerConfig, toolName 
 		"name":      toolName,
 		"arguments": toolArgs,
 	}
-	return c.sseJSONRPC(ctx, server, endpoint, "tools/call", params)
+	result, err := c.sseJSONRPC(ctx, server, endpoint, "tools/call", params)
+	if err != nil {
+		// endpoint 可能已失效（服务器重启），清除缓存并重试一次
+		c.invalidateSSEEndpoint(server.ServerURL)
+		endpoint, retryErr := c.sseConnect(ctx, server)
+		if retryErr != nil {
+			return nil, fmt.Errorf("SSE 重试连接失败: %w (原始错误: %v)", retryErr, err)
+		}
+		result, err = c.sseJSONRPC(ctx, server, endpoint, "tools/call", params)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+// invalidateSSEEndpoint 清除指定 URL 的 SSE endpoint 缓存和连接。
+func (c *Client) invalidateSSEEndpoint(serverURL string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.sseEndpoints, serverURL)
+	if conn, ok := c.sseConnections[serverURL]; ok {
+		conn.cancel()
+		conn.body.Close()
+		delete(c.sseConnections, serverURL)
+	}
+}
+
+// getSSEConnectMu 获取指定 URL 的连接互斥锁，防止并发重复连接（BUG-5 修复）。
+func (c *Client) getSSEConnectMu(serverURL string) *sync.Mutex {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if mu, ok := c.sseConnectMu[serverURL]; ok {
+		return mu
+	}
+	mu := &sync.Mutex{}
+	c.sseConnectMu[serverURL] = mu
+	return mu
 }
 
 func (c *Client) sseConnect(ctx context.Context, server ServerConfig) (string, error) {
+	// BUG-5 修复：使用 per-URL 互斥锁防止 TOCTOU 竞态
+	connectMu := c.getSSEConnectMu(server.ServerURL)
+	connectMu.Lock()
+	defer connectMu.Unlock()
+
+	// 双重检查：获取锁后再检查缓存
 	c.mu.Lock()
 	if endpoint, ok := c.sseEndpoints[server.ServerURL]; ok {
 		c.mu.Unlock()
@@ -331,20 +389,25 @@ func (c *Client) sseConnect(ctx context.Context, server ServerConfig) (string, e
 	}
 	c.mu.Unlock()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.ServerURL, nil)
+	// RISK-3 修复：使用无超时的 HTTP 客户端建立 SSE 连接
+	sseCtx, sseCancel := context.WithCancel(ctx)
+	req, err := http.NewRequestWithContext(sseCtx, http.MethodGet, server.ServerURL, nil)
 	if err != nil {
+		sseCancel()
 		return "", err
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	applyAuthHeaders(req, server.AuthConfig)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.sseHTTPClient.Do(req)
 	if err != nil {
+		sseCancel()
 		return "", err
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode >= http.StatusBadRequest {
+		resp.Body.Close()
+		sseCancel()
 		return "", fmt.Errorf("SSE 连接返回 HTTP %d", resp.StatusCode)
 	}
 
@@ -354,6 +417,8 @@ func (c *Client) sseConnect(ctx context.Context, server ServerConfig) (string, e
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
+			resp.Body.Close()
+			sseCancel()
 			return "", fmt.Errorf("SSE 流中未找到 endpoint 事件: %w", err)
 		}
 		line = strings.TrimSpace(line)
@@ -361,7 +426,6 @@ func (c *Client) sseConnect(ctx context.Context, server ServerConfig) (string, e
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			// endpoint 可能是相对路径或绝对路径
 			if strings.HasPrefix(data, "/") {
-				// 相对路径，拼接 base URL
 				baseURL := server.ServerURL
 				if idx := strings.Index(baseURL, "://"); idx >= 0 {
 					schemeEnd := idx + 3
@@ -378,8 +442,13 @@ func (c *Client) sseConnect(ctx context.Context, server ServerConfig) (string, e
 		}
 	}
 
+	// BUG-3 修复：保持 SSE 连接存活，不立即关闭 resp.Body
 	c.mu.Lock()
 	c.sseEndpoints[server.ServerURL] = endpoint
+	c.sseConnections[server.ServerURL] = &sseConnection{
+		body:   resp.Body,
+		cancel: sseCancel,
+	}
 	c.mu.Unlock()
 
 	return endpoint, nil
@@ -461,11 +530,11 @@ func (c *Client) sseNotify(ctx context.Context, server ServerConfig, endpoint, m
 // ---------- Stdio 传输 ----------
 
 type stdioInstance struct {
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	stdout  *bufio.Reader
-	mu      sync.Mutex
-	closed  bool
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout *bufio.Reader
+	mu     sync.Mutex
+	closed bool
 }
 
 func (c *Client) getOrCreateStdioInstance(server ServerConfig) (*stdioInstance, error) {
@@ -517,6 +586,9 @@ func (c *Client) getOrCreateStdioInstance(server ServerConfig) (*stdioInstance, 
 	return inst, nil
 }
 
+// sendRequest 发送 JSON-RPC 请求并等待匹配 ID 的响应。
+// BUG-1 修复：超时时销毁实例以回收阻塞的 goroutine。
+// BUG-2 修复：循环读取行，跳过通知消息，按 ID 匹配响应。
 func (inst *stdioInstance) sendRequest(ctx context.Context, req jsonRPCRequest) (json.RawMessage, error) {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
@@ -535,32 +607,45 @@ func (inst *stdioInstance) sendRequest(ctx context.Context, req jsonRPCRequest) 
 		return nil, fmt.Errorf("写入 stdio 失败: %w", err)
 	}
 
-	// 使用 goroutine + channel 实现 context 感知的读取超时
-	type readResult struct {
-		line []byte
-		err  error
-	}
-	ch := make(chan readResult, 1)
-	go func() {
-		line, err := inst.stdout.ReadBytes('\n')
-		ch <- readResult{line: line, err: err}
-	}()
+	// 循环读取行，按 ID 匹配目标响应
+	for {
+		type readResult struct {
+			line []byte
+			err  error
+		}
+		ch := make(chan readResult, 1)
+		go func() {
+			line, err := inst.stdout.ReadBytes('\n')
+			ch <- readResult{line: line, err: err}
+		}()
 
-	select {
-	case <-ctx.Done():
-		return nil, fmt.Errorf("stdio 响应超时: %w", ctx.Err())
-	case res := <-ch:
-		if res.err != nil {
-			return nil, fmt.Errorf("读取 stdio 响应失败: %w", res.err)
+		select {
+		case <-ctx.Done():
+			// BUG-1 修复：超时时销毁实例，关闭管道使阻塞的 ReadBytes 返回 EOF，
+			// 从而让 goroutine 正常退出，避免泄漏。
+			inst.destroyLocked()
+			return nil, fmt.Errorf("stdio 响应超时: %w", ctx.Err())
+		case res := <-ch:
+			if res.err != nil {
+				return nil, fmt.Errorf("读取 stdio 响应失败: %w", res.err)
+			}
+			trimmed := bytes.TrimSpace(res.line)
+			if len(trimmed) == 0 {
+				continue // 空行，继续读取
+			}
+			var rpcResp jsonRPCResponse
+			if err := json.Unmarshal(trimmed, &rpcResp); err != nil {
+				continue // 非 JSON 行（如服务器日志输出），跳过
+			}
+			// BUG-2 修复：按 ID 匹配响应，跳过通知（ID=0）和其他消息
+			if rpcResp.ID == req.ID {
+				if rpcResp.Error != nil {
+					return nil, rpcResp.Error
+				}
+				return rpcResp.Result, nil
+			}
+			// 非目标响应，继续读取下一行
 		}
-		var rpcResp jsonRPCResponse
-		if err := json.Unmarshal(bytes.TrimSpace(res.line), &rpcResp); err != nil {
-			return nil, fmt.Errorf("解析 stdio JSON-RPC 响应失败: %w", err)
-		}
-		if rpcResp.Error != nil {
-			return nil, rpcResp.Error
-		}
-		return rpcResp.Result, nil
 	}
 }
 
@@ -586,18 +671,37 @@ func (inst *stdioInstance) sendNotification(method string, params any) error {
 	return err
 }
 
+// destroy 优雅关闭 stdio 进程：先关闭 stdin 等待退出，超时再 Kill。
 func (inst *stdioInstance) destroy() {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
+	inst.destroyLocked()
+}
+
+// destroyLocked 在已持有锁的情况下销毁实例。
+func (inst *stdioInstance) destroyLocked() {
 	if inst.closed {
 		return
 	}
 	inst.closed = true
 	inst.stdin.Close()
+
 	if inst.cmd.Process != nil {
-		inst.cmd.Process.Kill()
+		// 给进程优雅退出的机会
+		done := make(chan struct{})
+		go func() {
+			inst.cmd.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			// 进程已正常退出
+		case <-time.After(stdioGracefulTimeout):
+			// 超时，强制终止
+			inst.cmd.Process.Kill()
+			<-done
+		}
 	}
-	inst.cmd.Wait()
 }
 
 func (c *Client) fetchStdioTools(ctx context.Context, server ServerConfig) ([]ToolDefinition, error) {
@@ -739,25 +843,52 @@ func extractToolCallResult(raw json.RawMessage) (any, error) {
 }
 
 // parseSSEResponse 从 SSE 流中解析 JSON-RPC 响应。
+// BUG-4 修复：支持多行 data: 字段，按 SSE 规范累积到空行（事件边界）后再解析。
 func parseSSEResponse(body io.Reader) (json.RawMessage, error) {
 	reader := bufio.NewReader(body)
+	var dataLines []string
+
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
+			// 流结束前检查是否有累积的 data
+			if len(dataLines) > 0 {
+				data := strings.Join(dataLines, "\n")
+				var rpcResp jsonRPCResponse
+				if json.Unmarshal([]byte(data), &rpcResp) == nil {
+					if rpcResp.Error != nil {
+						return nil, rpcResp.Error
+					}
+					return rpcResp.Result, nil
+				}
+			}
 			return nil, fmt.Errorf("SSE 流中未找到 JSON-RPC 响应: %w", err)
 		}
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "data:") {
-			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			var rpcResp jsonRPCResponse
-			if err := json.Unmarshal([]byte(data), &rpcResp); err != nil {
-				continue
+
+		trimmed := strings.TrimSpace(line)
+
+		// 空行表示事件边界
+		if trimmed == "" {
+			if len(dataLines) > 0 {
+				data := strings.Join(dataLines, "\n")
+				dataLines = nil
+				var rpcResp jsonRPCResponse
+				if err := json.Unmarshal([]byte(data), &rpcResp); err != nil {
+					continue // 非 JSON-RPC 事件，继续
+				}
+				if rpcResp.Error != nil {
+					return nil, rpcResp.Error
+				}
+				return rpcResp.Result, nil
 			}
-			if rpcResp.Error != nil {
-				return nil, rpcResp.Error
-			}
-			return rpcResp.Result, nil
+			continue
 		}
+
+		// 累积 data: 行（BUG-4 修复：支持多行 data）
+		if strings.HasPrefix(trimmed, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")))
+		}
+		// 忽略 event:、id:、retry: 等其他 SSE 字段
 	}
 }
 

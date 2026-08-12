@@ -269,6 +269,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					// 同时注入到两个 runtime：runtimeClient 负责工具执行，quietRuntimeClient 负责构建上送定义
 					runtimeClient.SetMCPRegistry(mcpRegistry)
 					quietRuntimeClient.SetMCPRegistry(mcpRegistry)
+				} else {
+					// RISK-1 修复：加载失败时清除旧引用，避免 runtime 持有已关闭的 registry
+					runtimeClient.SetMCPRegistry(nil)
+					quietRuntimeClient.SetMCPRegistry(nil)
 				}
 			}
 			if mcpRegistry != nil {
