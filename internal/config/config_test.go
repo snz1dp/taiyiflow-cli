@@ -700,3 +700,27 @@ func TestDefaultBundledSkillsDirUsesRootDir(t *testing.T) {
 		t.Fatalf("unexpected bundled skills dir: %s", bundledDir)
 	}
 }
+
+
+func TestNormalizeStreamProtocol(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{input: "", expected: StreamProtocolAuto},
+		{input: "auto", expected: StreamProtocolAuto},
+		{input: "AUTO", expected: StreamProtocolAuto},
+		{input: "sse", expected: StreamProtocolSSE},
+		{input: "SSE", expected: StreamProtocolSSE},
+		{input: "websocket", expected: StreamProtocolWebSocket},
+		{input: "WebSocket", expected: StreamProtocolWebSocket},
+		{input: "ws", expected: StreamProtocolWebSocket},
+		{input: "WS", expected: StreamProtocolWebSocket},
+		{input: "grpc", expected: StreamProtocolAuto},
+	}
+	for _, item := range cases {
+		if got := NormalizeStreamProtocol(item.input); got != item.expected {
+			t.Fatalf("NormalizeStreamProtocol(%q) = %q, want %q", item.input, got, item.expected)
+		}
+	}
+}

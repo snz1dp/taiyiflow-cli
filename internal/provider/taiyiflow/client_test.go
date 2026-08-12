@@ -1358,3 +1358,90 @@ func TestStreamRequestIncludesTweaks(t *testing.T) {
 		t.Fatalf("expected input_value to remain original text, got %#v", capturedRawMap["input_value"])
 	}
 }
+
+
+func TestStreamIdleTimeoutErrorMessage(t *testing.T) {
+	err := streamIdleTimeoutError{idleTimeout: 120 * time.Second}
+	message := err.Error()
+	if strings.Contains(message, "SSE") {
+		t.Fatalf("expected protocol-agnostic error message, got %q", message)
+	}
+	if !strings.Contains(message, "stream activity") {
+		t.Fatalf("expected 'stream activity' in error message, got %q", message)
+	}
+	if !strings.Contains(message, "2m0s") {
+		t.Fatalf("expected timeout duration in error message, got %q", message)
+	}
+}
+
+func TestStreamWebSocketURLIncludesSessionID(t *testing.T) {
+	client := NewClient("https://snz1.cn", "test-key")
+
+	wsURL, err := client.streamWebSocketURL("flow-123", "session-abc")
+	if err != nil {
+		t.Fatalf("streamWebSocketURL returned error: %v", err)
+	}
+	if !strings.HasPrefix(wsURL, "wss://") {
+		t.Fatalf("expected wss scheme, got %q", wsURL)
+	}
+	if !strings.Contains(wsURL, "session_id=session-abc") {
+		t.Fatalf("expected session_id query param in URL, got %q", wsURL)
+	}
+	if !strings.Contains(wsURL, "/run/flow-123/websocket") {
+		t.Fatalf("expected websocket path in URL, got %q", wsURL)
+	}
+}
+
+func TestStreamWebSocketURLOmitsEmptySessionID(t *testing.T) {
+	client := NewClient("http://localhost:8000", "")
+
+	wsURL, err := client.streamWebSocketURL("flow-456", "")
+	if err != nil {
+		t.Fatalf("streamWebSocketURL returned error: %v", err)
+	}
+	if !strings.HasPrefix(wsURL, "ws://") {
+		t.Fatalf("expected ws scheme for http base, got %q", wsURL)
+	}
+	if strings.Contains(wsURL, "session_id") {
+		t.Fatalf("expected no session_id param for empty session, got %q", wsURL)
+	}
+}
+
+func TestEffectiveStreamProtocol(t *testing.T) {
+	tests := []struct {
+		name           string
+		userProtocol   string
+		serverProtocol string
+		want           string
+	}{
+		{name: "user sse overrides server ws", userProtocol: "sse", serverProtocol: "websocket", want: internalconfig.StreamProtocolSSE},
+		{name: "user websocket overrides server sse", userProtocol: "websocket", serverProtocol: "sse", want: internalconfig.StreamProtocolWebSocket},
+		{name: "auto follows server websocket", userProtocol: "auto", serverProtocol: "websocket", want: internalconfig.StreamProtocolWebSocket},
+		{name: "auto follows server sse", userProtocol: "auto", serverProtocol: "sse", want: internalconfig.StreamProtocolSSE},
+		{name: "auto defaults to sse when server empty", userProtocol: "auto", serverProtocol: "", want: internalconfig.StreamProtocolSSE},
+		{name: "auto defaults to sse when server unknown", userProtocol: "auto", serverProtocol: "auto", want: internalconfig.StreamProtocolSSE},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewClient("http://example.com", "")
+			client.SetStreamProtocol(tt.userProtocol)
+			client.streamProtocolMu.Lock()
+			client.serverStreamProtocol = tt.serverProtocol
+			client.streamProtocolMu.Unlock()
+
+			got := client.effectiveStreamProtocol()
+			if got != tt.want {
+				t.Fatalf("effectiveStreamProtocol() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSetStreamProtocolNormalizesWsAlias(t *testing.T) {
+	client := NewClient("http://example.com", "")
+	client.SetStreamProtocol("ws")
+	if got := client.effectiveStreamProtocol(); got != internalconfig.StreamProtocolWebSocket {
+		t.Fatalf("expected websocket after SetStreamProtocol(ws), got %q", got)
+	}
+}

@@ -347,11 +347,13 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 		}
 		config.StreamIdleTimeoutSeconds = seconds
 	case "stream_protocol":
-		normalizedProtocol := internalconfig.NormalizeStreamProtocol(trimmedValue)
-		if normalizedProtocol != strings.ToLower(trimmedValue) {
-			return fmt.Errorf("stream_protocol 仅支持 auto、sse、websocket")
+		lowerValue := strings.ToLower(trimmedValue)
+		switch lowerValue {
+		case "auto", "sse", "websocket", "ws":
+			config.StreamProtocol = internalconfig.NormalizeStreamProtocol(trimmedValue)
+		default:
+			return fmt.Errorf("stream_protocol 仅支持 auto、sse、websocket（ws）")
 		}
-		config.StreamProtocol = normalizedProtocol
 	case "cross_session_memory_enabled":
 		normalized := strings.ToLower(trimmedValue)
 		if normalized != "true" && normalized != "false" {

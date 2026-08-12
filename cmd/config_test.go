@@ -390,3 +390,41 @@ func TestRunConfigUnknownSubcommandSuggestsHelp(t *testing.T) {
 		t.Fatalf("expected unknown subcommand error to suggest help, got %v", err)
 	}
 }
+
+
+func TestAssignConfigValueStreamProtocol(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantValue string
+		wantErr   bool
+	}{
+		{name: "auto", input: "auto", wantValue: "auto"},
+		{name: "sse", input: "sse", wantValue: "sse"},
+		{name: "websocket", input: "websocket", wantValue: "websocket"},
+		{name: "ws alias", input: "ws", wantValue: "websocket"},
+		{name: "uppercase WS", input: "WS", wantValue: "websocket"},
+		{name: "mixed case WebSocket", input: "WebSocket", wantValue: "websocket"},
+		{name: "invalid value", input: "grpc", wantErr: true},
+		{name: "empty value", input: "", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := internalconfig.Default()
+			err := assignConfigValue(&config, "stream_protocol", tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for input %q, got nil", tt.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("assignConfigValue returned error for input %q: %v", tt.input, err)
+			}
+			if config.StreamProtocol != tt.wantValue {
+				t.Fatalf("expected stream_protocol %q, got %q", tt.wantValue, config.StreamProtocol)
+			}
+		})
+	}
+}

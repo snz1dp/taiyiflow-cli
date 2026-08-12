@@ -34,13 +34,14 @@ const SessionHeader = "X-TaiyiFlow-Session-id"
 const defaultStreamIdleTimeout = time.Duration(internalconfig.DefaultStreamIdleTimeoutSeconds) * time.Second
 const defaultCompressionPollDelay = 120 * time.Millisecond
 const defaultCompressionPollAttempts = 4
+const defaultWebSocketDialTimeout = 15 * time.Second
 
 type streamIdleTimeoutError struct {
 	idleTimeout time.Duration
 }
 
 func (e streamIdleTimeoutError) Error() string {
-	return fmt.Sprintf("backend idle timeout after %s without SSE activity", e.idleTimeout)
+	return fmt.Sprintf("backend idle timeout after %s without stream activity", e.idleTimeout)
 }
 
 type idleTimeoutReadCloser struct {
@@ -1286,7 +1287,7 @@ func (c *Client) GetServiceConfig(ctx context.Context) (*provider.ServiceConfig,
 		docExts = append(docExts, trimmed)
 	}
 
-	serverStreamProtocol := strings.ToLower(strings.TrimSpace(payload.StreamProtocol))
+	serverStreamProtocol := internalconfig.NormalizeStreamProtocol(payload.StreamProtocol)
 	c.streamProtocolMu.Lock()
 	c.serverStreamProtocol = serverStreamProtocol
 	c.streamProtocolMu.Unlock()
@@ -1533,7 +1534,7 @@ func (c *Client) streamViaWebSocket(ctx context.Context, request provider.Stream
 		request.SessionID = sessionID
 	}
 
-	wsURL, err := c.streamWebSocketURL(request.FlowID)
+	wsURL, err := c.streamWebSocketURL(request.FlowID, sessionID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1554,7 +1555,9 @@ func (c *Client) streamViaWebSocket(ctx context.Context, request provider.Stream
 	headers.Set("User-Agent", userAgent)
 
 	dialer := ws.Dialer{Header: ws.HandshakeHeaderHTTP(headers)}
-	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	dialCtx, dialCancel := context.WithTimeout(ctx, defaultWebSocketDialTimeout)
+	defer dialCancel()
+	conn, _, _, err := dialer.Dial(dialCtx, wsURL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("建立 WebSocket 流式连接失败: %w", err)
 	}
@@ -1576,11 +1579,16 @@ func (c *Client) streamViaWebSocket(ctx context.Context, request provider.Stream
 	return stream, &provider.StreamSession{SessionID: sessionID}, nil
 }
 
-// streamWebSocketURL 将 HTTP(S) 流式地址替换为 WS(S) 协议的 WebSocket 地址。
-func (c *Client) streamWebSocketURL(flowID string) (string, error) {
+// streamWebSocketURL 将 HTTP(S) 流式地址替换为 WS(S) 协议的 WebSocket 地址，并携带 session_id 查询参数。
+func (c *Client) streamWebSocketURL(flowID string, sessionID string) (string, error) {
 	endpointURL, err := url.Parse(c.apiURL(fmt.Sprintf("/run/%s/websocket", url.PathEscape(flowID))))
 	if err != nil {
 		return "", fmt.Errorf("构造 WebSocket 流式请求地址失败: %w", err)
+	}
+	if trimmedSessionID := strings.TrimSpace(sessionID); trimmedSessionID != "" {
+		query := endpointURL.Query()
+		query.Set("session_id", trimmedSessionID)
+		endpointURL.RawQuery = query.Encode()
 	}
 	switch endpointURL.Scheme {
 	case "https":

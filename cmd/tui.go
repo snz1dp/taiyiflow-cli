@@ -3579,7 +3579,9 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "stream_idle_timeout_seconds", Message: err.Error()}
 	}
 
-	if err := assignConfigValue(&config, "stream_protocol", submission.Values.StreamProtocol); err != nil {
+	if strings.TrimSpace(submission.Values.StreamProtocol) == "" {
+		config.StreamProtocol = ""
+	} else if err := assignConfigValue(&config, "stream_protocol", submission.Values.StreamProtocol); err != nil {
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "stream_protocol", Message: err.Error()}
 	}
 
