@@ -346,6 +346,12 @@ func assignConfigValue(config *internalconfig.Config, key string, value string) 
 			return fmt.Errorf("stream_idle_timeout_seconds 仅支持大于等于 0 的整数秒，0 表示禁用")
 		}
 		config.StreamIdleTimeoutSeconds = seconds
+	case "stream_protocol":
+		normalizedProtocol := internalconfig.NormalizeStreamProtocol(trimmedValue)
+		if normalizedProtocol != strings.ToLower(trimmedValue) {
+			return fmt.Errorf("stream_protocol 仅支持 auto、sse、websocket")
+		}
+		config.StreamProtocol = normalizedProtocol
 	case "cross_session_memory_enabled":
 		normalized := strings.ToLower(trimmedValue)
 		if normalized != "true" && normalized != "false" {
@@ -496,6 +502,8 @@ func resetConfigValue(config *internalconfig.Config, key string) error {
 		config.SubtaskTimeoutSeconds = defaults.SubtaskTimeoutSeconds
 	case "stream_idle_timeout_seconds":
 		config.StreamIdleTimeoutSeconds = defaults.StreamIdleTimeoutSeconds
+	case "stream_protocol":
+		config.StreamProtocol = ""
 	case "cross_session_memory_enabled":
 		config.CrossSessionMemoryEnabled = defaults.CrossSessionMemoryEnabled
 	case "qr_wait_timeout_seconds":

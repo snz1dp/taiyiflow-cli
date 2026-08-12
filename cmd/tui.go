@@ -3467,7 +3467,8 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			Workdir:                   strings.TrimSpace(config.Workdir),
 			HTTPTimeoutSeconds:        strconv.Itoa(config.HTTPTimeoutSeconds),
 			CommandTimeoutSeconds:     strconv.Itoa(config.CommandTimeoutSeconds),
-			StreamIdleTimeoutSeconds:  strconv.Itoa(config.StreamIdleTimeoutSeconds),
+				StreamIdleTimeoutSeconds:  strconv.Itoa(config.StreamIdleTimeoutSeconds),
+			StreamProtocol:            internalconfig.NormalizeStreamProtocol(config.StreamProtocol),
 			SubtaskTimeoutSeconds:     strconv.Itoa(config.SubtaskTimeoutSeconds),
 			CrossSessionMemoryEnabled: config.CrossSessionMemoryEnabled,
 			QRWaitTimeoutSeconds:      strconv.Itoa(config.QRWaitTimeoutSeconds),
@@ -3576,6 +3577,10 @@ func (a *App) applyConfigFormSubmission(submission tui.ConfigFormSubmission) (in
 		config.StreamIdleTimeoutSeconds = internalconfig.Default().StreamIdleTimeoutSeconds
 	} else if err := assignConfigValue(&config, "stream_idle_timeout_seconds", submission.Values.StreamIdleTimeoutSeconds); err != nil {
 		return internalconfig.Config{}, tui.ConfigFieldError{Field: "stream_idle_timeout_seconds", Message: err.Error()}
+	}
+
+	if err := assignConfigValue(&config, "stream_protocol", submission.Values.StreamProtocol); err != nil {
+		return internalconfig.Config{}, tui.ConfigFieldError{Field: "stream_protocol", Message: err.Error()}
 	}
 
 	if strings.TrimSpace(submission.Values.SubtaskTimeoutSeconds) == "" {

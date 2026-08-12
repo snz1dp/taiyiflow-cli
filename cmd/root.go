@@ -88,6 +88,7 @@ func buildProviderClient(config internalconfig.Config) *providerclient.Client {
 	client.SetAPIPrefix(config.BackendAPIPrefix)
 	client.SetHTTPTimeoutSeconds(config.HTTPTimeoutSeconds)
 	client.SetStreamIdleTimeoutSeconds(config.StreamIdleTimeoutSeconds)
+	client.SetStreamProtocol(config.StreamProtocol)
 	return client
 }
 

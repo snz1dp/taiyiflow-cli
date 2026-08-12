@@ -21,6 +21,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
+
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
@@ -132,6 +135,12 @@ type Client struct {
 	streamIdleTimeout       time.Duration
 	compressionPollDelay    time.Duration
 	compressionPollAttempts int
+
+	// streamProtocolMu 保护用户配置的流式协议与服务端下发的流式协议。
+	// GetServiceConfig 可能在后台刷新，Stream 在请求时读取，两者可能并发。
+	streamProtocolMu       sync.RWMutex
+	streamProtocol         string
+	serverStreamProtocol   string
 }
 
 type metadataResponse struct {
@@ -175,6 +184,7 @@ type serviceConfigResponse struct {
 	AgentAutoLoopEnabled   bool                        `json:"agent_auto_loop_enabled"`
 	AgentAutoLoopMaxRounds int                         `json:"agent_auto_loop_max_rounds"`
 	LoopDecideFlowID       string                      `json:"loop_decide_flow_id"`
+	StreamProtocol         string                      `json:"stream_protocol"`
 }
 
 type versionInfoResponse struct {
@@ -539,6 +549,34 @@ func (c *Client) SetStreamIdleTimeoutSeconds(seconds int) {
 		c.streamIdleTimeout = 0
 	default:
 		c.streamIdleTimeout = time.Duration(seconds) * time.Second
+	}
+}
+
+// SetStreamProtocol 设置用户配置的流式输出协议（auto / sse / websocket）。
+// auto 表示跟随服务端 config 接口返回的 stream_protocol。
+func (c *Client) SetStreamProtocol(value string) {
+	normalized := internalconfig.NormalizeStreamProtocol(value)
+	c.streamProtocolMu.Lock()
+	c.streamProtocol = normalized
+	c.streamProtocolMu.Unlock()
+}
+
+// effectiveStreamProtocol 解析当前生效的流式输出协议。
+// 优先级与 taiyiflow-chatui 的 getEffectiveStreamProtocol 保持一致：
+// 用户显式选择（sse / websocket）优先，未显式选择时回退到服务端配置，最终兜底为 sse。
+func (c *Client) effectiveStreamProtocol() string {
+	c.streamProtocolMu.RLock()
+	defer c.streamProtocolMu.RUnlock()
+	switch c.streamProtocol {
+	case internalconfig.StreamProtocolSSE:
+		return internalconfig.StreamProtocolSSE
+	case internalconfig.StreamProtocolWebSocket:
+		return internalconfig.StreamProtocolWebSocket
+	default:
+		if c.serverStreamProtocol == internalconfig.StreamProtocolWebSocket {
+			return internalconfig.StreamProtocolWebSocket
+		}
+		return internalconfig.StreamProtocolSSE
 	}
 }
 
@@ -1248,6 +1286,11 @@ func (c *Client) GetServiceConfig(ctx context.Context) (*provider.ServiceConfig,
 		docExts = append(docExts, trimmed)
 	}
 
+	serverStreamProtocol := strings.ToLower(strings.TrimSpace(payload.StreamProtocol))
+	c.streamProtocolMu.Lock()
+	c.serverStreamProtocol = serverStreamProtocol
+	c.streamProtocolMu.Unlock()
+
 	return &provider.ServiceConfig{
 		FeatureFlags: provider.ServiceFeatureFlags{
 			TextToSpeech:    payload.FeatureFlags.TextToSpeech,
@@ -1263,6 +1306,7 @@ func (c *Client) GetServiceConfig(ctx context.Context) (*provider.ServiceConfig,
 		AgentAutoLoopEnabled:   payload.AgentAutoLoopEnabled,
 		AgentAutoLoopMaxRounds: payload.AgentAutoLoopMaxRounds,
 		LoopDecideFlowID:       strings.TrimSpace(payload.LoopDecideFlowID),
+		StreamProtocol:         serverStreamProtocol,
 	}, nil
 }
 
@@ -1370,18 +1414,10 @@ func (c *Client) ResolveSkillPreview(ctx context.Context, request provider.Skill
 	}, nil
 }
 
-func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
-	endpointURL, err := url.Parse(c.apiURL(fmt.Sprintf("/run/%s/stream", url.PathEscape(request.FlowID))))
-	if err != nil {
-		return nil, nil, fmt.Errorf("构造 stream 请求地址失败: %w", err)
-	}
+// buildStreamRequestBody 构建流式运行请求体，SSE 与 WebSocket 两条链路共用。
+func buildStreamRequestBody(request provider.StreamRequest) streamRequestBody {
 	trimmedSessionID := strings.TrimSpace(request.SessionID)
-	if trimmedSessionID != "" {
-		query := endpointURL.Query()
-		query.Set("session_id", trimmedSessionID)
-		endpointURL.RawQuery = query.Encode()
-	}
-	body := streamRequestBody{
+	return streamRequestBody{
 		InputValue:                request.Input,
 		InputType:                 firstNonEmpty(request.InputType, "any"),
 		Tweaks:                    request.Tweaks,
@@ -1415,6 +1451,24 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 		ClientInstructions:        request.ClientInstructions,
 		ParentID:                  request.ParentID,
 	}
+}
+
+func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
+	// 根据用户配置与服务端配置选择流式协议；websocket 走独立的 WebSocket 流式链路。
+	if c.effectiveStreamProtocol() == internalconfig.StreamProtocolWebSocket {
+		return c.streamViaWebSocket(ctx, request)
+	}
+	endpointURL, err := url.Parse(c.apiURL(fmt.Sprintf("/run/%s/stream", url.PathEscape(request.FlowID))))
+	if err != nil {
+		return nil, nil, fmt.Errorf("构造 stream 请求地址失败: %w", err)
+	}
+	trimmedSessionID := strings.TrimSpace(request.SessionID)
+	if trimmedSessionID != "" {
+		query := endpointURL.Query()
+		query.Set("session_id", trimmedSessionID)
+		endpointURL.RawQuery = query.Encode()
+	}
+	body := buildStreamRequestBody(request)
 
 	content, err := json.Marshal(body)
 	if err != nil {
@@ -1453,6 +1507,184 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 	}()
 
 	return stream, streamSession, nil
+}
+
+// streamViaWebSocket 通过 WebSocket 协议流式运行指定智能服务。
+//
+// 协议流程与 taiyiflow-chatui 的 assits-ws-lifecycle.js 保持一致：
+//  1. 与 /run/{flow_id_or_name}/websocket 建立 WebSocket 连接（携带认证头）；
+//  2. 连接成功后发送 SimplifiedAPIRequest JSON 作为第一条消息；
+//  3. 服务端逐条推送 {"event": "...", "data": {...}} 格式的 JSON 消息；
+//  4. 服务端推送 event="close" 后主动关闭连接。
+//
+// 与 SSE 链路的差异：WebSocket 握手响应不携带 X-TaiyiFlow-Session-id，
+// 因此当请求未带会话 ID 时，先通过 CreateSessionID 预创建会话 ID 并写入请求体。
+func (c *Client) streamViaWebSocket(ctx context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
+	sessionID := strings.TrimSpace(request.SessionID)
+	if sessionID == "" {
+		createdSessionID, err := c.CreateSessionID(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("预创建会话失败: %w", err)
+		}
+		sessionID = strings.TrimSpace(createdSessionID)
+		if sessionID == "" {
+			return nil, nil, fmt.Errorf("预创建会话返回空会话 ID")
+		}
+		request.SessionID = sessionID
+	}
+
+	wsURL, err := c.streamWebSocketURL(request.FlowID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	content, err := json.Marshal(buildStreamRequestBody(request))
+	if err != nil {
+		return nil, nil, fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	headers := http.Header{}
+	if c.apiKey != "" {
+		headers.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	userAgent := defaultUserAgent()
+	if trimmedUserAgent := strings.TrimSpace(request.UserAgent); trimmedUserAgent != "" {
+		userAgent = trimmedUserAgent
+	}
+	headers.Set("User-Agent", userAgent)
+
+	dialer := ws.Dialer{Header: ws.HandshakeHeaderHTTP(headers)}
+	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("建立 WebSocket 流式连接失败: %w", err)
+	}
+
+	if err := wsutil.WriteClientText(conn, content); err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("发送 WebSocket 流式请求失败: %w", err)
+	}
+
+	stream := make(chan provider.StreamEvent, 64)
+	go func() {
+		defer close(stream)
+		defer conn.Close()
+		stopInterrupt := interruptStreamWebSocketOnCancel(ctx, conn)
+		defer stopInterrupt()
+		readWebSocketStream(ctx, conn, c.streamIdleTimeout, stream)
+	}()
+
+	return stream, &provider.StreamSession{SessionID: sessionID}, nil
+}
+
+// streamWebSocketURL 将 HTTP(S) 流式地址替换为 WS(S) 协议的 WebSocket 地址。
+func (c *Client) streamWebSocketURL(flowID string) (string, error) {
+	endpointURL, err := url.Parse(c.apiURL(fmt.Sprintf("/run/%s/websocket", url.PathEscape(flowID))))
+	if err != nil {
+		return "", fmt.Errorf("构造 WebSocket 流式请求地址失败: %w", err)
+	}
+	switch endpointURL.Scheme {
+	case "https":
+		endpointURL.Scheme = "wss"
+	case "http":
+		endpointURL.Scheme = "ws"
+	case "ws", "wss":
+	default:
+		return "", fmt.Errorf("不支持的 WebSocket 流式请求协议: %s", endpointURL.Scheme)
+	}
+	return endpointURL.String(), nil
+}
+
+// readWebSocketStream 循环读取服务端推送的 WebSocket 消息并转发为统一的流式事件。
+// 服务端发送 Close 帧（正常结束）时静默退出；空闲超时时输出与 SSE 一致的错误事件。
+func readWebSocketStream(ctx context.Context, conn net.Conn, idleTimeout time.Duration, output chan<- provider.StreamEvent) {
+	for {
+		if idleTimeout > 0 {
+			if err := conn.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
+				output <- provider.StreamEvent{
+					Type: provider.EventError,
+					Data: map[string]any{"error": fmt.Sprintf("设置流式读取超时失败: %v", err)},
+				}
+				return
+			}
+		}
+		payload, _, err := wsutil.ReadServerData(conn)
+		if err != nil {
+			// 服务端发送 Close 帧表示流式输出正常完成。
+			var closedError wsutil.ClosedError
+			if errors.As(err, &closedError) {
+				return
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			var netErr net.Error
+			if idleTimeout > 0 && errors.As(err, &netErr) && netErr.Timeout() {
+				output <- provider.StreamEvent{
+					Type: provider.EventError,
+					Data: map[string]any{"error": fmt.Sprintf("读取流失败: %s", streamIdleTimeoutError{idleTimeout: idleTimeout}.Error())},
+				}
+				return
+			}
+			output <- provider.StreamEvent{
+				Type: provider.EventError,
+				Data: map[string]any{"error": fmt.Sprintf("读取流失败: %v", err)},
+			}
+			return
+		}
+
+		event, ok := parseWebSocketStreamMessage(payload)
+		if !ok {
+			continue
+		}
+		output <- event
+		if event.Type == provider.EventClose {
+			// 服务端推送 close 事件后会主动关闭连接，这里直接结束读取循环。
+			return
+		}
+	}
+}
+
+// parseWebSocketStreamMessage 将 WebSocket 消息 {"event": "...", "data": {...}}
+// 解析为与 SSE 链路一致的流式事件；data 字段已是解析后的对象，Raw 保留其 JSON 原文。
+func parseWebSocketStreamMessage(payload []byte) (provider.StreamEvent, bool) {
+	var envelope struct {
+		Event string          `json:"event"`
+		Data  json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return provider.StreamEvent{}, false
+	}
+	raw := strings.TrimSpace(string(envelope.Data))
+	data := map[string]any{}
+	if raw != "" && raw != "null" {
+		if err := json.Unmarshal(envelope.Data, &data); err != nil {
+			data = map[string]any{"raw": raw, "error": err.Error()}
+		}
+	}
+	event := provider.StreamEvent{
+		Type: provider.StreamEventType(firstNonEmpty(strings.TrimSpace(envelope.Event), string(provider.EventMessage))),
+		Data: data,
+		Raw:  raw,
+	}
+	return event, true
+}
+
+// interruptStreamWebSocketOnCancel 在上下文取消时关闭连接，中断阻塞中的读取。
+func interruptStreamWebSocketOnCancel(ctx context.Context, conn net.Conn) func() {
+	if ctx == nil || conn == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+	return func() {
+		close(done)
+	}
 }
 
 func (c *Client) GetRunStats(ctx context.Context, flowID string, sessionID string, runID string) (*provider.RunStats, error) {

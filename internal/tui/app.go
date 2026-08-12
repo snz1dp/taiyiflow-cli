@@ -250,6 +250,7 @@ type ConfigFormValues struct {
 	HTTPTimeoutSeconds        string
 	CommandTimeoutSeconds     string
 	StreamIdleTimeoutSeconds  string
+	StreamProtocol            string
 	SubtaskTimeoutSeconds     string
 	CrossSessionMemoryEnabled bool
 	QRWaitTimeoutSeconds      string
@@ -868,6 +869,7 @@ type configFormState struct {
 	skillsAutoInstallCursor  int
 	skillsFreeTextCursor     int
 	shellSandboxCursor       int
+	streamProtocolCursor     int
 	defaultRequestModeCursor int
 	requestModeAutoSwitchCursor int
 	fieldErrorKey            string
@@ -943,6 +945,7 @@ const (
 	configFieldHTTPTimeout
 	configFieldCommandTimeout
 	configFieldStreamIdleTimeout
+	configFieldStreamProtocol
 	configFieldSubtaskTimeout
 	configFieldCrossSessionMemory
 	configFieldQRWaitTimeout
@@ -2856,6 +2859,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveConfigRequestModeAutoSwitchCursor(-1)
 			return m, nil
 		}
+		if m.configForm.cursor == configFieldStreamProtocol {
+			m.moveConfigStreamProtocolCursor(-1)
+			return m, nil
+		}
 		if m.configForm.cursor == configFieldDefaultFlow {
 			m.moveConfigFlowCursor(-1)
 			return m, nil
@@ -2935,6 +2942,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldRequestModeAutoSwitch {
 			m.moveConfigRequestModeAutoSwitchCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldStreamProtocol {
+			m.moveConfigStreamProtocolCursor(1)
 			return m, nil
 		}
 		if m.configForm.cursor == configFieldDefaultFlow {
@@ -3030,6 +3041,10 @@ func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.configForm.cursor == configFieldRequestModeAutoSwitch {
 			m.moveConfigRequestModeAutoSwitchCursor(1)
+			return m, nil
+		}
+		if m.configForm.cursor == configFieldStreamProtocol {
+			m.moveConfigStreamProtocolCursor(1)
 			return m, nil
 		}
 	case "ctrl+s":
@@ -5607,6 +5622,8 @@ func (m model) renderConfigForm() string {
 			lines = append(lines, m.renderConfigReasoningField())
 		case configFieldCrossSessionMemory:
 			lines = append(lines, m.renderConfigCrossSessionMemoryField())
+		case configFieldStreamProtocol:
+			lines = append(lines, m.renderConfigStreamProtocolField())
 		case configFieldComputerEnabled:
 			lines = append(lines, m.renderConfigComputerEnabledField())
 		case configFieldComputerPermissionMode:
@@ -5827,6 +5844,13 @@ func (m model) renderConfigCrossSessionMemoryField() string {
 		}
 	}
 	return strings.Join(parts, "  ")
+}
+
+func (m model) renderConfigStreamProtocolField() string {
+	if m.configForm == nil {
+		return ""
+	}
+	return m.renderConfigChoiceField(configFieldStreamProtocol, m.configForm.streamProtocolCursor, configStreamProtocolChoices())
 }
 
 func (m model) renderConfigComputerEnabledField() string {
@@ -8134,6 +8158,10 @@ func (m model) submitConfigForm() (tea.Model, tea.Cmd) {
 	if m.configForm.shellSandboxCursor >= 0 && m.configForm.shellSandboxCursor < len(shellSandboxChoices) {
 		submission.Values.ShellSandboxMode = strings.TrimSpace(shellSandboxChoices[m.configForm.shellSandboxCursor].Value)
 	}
+	streamProtocolChoices := configStreamProtocolChoices()
+	if m.configForm.streamProtocolCursor >= 0 && m.configForm.streamProtocolCursor < len(streamProtocolChoices) {
+		submission.Values.StreamProtocol = strings.TrimSpace(streamProtocolChoices[m.configForm.streamProtocolCursor].Value)
+	}
 	defaultRequestModeChoices := configDefaultRequestModeChoices()
 	if m.configForm.defaultRequestModeCursor >= 0 && m.configForm.defaultRequestModeCursor < len(defaultRequestModeChoices) {
 		submission.Values.DefaultRequestMode = strings.TrimSpace(defaultRequestModeChoices[m.configForm.defaultRequestModeCursor].Value)
@@ -8238,6 +8266,7 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 		skillsAutoInstallCursor:  configChoiceIndex(configSkillsAutoInstallChoices(), values.SkillsAutoInstallPolicy),
 		skillsFreeTextCursor:     configChoiceIndex(configSkillsFreeTextSearchChoices(), boolChoiceValue(values.SkillsFreeTextSearch)),
 		shellSandboxCursor:       configChoiceIndex(configShellSandboxChoices(), values.ShellSandboxMode),
+		streamProtocolCursor:     configChoiceIndex(configStreamProtocolChoices(), values.StreamProtocol),
 		defaultRequestModeCursor: configChoiceIndex(configDefaultRequestModeChoices(), values.DefaultRequestMode),
 		requestModeAutoSwitchCursor: configChoiceIndex(configRequestModeAutoSwitchChoices(), boolChoiceValue(values.RequestModeAutoSwitch)),
 	}
@@ -8694,6 +8723,7 @@ func configFormFieldSpecs() []configFieldSpec {
 		{label: "HTTP 请求超时（秒）", placeholder: "60", description: "标准 HTTP 请求在未显式覆写时使用该默认值，范围 1-600 秒；不影响流式长连接。"},
 		{label: "命令执行超时（秒）", placeholder: "30", description: "本地命令与语言服务查询在未显式传超时(timeout)时使用该默认值，范围 1-6000 秒。"},
 		{label: "流式空闲超时（秒）", placeholder: "300", description: "大于等于 0 的整数秒，0 表示禁用流式空闲超时。"},
+		{label: "流式输出协议", placeholder: "", description: "左右键或空格切换跟随服务端、SSE、WebSocket。跟随服务端时使用服务端 config 接口返回的 stream_protocol。"},
 		{label: "子智能体超时（秒）", placeholder: "0", description: "子智能体执行超时时间，范围 0-6000 秒，0 表示不限制。"},
 		{label: "跨会话记忆", placeholder: "", description: "左右键或空格切换是否允许后端启用跨会话记忆。命令行(CLI)参数可覆盖该系统配置。"},
 		{label: "扫码等待超时（秒）", placeholder: "30", description: "二维码登录在自动轮询时使用该默认值；大于等于 0 的整数秒，0 表示持续等待直到手动取消。"},
@@ -8728,7 +8758,7 @@ func configFormFieldGroup(index int) string {
 		return "服务端与智能体"
 	case configFieldApprovalMode, configFieldSandboxPolicy, configFieldSkillReviewPolicy, configFieldWriteConfirmationPolicy, configFieldSandboxRoots, configFieldPermissionRules:
 		return "权限与审查"
-	case configFieldReasoningMode, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldSubtaskTimeout, configFieldCrossSessionMemory, configFieldQRWaitTimeout, configFieldConfirmTimeout:
+	case configFieldReasoningMode, configFieldWorkdir, configFieldHTTPTimeout, configFieldCommandTimeout, configFieldStreamIdleTimeout, configFieldStreamProtocol, configFieldSubtaskTimeout, configFieldCrossSessionMemory, configFieldQRWaitTimeout, configFieldConfirmTimeout:
 		return "运行与超时"
 	case configFieldAgentAutoLoopMaxRounds, configFieldOutputLanguage:
 		return "会话与输出"
@@ -8777,6 +8807,8 @@ func configFormFieldValue(index int, values ConfigFormValues) string {
 		return strings.TrimSpace(values.CommandTimeoutSeconds)
 	case configFieldStreamIdleTimeout:
 		return strings.TrimSpace(values.StreamIdleTimeoutSeconds)
+	case configFieldStreamProtocol:
+		return ""
 	case configFieldSubtaskTimeout:
 		return strings.TrimSpace(values.SubtaskTimeoutSeconds)
 	case configFieldCrossSessionMemory:
@@ -8946,6 +8978,8 @@ func configFieldKey(index int) string {
 		return "command_timeout_seconds"
 	case configFieldStreamIdleTimeout:
 		return "stream_idle_timeout_seconds"
+	case configFieldStreamProtocol:
+		return "stream_protocol"
 	case configFieldSubtaskTimeout:
 		return "subtask_timeout_seconds"
 	case configFieldCrossSessionMemory:
@@ -9298,6 +9332,20 @@ func (m *model) moveConfigRequestModeAutoSwitchCursor(delta int) {
 	m.syncLayout()
 }
 
+func (m *model) moveConfigStreamProtocolCursor(delta int) {
+	choices := configStreamProtocolChoices()
+	if m.configForm == nil || len(choices) == 0 {
+		return
+	}
+	m.configForm.streamProtocolCursor += delta
+	if m.configForm.streamProtocolCursor < 0 {
+		m.configForm.streamProtocolCursor = len(choices) - 1
+	} else if m.configForm.streamProtocolCursor >= len(choices) {
+		m.configForm.streamProtocolCursor = 0
+	}
+	m.syncLayout()
+}
+
 func configReasoningChoices() []ConfigChoice {
 	return []ConfigChoice{{Value: "off", Label: "关闭"}, {Value: "on", Label: "开启"}}
 }
@@ -9506,6 +9554,14 @@ func configRequestModeAutoSwitchChoices() []ConfigChoice {
 	return []ConfigChoice{
 		{Value: "true", Label: "开启", Description: "允许根据任务上下文自动切换请求模式。"},
 		{Value: "false", Label: "关闭", Description: "不自动切换，始终保持默认请求模式。"},
+	}
+}
+
+func configStreamProtocolChoices() []ConfigChoice {
+	return []ConfigChoice{
+		{Value: internalconfig.StreamProtocolAuto, Label: "跟随服务端", Description: "使用服务端 config 接口返回的 stream_protocol。"},
+		{Value: internalconfig.StreamProtocolSSE, Label: "SSE", Description: "使用 HTTP 服务端推送事件（SSE）流式协议。"},
+		{Value: internalconfig.StreamProtocolWebSocket, Label: "WebSocket", Description: "使用 WebSocket 全双工流式协议。"},
 	}
 }
 

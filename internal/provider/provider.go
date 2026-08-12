@@ -152,6 +152,8 @@ type ServiceConfig struct {
 	AgentAutoLoopEnabled   bool
 	AgentAutoLoopMaxRounds int
 	LoopDecideFlowID       string
+	// StreamProtocol 是服务端配置的流式输出协议（sse / websocket）。
+	StreamProtocol string
 }
 
 type KnowledgeBaseSummary struct {

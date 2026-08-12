@@ -64,6 +64,9 @@ const (
 	ShellSandboxModeOff              = "off"
 	ShellSandboxModeAuto             = "auto"
 	ShellSandboxModeEnforce          = "enforce"
+	StreamProtocolAuto               = "auto"
+	StreamProtocolSSE                = "sse"
+	StreamProtocolWebSocket          = "websocket"
 	DefaultRequestModeAgent          = "agent"
 	DefaultRequestModeAsk            = "ask"
 	DefaultRequestModePlan           = "plan"
@@ -176,6 +179,7 @@ type Config struct {
 	CommandTimeoutSeconds     int              `yaml:"command_timeout_seconds,omitempty"`
 	SubtaskTimeoutSeconds     int              `yaml:"subtask_timeout_seconds,omitempty"`
 	StreamIdleTimeoutSeconds  int              `yaml:"stream_idle_timeout_seconds,omitempty"`
+	StreamProtocol            string           `yaml:"stream_protocol,omitempty"`
 	QRWaitTimeoutSeconds      int              `yaml:"qr_wait_timeout_seconds,omitempty"`
 	ToolConfirmTimeoutSeconds int              `yaml:"tool_confirm_timeout_seconds,omitempty"`
 	AgentAutoLoopEnabled      bool             `yaml:"agent_auto_loop_enabled,omitempty"`
@@ -621,6 +625,19 @@ func NormalizeStreamIdleTimeoutSeconds(value int) int {
 	return value
 }
 
+// NormalizeStreamProtocol 规范化流式输出协议配置。
+// 支持 auto（跟随服务端配置）、sse、websocket；无法识别的值回退为 auto。
+func NormalizeStreamProtocol(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case StreamProtocolSSE:
+		return StreamProtocolSSE
+	case StreamProtocolWebSocket, "ws":
+		return StreamProtocolWebSocket
+	default:
+		return StreamProtocolAuto
+	}
+}
+
 func NormalizeQRWaitTimeoutSeconds(value int) int {
 	if value < 0 {
 		return DefaultQRWaitTimeoutSeconds
@@ -796,6 +813,7 @@ func (m *Manager) Load() (Config, error) {
 	config.CommandTimeoutSeconds = NormalizeCommandTimeoutSeconds(config.CommandTimeoutSeconds)
 	config.SubtaskTimeoutSeconds = NormalizeSubtaskTimeoutSeconds(config.SubtaskTimeoutSeconds)
 	config.StreamIdleTimeoutSeconds = NormalizeStreamIdleTimeoutSeconds(config.StreamIdleTimeoutSeconds)
+	config.StreamProtocol = NormalizeStreamProtocol(config.StreamProtocol)
 	config.QRWaitTimeoutSeconds = NormalizeQRWaitTimeoutSeconds(config.QRWaitTimeoutSeconds)
 	config.ToolConfirmTimeoutSeconds = NormalizeToolConfirmTimeoutSeconds(config.ToolConfirmTimeoutSeconds)
 	config.AgentAutoLoopMaxRounds = NormalizeAgentAutoLoopMaxRounds(config.AgentAutoLoopMaxRounds)
