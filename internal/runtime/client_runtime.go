@@ -27,6 +27,18 @@ const (
 	localToolServerName = "local"
 )
 
+// MCPRegistry 是外部 MCP 服务器注册表接口。
+// 由 internal/mcp.Registry 实现，用于将后端配置的 MCP 服务器工具
+// 合并到 client_mcp_servers 请求中，并路由非 local 的工具调用。
+type MCPRegistry interface {
+	// ClientMCPServers 返回 { serverName: [{name, description, input_schema}] } 格式的工具定义。
+	ClientMCPServers() map[string]any
+	// CallTool 路由工具调用到对应的 MCP 服务器。
+	CallTool(ctx context.Context, serverName, toolName string, toolArgs map[string]any) (any, error)
+	// HasServer 检查是否存在指定名称的 MCP 服务器。
+	HasServer(serverName string) bool
+}
+
 // DetachedCallbackContext 创建一个脱离父上下文生命周期的独立上下文，
 // 仅保留父上下文中携带的 Value（如认证信息），不受父上下文的取消或超时影响。
 // 用于回调结果提交、协同任务回报等关键操作，确保即使流处理已结束或 WebSocket 断连，
@@ -137,6 +149,10 @@ type ClientRuntime struct {
 	// guidanceCh 是从 TUI 接收用户执行引导文本的 channel。
 	// 在 submitCallback 中排空，确保工具执行期间用户输入的引导能在回调提交前被消费。
 	guidanceCh chan string
+	// mcpRegistry 是外部 MCP 服务器注册表，用于将后端配置的 MCP 服务器工具
+	// 合并到 client_mcp_servers 请求中，并路由非 local 的工具调用。
+	// 与 taiyiflow-chatui 的 mcp-store + mcpClient 功能对齐。
+	mcpRegistry MCPRegistry
 }
 
 func NewClientRuntime(stdin io.Reader, stdout io.Writer, stderr io.Writer) *ClientRuntime {
@@ -159,6 +175,13 @@ func (r *ClientRuntime) SetSandboxEscapePolicyOverride(policy string) {
 
 func (r *ClientRuntime) SetToolConfirmTimeoutSeconds(seconds int) {
 	r.toolConfirmTimeoutSeconds = seconds
+}
+
+// SetMCPRegistry 注入外部 MCP 服务器注册表。
+// 注入后，ClientMCPServersForMode 会将注册表中的工具定义合并到 client_mcp_servers，
+// executeClientToolPayload 会将非 local 服务器的工具调用路由到注册表。
+func (r *ClientRuntime) SetMCPRegistry(registry MCPRegistry) {
+	r.mcpRegistry = registry
 }
 
 // ReadStdinWithTimeout 从 stdin 读取一行，超时后返回空字符串和 nil error。
@@ -341,9 +364,19 @@ func (r *ClientRuntime) ClientMCPServersForMode(mode string, config internalconf
 		status := sharedComputerToolManager.Diagnose(config.Computer)
 		definitions = filterComputerToolDefinitionsByCapabilities(definitions, status.Capabilities)
 	}
-	return map[string]any{
+	result := map[string]any{
 		localToolServerName: definitions,
 	}
+	// 合并外部 MCP 服务器工具定义（与 taiyiflow-chatui 的 getFilteredToolDefinitions 对齐）
+	if r.mcpRegistry != nil {
+		for serverName, tools := range r.mcpRegistry.ClientMCPServers() {
+			if serverName == localToolServerName {
+				continue
+			}
+			result[serverName] = tools
+		}
+	}
+	return result
 }
 
 func (r *ClientRuntime) HandleBuiltInEvent(
@@ -431,6 +464,14 @@ func (r *ClientRuntime) executeClientToolPayload(
 	arguments = enrichToolArgumentsWithContext(arguments, payload)
 
 	if serverName != localToolServerName {
+		// 非 local 服务器：路由到外部 MCP 服务器注册表（与 chatui toolHandlerMappings 对齐）
+		if r.mcpRegistry != nil && r.mcpRegistry.HasServer(serverName) {
+			preview := commandPreview(arguments)
+			r.emitHook(config, buildPreToolHookEvent("mcp_server", toolName, preview, payload, arguments))
+			result, err = r.mcpRegistry.CallTool(ctx, serverName, toolName, arguments)
+			r.emitHook(config, buildPostToolHookEvent("mcp_server", toolName, preview, payload, err == nil, err, result, arguments))
+			return toolName, result, err
+		}
 		return toolName, nil, fmt.Errorf("不支持的客户端工具服务: %s", serverName)
 	}
 	preview := previewClientTool(toolName, arguments)

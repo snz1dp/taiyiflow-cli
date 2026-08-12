@@ -21,6 +21,7 @@ import (
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/instructions"
+	internalmcp "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/mcp"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
@@ -176,6 +177,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.runDoctor(args[1:])
 	case "agents":
 		return a.runAgents(ctx, args[1:])
+	case "mcp":
+		return a.runMcp(ctx, args[1:])
 	case "flows":
 		return errors.New("`flows` 子命令已移除，请改用 `taiyiflow-cli agents`")
 	case "tui":
@@ -923,6 +926,17 @@ func (a *App) streamTaskWithSkillRetry(
 		nil,
 	)
 	a.runtime.SetMaxParallelismSubtask(config.MaxParallelismSubtask)
+	// 加载外部 MCP 服务器注册表，将后端配置的 MCP 服务器工具合并到 client_mcp_servers。
+	// 与 taiyiflow-chatui 的 mcp-store.loadServers + getFilteredToolDefinitions 对齐。
+	if taiyiflowClient, ok := extractTaiyiflowClient(providerClient); ok {
+		mcpRegistry := internalmcp.NewRegistry()
+		if loadErr := mcpRegistry.LoadServers(ctx, taiyiflowClient, flowID); loadErr != nil {
+			fmt.Fprintf(a.stderr, "警告: 加载 MCP 服务器列表失败，本次请求将不携带外部 MCP 工具: %v\n", loadErr)
+		} else {
+			a.runtime.SetMCPRegistry(mcpRegistry)
+			defer mcpRegistry.Close()
+		}
+	}
 	stream, streamSession, err := providerClient.Stream(ctx, provider.StreamRequest{
 		FlowID:                    flowID,
 		Input:                     strings.TrimSpace(task),
@@ -1497,6 +1511,7 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli browser [install|help]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli worker [--max-concurrency N] [--recent-limit N]  启动协同驻留执行进程")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli agents [list|current|use] [参数]")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli mcp [list|add|remove|enable|disable|enable-tool|disable-tool|status]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli memory [status|trigger] [flow=<智能体>] [参数]")
 	fmt.Fprintf(a.stdout, "  %s\n", skillsCommandSynopsis())
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli upgrade [--force] [--manifest-url URL] [--check-api]")

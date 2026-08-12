@@ -18,6 +18,7 @@ import (
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/instructions"
+	internalmcp "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/mcp"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
@@ -259,6 +260,20 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				append([]string(nil), request.KnowledgeScopes...),
 				append([]string(nil), request.KnowledgeDocs...),
 			)
+			// 加载外部 MCP 服务器注册表，将后端配置的 MCP 服务器工具合并到 client_mcp_servers。
+			var mcpRegistry *internalmcp.Registry
+			if taiyiflowClient, ok := extractTaiyiflowClient(callbackProvider); ok {
+				registry := internalmcp.NewRegistry()
+				if loadErr := registry.LoadServers(runCtx, taiyiflowClient, currentFlow); loadErr == nil {
+					mcpRegistry = registry
+					// 同时注入到两个 runtime：runtimeClient 负责工具执行，quietRuntimeClient 负责构建上送定义
+					runtimeClient.SetMCPRegistry(mcpRegistry)
+					quietRuntimeClient.SetMCPRegistry(mcpRegistry)
+				}
+			}
+			if mcpRegistry != nil {
+				defer mcpRegistry.Close()
+			}
 			stream, streamSession, streamErr := callbackProvider.Stream(runCtx, provider.StreamRequest{
 				FlowID:                    currentFlow,
 				Input:                     buildStreamInputWithTodoContext(sessionState.TodoItems, request.Input),

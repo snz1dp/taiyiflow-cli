@@ -378,6 +378,19 @@ func extractServiceConfig(p provider.Provider) *provider.ServiceConfig {
 	return nil
 }
 
+// extractTaiyiflowClient 从 provider 中提取底层 *providerclient.Client。
+// 支持直接传入 *providerclient.Client 或被 callbackAuthRefreshProvider 包装后的 provider。
+// 修复：providerWithCallbackAuthRefresh 包装后，直接类型断言 providerClient.(*providerclient.Client) 永远失败。
+func extractTaiyiflowClient(p provider.Provider) (*providerclient.Client, bool) {
+	if client, ok := p.(*providerclient.Client); ok {
+		return client, true
+	}
+	if cp, ok := p.(*callbackAuthRefreshProvider); ok && cp.client != nil {
+		return cp.client, true
+	}
+	return nil, false
+}
+
 func modeAllowsBuiltIn(mode string) bool {
 	return normalizeRequestMode(mode) == provider.RequestTypeAgent
 }
