@@ -92,7 +92,7 @@ func (o *Orchestrator) CheckAndDownload(ctx context.Context, deviceID string, fo
 		downloadPath = o.state.DownloadCachePath(checkResp.FileName)
 	}
 
-	result, err := DownloadFile(ctx, checkResp.DownloadURL, downloadPath, checkResp.FileSize, onProgress)
+	result, err := DownloadFile(ctx, checkResp.DownloadURL, downloadPath, checkResp.FileSize, o.updater.apiKey, onProgress)
 	if err != nil {
 		// 上报 download_failed
 		if checkResp.DeliveryID != "" {

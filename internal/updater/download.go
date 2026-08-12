@@ -25,8 +25,8 @@ type DownloadResult struct {
 }
 
 // DownloadFile 下载文件到指定路径，同时计算 SHA256。
-// 支持进度回调和超时控制。
-func DownloadFile(ctx context.Context, url, destPath string, expectedSize int64, onProgress ProgressCallback) (*DownloadResult, error) {
+// 支持进度回调和超时控制。apiKey 非空时会携带 Authorization: Bearer 头。
+func DownloadFile(ctx context.Context, url, destPath string, expectedSize int64, apiKey string, onProgress ProgressCallback) (*DownloadResult, error) {
 	downloadCtx, cancel := context.WithTimeout(ctx, DefaultDownloadTimeout)
 	defer cancel()
 
@@ -35,6 +35,9 @@ func DownloadFile(ctx context.Context, url, destPath string, expectedSize int64,
 		return nil, fmt.Errorf("创建下载请求失败: %w", err)
 	}
 	req.Header.Set("User-Agent", buildUserAgent())
+	if trimmed := strings.TrimSpace(apiKey); trimmed != "" {
+		req.Header.Set("Authorization", "Bearer "+trimmed)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
