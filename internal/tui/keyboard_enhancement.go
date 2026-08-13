@@ -71,9 +71,9 @@ func lookupEnv(environ []string, key string) string {
 
 func multilineInputPlaceholder(environ []string) string {
 	if shouldEnableVSCodeKeyboardProtocol(environ) {
-		return "回车发送，Shift+Enter、Alt+Enter 或 Ctrl+J 换行"
+		return "回车发送，Shift+Enter、Alt+Enter 或 Ctrl+J 换行或发出执行引导"
 	}
-	return "回车发送，Alt+Enter 或 Ctrl+J 换行"
+	return "回车发送，Alt+Enter 或 Ctrl+J 换行或发出执行引导"
 }
 
 func newTerminalInputReader(input term.File, translateVSCodeKittyInput bool) *terminalInputReader {
