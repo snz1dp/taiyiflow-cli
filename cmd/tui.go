@@ -173,15 +173,23 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			}
 			return askUser(request)
 		})
-		persistSandboxEscapeAlwaysAllow := func(context.Context) error {
+		persistSandboxEscapeAlwaysAllow := func(ctx context.Context) error {
 			runtimeClient.SetSandboxEscapePolicyOverride(internalconfig.SandboxEscapePolicyAllow)
 			quietRuntimeClient.SetSandboxEscapePolicyOverride(internalconfig.SandboxEscapePolicyAllow)
 			sessionState.SandboxEscapePolicyOverride = internalconfig.SandboxEscapePolicyAllow
-			return a.sessionStore.Save(sessionState)
+			if err := a.sessionStore.Save(sessionState); err != nil {
+				return err
+			}
+			// 同步写入全局配置，确保新会话也继承该策略
+			return a.persistConfigValue("external_resource_access_policy", internalconfig.SandboxEscapePolicyAllow)(ctx)
 		}
-		persistSkillReviewAllowAll := func(context.Context) error {
+		persistSkillReviewAllowAll := func(ctx context.Context) error {
 			sessionState.SkillReviewPolicyOverride = internalconfig.SkillReviewPolicyIgnore
-			return a.sessionStore.Save(sessionState)
+			if err := a.sessionStore.Save(sessionState); err != nil {
+				return err
+			}
+			// 同步写入全局配置，确保新会话也继承该策略
+			return a.persistConfigValue("skill_review_policy", internalconfig.SkillReviewPolicyIgnore)(ctx)
 		}
 		persistBrowserToolAlwaysAllow := a.persistConfigValue("browser_permission_mode", internalconfig.BrowserPermissionModeSkipAll)
 		persistComputerToolAlwaysAllow := a.persistConfigValue("computer_permission_mode", internalconfig.ComputerPermissionModeSkipAll)
