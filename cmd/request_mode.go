@@ -93,6 +93,18 @@ func resolveTaskInternetSearchMode(value string) (string, error) {
 	}
 }
 
+// applyAgentModeReasoningDefault 在切换到 agent 模式时，若用户未显式设置思考模式，则默认开启思考。
+// 返回更新后的 ReasoningOverride 值。
+func applyAgentModeReasoningDefault(mode string, reasoningOverride string) string {
+	if normalizeRequestMode(mode) != provider.RequestTypeAgent {
+		return reasoningOverride
+	}
+	if strings.TrimSpace(reasoningOverride) != "" {
+		return reasoningOverride
+	}
+	return "on"
+}
+
 func buildCLIUserAgent() string {
 	version := strings.TrimSpace(buildinfo.Version)
 	if version == "" {

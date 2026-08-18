@@ -504,6 +504,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						if mode := runtimeClient.ConsumePendingModeSwitch(); mode != "" {
 							request.RequestMode = mode
 							sessionState.RequestMode = mode
+							sessionState.ReasoningOverride = applyAgentModeReasoningDefault(mode, sessionState.ReasoningOverride)
 							if saveErr := a.sessionStore.Save(sessionState); saveErr != nil {
 								return saveErr
 							}
@@ -519,6 +520,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					if mode := runtimeClient.ConsumePendingModeSwitch(); mode != "" {
 						request.RequestMode = mode
 						sessionState.RequestMode = mode
+						sessionState.ReasoningOverride = applyAgentModeReasoningDefault(mode, sessionState.ReasoningOverride)
 						if saveErr := a.sessionStore.Save(sessionState); saveErr != nil {
 							return saveErr
 						}
@@ -933,6 +935,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			updatedSnapshot := snapshot
 			updatedSnapshot.RequestMode = mode
 			updatedSnapshot.ContextDir = resolveLocalWorkdir(snapshot.Workdir)
+			updatedSnapshot.ReasoningOverride = applyAgentModeReasoningDefault(mode, snapshot.ReasoningOverride)
+			updatedSnapshot.ReasoningEnabled = resolveReasoningEnabled(config, updatedSnapshot.ReasoningOverride)
 			if strings.TrimSpace(prompt) == "" {
 				if strings.TrimSpace(snapshot.DefaultFlow) != "" {
 					currentSessionState, sessionErr := a.prepareSession(snapshot.DefaultFlow, false, snapshot.Workdir, mode)

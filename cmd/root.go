@@ -758,7 +758,7 @@ func (a *App) prepareSession(flowID string, newSession bool, workdir string, req
 		if err := a.sessionStore.Delete(flowID, resolvedWorkdir); err != nil {
 			return agent.SessionState{}, err
 		}
-		return agent.SessionState{FlowID: flowID, Workdir: resolvedWorkdir, RequestMode: normalizedMode, ContextDir: resolvedWorkdir}, nil
+		return agent.SessionState{FlowID: flowID, Workdir: resolvedWorkdir, RequestMode: normalizedMode, ContextDir: resolvedWorkdir, ReasoningOverride: applyAgentModeReasoningDefault(normalizedMode, "")}, nil
 	}
 	state, err := a.sessionStore.Load(flowID, resolvedWorkdir)
 	if err != nil {
@@ -769,6 +769,7 @@ func (a *App) prepareSession(flowID string, newSession bool, workdir string, req
 	} else if strings.TrimSpace(state.RequestMode) == "" {
 		state.RequestMode = provider.RequestTypeAgent
 	}
+	state.ReasoningOverride = applyAgentModeReasoningDefault(state.RequestMode, state.ReasoningOverride)
 	if strings.TrimSpace(state.ContextDir) == "" {
 		state.ContextDir = resolvedWorkdir
 	}
@@ -1175,6 +1176,7 @@ func (a *App) streamTaskWithSkillRetry(
 			}
 			if mode := a.runtime.ConsumePendingModeSwitch(); mode != "" {
 				sessionState.RequestMode = mode
+				sessionState.ReasoningOverride = applyAgentModeReasoningDefault(mode, sessionState.ReasoningOverride)
 				if err := saveSessionStateIfReady(a.sessionStore, sessionState); err != nil {
 					return sessionState, err
 				}
