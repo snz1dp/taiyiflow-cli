@@ -33,6 +33,7 @@ const (
 	collaborationEventTaskError               = "task.error"
 	collaborationEventTasksFetchRecent        = "tasks.fetch_recent"
 	collaborationEventTasksRecent             = "tasks.recent"
+	collaborationEventScheduleTaskDispatch    = "schedule_task.dispatch"
 	defaultWorkerRequestTimeout               = 5 * time.Minute
 	defaultWorkerReconnectDelay               = 3 * time.Second
 	defaultWorkerPingInterval                 = 45 * time.Second
@@ -79,6 +80,25 @@ type collaborationRecentTasksPayload struct {
 type collaborationTaskSnapshot struct {
 	TaskID string `json:"task_id"`
 	Status string `json:"status"`
+}
+
+// scheduleTaskDispatchPayload 定时任务下发的负载结构。
+type scheduleTaskDispatchPayload struct {
+	ScheduleID       string         `json:"schedule_id"`
+	RunRecordID      string         `json:"run_record_id"`
+	Name             string         `json:"name"`
+	ExecType         string         `json:"exec_type"`
+	Prompt           string         `json:"prompt"`
+	RequestMode      string         `json:"request_mode"`
+	WorkingDirectory string         `json:"working_directory"`
+	FlowID           string         `json:"flow_id"`
+	SessionID        string         `json:"session_id"`
+	ScriptPath       string         `json:"script_path"`
+	Interpreter      string         `json:"interpreter"`
+	Command          string         `json:"command"`
+	CommandArgs      []string       `json:"command_args"`
+	TimeoutSeconds   int            `json:"timeout_seconds"`
+	Metadata         map[string]any `json:"metadata"`
 }
 
 type collaborationWorker struct {
@@ -286,6 +306,12 @@ func (w *collaborationWorker) handleServerEnvelope(ctx context.Context, conn net
 		for _, taskSnapshot := range payload.Tasks {
 			w.loadAndScheduleTask(ctx, conn, taskSnapshot)
 		}
+	case collaborationEventScheduleTaskDispatch:
+		var payload scheduleTaskDispatchPayload
+		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+			return false, fmt.Errorf("解析定时任务下发事件失败: %w", err)
+		}
+		w.executeScheduleTask(ctx, conn, payload)
 	}
 	return startPing, nil
 }
@@ -388,6 +414,144 @@ func (w *collaborationWorker) executeTask(ctx context.Context, conn net.Conn, ta
 		return
 	}
 	w.reportTaskSuccess(ctx, conn, task.ID, buildSubtaskResultPayload(request, executionResult))
+}
+
+// executeScheduleTask 执行定时任务。
+// 按 exec_type 路由：prompt 通过子任务执行，script/command 通过本地 shell 执行。
+func (w *collaborationWorker) executeScheduleTask(ctx context.Context, conn net.Conn, payload scheduleTaskDispatchPayload) {
+	scheduleID := strings.TrimSpace(payload.ScheduleID)
+	runRecordID := strings.TrimSpace(payload.RunRecordID)
+	if scheduleID == "" || runRecordID == "" {
+		w.logf("定时任务下发缺少 schedule_id 或 run_record_id，忽略")
+		return
+	}
+
+	w.logf("收到定时任务: name=%s exec_type=%s schedule_id=%s", payload.Name, payload.ExecType, scheduleID)
+
+	// 发送 ack
+	if err := w.sendEnvelope(conn, collaborationEventTaskAck, map[string]any{
+		"schedule_id":   scheduleID,
+		"run_record_id": runRecordID,
+		"task_type":     "schedule",
+	}); err != nil {
+		w.logf("发送定时任务确认回执失败: schedule_id=%s err=%v", scheduleID, err)
+	}
+
+	// 发送 running 状态
+	if err := w.sendEnvelope(conn, collaborationEventTaskStatus, map[string]any{
+		"schedule_id":   scheduleID,
+		"run_record_id": runRecordID,
+		"status":        "running",
+		"task_type":     "schedule",
+	}); err != nil {
+		w.logf("发送定时任务运行中状态失败: schedule_id=%s err=%v", scheduleID, err)
+	}
+
+	// 按 exec_type 路由执行
+	switch strings.ToLower(strings.TrimSpace(payload.ExecType)) {
+	case "prompt":
+		w.executeSchedulePromptTask(ctx, conn, payload)
+	case "script":
+		w.executeScheduleShellTask(ctx, conn, payload, payload.ScriptPath, payload.Interpreter)
+	case "command":
+		w.executeScheduleShellTask(ctx, conn, payload, payload.Command, "")
+	default:
+		w.reportScheduleTaskError(conn, payload, fmt.Sprintf("不支持的执行类型: %s", payload.ExecType))
+	}
+}
+
+// executeSchedulePromptTask 执行 prompt 类型定时任务。
+// 通过 CLI 的子任务执行机制运行。
+func (w *collaborationWorker) executeSchedulePromptTask(ctx context.Context, conn net.Conn, payload scheduleTaskDispatchPayload) {
+	execRuntime := w.runtime.cloneRuntime()
+	execConfig := w.currentConfig()
+
+	// 构造子任务执行请求
+	request := subtaskExecutionRequest{
+		Prompt:           payload.Prompt,
+		RequestMode:      firstNonEmptySubtask(strings.TrimSpace(payload.RequestMode), "agent"),
+		WorkingDirectory: strings.TrimSpace(payload.WorkingDirectory),
+		FlowID:           strings.TrimSpace(payload.FlowID),
+	}
+
+	executionResult, execErr := execRuntime.executeLocalSubtask(ctx, w.provider, execConfig, request)
+	if execErr != nil {
+		w.reportScheduleTaskError(conn, payload, execErr.Error())
+		return
+	}
+	w.reportScheduleTaskSuccess(conn, payload, buildSubtaskResultPayload(request, executionResult))
+}
+
+// executeScheduleShellTask 执行 script/command 类型定时任务。
+// 通过本地 shell 执行脚本或命令。
+func (w *collaborationWorker) executeScheduleShellTask(ctx context.Context, conn net.Conn, payload scheduleTaskDispatchPayload, command string, interpreter string) {
+	if strings.TrimSpace(command) == "" {
+		w.reportScheduleTaskError(conn, payload, "缺少执行命令")
+		return
+	}
+
+	timeout := time.Duration(payload.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// 构建执行命令字符串
+	var rawCommand string
+	if interpreter != "" {
+		// script 类型：interpreter script_path [args...]
+		parts := []string{interpreter, command}
+		parts = append(parts, payload.CommandArgs...)
+		rawCommand = strings.Join(parts, " ")
+	} else {
+		// command 类型：command [args...]
+		parts := []string{command}
+		parts = append(parts, payload.CommandArgs...)
+		rawCommand = strings.Join(parts, " ")
+	}
+
+	// 通过 runtime 的 ExecuteShellCommand 执行
+	execRuntime := w.runtime.cloneRuntime()
+	execConfig := w.currentConfig()
+	result, err := execRuntime.ExecuteShellCommand(execCtx, execConfig, rawCommand)
+	if err != nil {
+		w.reportScheduleTaskError(conn, payload, err.Error())
+		return
+	}
+	w.reportScheduleTaskSuccess(conn, payload, map[string]any{
+		"output":    result,
+		"exit_code": 0,
+	})
+}
+
+// reportScheduleTaskSuccess 上报定时任务执行成功。
+func (w *collaborationWorker) reportScheduleTaskSuccess(conn net.Conn, payload scheduleTaskDispatchPayload, resultPayload map[string]any) {
+	if err := w.sendEnvelope(conn, collaborationEventTaskResult, map[string]any{
+		"schedule_id":   payload.ScheduleID,
+		"run_record_id": payload.RunRecordID,
+		"status":        "completed",
+		"result":        resultPayload,
+		"task_type":     "schedule",
+	}); err != nil {
+		w.logf("发送定时任务成功结果失败: schedule_id=%s err=%v", payload.ScheduleID, err)
+	}
+	w.logf("定时任务执行完成: name=%s schedule_id=%s", payload.Name, payload.ScheduleID)
+}
+
+// reportScheduleTaskError 上报定时任务执行失败。
+func (w *collaborationWorker) reportScheduleTaskError(conn net.Conn, payload scheduleTaskDispatchPayload, errorMessage string) {
+	trimmedMessage := firstNonEmptySubtask(strings.TrimSpace(errorMessage), "定时任务执行失败")
+	if err := w.sendEnvelope(conn, collaborationEventTaskError, map[string]any{
+		"schedule_id":   payload.ScheduleID,
+		"run_record_id": payload.RunRecordID,
+		"error":         trimmedMessage,
+		"task_type":     "schedule",
+	}); err != nil {
+		w.logf("发送定时任务失败结果失败: schedule_id=%s err=%v", payload.ScheduleID, err)
+	}
+	w.logf("定时任务执行失败: name=%s schedule_id=%s err=%s", payload.Name, payload.ScheduleID, trimmedMessage)
 }
 
 func (w *collaborationWorker) reportTaskSuccess(ctx context.Context, conn net.Conn, taskID string, resultPayload map[string]any) {
