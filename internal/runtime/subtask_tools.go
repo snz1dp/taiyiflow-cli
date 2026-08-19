@@ -73,6 +73,9 @@ type subtaskExecutionRequest struct {
 	ParentMessageID   string
 	ChildSessionID    string
 	ChildRunID        string
+	// Features 携带发布端的能力参数快照（reasoning/internet_search/knowledge 等），
+	// 用于跨客户端协同时让执行者端继承发布端的能力设定。
+	Features map[string]any
 }
 
 type subtaskExecutionResult struct {
@@ -343,6 +346,8 @@ func (r *ClientRuntime) parseSubtaskExecutionRequest(
 		ParentSessionID:   firstNonEmptySubtask(strings.TrimSpace(argumentString(arguments, "session_id", "sessionId")), strings.TrimSpace(nestedString(payload, "context", "session_id"))),
 		ParentRunID:       firstNonEmptySubtask(strings.TrimSpace(argumentString(arguments, "run_id", "runId")), strings.TrimSpace(nestedString(payload, "context", "run_id"))),
 		ParentMessageID:   firstNonEmptySubtask(strings.TrimSpace(argumentString(arguments, "message_id", "messageId")), strings.TrimSpace(nestedString(payload, "context", "message_id"))),
+		// 携带发布端能力快照，供跨客户端执行者继承
+		Features: r.buildSubtaskFeaturesPayload(),
 	}
 	if request.TimeoutSeconds < 0 {
 		request.TimeoutSeconds = config.SubtaskTimeoutSeconds
@@ -468,6 +473,14 @@ func (r *ClientRuntime) parseSubtaskExecutionRequestFromTask(
 	if err != nil {
 		return subtaskExecutionRequest{}, err
 	}
+	// 从 command_payload 中读取发布端的能力参数，覆盖本地 runtime 的能力设定。
+	// 确保跨客户端协同时执行者继承发布端的深度思考、联网搜索、知识库等设定。
+	if rawFeatures, ok := task.CommandPayload["features"]; ok {
+		if featuresMap, ok := rawFeatures.(map[string]any); ok {
+			r.applySubtaskFeaturesFromPayload(featuresMap)
+			request.Features = featuresMap
+		}
+	}
 	request.TargetClientID = firstNonEmptySubtask(strings.TrimSpace(task.TargetClientID), request.TargetClientID)
 	request.TargetDeviceID = firstNonEmptySubtask(strings.TrimSpace(task.TargetDeviceID), request.TargetDeviceID)
 	request.DeliveryPolicy = firstNonEmptySubtask(strings.TrimSpace(task.DeliveryPolicy), request.DeliveryPolicy)
@@ -546,7 +559,7 @@ func (r *ClientRuntime) executeLocalSubtask(
 		ClientContextDir:          request.WorkingDirectory,
 		CommandExecutionTarget:    "client",
 		RequestedSkillNames:       r.subtaskRequestedSkillNames,
-		ClientMCPServers:          filterSubtaskExcludedTools(r.ClientMCPServersForMode(request.RequestMode, config)),
+		ClientMCPServers:          filterSubtaskExcludedTools(filterMCPServersByNames(r.ClientMCPServersForMode(request.RequestMode, config), r.subtaskClientMCPServerNames)),
 		ClientSkillPackages:       r.subtaskSkillPackages,
 		ParentID:                  request.ParentRunID,
 	})
@@ -685,8 +698,76 @@ func (r *ClientRuntime) reportCollaborationTaskFailureWithResult(
 	}
 }
 
+// buildSubtaskFeaturesPayload 从当前 runtime 的能力字段构建 features 快照。
+// 用于跨客户端协同时将发布端的能力设定（深度思考、联网搜索、知识库、技能、MCP）透传给执行者端。
+func (r *ClientRuntime) buildSubtaskFeaturesPayload() map[string]any {
+	features := map[string]any{
+		"reasoning":       r.subtaskReasoningEnabled,
+		"internet_search": r.subtaskInternetSearch,
+	}
+	if len(r.subtaskKnowledgeScopes) > 0 {
+		features["knowledge_scopes"] = append([]string(nil), r.subtaskKnowledgeScopes...)
+	}
+	if len(r.subtaskKnowledgeDocs) > 0 {
+		features["knowledge_docs"] = append([]string(nil), r.subtaskKnowledgeDocs...)
+	}
+	// 携带发布端请求的技能名称列表，供执行者端过滤本地技能
+	if len(r.subtaskRequestedSkillNames) > 0 {
+		features["requested_skill_names"] = append([]string(nil), r.subtaskRequestedSkillNames...)
+	}
+	// 携带发布端使用的 MCP server 名称列表，供执行者端过滤本地 MCP servers
+	mcpServerNames := r.clientMCPServerNames()
+	if len(mcpServerNames) > 0 {
+		features["client_mcp_server_names"] = mcpServerNames
+	}
+	return features
+}
+
+// clientMCPServerNames 提取当前 runtime 已注册的 MCP server 名称列表。
+// 用于 features 快照，让跨客户端执行者知道发布端使用了哪些 MCP server。
+func (r *ClientRuntime) clientMCPServerNames() []string {
+	servers := r.ClientMCPServers()
+	if len(servers) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(servers))
+	for name := range servers {
+		names = append(names, name)
+	}
+	return names
+}
+
+// applySubtaskFeaturesFromPayload 从协同任务 command_payload 中的 features 字段
+// 覆盖当前 runtime 的能力设定。用于执行者端继承发布端的能力参数。
+// 若 payload 中无 features 或字段缺失，则保持 runtime 现有值不变。
+func (r *ClientRuntime) applySubtaskFeaturesFromPayload(features map[string]any) {
+	if len(features) == 0 {
+		return
+	}
+	if rawReasoning, ok := features["reasoning"]; ok {
+		r.subtaskReasoningEnabled = boolValue(rawReasoning)
+	}
+	if rawSearch, ok := features["internet_search"]; ok {
+		r.subtaskInternetSearch = boolValue(rawSearch)
+	}
+	if rawScopes, ok := features["knowledge_scopes"]; ok {
+		r.subtaskKnowledgeScopes = stringSliceValue(rawScopes)
+	}
+	if rawDocs, ok := features["knowledge_docs"]; ok {
+		r.subtaskKnowledgeDocs = stringSliceValue(rawDocs)
+	}
+	// 继承发布端请求的技能名称列表，执行者端据此过滤本地技能
+	if rawSkillNames, ok := features["requested_skill_names"]; ok {
+		r.subtaskRequestedSkillNames = stringSliceValue(rawSkillNames)
+	}
+	// 继承发布端使用的 MCP server 名称列表，执行者端据此过滤本地 MCP servers
+	if rawMCPServers, ok := features["client_mcp_server_names"]; ok {
+		r.subtaskClientMCPServerNames = stringSliceValue(rawMCPServers)
+	}
+}
+
 func buildSubtaskCommandPayload(request subtaskExecutionRequest) map[string]any {
-	return map[string]any{
+	payload := map[string]any{
 		"prompt":              request.Prompt,
 		"flow_id":             request.FlowID,
 		"request_mode":        request.RequestMode,
@@ -697,6 +778,11 @@ func buildSubtaskCommandPayload(request subtaskExecutionRequest) map[string]any 
 		"wait_for_completion": request.WaitForCompletion,
 		"timeout_seconds":     request.TimeoutSeconds,
 	}
+	// 携带发布端能力快照，供跨客户端执行者继承
+	if len(request.Features) > 0 {
+		payload["features"] = request.Features
+	}
+	return payload
 }
 
 func buildSubtaskResult(task *provider.ClientCollaborationTask, execution *subtaskExecutionResult) map[string]any {
@@ -1034,6 +1120,27 @@ func filterSubtaskExcludedTools(servers map[string]any) map[string]any {
 			cleaned = append(cleaned, def)
 		}
 		filtered[serverName] = cleaned
+	}
+	return filtered
+}
+
+// filterMCPServersByNames 按名称白名单过滤 MCP servers。
+// 跨客户端协同时，发布端通过 features 携带 client_mcp_server_names，
+// 执行者端据此只保留发布端使用过的 MCP server，确保子智能体复用主智能体的 clientMcp。
+// 若 allowedNames 为空则不过滤（向后兼容旧版本发布端）。
+func filterMCPServersByNames(servers map[string]any, allowedNames []string) map[string]any {
+	if len(allowedNames) == 0 || len(servers) == 0 {
+		return servers
+	}
+	allowed := make(map[string]bool, len(allowedNames))
+	for _, name := range allowedNames {
+		allowed[strings.TrimSpace(name)] = true
+	}
+	filtered := make(map[string]any, len(servers))
+	for serverName, tools := range servers {
+		if allowed[serverName] {
+			filtered[serverName] = tools
+		}
 	}
 	return filtered
 }

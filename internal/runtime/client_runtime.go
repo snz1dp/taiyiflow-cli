@@ -127,6 +127,9 @@ type ClientRuntime struct {
 	subtaskCrossSessionMemory  *bool
 	subtaskKnowledgeScopes     []string
 	subtaskKnowledgeDocs       []string
+	// subtaskClientMCPServerNames 记录发布端使用的 MCP server 名称列表。
+	// 跨客户端协同时由 features payload 注入，执行者端据此过滤本地 MCP servers。
+	subtaskClientMCPServerNames []string
 	// subtaskEnabled 控制是否向模型暴露 run_subtask 工具。
 	// 非交互式模式默认 false，交互式模式和 TUI 默认 true。
 	subtaskEnabled bool
@@ -322,6 +325,7 @@ func (r *ClientRuntime) cloneRuntime() *ClientRuntime {
 		subtaskCrossSessionMemory:   r.subtaskCrossSessionMemory,
 		subtaskKnowledgeScopes:      append([]string(nil), r.subtaskKnowledgeScopes...),
 		subtaskKnowledgeDocs:        append([]string(nil), r.subtaskKnowledgeDocs...),
+		subtaskClientMCPServerNames: append([]string(nil), r.subtaskClientMCPServerNames...),
 		subtaskEnabled:              r.subtaskEnabled,
 		maxParallelismSubtask:       r.maxParallelismSubtask,
 		// pendingModeSwitch 被有意忽略：克隆运行时不应继承父运行时的模式切换请求，
@@ -2074,6 +2078,25 @@ func boolValue(value any) bool {
 		return strings.EqualFold(strings.TrimSpace(typed), "true")
 	default:
 		return false
+	}
+}
+
+// stringSliceValue 将 any 类型转换为 []string。
+// 支持 []any（JSON 反序列化结果）和 []string 两种输入。
+func stringSliceValue(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		return append([]string(nil), typed...)
+	case []any:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if s := stringValue(item); s != "" {
+				result = append(result, s)
+			}
+		}
+		return result
+	default:
+		return nil
 	}
 }
 
