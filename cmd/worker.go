@@ -48,6 +48,17 @@ func (a *App) runWorker(ctx context.Context, args []string) error {
 	if runtimeClient == nil {
 		runtimeClient = clientruntime.NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	}
+	// 注入子任务能力字段：worker 驻留进程没有会话级 override，使用全局配置值。
+	// 确保 worker 执行的子任务至少继承配置中的深度思考和联网搜索设定。
+	runtimeClient.SetSubtaskCapabilities(
+		nil, // worker 无技能包上下文
+		nil,
+		resolveReasoningEnabled(config, ""),
+		resolveInternetSearchEnabled(""),
+		boolPtr(config.CrossSessionMemoryEnabled),
+		nil,
+		nil,
+	)
 	return runtimeClient.RunCollaborationWorker(ctx, callbackProvider, &config, clientruntime.CollaborationWorkerOptions{
 		RecentTaskLimit: recentLimit,
 		MaxConcurrency:  maxConcurrency,
