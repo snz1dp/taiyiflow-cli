@@ -83,20 +83,17 @@ type collaborationTaskSnapshot struct {
 }
 
 // scheduleTaskDispatchPayload 定时任务下发的负载结构。
+// request_mode 为 command 时 prompt 即为要执行的命令；
+// request_mode 为 agent/ask/plan 时 prompt 为提示词。
 type scheduleTaskDispatchPayload struct {
 	ScheduleID       string         `json:"schedule_id"`
 	RunRecordID      string         `json:"run_record_id"`
 	Name             string         `json:"name"`
-	ExecType         string         `json:"exec_type"`
 	Prompt           string         `json:"prompt"`
 	RequestMode      string         `json:"request_mode"`
 	WorkingDirectory string         `json:"working_directory"`
 	FlowID           string         `json:"flow_id"`
 	SessionID        string         `json:"session_id"`
-	ScriptPath       string         `json:"script_path"`
-	Interpreter      string         `json:"interpreter"`
-	Command          string         `json:"command"`
-	CommandArgs      []string       `json:"command_args"`
 	TimeoutSeconds   int            `json:"timeout_seconds"`
 	Metadata         map[string]any `json:"metadata"`
 }
@@ -417,7 +414,6 @@ func (w *collaborationWorker) executeTask(ctx context.Context, conn net.Conn, ta
 }
 
 // executeScheduleTask 执行定时任务。
-// 按 exec_type 路由：prompt 通过子任务执行，script/command 通过本地 shell 执行。
 func (w *collaborationWorker) executeScheduleTask(ctx context.Context, conn net.Conn, payload scheduleTaskDispatchPayload) {
 	scheduleID := strings.TrimSpace(payload.ScheduleID)
 	runRecordID := strings.TrimSpace(payload.RunRecordID)
@@ -426,7 +422,7 @@ func (w *collaborationWorker) executeScheduleTask(ctx context.Context, conn net.
 		return
 	}
 
-	w.logf("收到定时任务: name=%s exec_type=%s schedule_id=%s", payload.Name, payload.ExecType, scheduleID)
+	w.logf("收到定时任务: name=%s schedule_id=%s", payload.Name, scheduleID)
 
 	// 发送 ack
 	if err := w.sendEnvelope(conn, collaborationEventTaskAck, map[string]any{
@@ -447,20 +443,15 @@ func (w *collaborationWorker) executeScheduleTask(ctx context.Context, conn net.
 		w.logf("发送定时任务运行中状态失败: schedule_id=%s err=%v", scheduleID, err)
 	}
 
-	// 按 exec_type 路由执行
-	switch strings.ToLower(strings.TrimSpace(payload.ExecType)) {
-	case "prompt":
+	// 按 request_mode 路由：command 执行命令，其余作为提示词执行
+	if strings.EqualFold(strings.TrimSpace(payload.RequestMode), "command") {
+		w.executeScheduleShellTask(ctx, conn, payload, payload.Prompt)
+	} else {
 		w.executeSchedulePromptTask(ctx, conn, payload)
-	case "script":
-		w.executeScheduleShellTask(ctx, conn, payload, payload.ScriptPath, payload.Interpreter)
-	case "command":
-		w.executeScheduleShellTask(ctx, conn, payload, payload.Command, "")
-	default:
-		w.reportScheduleTaskError(conn, payload, fmt.Sprintf("不支持的执行类型: %s", payload.ExecType))
 	}
 }
 
-// executeSchedulePromptTask 执行 prompt 类型定时任务。
+// executeSchedulePromptTask 执行提示词类型定时任务（request_mode 为 agent/ask/plan）。
 // 通过 CLI 的子任务执行机制运行。
 func (w *collaborationWorker) executeSchedulePromptTask(ctx context.Context, conn net.Conn, payload scheduleTaskDispatchPayload) {
 	execRuntime := w.runtime.cloneRuntime()
@@ -482,11 +473,11 @@ func (w *collaborationWorker) executeSchedulePromptTask(ctx context.Context, con
 	w.reportScheduleTaskSuccess(conn, payload, buildSubtaskResultPayload(request, executionResult))
 }
 
-// executeScheduleShellTask 执行 script/command 类型定时任务。
-// 通过本地 shell 执行脚本或命令。
-func (w *collaborationWorker) executeScheduleShellTask(ctx context.Context, conn net.Conn, payload scheduleTaskDispatchPayload, command string, interpreter string) {
+// executeScheduleShellTask 执行命令类型定时任务（request_mode 为 command）。
+// prompt 字段即为要执行的命令，通过本地 shell 执行。
+func (w *collaborationWorker) executeScheduleShellTask(ctx context.Context, conn net.Conn, payload scheduleTaskDispatchPayload, command string) {
 	if strings.TrimSpace(command) == "" {
-		w.reportScheduleTaskError(conn, payload, "缺少执行命令")
+		w.reportScheduleTaskError(conn, payload, "command 模式任务的 prompt（命令）不能为空")
 		return
 	}
 
@@ -498,24 +489,10 @@ func (w *collaborationWorker) executeScheduleShellTask(ctx context.Context, conn
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// 构建执行命令字符串
-	var rawCommand string
-	if interpreter != "" {
-		// script 类型：interpreter script_path [args...]
-		parts := []string{interpreter, command}
-		parts = append(parts, payload.CommandArgs...)
-		rawCommand = strings.Join(parts, " ")
-	} else {
-		// command 类型：command [args...]
-		parts := []string{command}
-		parts = append(parts, payload.CommandArgs...)
-		rawCommand = strings.Join(parts, " ")
-	}
-
 	// 通过 runtime 的 ExecuteShellCommand 执行
 	execRuntime := w.runtime.cloneRuntime()
 	execConfig := w.currentConfig()
-	result, err := execRuntime.ExecuteShellCommand(execCtx, execConfig, rawCommand)
+	result, err := execRuntime.ExecuteShellCommand(execCtx, execConfig, command)
 	if err != nil {
 		w.reportScheduleTaskError(conn, payload, err.Error())
 		return
