@@ -552,11 +552,18 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 	}
 	definitions = append(definitions, browserClientToolDefinitions()...)
 	definitions = append(definitions, computerClientToolDefinitions()...)
+	definitions = append(definitions, scheduleClientToolDefinitions()...)
 	if !r.interactivePromptsEnabled {
 		filtered := definitions[:0]
 		for _, definition := range definitions {
 			name := strings.TrimSpace(stringValue(definition["name"]))
 			if name == "ask_user" {
+				continue
+			}
+			// REG-1 修复：非交互模式下过滤 schedule 变更工具，
+			// 仅保留只读查询（schedule_list、schedule_runs），
+			// 避免无人值守场景下模型误调用变更操作。
+			if isScheduleTool(name) && mutatingScheduleTool(name) {
 				continue
 			}
 			filtered = append(filtered, definition)
@@ -620,6 +627,8 @@ func allowedClientToolSetForMode(mode string) map[string]bool {
 		"skill_upload":              true,
 		"skill_delete":              true,
 		"switch_to_agent":           true,
+		"schedule_list":             true,
+		"schedule_runs":             true,
 		browserToolTabsContext:      true,
 		browserToolReadText:         true,
 		browserToolReadConsole:      true,
@@ -797,6 +806,10 @@ func mutatingClientTool(toolName string) bool {
 	if isComputerTool(toolName) {
 		return !computerReadOnlyTool(toolName)
 	}
+	if isScheduleTool(toolName) {
+		// schedule_list 和 schedule_runs 为只读查询，其余为变更操作
+		return mutatingScheduleTool(toolName)
+	}
 	switch canonicalClientToolName(toolName) {
 	case "shell_exec", "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit", "document_unstructured", "write_file", "skill_create", "skill_upload", "skill_delete":
 		return true
@@ -822,6 +835,9 @@ func previewClientTool(toolName string, arguments map[string]any) string {
 	}
 	if isComputerTool(toolName) {
 		return previewComputerTool(toolName, arguments)
+	}
+	if isScheduleTool(toolName) {
+		return schedulePreview(toolName, arguments)
 	}
 	switch canonicalClientToolName(toolName) {
 	case "ask_user":

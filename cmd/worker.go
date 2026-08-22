@@ -5,7 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	clientruntime "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/runtime"
@@ -29,6 +32,26 @@ func (a *App) runWorker(ctx context.Context, args []string) error {
 		return fmt.Errorf("协同驻留命令不接受额外参数: %s", strings.Join(flagSet.Args(), " "))
 	}
 
+	// 信号处理：监听 SIGTERM/SIGINT 实现优雅退出。
+	// 守护进程管理器（launchd/systemd）发送 SIGTERM 时，
+	// worker 会停止接受新任务并等待当前任务完成后退出。
+	signalCtx, signalCancel := context.WithCancel(ctx)
+	defer signalCancel()
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, syscall.SIGTERM, syscall.SIGINT)
+	// REG-2 修复：函数退出时取消信号注册，避免残留的信号拦截影响后续调用。
+	defer signal.Stop(signalCh)
+	go func() {
+		select {
+		case sig := <-signalCh:
+			if a.stderr != nil {
+				_, _ = fmt.Fprintf(a.stderr, "收到信号 %v，正在优雅退出...\n", sig)
+			}
+			signalCancel()
+		case <-signalCtx.Done():
+		}
+	}()
+
 	config, err := a.configManager.Load()
 	if err != nil {
 		return err
@@ -38,7 +61,7 @@ func (a *App) runWorker(ctx context.Context, args []string) error {
 		return err
 	}
 	providerClient := buildProviderClient(config)
-	config, _, err = a.ensureProviderAuthenticated(ctx, providerClient, config)
+	config, _, err = a.ensureProviderAuthenticated(signalCtx, providerClient, config)
 	if err != nil {
 		return err
 	}
@@ -59,7 +82,7 @@ func (a *App) runWorker(ctx context.Context, args []string) error {
 		nil,
 		nil,
 	)
-	return runtimeClient.RunCollaborationWorker(ctx, callbackProvider, &config, clientruntime.CollaborationWorkerOptions{
+	err = runtimeClient.RunCollaborationWorker(signalCtx, callbackProvider, &config, clientruntime.CollaborationWorkerOptions{
 		RecentTaskLimit: recentLimit,
 		MaxConcurrency:  maxConcurrency,
 		ReconnectDelay:  time.Duration(reconnectSeconds) * time.Second,
@@ -71,4 +94,9 @@ func (a *App) runWorker(ctx context.Context, args []string) error {
 			_, _ = fmt.Fprintf(a.stderr, format+"\n", values...)
 		},
 	})
+	if signalCtx.Err() != nil && err != nil {
+		// 信号导致的退出视为正常退出，不返回错误
+		return nil
+	}
+	return err
 }

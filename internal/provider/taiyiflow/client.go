@@ -1640,6 +1640,9 @@ func readWebSocketStream(ctx context.Context, conn net.Conn, idleTimeout time.Du
 			return
 		}
 
+		// RISK-7 说明：parseWebSocketStreamMessage 对无法解析为 JSON 的消息返回 false，
+		// 此处 continue 会静默跳过。这是预期行为（如二进制 ping 帧），
+		// 但若后端引入新的事件格式，需在此处同步适配，否则新事件会被丢弃。
 		event, ok := parseWebSocketStreamMessage(payload)
 		if !ok {
 			continue
@@ -2111,6 +2114,341 @@ func (c *Client) UpdateClientCollaboration(ctx context.Context, taskID string, r
 		return nil, fmt.Errorf("解析更新客户端协同任务响应失败: %w", err)
 	}
 	return mapClientCollaborationTask(payload)
+}
+
+// ListClientCollaborations 查询协同任务列表。
+// 对应后端 GET /agents/client/collaborations 接口。
+func (c *Client) ListClientCollaborations(ctx context.Context, params provider.CollaborationListParams) (*provider.CollaborationTaskPage, error) {
+	query := url.Values{}
+	if strings.TrimSpace(params.Status) != "" {
+		query.Set("status", strings.TrimSpace(params.Status))
+	}
+	if strings.TrimSpace(params.TaskKind) != "" {
+		query.Set("task_kind", strings.TrimSpace(params.TaskKind))
+	}
+	if params.Offset > 0 {
+		query.Set("offset", fmt.Sprintf("%d", params.Offset))
+	}
+	if params.Limit > 0 {
+		query.Set("limit", fmt.Sprintf("%d", params.Limit))
+	}
+	endpoint := c.apiURL("/agents/client/collaborations")
+	if len(query) > 0 {
+		endpoint += "?" + query.Encode()
+	}
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建协同任务列表请求失败: %w", err)
+	}
+	c.applyAuth(httpRequest)
+
+	response, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("查询协同任务列表失败: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("查询协同任务列表失败", response)
+	}
+
+	var payload struct {
+		Offset int                            `json:"offset"`
+		Total  int                            `json:"total"`
+		Data   []clientCollaborationTaskResponse `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析协同任务列表响应失败: %w", err)
+	}
+	page := &provider.CollaborationTaskPage{
+		Offset: payload.Offset,
+		Total:  payload.Total,
+		Data:   make([]provider.ClientCollaborationTask, 0, len(payload.Data)),
+	}
+	for _, item := range payload.Data {
+		task, mapErr := mapClientCollaborationTask(item)
+		if mapErr != nil {
+			continue
+		}
+		page.Data = append(page.Data, *task)
+	}
+	return page, nil
+}
+
+// GetOnlineDesktopClients 查询当前在线的桌面/CLI 客户端。
+// 对应后端 GET /agents/client/online-desktops 接口。
+func (c *Client) GetOnlineDesktopClients(ctx context.Context) ([]provider.OnlineDesktopClient, error) {
+	endpoint := c.apiURL("/agents/client/online-desktops")
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建在线客户端查询请求失败: %w", err)
+	}
+	c.applyAuth(httpRequest)
+
+	response, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("查询在线客户端失败: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("查询在线客户端失败", response)
+	}
+
+	var clients []provider.OnlineDesktopClient
+	if err := json.NewDecoder(response.Body).Decode(&clients); err != nil {
+		return nil, fmt.Errorf("解析在线客户端响应失败: %w", err)
+	}
+	return clients, nil
+}
+
+// ReportScheduleRun 通过 HTTP 回报定时任务执行记录状态。
+// 对应后端 POST /client/schedules/runs/{run_record_id}/report 接口。
+func (c *Client) ReportScheduleRun(ctx context.Context, runRecordID string, request provider.ScheduleRunReportRequest) error {
+	trimmedID := strings.TrimSpace(runRecordID)
+	if trimmedID == "" {
+		return fmt.Errorf("回报定时任务执行记录失败: run_record_id 不能为空")
+	}
+	content, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("序列化定时任务回报请求失败: %w", err)
+	}
+	endpoint := c.apiURL(fmt.Sprintf("/agents/client/schedules/runs/%s/report", url.PathEscape(trimmedID)))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(content))
+	if err != nil {
+		return fmt.Errorf("创建定时任务回报请求失败: %w", err)
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	c.applyAuth(httpRequest)
+
+	response, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return fmt.Errorf("回报定时任务执行记录失败: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= http.StatusBadRequest {
+		return readHTTPError("回报定时任务执行记录失败", response)
+	}
+	return nil
+}
+
+// ListSchedules 查询定时任务列表。
+func (c *Client) ListSchedules(ctx context.Context, params provider.ScheduleListParams) (*provider.ScheduleTaskPage, error) {
+	endpoint := c.apiURL("/agents/client/schedules")
+	query := url.Values{}
+	if strings.TrimSpace(params.Name) != "" {
+		query.Set("name", strings.TrimSpace(params.Name))
+	}
+	if strings.TrimSpace(params.ClientID) != "" {
+		query.Set("client_id", strings.TrimSpace(params.ClientID))
+	}
+	if strings.TrimSpace(params.DeviceID) != "" {
+		query.Set("device_id", strings.TrimSpace(params.DeviceID))
+	}
+	if strings.TrimSpace(params.ClientType) != "" {
+		query.Set("client_type", strings.TrimSpace(params.ClientType))
+	}
+	if params.Disabled != nil {
+		if *params.Disabled {
+			query.Set("disabled", "true")
+		} else {
+			query.Set("disabled", "false")
+		}
+	}
+	if params.IsTemplate != nil {
+		if *params.IsTemplate {
+			query.Set("is_template", "true")
+		} else {
+			query.Set("is_template", "false")
+		}
+	}
+	if strings.TrimSpace(params.FlowID) != "" {
+		query.Set("flow_id", strings.TrimSpace(params.FlowID))
+	}
+	if params.Offset > 0 {
+		query.Set("offset", fmt.Sprintf("%d", params.Offset))
+	}
+	if params.Limit > 0 {
+		query.Set("limit", fmt.Sprintf("%d", params.Limit))
+	}
+	if len(query) > 0 {
+		endpoint += "?" + query.Encode()
+	}
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建查询定时任务列表请求失败: %w", err)
+	}
+	c.applyAuth(httpRequest)
+	response, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("查询定时任务列表失败: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("查询定时任务列表失败", response)
+	}
+	var page provider.ScheduleTaskPage
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
+		return nil, fmt.Errorf("解析定时任务列表响应失败: %w", err)
+	}
+	return &page, nil
+}
+
+// CreateSchedule 创建定时任务。
+func (c *Client) CreateSchedule(ctx context.Context, request provider.ScheduleTaskCreateRequest) (*provider.ScheduleTask, error) {
+	content, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("序列化创建定时任务请求失败: %w", err)
+	}
+	endpoint := c.apiURL("/agents/client/schedules")
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(content))
+	if err != nil {
+		return nil, fmt.Errorf("创建定时任务请求失败: %w", err)
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	c.applyAuth(httpRequest)
+	response, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("创建定时任务失败: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("创建定时任务失败", response)
+	}
+	var task provider.ScheduleTask
+	if err := json.NewDecoder(response.Body).Decode(&task); err != nil {
+		return nil, fmt.Errorf("解析创建定时任务响应失败: %w", err)
+	}
+	return &task, nil
+}
+
+// UpdateSchedule 更新定时任务。
+func (c *Client) UpdateSchedule(ctx context.Context, scheduleID string, request provider.ScheduleTaskUpdateRequest) (*provider.ScheduleTask, error) {
+	trimmedID := strings.TrimSpace(scheduleID)
+	if trimmedID == "" {
+		return nil, fmt.Errorf("更新定时任务失败: schedule_id 不能为空")
+	}
+	content, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("序列化更新定时任务请求失败: %w", err)
+	}
+	endpoint := c.apiURL(fmt.Sprintf("/agents/client/schedules/%s", url.PathEscape(trimmedID)))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPatch, endpoint, bytes.NewReader(content))
+	if err != nil {
+		return nil, fmt.Errorf("创建更新定时任务请求失败: %w", err)
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	c.applyAuth(httpRequest)
+	response, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("更新定时任务失败: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("更新定时任务失败", response)
+	}
+	var task provider.ScheduleTask
+	if err := json.NewDecoder(response.Body).Decode(&task); err != nil {
+		return nil, fmt.Errorf("解析更新定时任务响应失败: %w", err)
+	}
+	return &task, nil
+}
+
+// DeleteSchedule 删除定时任务。
+func (c *Client) DeleteSchedule(ctx context.Context, scheduleID string) error {
+	trimmedID := strings.TrimSpace(scheduleID)
+	if trimmedID == "" {
+		return fmt.Errorf("删除定时任务失败: schedule_id 不能为空")
+	}
+	endpoint := c.apiURL(fmt.Sprintf("/agents/client/schedules/%s", url.PathEscape(trimmedID)))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("创建删除定时任务请求失败: %w", err)
+	}
+	c.applyAuth(httpRequest)
+	response, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return fmt.Errorf("删除定时任务失败: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= http.StatusBadRequest {
+		return readHTTPError("删除定时任务失败", response)
+	}
+	return nil
+}
+
+// EnableSchedule 启用定时任务。
+func (c *Client) EnableSchedule(ctx context.Context, scheduleID string) error {
+	return c.toggleSchedule(ctx, scheduleID, "enable")
+}
+
+// DisableSchedule 停用定时任务。
+func (c *Client) DisableSchedule(ctx context.Context, scheduleID string) error {
+	return c.toggleSchedule(ctx, scheduleID, "disable")
+}
+
+func (c *Client) toggleSchedule(ctx context.Context, scheduleID string, action string) error {
+	trimmedID := strings.TrimSpace(scheduleID)
+	if trimmedID == "" {
+		return fmt.Errorf("%s 定时任务失败: schedule_id 不能为空", action)
+	}
+	endpoint := c.apiURL(fmt.Sprintf("/agents/client/schedules/%s/%s", url.PathEscape(trimmedID), action))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("创建 %s 定时任务请求失败: %w", action, err)
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	c.applyAuth(httpRequest)
+	response, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return fmt.Errorf("%s 定时任务失败: %w", action, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= http.StatusBadRequest {
+		return readHTTPError(fmt.Sprintf("%s 定时任务失败", action), response)
+	}
+	return nil
+}
+
+// ListScheduleRuns 查询定时任务执行记录。
+func (c *Client) ListScheduleRuns(ctx context.Context, scheduleID string, status string, offset, limit int) (*provider.ScheduleRunRecordPage, error) {
+	trimmedID := strings.TrimSpace(scheduleID)
+	if trimmedID == "" {
+		return nil, fmt.Errorf("查询定时任务执行记录失败: schedule_id 不能为空")
+	}
+	endpoint := c.apiURL(fmt.Sprintf("/agents/client/schedules/%s/runs", url.PathEscape(trimmedID)))
+	query := url.Values{}
+	if strings.TrimSpace(status) != "" {
+		query.Set("status", strings.TrimSpace(status))
+	}
+	if offset > 0 {
+		query.Set("offset", fmt.Sprintf("%d", offset))
+	}
+	if limit > 0 {
+		query.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	if len(query) > 0 {
+		endpoint += "?" + query.Encode()
+	}
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建查询定时任务执行记录请求失败: %w", err)
+	}
+	c.applyAuth(httpRequest)
+	response, err := c.httpClient.Do(httpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("查询定时任务执行记录失败: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= http.StatusBadRequest {
+		return nil, readHTTPError("查询定时任务执行记录失败", response)
+	}
+	var page provider.ScheduleRunRecordPage
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
+		return nil, fmt.Errorf("解析定时任务执行记录响应失败: %w", err)
+	}
+	return &page, nil
 }
 
 func (c *Client) fetchCompressionPayload(ctx context.Context, flowID string, sessionID string, runID string) ([]compressionRecordResponse, error) {

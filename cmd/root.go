@@ -174,6 +174,12 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.runBrowser(ctx, args[1:])
 	case "worker":
 		return a.runWorker(ctx, args[1:])
+	case "schedule":
+		return a.runSchedule(ctx, args[1:])
+	case "collaboration":
+		return a.runCollaboration(ctx, args[1:])
+	case "daemon":
+		return a.runDaemon(ctx, args[1:])
 	case "doctor":
 		return a.runDoctor(args[1:])
 	case "agents":
@@ -1513,6 +1519,9 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli config [show|init|path|set|unset]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli browser [install|help]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli worker [--max-concurrency N] [--recent-limit N]  启动协同驻留执行进程")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli schedule [list|create|edit|delete|enable|disable|runs]  定时任务管理")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli collaboration [status|tasks]  协同任务管理")
+	fmt.Fprintln(a.stdout, "  taiyiflow-cli daemon [install|uninstall|start|stop|status]  守护进程管理")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli agents [list|current|use] [参数]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli mcp [list|add|remove|enable|disable|enable-tool|disable-tool|status]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli memory [status|trigger] [flow=<智能体>] [参数]")

@@ -535,7 +535,9 @@ func (r *ClientRuntime) executeClientToolPayload(
 	case "switch_to_agent":
 		result, err = r.switchToAgent(arguments)
 	default:
-		if isBrowserTool(toolName) {
+		if isScheduleTool(toolName) {
+			result, err = r.scheduleTool(ctx, providerClient, config, toolName, arguments)
+		} else if isBrowserTool(toolName) {
 			result, err = r.browserTool(ctx, providerClient, config, toolName, arguments)
 		} else if isComputerTool(toolName) {
 			result, err = r.computerTool(ctx, providerClient, config, toolName, arguments)

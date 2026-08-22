@@ -900,6 +900,18 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				events = append(events, tui.Event{Kind: tui.EventSystemNote, Text: output})
 			}
 			return tui.LocalCommandResult{Handled: true, Events: events}, nil
+		case isScheduleSlashCommand(trimmed):
+			output, panel, commandErr := a.executeScheduleSlashCommand(commandCtx, commandProvider, trimmed)
+			if commandErr != nil {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: commandErr.Error()}}}, nil
+			}
+			events := []tui.Event{}
+			if panel != nil {
+				events = append(events, tui.Event{Kind: tui.EventToolPanel, Panel: panel})
+			} else if strings.TrimSpace(output) != "" {
+				events = append(events, tui.Event{Kind: tui.EventSystemNote, Text: output})
+			}
+			return tui.LocalCommandResult{Handled: true, Events: events}, nil
 		case strings.EqualFold(trimmed, "/permissions") || strings.EqualFold(trimmed, "/permissions show") || strings.HasPrefix(strings.ToLower(trimmed), "/permissions "):
 			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: "/permissions 已移除，请使用 /config 管理权限与执行配置。"}}}, nil
 		case strings.EqualFold(trimmed, "/review") || strings.HasPrefix(strings.ToLower(trimmed), "/review "):

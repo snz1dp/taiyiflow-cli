@@ -317,6 +317,46 @@ func (s stubProvider) UninstallSkillRecord(context.Context, string) (*provider.S
 	return nil, fmt.Errorf("not implemented")
 }
 
+func (s stubProvider) ReportScheduleRun(context.Context, string, provider.ScheduleRunReportRequest) error {
+	return nil
+}
+
+func (s stubProvider) ListSchedules(context.Context, provider.ScheduleListParams) (*provider.ScheduleTaskPage, error) {
+	return &provider.ScheduleTaskPage{}, nil
+}
+
+func (s stubProvider) CreateSchedule(context.Context, provider.ScheduleTaskCreateRequest) (*provider.ScheduleTask, error) {
+	return &provider.ScheduleTask{}, nil
+}
+
+func (s stubProvider) UpdateSchedule(context.Context, string, provider.ScheduleTaskUpdateRequest) (*provider.ScheduleTask, error) {
+	return &provider.ScheduleTask{}, nil
+}
+
+func (s stubProvider) DeleteSchedule(context.Context, string) error {
+	return nil
+}
+
+func (s stubProvider) EnableSchedule(context.Context, string) error {
+	return nil
+}
+
+func (s stubProvider) DisableSchedule(context.Context, string) error {
+	return nil
+}
+
+func (s stubProvider) ListScheduleRuns(context.Context, string, string, int, int) (*provider.ScheduleRunRecordPage, error) {
+	return &provider.ScheduleRunRecordPage{}, nil
+}
+
+func (s stubProvider) ListClientCollaborations(context.Context, provider.CollaborationListParams) (*provider.CollaborationTaskPage, error) {
+	return &provider.CollaborationTaskPage{}, nil
+}
+
+func (s stubProvider) GetOnlineDesktopClients(context.Context) ([]provider.OnlineDesktopClient, error) {
+	return nil, nil
+}
+
 func streamWithEvents(events ...provider.StreamEvent) <-chan provider.StreamEvent {
 	stream := make(chan provider.StreamEvent, len(events))
 	for _, event := range events {

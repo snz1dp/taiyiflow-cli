@@ -94,20 +94,25 @@ type scheduleTaskDispatchPayload struct {
 	WorkingDirectory string         `json:"working_directory"`
 	FlowID           string         `json:"flow_id"`
 	SessionID        string         `json:"session_id"`
+	GroupID          string         `json:"group_id"`
 	TimeoutSeconds   int            `json:"timeout_seconds"`
 	Metadata         map[string]any `json:"metadata"`
+	AvailableSkills  []string       `json:"available_skills"`
+	MCPClientServers map[string]any `json:"mcp_client_servers"`
 }
 
 type collaborationWorker struct {
-	runtime    *ClientRuntime
-	provider   provider.Provider
-	config     *internalconfig.Config
-	options    CollaborationWorkerOptions
-	logf       func(format string, args ...any)
-	semaphore  chan struct{}
-	writeMu    sync.Mutex
-	activeMu   sync.Mutex
-	activeTask map[string]struct{}
+	runtime        *ClientRuntime
+	provider       provider.Provider
+	config         *internalconfig.Config
+	options        CollaborationWorkerOptions
+	logf           func(format string, args ...any)
+	semaphore      chan struct{}
+	writeMu        sync.Mutex
+	activeMu       sync.Mutex
+	activeTask     map[string]struct{}
+	activeSchedule map[string]struct{}
+	observability  *workerObservability
 }
 
 func (r *ClientRuntime) RunCollaborationWorker(
@@ -166,9 +171,11 @@ func newCollaborationWorker(
 			PingInterval:    pingInterval,
 			Logf:            logf,
 		},
-		logf:       logf,
-		semaphore:  make(chan struct{}, maxConcurrency),
-		activeTask: map[string]struct{}{},
+		logf:           logf,
+		semaphore:      make(chan struct{}, maxConcurrency),
+		activeTask:     map[string]struct{}{},
+		activeSchedule: map[string]struct{}{},
+		observability:  newWorkerObservability(logf),
 	}
 }
 
@@ -308,7 +315,7 @@ func (w *collaborationWorker) handleServerEnvelope(ctx context.Context, conn net
 		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 			return false, fmt.Errorf("解析定时任务下发事件失败: %w", err)
 		}
-		w.executeScheduleTask(ctx, conn, payload)
+		go w.executeScheduleTask(ctx, conn, payload)
 	}
 	return startPing, nil
 }
@@ -414,6 +421,8 @@ func (w *collaborationWorker) executeTask(ctx context.Context, conn net.Conn, ta
 }
 
 // executeScheduleTask 执行定时任务。
+// 使用信号量控制并发，与协同任务共享并发配额。
+// 通过 activeSchedule 以 run_record_id 为键做幂等去重，防止断线重连后重复执行。
 func (w *collaborationWorker) executeScheduleTask(ctx context.Context, conn net.Conn, payload scheduleTaskDispatchPayload) {
 	scheduleID := strings.TrimSpace(payload.ScheduleID)
 	runRecordID := strings.TrimSpace(payload.RunRecordID)
@@ -422,7 +431,15 @@ func (w *collaborationWorker) executeScheduleTask(ctx context.Context, conn net.
 		return
 	}
 
+	// 幂等去重：同一 run_record_id 只执行一次
+	if !w.activateSchedule(runRecordID) {
+		w.logf("定时任务已在执行中，跳过重复调度: run_record_id=%s", runRecordID)
+		return
+	}
+	defer w.deactivateSchedule(runRecordID)
+
 	w.logf("收到定时任务: name=%s schedule_id=%s", payload.Name, scheduleID)
+	w.observability.logTaskReceived("schedule", scheduleID, payload.Name)
 
 	// 发送 ack
 	if err := w.sendEnvelope(conn, collaborationEventTaskAck, map[string]any{
@@ -432,6 +449,14 @@ func (w *collaborationWorker) executeScheduleTask(ctx context.Context, conn net.
 	}); err != nil {
 		w.logf("发送定时任务确认回执失败: schedule_id=%s err=%v", scheduleID, err)
 	}
+
+	// 获取并发信号量（阻塞等待）
+	select {
+	case <-ctx.Done():
+		return
+	case w.semaphore <- struct{}{}:
+	}
+	defer func() { <-w.semaphore }()
 
 	// 发送 running 状态
 	if err := w.sendEnvelope(conn, collaborationEventTaskStatus, map[string]any{
@@ -443,43 +468,74 @@ func (w *collaborationWorker) executeScheduleTask(ctx context.Context, conn net.
 		w.logf("发送定时任务运行中状态失败: schedule_id=%s err=%v", scheduleID, err)
 	}
 
-	// 按 request_mode 路由：command 执行命令，其余作为提示词执行
-	if strings.EqualFold(strings.TrimSpace(payload.RequestMode), "command") {
-		w.executeScheduleShellTask(ctx, conn, payload, payload.Prompt)
-	} else {
-		w.executeSchedulePromptTask(ctx, conn, payload)
+	// 记录执行开始时间
+	startedAt := executionStartTime()
+	execRecord := workerExecutionRecord{
+		ID:          runRecordID,
+		TaskType:    "schedule",
+		ScheduleID:  scheduleID,
+		RunRecordID: runRecordID,
+		Name:        payload.Name,
+		RequestMode: payload.RequestMode,
+		WorkingDir:  payload.WorkingDirectory,
 	}
+
+	// 按 request_mode 路由：command 执行命令，其余作为提示词执行
+	var execErr error
+	if strings.EqualFold(strings.TrimSpace(payload.RequestMode), "command") {
+		execErr = w.executeScheduleShellTask(ctx, conn, payload, payload.Prompt)
+	} else {
+		execErr = w.executeSchedulePromptTask(ctx, conn, payload)
+	}
+
+	// 记录执行结果
+	w.observability.finishExecution(startedAt, "schedule", execRecord, execErr)
 }
 
 // executeSchedulePromptTask 执行提示词类型定时任务（request_mode 为 agent/ask/plan）。
-// 通过 CLI 的子任务执行机制运行。
-func (w *collaborationWorker) executeSchedulePromptTask(ctx context.Context, conn net.Conn, payload scheduleTaskDispatchPayload) {
+// 通过 CLI 的子任务执行机制运行。返回执行错误（用于可观测性记录）。
+func (w *collaborationWorker) executeSchedulePromptTask(ctx context.Context, conn net.Conn, payload scheduleTaskDispatchPayload) error {
 	execRuntime := w.runtime.cloneRuntime()
 	execConfig := w.currentConfig()
 
 	// 构造子任务执行请求
+	// BUG-2 修复：传递 SessionID 和 TimeoutSeconds，避免定时任务执行时上下文丢失。
 	request := subtaskExecutionRequest{
 		Prompt:           payload.Prompt,
 		RequestMode:      firstNonEmptySubtask(strings.TrimSpace(payload.RequestMode), "agent"),
 		WorkingDirectory: strings.TrimSpace(payload.WorkingDirectory),
 		FlowID:           strings.TrimSpace(payload.FlowID),
+		ChildSessionID:   strings.TrimSpace(payload.SessionID),
+		TimeoutSeconds:   payload.TimeoutSeconds,
 	}
 
 	executionResult, execErr := execRuntime.executeLocalSubtask(ctx, w.provider, execConfig, request)
 	if execErr != nil {
-		w.reportScheduleTaskError(conn, payload, execErr.Error())
-		return
+		w.reportScheduleTaskError(ctx, conn, payload, execErr.Error())
+		return execErr
 	}
-	w.reportScheduleTaskSuccess(conn, payload, buildSubtaskResultPayload(request, executionResult))
+	w.reportScheduleTaskSuccess(ctx, conn, payload, buildSubtaskResultPayload(request, executionResult))
+	return nil
 }
 
 // executeScheduleShellTask 执行命令类型定时任务（request_mode 为 command）。
-// prompt 字段即为要执行的命令，通过本地 shell 执行。
-func (w *collaborationWorker) executeScheduleShellTask(ctx context.Context, conn net.Conn, payload scheduleTaskDispatchPayload, command string) {
+// prompt 字段即为要执行的命令，通过本地 shell 执行。返回执行错误（用于可观测性记录）。
+// RISK-1 修复：增加审计日志，记录命令执行行为，便于事后追溯。
+func (w *collaborationWorker) executeScheduleShellTask(ctx context.Context, conn net.Conn, payload scheduleTaskDispatchPayload, command string) error {
 	if strings.TrimSpace(command) == "" {
-		w.reportScheduleTaskError(conn, payload, "command 模式任务的 prompt（命令）不能为空")
-		return
+		err := fmt.Errorf("command 模式任务的 prompt（命令）不能为空")
+		w.reportScheduleTaskError(ctx, conn, payload, err.Error())
+		return err
 	}
+
+	// 审计日志：记录即将执行的命令内容
+	w.observability.logEvent("schedule.shell_audit", map[string]any{
+		"schedule_id":   payload.ScheduleID,
+		"run_record_id": payload.RunRecordID,
+		"name":          payload.Name,
+		"command":       command,
+		"working_dir":   payload.WorkingDirectory,
+	})
 
 	timeout := time.Duration(payload.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
@@ -489,22 +545,27 @@ func (w *collaborationWorker) executeScheduleShellTask(ctx context.Context, conn
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// 通过 runtime 的 ExecuteShellCommand 执行
+	// 通过 runtime 的 ExecuteShellCommand 执行。
+	// Worker 场景下定时任务为预授权执行，显式将审批模式置空以绕过交互确认，
+	// 避免 InteractivePromptsEnabled=false 时 command 任务被阻塞或静默失败。
 	execRuntime := w.runtime.cloneRuntime()
 	execConfig := w.currentConfig()
+	execConfig.ApprovalMode = ""
 	result, err := execRuntime.ExecuteShellCommand(execCtx, execConfig, command)
 	if err != nil {
-		w.reportScheduleTaskError(conn, payload, err.Error())
-		return
+		w.reportScheduleTaskError(ctx, conn, payload, err.Error())
+		return err
 	}
-	w.reportScheduleTaskSuccess(conn, payload, map[string]any{
+	w.reportScheduleTaskSuccess(ctx, conn, payload, map[string]any{
 		"output":    result,
 		"exit_code": 0,
 	})
+	return nil
 }
 
 // reportScheduleTaskSuccess 上报定时任务执行成功。
-func (w *collaborationWorker) reportScheduleTaskSuccess(conn net.Conn, payload scheduleTaskDispatchPayload, resultPayload map[string]any) {
+// WebSocket 发送失败时回退到 HTTP 回报接口。
+func (w *collaborationWorker) reportScheduleTaskSuccess(ctx context.Context, conn net.Conn, payload scheduleTaskDispatchPayload, resultPayload map[string]any) {
 	if err := w.sendEnvelope(conn, collaborationEventTaskResult, map[string]any{
 		"schedule_id":   payload.ScheduleID,
 		"run_record_id": payload.RunRecordID,
@@ -512,13 +573,18 @@ func (w *collaborationWorker) reportScheduleTaskSuccess(conn net.Conn, payload s
 		"result":        resultPayload,
 		"task_type":     "schedule",
 	}); err != nil {
-		w.logf("发送定时任务成功结果失败: schedule_id=%s err=%v", payload.ScheduleID, err)
+		w.logf("发送定时任务成功结果失败，回退 HTTP 回报: schedule_id=%s err=%v", payload.ScheduleID, err)
+		w.reportScheduleRunFallback(ctx, payload, provider.ScheduleRunReportRequest{
+			Status:        "success",
+			ResultPayload: resultPayload,
+		})
 	}
 	w.logf("定时任务执行完成: name=%s schedule_id=%s", payload.Name, payload.ScheduleID)
 }
 
 // reportScheduleTaskError 上报定时任务执行失败。
-func (w *collaborationWorker) reportScheduleTaskError(conn net.Conn, payload scheduleTaskDispatchPayload, errorMessage string) {
+// WebSocket 发送失败时回退到 HTTP 回报接口。
+func (w *collaborationWorker) reportScheduleTaskError(ctx context.Context, conn net.Conn, payload scheduleTaskDispatchPayload, errorMessage string) {
 	trimmedMessage := firstNonEmptySubtask(strings.TrimSpace(errorMessage), "定时任务执行失败")
 	if err := w.sendEnvelope(conn, collaborationEventTaskError, map[string]any{
 		"schedule_id":   payload.ScheduleID,
@@ -526,9 +592,36 @@ func (w *collaborationWorker) reportScheduleTaskError(conn net.Conn, payload sch
 		"error":         trimmedMessage,
 		"task_type":     "schedule",
 	}); err != nil {
-		w.logf("发送定时任务失败结果失败: schedule_id=%s err=%v", payload.ScheduleID, err)
+		w.logf("发送定时任务失败结果失败，回退 HTTP 回报: schedule_id=%s err=%v", payload.ScheduleID, err)
+		w.reportScheduleRunFallback(ctx, payload, provider.ScheduleRunReportRequest{
+			Status:       "failed",
+			ErrorMessage: trimmedMessage,
+		})
 	}
 	w.logf("定时任务执行失败: name=%s schedule_id=%s err=%s", payload.Name, payload.ScheduleID, trimmedMessage)
+}
+
+// reportScheduleRunFallback 通过 HTTP 接口回报定时任务执行记录。
+// 作为 WebSocket 回报失败时的回退机制。
+func (w *collaborationWorker) reportScheduleRunFallback(ctx context.Context, payload scheduleTaskDispatchPayload, request provider.ScheduleRunReportRequest) {
+	config := w.currentConfig()
+	request.ClientID = strings.TrimSpace(config.ClientID)
+	request.DeviceID = strings.TrimSpace(config.DeviceID)
+	request.ClientType = provider.ClientTypeCLI
+	request.ClientVersion = buildinfo.Version
+	request.Platform = goruntime.GOOS + "-" + goruntime.GOARCH
+
+	timeout := time.Duration(defaultWorkerRequestTimeout)
+	if config.HTTPTimeoutSeconds > 0 {
+		timeout = time.Duration(config.HTTPTimeoutSeconds) * time.Second
+	}
+	fallbackCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_ = ctx // 原始上下文可能已取消，使用独立上下文确保回报可达
+
+	if err := w.provider.ReportScheduleRun(fallbackCtx, payload.RunRecordID, request); err != nil {
+		w.logf("定时任务 HTTP 回退回报失败: run_record_id=%s err=%v", payload.RunRecordID, err)
+	}
 }
 
 func (w *collaborationWorker) reportTaskSuccess(ctx context.Context, conn net.Conn, taskID string, resultPayload map[string]any) {
@@ -612,7 +705,7 @@ func (w *collaborationWorker) updateTaskFallback(ctx context.Context, taskID str
 	// 避免父上下文（WebSocket 连接上下文）已取消时出现 "context deadline exceeded"，
 	// 并通过自动重试和指数退避提高协同任务状态回报的可靠性。
 	timeout := time.Duration(defaultWorkerRequestTimeout)
-	if w.config != nil {
+	if w.config != nil && w.config.HTTPTimeoutSeconds > 0 {
 		timeout = time.Duration(w.config.HTTPTimeoutSeconds) * time.Second
 	}
 
@@ -652,6 +745,22 @@ func (w *collaborationWorker) deactivateTask(taskID string) {
 	w.activeMu.Lock()
 	defer w.activeMu.Unlock()
 	delete(w.activeTask, taskID)
+}
+
+func (w *collaborationWorker) activateSchedule(runRecordID string) bool {
+	w.activeMu.Lock()
+	defer w.activeMu.Unlock()
+	if _, exists := w.activeSchedule[runRecordID]; exists {
+		return false
+	}
+	w.activeSchedule[runRecordID] = struct{}{}
+	return true
+}
+
+func (w *collaborationWorker) deactivateSchedule(runRecordID string) {
+	w.activeMu.Lock()
+	defer w.activeMu.Unlock()
+	delete(w.activeSchedule, runRecordID)
 }
 
 func (w *collaborationWorker) matchesCurrentClient(task *provider.ClientCollaborationTask) bool {

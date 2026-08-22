@@ -610,6 +610,30 @@ type ClientCollaborationTask struct {
 	UpdatedAt       time.Time
 }
 
+// CollaborationListParams 协同任务列表查询参数。
+type CollaborationListParams struct {
+	Status   string
+	TaskKind string
+	Offset   int
+	Limit    int
+}
+
+// CollaborationTaskPage 协同任务分页列表。
+type CollaborationTaskPage struct {
+	Offset int                         `json:"offset"`
+	Total  int                         `json:"total"`
+	Data   []ClientCollaborationTask   `json:"data"`
+}
+
+// OnlineDesktopClient 在线桌面客户端信息。
+type OnlineDesktopClient struct {
+	ClientID   string `json:"client_id"`
+	DeviceID   string `json:"device_id"`
+	ClientType string `json:"client_type"`
+	Platform   string `json:"platform"`
+	ConnectedAt string `json:"connected_at,omitempty"`
+}
+
 type Provider interface {
 	Name() string
 	ListFlows(ctx context.Context, filter string, agentType string, offset, limit int) (*FlowList, error)
@@ -636,6 +660,18 @@ type Provider interface {
 	CreateClientCollaboration(ctx context.Context, request ClientCollaborationCreateRequest) (*ClientCollaborationTask, error)
 	GetClientCollaboration(ctx context.Context, taskID string) (*ClientCollaborationTask, error)
 	UpdateClientCollaboration(ctx context.Context, taskID string, request ClientCollaborationUpdateRequest) (*ClientCollaborationTask, error)
+	ListClientCollaborations(ctx context.Context, params CollaborationListParams) (*CollaborationTaskPage, error)
+	GetOnlineDesktopClients(ctx context.Context) ([]OnlineDesktopClient, error)
+
+	// 定时任务管理 API
+	ReportScheduleRun(ctx context.Context, runRecordID string, request ScheduleRunReportRequest) error
+	ListSchedules(ctx context.Context, params ScheduleListParams) (*ScheduleTaskPage, error)
+	CreateSchedule(ctx context.Context, request ScheduleTaskCreateRequest) (*ScheduleTask, error)
+	UpdateSchedule(ctx context.Context, scheduleID string, request ScheduleTaskUpdateRequest) (*ScheduleTask, error)
+	DeleteSchedule(ctx context.Context, scheduleID string) error
+	EnableSchedule(ctx context.Context, scheduleID string) error
+	DisableSchedule(ctx context.Context, scheduleID string) error
+	ListScheduleRuns(ctx context.Context, scheduleID string, status string, offset, limit int) (*ScheduleRunRecordPage, error)
 
 	// 后端技能包管理 API
 	FetchVisibleSkills(ctx context.Context, params FetchVisibleSkillsParams) ([]VisibleSkillPackage, error)
@@ -664,4 +700,152 @@ type QueryInstallationsParams struct {
 	Status         string
 	Offset         int
 	Limit          int
+}
+
+// ScheduleRunReportRequest 定时任务执行记录回报请求。
+// 对应后端 POST /client/schedules/runs/{run_record_id}/report 接口。
+type ScheduleRunReportRequest struct {
+	Status        string         `json:"status"`
+	ErrorMessage  string         `json:"error_message,omitempty"`
+	ResultPayload map[string]any `json:"result_payload,omitempty"`
+	SessionID     string         `json:"session_id,omitempty"`
+	RunID         string         `json:"run_id,omitempty"`
+	DurationMS    int64          `json:"duration_ms,omitempty"`
+	ClientID      string         `json:"client_id,omitempty"`
+	DeviceID      string         `json:"device_id,omitempty"`
+	ClientType    string         `json:"client_type,omitempty"`
+	ClientVersion string         `json:"client_version,omitempty"`
+	Platform      string         `json:"platform,omitempty"`
+}
+
+// ScheduleTask 定时任务数据模型。
+type ScheduleTask struct {
+	ID               string         `json:"id"`
+	Name             string         `json:"name"`
+	Description      string         `json:"description"`
+	ScheduleType     string         `json:"schedule_type"`
+	DelaySeconds     int            `json:"delay_seconds,omitempty"`
+	RunAt            string         `json:"run_at,omitempty"`
+	IntervalSeconds  int            `json:"interval_seconds,omitempty"`
+	CronExpr         string         `json:"cron_expr,omitempty"`
+	Timezone         string         `json:"timezone,omitempty"`
+	Prompt           string         `json:"prompt"`
+	RequestMode      string         `json:"request_mode"`
+	SessionID        string         `json:"session_id,omitempty"`
+	GroupID          string         `json:"group_id,omitempty"`
+	WorkingDirectory string         `json:"working_directory,omitempty"`
+	FlowID           string         `json:"flow_id,omitempty"`
+	ClientType       string         `json:"client_type,omitempty"`
+	ClientID         string         `json:"target_client_id,omitempty"`
+	DeviceID         string         `json:"target_device_id,omitempty"`
+	Disabled         bool           `json:"disabled"`
+	IsTemplate       bool           `json:"is_template"`
+	NextRunAt        string         `json:"next_run_at,omitempty"`
+	LastRunAt        string         `json:"last_run_at,omitempty"`
+	LastErrorMessage string         `json:"last_error_message,omitempty"`
+	EffectiveStartAt string         `json:"effective_start_at,omitempty"`
+	EffectiveEndAt   string         `json:"effective_end_at,omitempty"`
+	MetadataPayload  map[string]any `json:"metadata_payload,omitempty"`
+	AvailableSkills  []string       `json:"available_skills,omitempty"`
+	CreatedAt        string         `json:"created_at,omitempty"`
+	UpdatedAt        string         `json:"updated_at,omitempty"`
+}
+
+// ScheduleTaskPage 定时任务分页列表。
+type ScheduleTaskPage struct {
+	Offset int            `json:"offset"`
+	Total  int            `json:"total"`
+	Data   []ScheduleTask `json:"data"`
+}
+
+// ScheduleListParams 定时任务列表查询参数。
+type ScheduleListParams struct {
+	Name       string
+	ClientID   string
+	DeviceID   string
+	ClientType string
+	Disabled   *bool
+	IsTemplate *bool
+	FlowID     string
+	Offset     int
+	Limit      int
+}
+
+// ScheduleTaskCreateRequest 创建定时任务请求。
+type ScheduleTaskCreateRequest struct {
+	Name             string         `json:"name"`
+	Description      string         `json:"description,omitempty"`
+	ScheduleType     string         `json:"schedule_type"`
+	DelaySeconds     int            `json:"delay_seconds,omitempty"`
+	RunAt            string         `json:"run_at,omitempty"`
+	IntervalSeconds  int            `json:"interval_seconds,omitempty"`
+	CronExpr         string         `json:"cron_expr,omitempty"`
+	Timezone         string         `json:"timezone,omitempty"`
+	Prompt           string         `json:"prompt"`
+	RequestMode      string         `json:"request_mode,omitempty"`
+	SessionID        string         `json:"session_id,omitempty"`
+	GroupID          string         `json:"group_id,omitempty"`
+	WorkingDirectory string         `json:"working_directory,omitempty"`
+	FlowID           string         `json:"flow_id,omitempty"`
+	ClientType       string         `json:"client_type,omitempty"`
+	ClientID         string         `json:"target_client_id,omitempty"`
+	DeviceID         string         `json:"target_device_id,omitempty"`
+	EffectiveStartAt string         `json:"effective_start_at,omitempty"`
+	EffectiveEndAt   string         `json:"effective_end_at,omitempty"`
+	MetadataPayload  map[string]any `json:"metadata_payload,omitempty"`
+	AvailableSkills  []string       `json:"available_skills,omitempty"`
+	Disabled         bool           `json:"disabled,omitempty"`
+}
+
+// ScheduleTaskUpdateRequest 更新定时任务请求。
+// 仅非零值字段会被提交。
+type ScheduleTaskUpdateRequest struct {
+	Name             *string        `json:"name,omitempty"`
+	Description      *string        `json:"description,omitempty"`
+	ScheduleType     *string        `json:"schedule_type,omitempty"`
+	DelaySeconds     *int           `json:"delay_seconds,omitempty"`
+	RunAt            *string        `json:"run_at,omitempty"`
+	IntervalSeconds  *int           `json:"interval_seconds,omitempty"`
+	CronExpr         *string        `json:"cron_expr,omitempty"`
+	Timezone         *string        `json:"timezone,omitempty"`
+	Prompt           *string        `json:"prompt,omitempty"`
+	RequestMode      *string        `json:"request_mode,omitempty"`
+	SessionID        *string        `json:"session_id,omitempty"`
+	GroupID          *string        `json:"group_id,omitempty"`
+	WorkingDirectory *string        `json:"working_directory,omitempty"`
+	FlowID           *string        `json:"flow_id,omitempty"`
+	Disabled         *bool          `json:"disabled,omitempty"`
+	EffectiveStartAt *string        `json:"effective_start_at,omitempty"`
+	EffectiveEndAt   *string        `json:"effective_end_at,omitempty"`
+	MetadataPayload  map[string]any `json:"metadata_payload,omitempty"`
+	AvailableSkills  []string       `json:"available_skills,omitempty"`
+}
+
+// ScheduleRunRecord 定时任务执行记录。
+type ScheduleRunRecord struct {
+	ID             string         `json:"id"`
+	ScheduleID     string         `json:"schedule_id"`
+	Status         string         `json:"status"`
+	RequestMode    string         `json:"request_mode,omitempty"`
+	PromptSnapshot string         `json:"prompt_snapshot,omitempty"`
+	SessionID      string         `json:"session_id,omitempty"`
+	RunID          string         `json:"run_id,omitempty"`
+	ClientID       string         `json:"client_id,omitempty"`
+	DeviceID       string         `json:"device_id,omitempty"`
+	ClientType     string         `json:"client_type,omitempty"`
+	Platform       string         `json:"platform,omitempty"`
+	ErrorMessage   string         `json:"error_message,omitempty"`
+	ResultPayload  map[string]any `json:"result_payload,omitempty"`
+	TriggeredAt    string         `json:"triggered_at,omitempty"`
+	StartedAt      string         `json:"started_at,omitempty"`
+	FinishedAt     string         `json:"finished_at,omitempty"`
+	DurationMS     int64          `json:"duration_ms,omitempty"`
+	CreatedAt      string         `json:"created_at,omitempty"`
+}
+
+// ScheduleRunRecordPage 定时任务执行记录分页列表。
+type ScheduleRunRecordPage struct {
+	Offset int                 `json:"offset"`
+	Total  int                 `json:"total"`
+	Data   []ScheduleRunRecord `json:"data"`
 }
