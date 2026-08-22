@@ -150,20 +150,26 @@ func (c *Client) CallTool(ctx context.Context, server ServerConfig, toolName str
 }
 
 // Close 清理所有连接资源。
+// 修复：先在锁内收集所有需要销毁的实例，释放锁后再逐个销毁，
+// 避免持有全局锁期间同步等待子进程退出（最长 N×3s）阻塞所有并发操作。
 func (c *Client) Close() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, inst := range c.stdioInstances {
-		inst.destroy()
-	}
+	instances := c.stdioInstances
+	connections := c.sseConnections
 	c.stdioInstances = make(map[string]*stdioInstance)
-	for _, conn := range c.sseConnections {
-		conn.cancel()
-		conn.body.Close()
-	}
 	c.sseConnections = make(map[string]*sseConnection)
 	c.httpSessionIDs = make(map[string]string)
 	c.sseEndpoints = make(map[string]string)
+	c.sseConnectMu = make(map[string]*sync.Mutex)
+	c.mu.Unlock()
+
+	for _, inst := range instances {
+		inst.destroy()
+	}
+	for _, conn := range connections {
+		conn.cancel()
+		conn.body.Close()
+	}
 }
 
 // ---------- Streamable HTTP 传输 ----------
@@ -356,6 +362,7 @@ func (c *Client) invalidateSSEEndpoint(serverURL string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.sseEndpoints, serverURL)
+	delete(c.sseConnectMu, serverURL) // 修复：同步清理连接互斥锁，防止 map 无限增长
 	if conn, ok := c.sseConnections[serverURL]; ok {
 		conn.cancel()
 		conn.body.Close()
@@ -390,7 +397,9 @@ func (c *Client) sseConnect(ctx context.Context, server ServerConfig) (string, e
 	c.mu.Unlock()
 
 	// RISK-3 修复：使用无超时的 HTTP 客户端建立 SSE 连接
-	sseCtx, sseCancel := context.WithCancel(ctx)
+	// P1⑤ 修复：SSE 连接使用独立的 Background context，与请求级超时解耦，
+	// 避免首个调用者超时后缓存的连接被自动断开。连接生命周期由 Close() 管理。
+	sseCtx, sseCancel := context.WithCancel(context.Background())
 	req, err := http.NewRequestWithContext(sseCtx, http.MethodGet, server.ServerURL, nil)
 	if err != nil {
 		sseCancel()
@@ -542,7 +551,16 @@ func (c *Client) getOrCreateStdioInstance(server ServerConfig) (*stdioInstance, 
 	defer c.mu.Unlock()
 
 	if inst, ok := c.stdioInstances[server.ServerURL]; ok {
-		return inst, nil
+		// P0③ 修复：若实例已被销毁（超时/错误触发），从缓存移除并重建，
+		// 避免该服务器在 Client 生命周期内永久不可用。
+		inst.mu.Lock()
+		closed := inst.closed
+		inst.mu.Unlock()
+		if closed {
+			delete(c.stdioInstances, server.ServerURL)
+		} else {
+			return inst, nil
+		}
 	}
 
 	// 解析 stdio:// URL 格式: stdio://command arg1 arg2 ...

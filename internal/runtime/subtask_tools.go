@@ -52,7 +52,12 @@ func updateCollaborationWithRetry(
 			if logf != nil {
 				logf("[协同任务] 状态更新失败，第 %d 次重试（等待 %v）: task_id=%s err=%v", attempt+1, delay, taskID, err)
 			}
-			time.Sleep(delay)
+			// 修复：退避等待响应 context 取消，避免进程退出被无谓延迟
+			select {
+			case <-callbackCtx.Done():
+				return nil, fmt.Errorf("协同任务状态更新失败（等待重试期间被取消）: %w", callbackCtx.Err())
+			case <-time.After(delay):
+			}
 		}
 	}
 	return nil, fmt.Errorf("协同任务状态更新失败（已重试 %d 次）: %w", collaborationUpdateMaxRetries, lastErr)
@@ -598,7 +603,14 @@ func (r *ClientRuntime) executeLocalSubtask(
 
 	for event := range stream {
 		// 收到任意流事件即重置空闲计时器
+		// 修复：Reset 前必须先 Stop 并排空 channel，避免 Go < 1.23 上的竞态
 		if idleTimer != nil {
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
+			}
 			idleTimer.Reset(time.Duration(request.TimeoutSeconds) * time.Second)
 		}
 		if messageID := resolveSubtaskEventMessageID(event.Data); messageID != "" {

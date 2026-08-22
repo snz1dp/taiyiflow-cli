@@ -779,11 +779,13 @@ func (m *Manager) Load() (Config, error) {
 
 	decryptedAccessToken, err := decryptConfigSecret(config.AccessToken)
 	if err != nil {
-		return Config{}, fmt.Errorf("解密 access_token 失败: %w", err)
+		// P2 修复：解密失败时降级为空令牌（视为未登录），而非阻断整个 Load 流程。
+		// 场景：用户更改主机名、迁移 SNZ1DP_HOME、从备份恢复配置等。
+		decryptedAccessToken = ""
 	}
 	decryptedPersistentToken, err := decryptConfigSecret(config.PersistentToken)
 	if err != nil {
-		return Config{}, fmt.Errorf("解密 persistent_token 失败: %w", err)
+		decryptedPersistentToken = ""
 	}
 	config.AccessToken = decryptedAccessToken
 	config.PersistentToken = decryptedPersistentToken
@@ -839,6 +841,10 @@ func (m *Manager) Save(config Config) error {
 	}
 
 	serializedConfig := config
+	// P2⑩ 修复：确保随机种子存在，使加密密钥包含不可预测的随机成分
+	if err := ensureConfigSecretSeed(); err != nil {
+		return fmt.Errorf("初始化配置加密种子失败: %w", err)
+	}
 	encryptedAccessToken, err := encryptConfigSecret(config.AccessToken)
 	if err != nil {
 		return fmt.Errorf("加密 access_token 失败: %w", err)
@@ -855,7 +861,13 @@ func (m *Manager) Save(config Config) error {
 		return fmt.Errorf("序列化配置失败: %w", err)
 	}
 
-	if err := os.WriteFile(m.path, content, 0o644); err != nil {
+	// P0①+P1④ 修复：原子写入 + 权限收紧为 0600
+	tmpPath := m.path + ".tmp"
+	if err := os.WriteFile(tmpPath, content, 0o600); err != nil {
+		return fmt.Errorf("写入配置临时文件失败: %w", err)
+	}
+	if err := os.Rename(tmpPath, m.path); err != nil {
+		os.Remove(tmpPath)
 		return fmt.Errorf("写入配置失败: %w", err)
 	}
 
@@ -924,27 +936,51 @@ func decryptConfigSecret(value string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	block, err := aes.NewCipher(configSecretKey())
-	if err != nil {
-		return "", err
+	// P2⑩ 修复：优先使用新密钥（含随机种子）解密，失败时回退到旧密钥（向后兼容）
+	keys := [][]byte{configSecretKey(), configSecretKeyLegacy()}
+	for _, key := range keys {
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			continue
+		}
+		aead, err := cipher.NewGCM(block)
+		if err != nil {
+			continue
+		}
+		if len(payload) < aead.NonceSize() {
+			continue
+		}
+		nonce := payload[:aead.NonceSize()]
+		ciphertext := payload[aead.NonceSize():]
+		plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
+		if err == nil {
+			return strings.TrimSpace(string(plaintext)), nil
+		}
 	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-	if len(payload) < aead.NonceSize() {
-		return "", fmt.Errorf("密文长度不足")
-	}
-	nonce := payload[:aead.NonceSize()]
-	ciphertext := payload[aead.NonceSize():]
-	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(plaintext)), nil
+	return "", fmt.Errorf("解密配置密文失败")
 }
 
 func configSecretKey() []byte {
+	seedParts := []string{"taiyiflow-cli/config-secret/v2"}
+	// P2⑩ 修复：引入随机种子文件，使密钥不再仅由公开信息推导
+	if seed, err := readConfigSecretSeed(); err == nil && seed != "" {
+		seedParts = append(seedParts, seed)
+	}
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		seedParts = append(seedParts, strings.TrimSpace(homeDir))
+	}
+	if hostName, err := os.Hostname(); err == nil {
+		seedParts = append(seedParts, strings.TrimSpace(hostName))
+	}
+	if rootDir, err := DefaultRootDir(); err == nil {
+		seedParts = append(seedParts, strings.TrimSpace(rootDir))
+	}
+	sum := sha256.Sum256([]byte(strings.Join(seedParts, "|")))
+	return sum[:]
+}
+
+// configSecretKeyLegacy 返回旧版密钥（不含随机种子），用于向后兼容解密。
+func configSecretKeyLegacy() []byte {
 	seedParts := []string{"taiyiflow-cli/config-secret/v1"}
 	if homeDir, err := os.UserHomeDir(); err == nil {
 		seedParts = append(seedParts, strings.TrimSpace(homeDir))
@@ -957,4 +993,48 @@ func configSecretKey() []byte {
 	}
 	sum := sha256.Sum256([]byte(strings.Join(seedParts, "|")))
 	return sum[:]
+}
+
+// configSecretSeedPath 返回随机种子文件路径。
+func configSecretSeedPath() (string, error) {
+	rootDir, err := DefaultRootDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(rootDir, "config-secret-seed"), nil
+}
+
+// readConfigSecretSeed 读取随机种子文件内容。
+func readConfigSecretSeed() (string, error) {
+	seedPath, err := configSecretSeedPath()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(seedPath)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+// ensureConfigSecretSeed 确保随机种子文件存在；不存在时生成 32 字节随机种子。
+func ensureConfigSecretSeed() error {
+	seedPath, err := configSecretSeedPath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(seedPath); err == nil {
+		return nil // 已存在
+	}
+	seed := make([]byte, 32)
+	if _, err := io.ReadFull(cryptorand.Reader, seed); err != nil {
+		return fmt.Errorf("生成配置加密种子失败: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(seedPath), 0o700); err != nil {
+		return fmt.Errorf("创建配置加密种子目录失败: %w", err)
+	}
+	if err := os.WriteFile(seedPath, []byte(base64.RawStdEncoding.EncodeToString(seed)), 0o600); err != nil {
+		return fmt.Errorf("写入配置加密种子失败: %w", err)
+	}
+	return nil
 }

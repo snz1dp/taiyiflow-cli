@@ -194,10 +194,13 @@ func (w *collaborationWorker) run(ctx context.Context) error {
 		} else {
 			w.logf("协同驻留进程连接中断: %v", err)
 		}
+		// 修复：使用 NewTimer 替代 time.After，避免 ctx 先触发时定时器泄漏
+		reconnectTimer := time.NewTimer(w.options.ReconnectDelay)
 		select {
 		case <-ctx.Done():
+			reconnectTimer.Stop()
 			return ctx.Err()
-		case <-time.After(w.options.ReconnectDelay):
+		case <-reconnectTimer.C:
 		}
 	}
 }
@@ -269,7 +272,10 @@ func interruptCollaborationWorkerConnectionOnCancel(ctx context.Context, conn ne
 func (w *collaborationWorker) handleServerEnvelope(ctx context.Context, conn net.Conn, raw []byte) (bool, error) {
 	var envelope collaborationEnvelope
 	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return false, fmt.Errorf("解析协同长连接消息失败: %w", err)
+		// P2⑧ 修复：顶层 envelope 解析失败仅记录日志并跳过，不断开连接。
+		// 服务端偶发编码错误不应触发 worker 重连。
+		w.logf("解析协同长连接消息失败，跳过: %v", err)
+		return false, nil
 	}
 	if strings.TrimSpace(envelope.Type) != collaborationMessageType {
 		return false, nil
@@ -308,7 +314,8 @@ func (w *collaborationWorker) handleServerEnvelope(ctx context.Context, conn net
 			return false, fmt.Errorf("解析最近任务事件失败: %w", err)
 		}
 		for _, taskSnapshot := range payload.Tasks {
-			w.loadAndScheduleTask(ctx, conn, taskSnapshot)
+			// P2⑦ 修复：将 HTTP 拉取逻辑放入独立 goroutine，避免阻塞 WebSocket 读循环
+			go w.loadAndScheduleTask(ctx, conn, taskSnapshot)
 		}
 	case collaborationEventScheduleTaskDispatch:
 		var payload scheduleTaskDispatchPayload

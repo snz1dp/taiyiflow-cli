@@ -544,7 +544,7 @@ func TestManagerLoadKeepsPlaintextAuthTokensForBackwardCompatibility(t *testing.
 	}
 }
 
-func TestManagerLoadRejectsBrokenEncryptedAuthToken(t *testing.T) {
+func TestManagerLoadDegradesBrokenEncryptedAuthToken(t *testing.T) {
 	tempDir := t.TempDir()
 	manager := &Manager{path: filepath.Join(tempDir, "taiyiflow.yaml")}
 
@@ -553,8 +553,13 @@ func TestManagerLoadRejectsBrokenEncryptedAuthToken(t *testing.T) {
 		t.Fatalf("write config failed: %v", err)
 	}
 
-	if _, err := manager.Load(); err == nil || !strings.Contains(err.Error(), "解密 access_token 失败") {
-		t.Fatalf("expected encrypted token decode failure, got %v", err)
+	// 修复后行为：解密失败时降级为空令牌，Load 不再报错
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("expected Load to succeed with degraded token, got error: %v", err)
+	}
+	if loaded.AccessToken != "" {
+		t.Fatalf("expected empty access token after decryption failure, got %q", loaded.AccessToken)
 	}
 }
 

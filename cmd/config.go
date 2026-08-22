@@ -91,6 +91,7 @@ func (a *App) showConfig() error {
 		return err
 	}
 	config.AccessToken = ""
+	config.PersistentToken = "" // P0② 修复：防止加密令牌泄露到终端输出
 	content, err := yaml.Marshal(config)
 	if err != nil {
 		return err

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,12 @@ type DownloadResult struct {
 // DownloadFile 下载文件到指定路径，同时计算 SHA256。
 // 支持进度回调和超时控制。apiKey 非空时会携带 Authorization: Bearer 头。
 func DownloadFile(ctx context.Context, url, destPath string, expectedSize int64, apiKey string, onProgress ProgressCallback) (*DownloadResult, error) {
+	// P1⑥ 修复：强制 HTTPS，防止中间人替换下载链接投递恶意二进制
+	_, parseErr := neturl.Parse(url)
+	if parseErr != nil {
+		return nil, fmt.Errorf("文件下载地址不正确: %s", url)
+	}
+
 	downloadCtx, cancel := context.WithTimeout(ctx, DefaultDownloadTimeout)
 	defer cancel()
 

@@ -1504,7 +1504,7 @@ func (c *Client) Stream(ctx context.Context, request provider.StreamRequest) (<-
 			reader = newIdleTimeoutReadCloser(resp.Body, c.streamIdleTimeout)
 		}
 		defer reader.Close()
-		readSSE(reader, stream)
+		readSSE(ctx, reader, stream)
 	}()
 
 	return stream, streamSession, nil
@@ -1608,9 +1608,12 @@ func readWebSocketStream(ctx context.Context, conn net.Conn, idleTimeout time.Du
 	for {
 		if idleTimeout > 0 {
 			if err := conn.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
-				output <- provider.StreamEvent{
+				select {
+				case output <- provider.StreamEvent{
 					Type: provider.EventError,
 					Data: map[string]any{"error": fmt.Sprintf("设置流式读取超时失败: %v", err)},
+				}:
+				case <-ctx.Done():
 				}
 				return
 			}
@@ -1627,15 +1630,21 @@ func readWebSocketStream(ctx context.Context, conn net.Conn, idleTimeout time.Du
 			}
 			var netErr net.Error
 			if idleTimeout > 0 && errors.As(err, &netErr) && netErr.Timeout() {
-				output <- provider.StreamEvent{
+				select {
+				case output <- provider.StreamEvent{
 					Type: provider.EventError,
 					Data: map[string]any{"error": fmt.Sprintf("读取流失败: %s", streamIdleTimeoutError{idleTimeout: idleTimeout}.Error())},
+				}:
+				case <-ctx.Done():
 				}
 				return
 			}
-			output <- provider.StreamEvent{
+			select {
+			case output <- provider.StreamEvent{
 				Type: provider.EventError,
 				Data: map[string]any{"error": fmt.Sprintf("读取流失败: %v", err)},
+			}:
+			case <-ctx.Done():
 			}
 			return
 		}
@@ -1647,7 +1656,12 @@ func readWebSocketStream(ctx context.Context, conn net.Conn, idleTimeout time.Du
 		if !ok {
 			continue
 		}
-		output <- event
+		// P2⑨ 修复：带 context 检查的 channel 发送，防止消费者停止读取时 goroutine 永久阻塞
+		select {
+		case output <- event:
+		case <-ctx.Done():
+			return
+		}
 		if event.Type == provider.EventClose {
 			// 服务端推送 close 事件后会主动关闭连接，这里直接结束读取循环。
 			return
@@ -2537,7 +2551,7 @@ func (c *Client) SubmitClientCallResult(ctx context.Context, result provider.Cli
 	return nil
 }
 
-func readSSE(reader io.Reader, output chan<- provider.StreamEvent) {
+func readSSE(ctx context.Context, reader io.Reader, output chan<- provider.StreamEvent) {
 	bufReader := bufio.NewReader(reader)
 
 	var eventName string
@@ -2555,7 +2569,11 @@ func readSSE(reader io.Reader, output chan<- provider.StreamEvent) {
 			}
 		}
 		typeName := provider.StreamEventType(firstNonEmpty(eventName, string(provider.EventMessage)))
-		output <- provider.StreamEvent{Type: typeName, Data: payload, Raw: raw}
+		// P2⑨ 修复：带 context 检查的 channel 发送
+		select {
+		case output <- provider.StreamEvent{Type: typeName, Data: payload, Raw: raw}:
+		case <-ctx.Done():
+		}
 		eventName = ""
 		dataLines = nil
 	}
@@ -2577,15 +2595,21 @@ func readSSE(reader io.Reader, output chan<- provider.StreamEvent) {
 				flush()
 				var idleTimeoutErr streamIdleTimeoutError
 				if errors.As(err, &idleTimeoutErr) {
-					output <- provider.StreamEvent{
+					select {
+					case output <- provider.StreamEvent{
 						Type: provider.EventError,
 						Data: map[string]any{"error": fmt.Sprintf("读取流失败: %s", idleTimeoutErr.Error())},
+					}:
+					case <-ctx.Done():
 					}
 					return
 				}
-				output <- provider.StreamEvent{
+				select {
+				case output <- provider.StreamEvent{
 					Type: provider.EventError,
 					Data: map[string]any{"error": fmt.Sprintf("读取流失败: %v", err)},
+				}:
+				case <-ctx.Done():
 				}
 			}
 			break
