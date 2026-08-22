@@ -4495,10 +4495,10 @@ func TestStaleStreamBatchReturnsPendingCurrentEvent(t *testing.T) {
 
 func TestConfigFormValuesFromInputsIncludesHTTPTimeout(t *testing.T) {
 	state := newConfigFormState(ConfigFormState{})
-	state.inputs[10].SetValue("75")
-	state.inputs[11].SetValue("45")
-	state.inputs[12].SetValue("300")
-	state.inputs[15].SetValue("90")
+	state.inputs[configFieldHTTPTimeout].SetValue("75")
+	state.inputs[configFieldCommandTimeout].SetValue("45")
+	state.inputs[configFieldStreamIdleTimeout].SetValue("300")
+	state.inputs[configFieldQRWaitTimeout].SetValue("90")
 
 	values := configFormValuesFromInputs(state.inputs)
 	if values.HTTPTimeoutSeconds != "75" {

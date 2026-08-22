@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 )
 
 func TestVerifySHA256(t *testing.T) {
@@ -139,7 +141,7 @@ func TestOrchestrator_VerifyStartup_Matched(t *testing.T) {
 
 	// 保存一个目标版本状态（与 buildinfo.Version 相同）
 	state := &PersistState{
-		TargetVersion: "0.1.6", // 与 buildinfo.Version 默认值一致
+		TargetVersion: buildinfo.Version, // 与当前构建版本一致
 		UpdatePolicy:  "notify",
 	}
 	if err := stateMgr.SaveState(state); err != nil {
@@ -158,8 +160,8 @@ func TestOrchestrator_VerifyStartup_Matched(t *testing.T) {
 	if !matched {
 		t.Error("should be matched when target version equals current version")
 	}
-	if targetVersion != "0.1.6" {
-		t.Errorf("expected target version 0.1.6, got %s", targetVersion)
+	if targetVersion != buildinfo.Version {
+		t.Errorf("expected target version %s, got %s", buildinfo.Version, targetVersion)
 	}
 
 	// 验证状态已被清除
