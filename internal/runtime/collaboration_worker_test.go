@@ -883,3 +883,64 @@ func writeSSEEventForTest(writer io.Writer, event string, payload map[string]any
 	_, err = fmt.Fprintf(writer, "event: %s\ndata: %s\n\n", strings.TrimSpace(event), raw)
 	return err
 }
+
+// TestRunCollaborationWorkerStopsOnKicked 验证被管理员踢下线后 worker 不再重连。
+func TestRunCollaborationWorkerStopsOnKicked(t *testing.T) {
+	tempDir := t.TempDir()
+	providerStub := &subtaskProviderStub{}
+
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	config := internalconfig.Default()
+	config.ClientID = "cli-123"
+	config.DeviceID = "device-456"
+	config.Workdir = tempDir
+
+	var logMu sync.Mutex
+	var logLines []string
+	worker := newCollaborationWorker(runtimeClient, providerStub, &config, CollaborationWorkerOptions{
+		RecentTaskLimit: 2,
+		MaxConcurrency:  1,
+		ReconnectDelay:  time.Hour, // 设置极长重连间隔，若触发重连则测试超时失败
+		PingInterval:    time.Hour,
+		Logf: func(format string, args ...any) {
+			logMu.Lock()
+			logLines = append(logLines, fmt.Sprintf(format, args...))
+			logMu.Unlock()
+		},
+	})
+
+	// 验证 handleServerEnvelope 对 connection.kicked 事件返回哨兵错误
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	kickedPayload, err := json.Marshal(map[string]any{
+		"type":  collaborationMessageType,
+		"event": collaborationEventConnectionKicked,
+		"payload": map[string]any{
+			"reason": "设备已被管理员禁用",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal kicked payload failed: %v", err)
+	}
+
+	_, handleErr := worker.handleServerEnvelope(context.Background(), clientConn, kickedPayload)
+	if !errors.Is(handleErr, errWorkerKicked) {
+		t.Fatalf("expected errWorkerKicked, got: %v", handleErr)
+	}
+
+	// 验证日志中记录了踢下线原因
+	logMu.Lock()
+	found := false
+	for _, line := range logLines {
+		if strings.Contains(line, "被管理员踢下线") && strings.Contains(line, "设备已被管理员禁用") {
+			found = true
+			break
+		}
+	}
+	logMu.Unlock()
+	if !found {
+		t.Fatalf("expected kick log with reason, got: %v", logLines)
+	}
+}

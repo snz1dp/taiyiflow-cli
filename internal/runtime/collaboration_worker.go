@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -24,6 +25,7 @@ const (
 	collaborationMessageType                  = "collaboration"
 	collaborationEventConnectionReady         = "connection.ready"
 	collaborationEventConnectionError         = "connection.error"
+	collaborationEventConnectionKicked        = "connection.kicked"
 	collaborationEventConnectionPing          = "connection.ping"
 	collaborationEventConnectionPong          = "connection.pong"
 	collaborationEventTaskDispatch            = "task.dispatch"
@@ -44,6 +46,9 @@ const (
 	collaborationWorkerRecoveryStatusPending  = "pending"
 	collaborationWorkerRecoveryStatusDispatch = "dispatched"
 )
+
+// errWorkerKicked 是哨兵错误，表示协同驻留进程被管理员踢下线，禁止自动重连。
+var errWorkerKicked = errors.New("被管理员踢下线，停止重连")
 
 type CollaborationWorkerOptions struct {
 	RecentTaskLimit int
@@ -191,6 +196,10 @@ func (w *collaborationWorker) run(ctx context.Context) error {
 			}
 		} else if ctx.Err() != nil {
 			return ctx.Err()
+		} else if errors.Is(err, errWorkerKicked) {
+			// 被管理员踢下线，禁止自动重连，直接退出。
+			w.logf("协同驻留进程被踢下线，停止重连")
+			return err
 		} else {
 			w.logf("协同驻留进程连接中断: %v", err)
 		}
@@ -296,6 +305,17 @@ func (w *collaborationWorker) handleServerEnvelope(ctx context.Context, conn net
 			}
 		}
 		return false, fmt.Errorf("%s", message)
+	case collaborationEventConnectionKicked:
+		// 被管理员踢下线：记录原因并返回哨兵错误，禁止自动重连。
+		reason := "未知原因"
+		if len(envelope.Payload) > 0 {
+			var payload map[string]any
+			if err := json.Unmarshal(envelope.Payload, &payload); err == nil {
+				reason = firstNonEmptySubtask(strings.TrimSpace(stringValue(payload["reason"])), reason)
+			}
+		}
+		w.logf("被管理员踢下线: %s", reason)
+		return false, errWorkerKicked
 	case collaborationEventConnectionPing:
 		if err := w.sendEnvelope(conn, collaborationEventConnectionPong, map[string]any{}); err != nil {
 			return false, err
