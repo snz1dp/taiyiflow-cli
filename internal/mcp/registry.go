@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
 
 // Registry 是 MCP 服务器注册表，负责：
@@ -34,7 +34,7 @@ func NewRegistry() *Registry {
 // - 系统内置服务（is_system=true）始终启用
 // - 非系统服务若 ID 在本地禁用集合中则标记为禁用
 // - 工具级禁用通过 disabled_tool_keys 过滤
-func (r *Registry) LoadServers(ctx context.Context, providerClient *providerclient.Client, flowID string) error {
+func (r *Registry) LoadServers(ctx context.Context, providerClient provider.Provider, flowID string) error {
 	if flowID == "" {
 		return nil
 	}

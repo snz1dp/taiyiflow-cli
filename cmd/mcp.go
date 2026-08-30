@@ -8,7 +8,7 @@ import (
 	"text/tabwriter"
 
 	internalmcp "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/mcp"
-	providerclient "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider/taiyiflow"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
 
 // runMcp 是 MCP 供应及管理子命令的入口。
@@ -210,7 +210,7 @@ func (a *App) mcpAdd(ctx context.Context, args []string) error {
 		return fmt.Errorf("未配置默认智能体，请先执行 taiyiflow-cli agents use <名称> 或使用 --agent 指定")
 	}
 
-	createData := providerclient.MCPServerCreate{
+	createData := provider.MCPServerCreateRequest{
 		Name:       strings.TrimSpace(*name),
 		ServerURL:  strings.TrimSpace(*serverURL),
 		FlowID:     flowID,

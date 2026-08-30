@@ -553,17 +553,12 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 	definitions = append(definitions, browserClientToolDefinitions()...)
 	definitions = append(definitions, computerClientToolDefinitions()...)
 	definitions = append(definitions, scheduleClientToolDefinitions()...)
+	definitions = append(definitions, mcpManageClientToolDefinitions()...)
 	if !r.interactivePromptsEnabled {
 		filtered := definitions[:0]
 		for _, definition := range definitions {
 			name := strings.TrimSpace(stringValue(definition["name"]))
 			if name == "ask_user" {
-				continue
-			}
-			// REG-1 修复：非交互模式下过滤 schedule 变更工具，
-			// 仅保留只读查询（schedule_list、schedule_runs），
-			// 避免无人值守场景下模型误调用变更操作。
-			if isScheduleTool(name) && mutatingScheduleTool(name) {
 				continue
 			}
 			filtered = append(filtered, definition)
@@ -629,6 +624,13 @@ func allowedClientToolSetForMode(mode string) map[string]bool {
 		"switch_to_agent":           true,
 		"schedule_list":             true,
 		"schedule_runs":             true,
+		"mcp_list_servers":          true,
+		"mcp_list_tools":            true,
+		"mcp_toggle_server":         true,
+		"mcp_toggle_tool":           true,
+		"mcp_add_server":            true,
+		"mcp_edit_server":           true,
+		"mcp_delete_server":         true,
 		browserToolTabsContext:      true,
 		browserToolReadText:         true,
 		browserToolReadConsole:      true,
@@ -810,6 +812,9 @@ func mutatingClientTool(toolName string) bool {
 		// schedule_list 和 schedule_runs 为只读查询，其余为变更操作
 		return mutatingScheduleTool(toolName)
 	}
+	if isMcpManageTool(toolName) {
+		return mutatingMcpManageTool(toolName)
+	}
 	switch canonicalClientToolName(toolName) {
 	case "shell_exec", "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit", "document_unstructured", "write_file", "skill_create", "skill_upload", "skill_delete":
 		return true
@@ -838,6 +843,9 @@ func previewClientTool(toolName string, arguments map[string]any) string {
 	}
 	if isScheduleTool(toolName) {
 		return schedulePreview(toolName, arguments)
+	}
+	if isMcpManageTool(toolName) {
+		return mcpManagePreview(toolName, arguments)
 	}
 	switch canonicalClientToolName(toolName) {
 	case "ask_user":

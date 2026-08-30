@@ -317,6 +317,22 @@ func (s stubProvider) UninstallSkillRecord(context.Context, string) (*provider.S
 	return nil, fmt.Errorf("not implemented")
 }
 
+func (s stubProvider) ListMCPServers(context.Context, string, string) ([]provider.MCPServerSummary, error) {
+	return nil, nil
+}
+
+func (s stubProvider) CreateMCPServer(context.Context, provider.MCPServerCreateRequest) (*provider.MCPServerSummary, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s stubProvider) UpdateMCPServer(context.Context, string, provider.MCPServerUpdateRequest) (*provider.MCPServerSummary, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s stubProvider) DeleteMCPServer(context.Context, string) error {
+	return fmt.Errorf("not implemented")
+}
+
 func (s stubProvider) ReportScheduleRun(context.Context, string, provider.ScheduleRunReportRequest) error {
 	return nil
 }

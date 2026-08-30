@@ -537,6 +537,8 @@ func (r *ClientRuntime) executeClientToolPayload(
 	default:
 		if isScheduleTool(toolName) {
 			result, err = r.scheduleTool(ctx, providerClient, config, toolName, arguments)
+		} else if isMcpManageTool(toolName) {
+			result, err = r.mcpManageTool(ctx, providerClient, config, toolName, arguments)
 		} else if isBrowserTool(toolName) {
 			result, err = r.browserTool(ctx, providerClient, config, toolName, arguments)
 		} else if isComputerTool(toolName) {

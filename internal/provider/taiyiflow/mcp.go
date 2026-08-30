@@ -8,59 +8,65 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
 
-// MCPServer 表示后端返回的 MCP 服务器对象。
+// mcpServerRaw 表示后端返回的 MCP 服务器原始对象。
 // 字段与 taiyiflow-chatui 的 MCPServer 接口保持一致。
-type MCPServer struct {
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	ServerURL      string         `json:"server_url"`
-	ServerType     string         `json:"server_type"`
-	Description    string         `json:"description,omitempty"`
-	AuthConfig     map[string]any `json:"auth_config,omitempty"`
-	PassUserIdentity bool         `json:"pass_user_identity,omitempty"`
-	IsSystem       bool           `json:"is_system,omitempty"`
-	OwnerUserID    string         `json:"owner_user_id,omitempty"`
-	ViaClient      bool           `json:"via_client,omitempty"`
-	ClientType     string         `json:"client_type,omitempty"`
-	Enabled        *bool          `json:"enabled,omitempty"`
-	FlowID         string         `json:"flow_id,omitempty"`
-	Tools          []MCPToolRead  `json:"tools,omitempty"`
+type mcpServerRaw struct {
+	ID               string         `json:"id"`
+	Name             string         `json:"name"`
+	ServerURL        string         `json:"server_url"`
+	ServerType       string         `json:"server_type"`
+	Description      string         `json:"description,omitempty"`
+	AuthConfig       map[string]any `json:"auth_config,omitempty"`
+	PassUserIdentity bool           `json:"pass_user_identity,omitempty"`
+	IsSystem         bool           `json:"is_system,omitempty"`
+	OwnerUserID      string         `json:"owner_user_id,omitempty"`
+	ViaClient        bool           `json:"via_client,omitempty"`
+	ClientType       string         `json:"client_type,omitempty"`
+	Enabled          *bool          `json:"enabled,omitempty"`
+	FlowID           string         `json:"flow_id,omitempty"`
+	Tools            []mcpToolRaw   `json:"tools,omitempty"`
 }
 
-// MCPToolRead 表示后端返回的工具定义（含启用状态）。
-type MCPToolRead struct {
+// mcpToolRaw 表示后端返回的工具定义原始对象。
+type mcpToolRaw struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	InputSchema map[string]any `json:"input_schema,omitempty"`
-	OutputSchema map[string]any `json:"output_schema,omitempty"`
 	Enabled     *bool          `json:"enabled,omitempty"`
 }
 
-// MCPServerCreate 表示创建 MCP 服务器的请求体。
-type MCPServerCreate struct {
-	Name           string         `json:"name"`
-	ServerURL      string         `json:"server_url"`
-	FlowID         string         `json:"flow_id"`
-	ServerType     string         `json:"server_type"`
-	Description    string         `json:"description,omitempty"`
-	AuthConfig     map[string]any `json:"auth_config,omitempty"`
-	PassUserIdentity bool         `json:"pass_user_identity,omitempty"`
-	Tools          []MCPToolItem  `json:"tools,omitempty"`
-	ClientType     string         `json:"client_type,omitempty"`
-}
-
-// MCPToolItem 表示工具定义（创建/编辑时使用）。
-type MCPToolItem struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	InputSchema map[string]any `json:"input_schema,omitempty"`
+// toSummary 将原始服务器对象转换为 provider.MCPServerSummary。
+func (s *mcpServerRaw) toSummary() provider.MCPServerSummary {
+	summary := provider.MCPServerSummary{
+		ID:          s.ID,
+		Name:        s.Name,
+		ServerURL:   s.ServerURL,
+		ServerType:  s.ServerType,
+		Description: s.Description,
+		AuthConfig:  s.AuthConfig,
+		IsSystem:    s.IsSystem,
+		OwnerUserID: s.OwnerUserID,
+		Enabled:     s.Enabled,
+		FlowID:      s.FlowID,
+	}
+	for _, tool := range s.Tools {
+		summary.Tools = append(summary.Tools, provider.MCPToolSummary{
+			Name:        tool.Name,
+			Description: tool.Description,
+			InputSchema: tool.InputSchema,
+			Enabled:     tool.Enabled,
+		})
+	}
+	return summary
 }
 
 // ListMCPServers 获取指定 flow 下的 MCP 服务器列表。
 // clientType 用于标识客户端类型，CLI 传 "cli"。
-func (c *Client) ListMCPServers(ctx context.Context, flowID string, clientType string) ([]MCPServer, error) {
+func (c *Client) ListMCPServers(ctx context.Context, flowID string, clientType string) ([]provider.MCPServerSummary, error) {
 	flowID = strings.TrimSpace(flowID)
 	if flowID == "" {
 		return nil, fmt.Errorf("获取 MCP 服务器列表失败: flow_id 不能为空")
@@ -93,16 +99,21 @@ func (c *Client) ListMCPServers(ctx context.Context, flowID string, clientType s
 		return nil, readHTTPError("获取 MCP 服务器列表失败", resp)
 	}
 
-	var servers []MCPServer
-	if err := json.NewDecoder(resp.Body).Decode(&servers); err != nil {
+	var rawServers []mcpServerRaw
+	if err := json.NewDecoder(resp.Body).Decode(&rawServers); err != nil {
 		return nil, fmt.Errorf("解析 MCP 服务器列表响应失败: %w", err)
+	}
+
+	servers := make([]provider.MCPServerSummary, 0, len(rawServers))
+	for i := range rawServers {
+		servers = append(servers, rawServers[i].toSummary())
 	}
 	return servers, nil
 }
 
 // CreateMCPServer 创建用户自建 MCP 服务器。
-func (c *Client) CreateMCPServer(ctx context.Context, data MCPServerCreate) (*MCPServer, error) {
-	content, err := json.Marshal(data)
+func (c *Client) CreateMCPServer(ctx context.Context, request provider.MCPServerCreateRequest) (*provider.MCPServerSummary, error) {
+	content, err := json.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("序列化创建 MCP 服务器请求失败: %w", err)
 	}
@@ -125,21 +136,22 @@ func (c *Client) CreateMCPServer(ctx context.Context, data MCPServerCreate) (*MC
 		return nil, readHTTPError("创建 MCP 服务器失败", resp)
 	}
 
-	var server MCPServer
-	if err := json.NewDecoder(resp.Body).Decode(&server); err != nil {
+	var raw mcpServerRaw
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("解析创建 MCP 服务器响应失败: %w", err)
 	}
-	return &server, nil
+	summary := raw.toSummary()
+	return &summary, nil
 }
 
 // UpdateMCPServer 编辑用户自建 MCP 服务器。
-func (c *Client) UpdateMCPServer(ctx context.Context, serverID string, data map[string]any) (*MCPServer, error) {
+func (c *Client) UpdateMCPServer(ctx context.Context, serverID string, request provider.MCPServerUpdateRequest) (*provider.MCPServerSummary, error) {
 	serverID = strings.TrimSpace(serverID)
 	if serverID == "" {
 		return nil, fmt.Errorf("编辑 MCP 服务器失败: server_id 不能为空")
 	}
 
-	content, err := json.Marshal(data)
+	content, err := json.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("序列化编辑 MCP 服务器请求失败: %w", err)
 	}
@@ -162,11 +174,12 @@ func (c *Client) UpdateMCPServer(ctx context.Context, serverID string, data map[
 		return nil, readHTTPError("编辑 MCP 服务器失败", resp)
 	}
 
-	var server MCPServer
-	if err := json.NewDecoder(resp.Body).Decode(&server); err != nil {
+	var raw mcpServerRaw
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("解析编辑 MCP 服务器响应失败: %w", err)
 	}
-	return &server, nil
+	summary := raw.toSummary()
+	return &summary, nil
 }
 
 // DeleteMCPServer 删除用户自建 MCP 服务器。

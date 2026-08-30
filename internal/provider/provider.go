@@ -673,6 +673,12 @@ type Provider interface {
 	DisableSchedule(ctx context.Context, scheduleID string) error
 	ListScheduleRuns(ctx context.Context, scheduleID string, status string, offset, limit int) (*ScheduleRunRecordPage, error)
 
+	// MCP 服务器管理 API
+	ListMCPServers(ctx context.Context, flowID string, clientType string) ([]MCPServerSummary, error)
+	CreateMCPServer(ctx context.Context, request MCPServerCreateRequest) (*MCPServerSummary, error)
+	UpdateMCPServer(ctx context.Context, serverID string, request MCPServerUpdateRequest) (*MCPServerSummary, error)
+	DeleteMCPServer(ctx context.Context, serverID string) error
+
 	// 后端技能包管理 API
 	FetchVisibleSkills(ctx context.Context, params FetchVisibleSkillsParams) ([]VisibleSkillPackage, error)
 	DownloadSkillContent(ctx context.Context, skillID string) (*SkillPackageContent, error)
@@ -848,4 +854,49 @@ type ScheduleRunRecordPage struct {
 	Offset int                 `json:"offset"`
 	Total  int                 `json:"total"`
 	Data   []ScheduleRunRecord `json:"data"`
+}
+
+// ---------------------------------------------------------------------------
+// MCP 服务器管理类型
+// ---------------------------------------------------------------------------
+
+// MCPServerSummary MCP 服务器摘要信息。
+type MCPServerSummary struct {
+	ID          string           `json:"id"`
+	Name        string           `json:"name"`
+	ServerURL   string           `json:"server_url"`
+	ServerType  string           `json:"server_type"`
+	Description string           `json:"description,omitempty"`
+	AuthConfig  map[string]any   `json:"auth_config,omitempty"`
+	IsSystem    bool             `json:"is_system,omitempty"`
+	OwnerUserID string           `json:"owner_user_id,omitempty"`
+	Enabled     *bool            `json:"enabled,omitempty"`
+	FlowID      string           `json:"flow_id,omitempty"`
+	Tools       []MCPToolSummary `json:"tools,omitempty"`
+}
+
+// MCPToolSummary MCP 工具摘要信息。
+type MCPToolSummary struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"input_schema,omitempty"`
+	Enabled     *bool          `json:"enabled,omitempty"`
+}
+
+// MCPServerCreateRequest 创建 MCP 服务器请求。
+type MCPServerCreateRequest struct {
+	Name        string `json:"name"`
+	ServerURL   string `json:"server_url"`
+	FlowID      string `json:"flow_id"`
+	ServerType  string `json:"server_type"`
+	Description string `json:"description,omitempty"`
+	ClientType  string `json:"client_type,omitempty"`
+}
+
+// MCPServerUpdateRequest 更新 MCP 服务器请求（仅非 nil 字段会被提交）。
+type MCPServerUpdateRequest struct {
+	Name        *string `json:"name,omitempty"`
+	ServerURL   *string `json:"server_url,omitempty"`
+	ServerType  *string `json:"server_type,omitempty"`
+	Description *string `json:"description,omitempty"`
 }
