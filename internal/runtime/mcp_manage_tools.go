@@ -108,6 +108,10 @@ func mcpManageClientToolDefinitions() []map[string]any {
 						"type":        "string",
 						"description": "服务描述（可选）",
 					},
+					"default_enabled": map[string]any{
+						"type":        "boolean",
+						"description": "默认启用状态（可选，默认 true）。设为 false 时，其他客户端首次看到该服务时默认处于禁用状态",
+					},
 				},
 				"required":             []string{"name", "server_url", "server_type"},
 				"additionalProperties": false,
@@ -140,6 +144,10 @@ func mcpManageClientToolDefinitions() []map[string]any {
 					"description": map[string]any{
 						"type":        "string",
 						"description": "新的服务描述（可选，不传则不修改）",
+					},
+					"default_enabled": map[string]any{
+						"type":        "boolean",
+						"description": "默认启用状态（可选，不传则不修改）。设为 false 时，其他客户端首次看到该服务时默认处于禁用状态",
 					},
 				},
 				"required":             []string{"server_name"},
@@ -563,6 +571,13 @@ func (r *ClientRuntime) mcpAddServer(ctx context.Context, providerClient provide
 		ClientType:  "cli",
 	}
 
+	// default_enabled：默认 true，用户可设为 false 表示新客户端默认禁用
+	if v, ok := arguments["default_enabled"]; ok {
+		if boolVal, isBool := v.(bool); isBool {
+			request.DefaultEnabled = &boolVal
+		}
+	}
+
 	newServer, err := providerClient.CreateMCPServer(ctx, request)
 	if err != nil {
 		return nil, newToolError("EXECUTION_FAILED", "添加 MCP 服务器失败: %v", err)
@@ -631,9 +646,15 @@ func (r *ClientRuntime) mcpEditServer(ctx context.Context, providerClient provid
 		updateRequest.Description = &desc
 		hasUpdate = true
 	}
+	if v, ok := arguments["default_enabled"]; ok {
+		if boolVal, isBool := v.(bool); isBool {
+			updateRequest.DefaultEnabled = &boolVal
+			hasUpdate = true
+		}
+	}
 
 	if !hasUpdate {
-		return nil, newToolError("PARAM_ERROR", "未提供任何需要修改的字段。可修改：name、server_url、server_type、description。")
+		return nil, newToolError("PARAM_ERROR", "未提供任何需要修改的字段。可修改：name、server_url、server_type、description、default_enabled。")
 	}
 
 	updated, err := providerClient.UpdateMCPServer(ctx, server.ID, updateRequest)

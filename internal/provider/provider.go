@@ -862,17 +862,18 @@ type ScheduleRunRecordPage struct {
 
 // MCPServerSummary MCP 服务器摘要信息。
 type MCPServerSummary struct {
-	ID          string           `json:"id"`
-	Name        string           `json:"name"`
-	ServerURL   string           `json:"server_url"`
-	ServerType  string           `json:"server_type"`
-	Description string           `json:"description,omitempty"`
-	AuthConfig  map[string]any   `json:"auth_config,omitempty"`
-	IsSystem    bool             `json:"is_system,omitempty"`
-	OwnerUserID string           `json:"owner_user_id,omitempty"`
-	Enabled     *bool            `json:"enabled,omitempty"`
-	FlowID      string           `json:"flow_id,omitempty"`
-	Tools       []MCPToolSummary `json:"tools,omitempty"`
+	ID             string           `json:"id"`
+	Name           string           `json:"name"`
+	ServerURL      string           `json:"server_url"`
+	ServerType     string           `json:"server_type"`
+	Description    string           `json:"description,omitempty"`
+	AuthConfig     map[string]any   `json:"auth_config,omitempty"`
+	IsSystem       bool             `json:"is_system,omitempty"`
+	OwnerUserID    string           `json:"owner_user_id,omitempty"`
+	Enabled        *bool            `json:"enabled,omitempty"`
+	DefaultEnabled *bool            `json:"default_enabled,omitempty"`
+	FlowID         string           `json:"flow_id,omitempty"`
+	Tools          []MCPToolSummary `json:"tools,omitempty"`
 }
 
 // MCPToolSummary MCP 工具摘要信息。
@@ -885,18 +886,20 @@ type MCPToolSummary struct {
 
 // MCPServerCreateRequest 创建 MCP 服务器请求。
 type MCPServerCreateRequest struct {
-	Name        string `json:"name"`
-	ServerURL   string `json:"server_url"`
-	FlowID      string `json:"flow_id"`
-	ServerType  string `json:"server_type"`
-	Description string `json:"description,omitempty"`
-	ClientType  string `json:"client_type,omitempty"`
+	Name           string `json:"name"`
+	ServerURL      string `json:"server_url"`
+	FlowID         string `json:"flow_id"`
+	ServerType     string `json:"server_type"`
+	Description    string `json:"description,omitempty"`
+	ClientType     string `json:"client_type,omitempty"`
+	DefaultEnabled *bool  `json:"default_enabled,omitempty"`
 }
 
 // MCPServerUpdateRequest 更新 MCP 服务器请求（仅非 nil 字段会被提交）。
 type MCPServerUpdateRequest struct {
-	Name        *string `json:"name,omitempty"`
-	ServerURL   *string `json:"server_url,omitempty"`
-	ServerType  *string `json:"server_type,omitempty"`
-	Description *string `json:"description,omitempty"`
+	Name           *string `json:"name,omitempty"`
+	ServerURL      *string `json:"server_url,omitempty"`
+	ServerType     *string `json:"server_type,omitempty"`
+	Description    *string `json:"description,omitempty"`
+	DefaultEnabled *bool   `json:"default_enabled,omitempty"`
 }

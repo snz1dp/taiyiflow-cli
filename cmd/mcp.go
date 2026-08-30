@@ -25,6 +25,8 @@ func (a *App) runMcp(ctx context.Context, args []string) error {
 		return a.mcpList(ctx, args[1:])
 	case "add":
 		return a.mcpAdd(ctx, args[1:])
+	case "edit", "update":
+		return a.mcpEdit(ctx, args[1:])
 	case "remove", "rm", "delete":
 		return a.mcpRemove(ctx, args[1:])
 	case "enable":
@@ -50,6 +52,7 @@ func (a *App) showMcpHelp() error {
 		"用法:",
 		"  taiyiflow-cli mcp list                          列出当前智能体的 MCP 服务器",
 		"  taiyiflow-cli mcp add [选项]                    添加用户自建 MCP 服务器",
+		"  taiyiflow-cli mcp edit <服务器ID> [选项]        编辑用户自建 MCP 服务器",
 		"  taiyiflow-cli mcp remove <服务器ID>             删除用户自建 MCP 服务器",
 		"  taiyiflow-cli mcp enable <服务器ID>             启用 MCP 服务器（本地）",
 		"  taiyiflow-cli mcp disable <服务器ID>            禁用 MCP 服务器（本地）",
@@ -59,21 +62,33 @@ func (a *App) showMcpHelp() error {
 		"  taiyiflow-cli mcp help                          显示本帮助",
 		"",
 		"add 选项:",
-		"  --name <名称>          服务器名称（必填）",
-		"  --url <地址>           服务器地址（必填），stdio 类型格式: stdio://command args...",
-		"  --type <类型>          服务器类型: stdio、sse、streamable_http、other（默认 streamable_http）",
-		"  --description <描述>   服务器描述",
-		"  --agent <ID>           指定智能体 ID（默认使用当前默认智能体）",
+		"  --name <名称>              服务器名称（必填）",
+		"  --url <地址>               服务器地址（必填），stdio 类型格式: stdio://command args...",
+		"  --type <类型>              服务器类型: stdio、sse、streamable_http、other（默认 streamable_http）",
+		"  --description <描述>       服务器描述",
+		"  --default-enabled <bool>   默认启用状态（默认 true），设为 false 时新客户端默认禁用",
+		"  --agent <ID>               指定智能体 ID（默认使用当前默认智能体）",
+		"",
+		"edit 选项:",
+		"  --name <名称>              服务器名称",
+		"  --url <地址>               服务器地址",
+		"  --type <类型>              服务器类型: stdio、sse、streamable_http、other",
+		"  --description <描述>       服务器描述",
+		"  --default-enabled <bool>   默认启用状态",
+		"  --agent <ID>               指定智能体 ID（默认使用当前默认智能体）",
 		"",
 		"说明:",
 		"  启用/禁用状态保存在本地配置文件 ~/.snz1dp/config/mcp.json，",
 		"  与太乙智启桌面端（taiyiflow-chatui）共享同一配置文件。",
 		"  系统内置服务器（is_system=true）不可被禁用。",
+		"  --default-enabled 控制其他客户端首次看到该服务时是否默认启用。",
 		"",
 		"示例:",
 		"  taiyiflow-cli mcp list",
 		"  taiyiflow-cli mcp add --name my-server --url https://mcp.example.com/sse --type sse",
 		"  taiyiflow-cli mcp add --name local-tool --url \"stdio://npx -y @some/mcp-server\" --type stdio",
+		"  taiyiflow-cli mcp add --name my-server --url https://mcp.example.com/sse --default-enabled false",
+		"  taiyiflow-cli mcp edit abc123 --default-enabled false",
 		"  taiyiflow-cli mcp disable abc123",
 		"  taiyiflow-cli mcp enable abc123",
 		"  taiyiflow-cli mcp disable-tool abc123 search_web",
@@ -172,6 +187,7 @@ func (a *App) mcpAdd(ctx context.Context, args []string) error {
 	serverURL := flagSet.String("url", "", "服务器地址（必填）")
 	serverType := flagSet.String("type", "streamable_http", "服务器类型: stdio、sse、streamable_http、other")
 	description := flagSet.String("description", "", "服务器描述")
+	defaultEnabled := flagSet.Bool("default-enabled", true, "默认启用状态，设为 false 时新客户端默认禁用")
 	agentID := flagSet.String("agent", "", "指定智能体 ID")
 
 	if err := flagSet.Parse(args); err != nil {
@@ -211,11 +227,12 @@ func (a *App) mcpAdd(ctx context.Context, args []string) error {
 	}
 
 	createData := provider.MCPServerCreateRequest{
-		Name:       strings.TrimSpace(*name),
-		ServerURL:  strings.TrimSpace(*serverURL),
-		FlowID:     flowID,
-		ServerType: *serverType,
-		ClientType: "cli",
+		Name:           strings.TrimSpace(*name),
+		ServerURL:      strings.TrimSpace(*serverURL),
+		FlowID:         flowID,
+		ServerType:     *serverType,
+		ClientType:     "cli",
+		DefaultEnabled: defaultEnabled,
 	}
 	if strings.TrimSpace(*description) != "" {
 		createData.Description = strings.TrimSpace(*description)
@@ -227,6 +244,110 @@ func (a *App) mcpAdd(ctx context.Context, args []string) error {
 	}
 
 	fmt.Fprintf(a.stdout, "已添加 MCP 服务器: %s (ID: %s)\n", server.Name, server.ID)
+	return nil
+}
+
+// mcpEdit 编辑用户自建 MCP 服务器。
+func (a *App) mcpEdit(ctx context.Context, args []string) error {
+	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+		return fmt.Errorf("用法: taiyiflow-cli mcp edit <服务器ID> [选项]")
+	}
+	serverID := strings.TrimSpace(args[0])
+
+	flagSet := flag.NewFlagSet("mcp edit", flag.ContinueOnError)
+	flagSet.SetOutput(a.stderr)
+	name := flagSet.String("name", "", "服务器名称")
+	serverURL := flagSet.String("url", "", "服务器地址")
+	serverType := flagSet.String("type", "", "服务器类型: stdio、sse、streamable_http、other")
+	description := flagSet.String("description", "", "服务器描述")
+	defaultEnabled := flagSet.String("default-enabled", "", "默认启用状态: true 或 false")
+	agentID := flagSet.String("agent", "", "指定智能体 ID")
+
+	if err := flagSet.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	// 校验服务器类型（仅在指定时）
+	if strings.TrimSpace(*serverType) != "" {
+		validTypes := map[string]bool{"stdio": true, "sse": true, "streamable_http": true, "other": true}
+		if !validTypes[*serverType] {
+			return fmt.Errorf("不支持的服务器类型: %s，可选: stdio、sse、streamable_http、other", *serverType)
+		}
+	}
+
+	// 解析 default-enabled 布尔值
+	var defaultEnabledPtr *bool
+	if strings.TrimSpace(*defaultEnabled) != "" {
+		val := strings.TrimSpace(*defaultEnabled)
+		if val == "true" || val == "1" {
+			b := true
+			defaultEnabledPtr = &b
+		} else if val == "false" || val == "0" {
+			b := false
+			defaultEnabledPtr = &b
+		} else {
+			return fmt.Errorf("--default-enabled 值无效: %s，可选: true、false", val)
+		}
+	}
+
+	// 构建更新请求（仅包含用户传入的字段）
+	updateData := provider.MCPServerUpdateRequest{}
+	hasUpdate := false
+
+	if strings.TrimSpace(*name) != "" {
+		v := strings.TrimSpace(*name)
+		updateData.Name = &v
+		hasUpdate = true
+	}
+	if strings.TrimSpace(*serverURL) != "" {
+		v := strings.TrimSpace(*serverURL)
+		updateData.ServerURL = &v
+		hasUpdate = true
+	}
+	if strings.TrimSpace(*serverType) != "" {
+		v := strings.TrimSpace(*serverType)
+		updateData.ServerType = &v
+		hasUpdate = true
+	}
+	if strings.TrimSpace(*description) != "" {
+		v := strings.TrimSpace(*description)
+		updateData.Description = &v
+		hasUpdate = true
+	}
+	if defaultEnabledPtr != nil {
+		updateData.DefaultEnabled = defaultEnabledPtr
+		hasUpdate = true
+	}
+
+	if !hasUpdate {
+		return fmt.Errorf("未提供任何需要修改的字段。可修改: --name、--url、--type、--description、--default-enabled")
+	}
+
+	config, err := a.configManager.Load()
+	if err != nil {
+		return err
+	}
+
+	client := buildProviderClient(config)
+	config, err = a.ensureDefaultFlow(ctx, client, config)
+	if err != nil {
+		return err
+	}
+
+	flowID := config.DefaultFlow
+	if strings.TrimSpace(*agentID) != "" {
+		flowID = strings.TrimSpace(*agentID)
+	}
+	if strings.TrimSpace(flowID) == "" {
+		return fmt.Errorf("未配置默认智能体，请先执行 taiyiflow-cli agents use <名称> 或使用 --agent 指定")
+	}
+
+	updated, err := client.UpdateMCPServer(ctx, serverID, updateData)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(a.stdout, "已更新 MCP 服务器: %s (ID: %s)\n", updated.Name, updated.ID)
 	return nil
 }
 
