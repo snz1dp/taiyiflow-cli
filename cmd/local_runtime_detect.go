@@ -17,6 +17,7 @@ type runtimeToolProbe struct {
 	label      string   // 环境提示词中显示的工具名
 	candidates []string // 按优先级尝试的命令名
 	versionArg string   // 获取版本的参数
+	cliSubDir  string   // CLI 目录下的子目录（如 "uv"），为空表示直接在 CLI 根目录查找
 }
 
 // probedRuntimeTools 列出需要探测的运行时工具。
@@ -24,6 +25,7 @@ var probedRuntimeTools = []runtimeToolProbe{
 	{label: "node22", candidates: []string{"node22", "node"}, versionArg: "--version"},
 	{label: "python3.12", candidates: []string{"python3.12", "python3", "python"}, versionArg: "--version"},
 	{label: "rg", candidates: []string{"rg"}, versionArg: "--version"},
+	{label: "uv", candidates: []string{"uv"}, versionArg: "--version", cliSubDir: "uv"},
 }
 
 // runtimeDetectTimeout 是单次工具探测的超时时间。
@@ -119,6 +121,7 @@ func probeRuntimeTools() []runtimeToolResult {
 // 优先通过系统 PATH 查找操作系统内置的工具，找不到时才回退到 CLI 可执行文件同目录。
 // command 字段存储命令名而非全路径，执行时由操作系统通过 PATH 解析，
 // 避免绑定到特定版本路径（如 nvm/conda 管理的版本）。
+// 若 probe.cliSubDir 非空，回退查找时会在 CLI 目录下的对应子目录中搜索。
 func probeOneTool(probe runtimeToolProbe, cliDir string) *runtimeToolResult {
 	for _, cmdName := range probe.candidates {
 		// 1. 优先通过系统 PATH 查找（操作系统内置）
@@ -126,9 +129,13 @@ func probeOneTool(probe runtimeToolProbe, cliDir string) *runtimeToolResult {
 			version := probeVersion(path, probe.versionArg)
 			return &runtimeToolResult{label: probe.label, command: cmdName, version: version}
 		}
-		// 2. 系统 PATH 找不到时，回退到 CLI 同目录查找
+		// 2. 系统 PATH 找不到时，回退到 CLI 同目录（或其子目录）查找
 		if cliDir != "" {
-			fullPath := filepath.Join(cliDir, cmdName)
+			searchDir := cliDir
+			if probe.cliSubDir != "" {
+				searchDir = filepath.Join(cliDir, probe.cliSubDir)
+			}
+			fullPath := filepath.Join(searchDir, cmdName)
 			if isExecutable(fullPath) {
 				version := probeVersion(fullPath, probe.versionArg)
 				if version != "" {

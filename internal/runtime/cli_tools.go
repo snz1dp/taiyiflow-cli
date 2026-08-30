@@ -61,18 +61,33 @@ func nodeSubDir() string {
 	return filepath.Join("node22", "bin")
 }
 
+// uvSubDir 返回 uv 的可执行文件子目录。
+// uv 是单二进制分发，所有平台下可执行文件直接位于 uv/ 目录中，无 bin 子目录。
+// 该目录同时包含 uv 和 uvx 两个可执行文件。
+func uvSubDir() string {
+	return "uv"
+}
+
 // commandOverrideMap 定义需要特殊路由的命令名到解析函数的映射。
 // python/node/rg 不在此映射中，由 PATH 解析（CLI 目录追加到 PATH 末尾作为回退）。
-// 仅 taiyiflow-cli 需要特殊路由，始终指向进程自身可执行文件路径。
+// taiyiflow-cli 需要特殊路由，始终指向进程自身可执行文件路径。
+// uv/uvx 需要特殊路由，优先使用 CLI 内置的 uv 二进制，内置不存在时回退到系统 PATH。
 var commandOverrideMap = map[string]func(cliDir string) string{
 	"taiyiflow-cli": func(_ string) string { return cliExecutablePath() },
+	"uv": func(cliDir string) string {
+		return filepath.Join(cliDir, uvSubDir(), "uv")
+	},
+	"uvx": func(cliDir string) string {
+		return filepath.Join(cliDir, uvSubDir(), "uvx")
+	},
 }
 
 // resolveCommandInCLIDir 根据命令名映射规则解析可执行文件路径。
 //   - taiyiflow-cli             → 进程自身可执行文件路径
+//   - uv / uvx                  → CLI 内置 uv 二进制（不存在时回退到系统 PATH）
 //   - 其他命令                   → 返回原始命令名，由 PATH 解析
 //
-// CLI 目录（含 python3.12/bin、node22/bin）已追加到 PATH 末尾，
+// CLI 目录（含 python3.12/bin、node22/bin、uv）已追加到 PATH 末尾，
 // 操作系统内置工具优先被找到，CLI 捆绑工具仅在系统 PATH 中不存在时作为回退。
 //
 // 已是绝对路径或包含路径分隔符的命令不做覆盖。
@@ -90,7 +105,7 @@ func resolveCommandInCLIDir(command string) string {
 		return command
 	}
 
-	// 检查是否在特殊路由映射中（仅 taiyiflow-cli）
+	// 检查是否在特殊路由映射中（taiyiflow-cli / uv / uvx）
 	if resolver, ok := commandOverrideMap[command]; ok {
 		candidate := resolver(dir)
 		// Windows: 尝试 .exe 扩展名
@@ -129,7 +144,8 @@ func isExecutableFile(path string) bool {
 }
 
 // cliPathDirs 返回需要前置到 PATH 的目录列表，按优先级从高到低排列。
-// 包含 python3.12/bin（Windows 下为 python3.12）、node22/bin（Windows 下为 node22）和 CLI 目录本身。
+// 包含 python3.12/bin（Windows 下为 python3.12）、node22/bin（Windows 下为 node22）、
+// uv（所有平台无 bin 子目录）和 CLI 目录本身。
 func cliPathDirs() []string {
 	dir := cliExecutableDir()
 	if dir == "" {
@@ -138,6 +154,7 @@ func cliPathDirs() []string {
 	return []string{
 		filepath.Join(dir, pythonSubDir()),
 		filepath.Join(dir, nodeSubDir()),
+		filepath.Join(dir, uvSubDir()),
 		dir,
 	}
 }

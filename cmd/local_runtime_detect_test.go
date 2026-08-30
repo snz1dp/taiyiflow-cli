@@ -36,7 +36,7 @@ func TestDetectLocalRuntimeToolsInline(t *testing.T) {
 	// 如果有工具，应该不包含括号格式（inline 格式与 summary 不同）
 	if inline != "" {
 		// 验证非空结果中至少包含一个已知工具名
-		knownTools := []string{"node22", "python3.12", "rg", "node", "python3", "python"}
+		knownTools := []string{"node22", "python3.12", "rg", "uv", "node", "python3", "python"}
 		found := false
 		for _, tool := range knownTools {
 			if strings.Contains(inline, tool) {

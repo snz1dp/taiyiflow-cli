@@ -14,8 +14,10 @@ func TestResolveCommandInCLIDir(t *testing.T) {
 	// 创建子目录结构
 	// Windows 下 python/node 可执行文件直接在 python3.12/ 和 node22/ 目录下，
 	// 非 Windows 下在 python3.12/bin/ 和 node22/bin/ 下。
+	// uv 所有平台都在 uv/ 子目录下，无 bin 子目录。
 	pythonSubDir := filepath.Join(tmpDir, "python3.12")
 	nodeSubDir := filepath.Join(tmpDir, "node22")
+	uvSubDir := filepath.Join(tmpDir, "uv")
 	if runtime.GOOS != "windows" {
 		pythonSubDir = filepath.Join(pythonSubDir, "bin")
 		nodeSubDir = filepath.Join(nodeSubDir, "bin")
@@ -25,6 +27,9 @@ func TestResolveCommandInCLIDir(t *testing.T) {
 	}
 	if err := os.MkdirAll(nodeSubDir, 0o755); err != nil {
 		t.Fatalf("创建 node 子目录失败: %v", err)
+	}
+	if err := os.MkdirAll(uvSubDir, 0o755); err != nil {
+		t.Fatalf("创建 uv 子目录失败: %v", err)
 	}
 
 	// 创建测试用可执行文件
@@ -46,6 +51,9 @@ func TestResolveCommandInCLIDir(t *testing.T) {
 	createTestExe(filepath.Join(pythonSubDir, "python3.12"))
 	// node 子目录下的文件
 	createTestExe(filepath.Join(nodeSubDir, "node"))
+	// uv 子目录下的文件
+	createTestExe(filepath.Join(uvSubDir, "uv"))
+	createTestExe(filepath.Join(uvSubDir, "uvx"))
 	// CLI 根目录下的文件
 	createTestExe(filepath.Join(tmpDir, "rg"))
 
@@ -102,6 +110,20 @@ func TestResolveCommandInCLIDir(t *testing.T) {
 		t.Errorf("resolveCommandInCLIDir(\"rg\") = %q, want %q", resolved, expected)
 	}
 
+	// 测试 6a: uv → 内置存在时返回内置路径
+	resolved = resolveCommandInCLIDir("uv")
+	expected = filepath.Join(uvSubDir, "uv")
+	if resolved != expected {
+		t.Errorf("resolveCommandInCLIDir(\"uv\") = %q, want %q", resolved, expected)
+	}
+
+	// 测试 6b: uvx → 内置存在时返回内置路径
+	resolved = resolveCommandInCLIDir("uvx")
+	expected = filepath.Join(uvSubDir, "uvx")
+	if resolved != expected {
+		t.Errorf("resolveCommandInCLIDir(\"uvx\") = %q, want %q", resolved, expected)
+	}
+
 	// 测试 7: CLI 目录中不存在的命令应返回原始名称
 	cmd := "nonexistent-tool-xyz"
 	resolved = resolveCommandInCLIDir(cmd)
@@ -114,6 +136,24 @@ func TestResolveCommandInCLIDir(t *testing.T) {
 	resolved = resolveCommandInCLIDir("python3.13")
 	if resolved != "python3.13" {
 		t.Errorf("resolveCommandInCLIDir(\"python3.13\") = %q, want %q", resolved, "python3.13")
+	}
+
+	// 测试 8a: 内置 uv 文件不存在时回退到原始命令名
+	// 删除 uv 子目录下的可执行文件
+	if runtime.GOOS != "windows" {
+		_ = os.Remove(filepath.Join(uvSubDir, "uv"))
+		_ = os.Remove(filepath.Join(uvSubDir, "uvx"))
+	} else {
+		_ = os.Remove(filepath.Join(uvSubDir, "uv.exe"))
+		_ = os.Remove(filepath.Join(uvSubDir, "uvx.exe"))
+	}
+	resolved = resolveCommandInCLIDir("uv")
+	if resolved != "uv" {
+		t.Errorf("resolveCommandInCLIDir(\"uv\") without bundled uv = %q, want %q", resolved, "uv")
+	}
+	resolved = resolveCommandInCLIDir("uvx")
+	if resolved != "uvx" {
+		t.Errorf("resolveCommandInCLIDir(\"uvx\") without bundled uv = %q, want %q", resolved, "uvx")
 	}
 
 	// 测试 9: rg 文件存在时也返回原始命令名（由 PATH 解析）
@@ -153,12 +193,14 @@ func TestAppendCLIDirToPath(t *testing.T) {
 	// 根据平台确定期望的子目录
 	pythonDir := filepath.Join("/fake/cli/dir", pythonSubDir())
 	nodeDir := filepath.Join("/fake/cli/dir", nodeSubDir())
+	uvDir := filepath.Join("/fake/cli/dir", uvSubDir())
 
-	// 测试有 PATH 的情况：应追加 python 子目录、node 子目录和 CLI 目录到末尾
+	// 测试有 PATH 的情况：应追加 python 子目录、node 子目录、uv 子目录和 CLI 目录到末尾
 	result := appendCLIDirToPath("/usr/bin:/bin")
 	expected := "/usr/bin:/bin" + string(os.PathListSeparator) +
 		pythonDir + string(os.PathListSeparator) +
 		nodeDir + string(os.PathListSeparator) +
+		uvDir + string(os.PathListSeparator) +
 		"/fake/cli/dir"
 	if result != expected {
 		t.Errorf("appendCLIDirToPath(\"/usr/bin:/bin\") = %q, want %q", result, expected)
@@ -168,6 +210,7 @@ func TestAppendCLIDirToPath(t *testing.T) {
 	result = appendCLIDirToPath("")
 	expected = pythonDir + string(os.PathListSeparator) +
 		nodeDir + string(os.PathListSeparator) +
+		uvDir + string(os.PathListSeparator) +
 		"/fake/cli/dir"
 	if result != expected {
 		t.Errorf("appendCLIDirToPath(\"\") = %q, want %q", result, expected)
@@ -188,9 +231,11 @@ func TestAppendCLIDirToPathInEnv(t *testing.T) {
 
 	pythonDir := filepath.Join("/fake/cli/dir", pythonSubDir())
 	nodeDir := filepath.Join("/fake/cli/dir", nodeSubDir())
+	uvDir := filepath.Join("/fake/cli/dir", uvSubDir())
 	expectedPath := "/usr/bin:/bin" + string(os.PathListSeparator) +
 		pythonDir + string(os.PathListSeparator) +
 		nodeDir + string(os.PathListSeparator) +
+		uvDir + string(os.PathListSeparator) +
 		"/fake/cli/dir"
 
 	// 测试 PATH 键存在
@@ -207,6 +252,7 @@ func TestAppendCLIDirToPathInEnv(t *testing.T) {
 	if envMap["Path"] != "/usr/bin"+string(os.PathListSeparator)+
 		pythonDir+string(os.PathListSeparator)+
 		nodeDir+string(os.PathListSeparator)+
+		uvDir+string(os.PathListSeparator)+
 		"/fake/cli/dir" {
 		t.Errorf("Path = %q", envMap["Path"])
 	}
@@ -219,6 +265,7 @@ func TestAppendCLIDirToPathInEnv(t *testing.T) {
 	appendCLIDirToPathInEnv(envMap)
 	if envMap["PATH"] != pythonDir+string(os.PathListSeparator)+
 		nodeDir+string(os.PathListSeparator)+
+		uvDir+string(os.PathListSeparator)+
 		"/fake/cli/dir" {
 		t.Errorf("PATH = %q, want %q", envMap["PATH"], pythonDir+string(os.PathListSeparator)+"...")
 	}
