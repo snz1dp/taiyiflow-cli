@@ -65,6 +65,19 @@ func (a *App) runUpgrade(ctx context.Context, args []string) error {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
 
+	// 确保设备标识和令牌有效性（与其他命令对齐）：
+	// 若 AccessToken 已过期但 PersistentToken 有效，自动换取新令牌。
+	config, _, err = a.ensureClientIdentity(config)
+	if err != nil {
+		return fmt.Errorf("初始化设备标识失败: %w", err)
+	}
+	providerClient := buildProviderClient(config)
+	config, _, err = a.ensureProviderAuthenticated(ctx, providerClient, config)
+	if err != nil {
+		// 鉴权刷新失败不阻断更新流程，后续仍会回退到 manifest
+		fmt.Fprintf(a.stderr, "警告: 令牌刷新失败: %v\n", err)
+	}
+
 	fmt.Fprintf(a.stdout, "正在检查更新...\n")
 	fmt.Fprintf(a.stdout, "当前版本: %s (%s)\n", buildinfo.Version, buildinfo.Commit)
 
