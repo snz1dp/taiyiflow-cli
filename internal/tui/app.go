@@ -381,8 +381,8 @@ type EventKind string
 const (
 	EventAssistantChunk  EventKind = "assistant_chunk"
 	EventReasoningChunk  EventKind = "reasoning_chunk"
-	EventFollowupRequest  EventKind = "followup_request"
-	EventAutoLoopResult   EventKind = "auto_loop_result"
+	EventFollowupRequest EventKind = "followup_request"
+	EventAutoLoopResult  EventKind = "auto_loop_result"
 	EventProgressNote    EventKind = "progress_note"
 	EventSystemNote      EventKind = "system_note"
 	EventErrorNote       EventKind = "error_note"
@@ -399,18 +399,18 @@ const (
 const streamBatchDrainWindow = 16 * time.Millisecond
 
 type Event struct {
-	Kind           EventKind
-	Text           string
-	MessageID      string
-	Stage          string
-	EventType      string
-	SessionID      string
-	SessionTitle   string
-	SplitAssistant bool
+	Kind               EventKind
+	Text               string
+	MessageID          string
+	Stage              string
+	EventType          string
+	SessionID          string
+	SessionTitle       string
+	SplitAssistant     bool
 	AutoLoopNextPrompt string
-	Stats          *RequestMetrics
-	Panel          *ToolPanel
-	TodoItems      []TodoItem
+	Stats              *RequestMetrics
+	Panel              *ToolPanel
+	TodoItems          []TodoItem
 }
 
 type Request struct {
@@ -427,7 +427,7 @@ type Request struct {
 	// GuidanceCh 用于在任务执行期间从 TUI 向 runner 传递用户执行引导文本。
 	// TUI 在用户通过 shift+enter 输入引导后，将文本发送到此 channel；
 	// runner 在每次工具回调前排空此 channel，将引导文本前置到工具回调结果中。
-	GuidanceCh       chan string
+	GuidanceCh chan string
 }
 
 type ContextWindow struct {
@@ -837,43 +837,43 @@ type model struct {
 	skipSyncViewport           bool
 	// currentGuidanceCh 是当前请求的引导文本 channel，在 startRequest 中创建。
 	// 任务执行中用户按 shift+enter 直接提交引导文本，通过此 channel 发送给 runner。
-	currentGuidanceCh         chan string
+	currentGuidanceCh chan string
 }
 
 type configFormState struct {
-	title                    string
-	hint                     string
-	statusText               string
-	statusIsError            bool
-	path                     string
-	submitText               string
-	inputs                   []textinput.Model
-	cursor                   int
-	flowOptions              []ConfigChoice
-	flowCursor               int
-	flowOpen                 bool
-	approvalCursor           int
-	sandboxCursor            int
-	skillReviewCursor        int
-	writeConfirmationCursor  int
-	reasoningCursor          int
-	crossSessionMemoryCursor int
-	computerEnabledCursor    int
-	computerPermissionCursor int
-	browserModeCursor        int
-	browserPermissionCursor  int
-	browserChannelCursor     int
-	browserExtensionCursor   int
-	browserHeadlessCursor    int
-	skillsCursor             int
-	skillsAutoInstallCursor  int
-	skillsFreeTextCursor     int
-	shellSandboxCursor       int
-	streamProtocolCursor     int
-	defaultRequestModeCursor int
+	title                       string
+	hint                        string
+	statusText                  string
+	statusIsError               bool
+	path                        string
+	submitText                  string
+	inputs                      []textinput.Model
+	cursor                      int
+	flowOptions                 []ConfigChoice
+	flowCursor                  int
+	flowOpen                    bool
+	approvalCursor              int
+	sandboxCursor               int
+	skillReviewCursor           int
+	writeConfirmationCursor     int
+	reasoningCursor             int
+	crossSessionMemoryCursor    int
+	computerEnabledCursor       int
+	computerPermissionCursor    int
+	browserModeCursor           int
+	browserPermissionCursor     int
+	browserChannelCursor        int
+	browserExtensionCursor      int
+	browserHeadlessCursor       int
+	skillsCursor                int
+	skillsAutoInstallCursor     int
+	skillsFreeTextCursor        int
+	shellSandboxCursor          int
+	streamProtocolCursor        int
+	defaultRequestModeCursor    int
 	requestModeAutoSwitchCursor int
-	fieldErrorKey            string
-	fieldErrorText           string
+	fieldErrorKey               string
+	fieldErrorText              string
 }
 
 type loginFormState struct {
@@ -4276,7 +4276,7 @@ func renderHeaderLine(left string, right string, width int, preferRight bool) st
 func formatHeaderServerVersion(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return "SERVER v0.1.0"
+		return ""
 	}
 	if strings.Contains(trimmed, "服务") {
 		return strings.ReplaceAll(trimmed, "服务", "SERVER")
@@ -8237,37 +8237,37 @@ func newConfigFormState(state ConfigFormState) *configFormState {
 	}
 	flowOptions := normalizeConfigFlowChoices(state.FlowOptions, values.DefaultFlow)
 	return &configFormState{
-		title:                    state.Title,
-		hint:                     state.Hint,
-		statusText:               state.StatusText,
-		statusIsError:            state.StatusIsError,
-		fieldErrorKey:            "",
-		fieldErrorText:           "",
-		path:                     state.Path,
-		submitText:               state.SubmitText,
-		inputs:                   models,
-		cursor:                   0,
-		flowOptions:              flowOptions,
-		flowCursor:               configChoiceIndex(flowOptions, values.DefaultFlow),
-		approvalCursor:           configChoiceIndex(configApprovalChoices(), values.ApprovalMode),
-		sandboxCursor:            configChoiceIndex(configSandboxChoices(), values.SandboxEscapePolicy),
-		skillReviewCursor:        configChoiceIndex(configSkillReviewChoices(), values.SkillReviewPolicy),
-		writeConfirmationCursor:  configChoiceIndex(configWriteConfirmationChoices(), values.WriteConfirmationPolicy),
-		reasoningCursor:          configChoiceIndex(configReasoningChoices(), reasoningChoiceValue(values.ReasoningEnabled)),
-		crossSessionMemoryCursor: configChoiceIndex(configCrossSessionMemoryChoices(), boolChoiceValue(values.CrossSessionMemoryEnabled)),
-		computerEnabledCursor:    configChoiceIndex(configComputerEnabledChoices(), boolChoiceValue(values.ComputerEnabled)),
-		computerPermissionCursor: configChoiceIndex(configComputerPermissionChoices(), values.ComputerPermissionMode),
-		browserModeCursor:        configChoiceIndex(configBrowserModeChoices(), values.BrowserMode),
-		browserPermissionCursor:  configChoiceIndex(configBrowserPermissionChoices(), values.BrowserPermissionMode),
-		browserChannelCursor:     configChoiceIndex(configBrowserChannelChoices(), values.BrowserChannel),
-		browserExtensionCursor:   configChoiceIndex(configBrowserExtensionSetupChoices(), values.BrowserExtensionSetup),
-		browserHeadlessCursor:    configChoiceIndex(configBrowserHeadlessChoices(), boolChoiceString(values.BrowserHeadless)),
-		skillsCursor:             configChoiceIndex(configSkillsInstallScopeChoices(), values.SkillsInstallScope),
-		skillsAutoInstallCursor:  configChoiceIndex(configSkillsAutoInstallChoices(), values.SkillsAutoInstallPolicy),
-		skillsFreeTextCursor:     configChoiceIndex(configSkillsFreeTextSearchChoices(), boolChoiceValue(values.SkillsFreeTextSearch)),
-		shellSandboxCursor:       configChoiceIndex(configShellSandboxChoices(), values.ShellSandboxMode),
-		streamProtocolCursor:     configChoiceIndex(configStreamProtocolChoices(), values.StreamProtocol),
-		defaultRequestModeCursor: configChoiceIndex(configDefaultRequestModeChoices(), values.DefaultRequestMode),
+		title:                       state.Title,
+		hint:                        state.Hint,
+		statusText:                  state.StatusText,
+		statusIsError:               state.StatusIsError,
+		fieldErrorKey:               "",
+		fieldErrorText:              "",
+		path:                        state.Path,
+		submitText:                  state.SubmitText,
+		inputs:                      models,
+		cursor:                      0,
+		flowOptions:                 flowOptions,
+		flowCursor:                  configChoiceIndex(flowOptions, values.DefaultFlow),
+		approvalCursor:              configChoiceIndex(configApprovalChoices(), values.ApprovalMode),
+		sandboxCursor:               configChoiceIndex(configSandboxChoices(), values.SandboxEscapePolicy),
+		skillReviewCursor:           configChoiceIndex(configSkillReviewChoices(), values.SkillReviewPolicy),
+		writeConfirmationCursor:     configChoiceIndex(configWriteConfirmationChoices(), values.WriteConfirmationPolicy),
+		reasoningCursor:             configChoiceIndex(configReasoningChoices(), reasoningChoiceValue(values.ReasoningEnabled)),
+		crossSessionMemoryCursor:    configChoiceIndex(configCrossSessionMemoryChoices(), boolChoiceValue(values.CrossSessionMemoryEnabled)),
+		computerEnabledCursor:       configChoiceIndex(configComputerEnabledChoices(), boolChoiceValue(values.ComputerEnabled)),
+		computerPermissionCursor:    configChoiceIndex(configComputerPermissionChoices(), values.ComputerPermissionMode),
+		browserModeCursor:           configChoiceIndex(configBrowserModeChoices(), values.BrowserMode),
+		browserPermissionCursor:     configChoiceIndex(configBrowserPermissionChoices(), values.BrowserPermissionMode),
+		browserChannelCursor:        configChoiceIndex(configBrowserChannelChoices(), values.BrowserChannel),
+		browserExtensionCursor:      configChoiceIndex(configBrowserExtensionSetupChoices(), values.BrowserExtensionSetup),
+		browserHeadlessCursor:       configChoiceIndex(configBrowserHeadlessChoices(), boolChoiceString(values.BrowserHeadless)),
+		skillsCursor:                configChoiceIndex(configSkillsInstallScopeChoices(), values.SkillsInstallScope),
+		skillsAutoInstallCursor:     configChoiceIndex(configSkillsAutoInstallChoices(), values.SkillsAutoInstallPolicy),
+		skillsFreeTextCursor:        configChoiceIndex(configSkillsFreeTextSearchChoices(), boolChoiceValue(values.SkillsFreeTextSearch)),
+		shellSandboxCursor:          configChoiceIndex(configShellSandboxChoices(), values.ShellSandboxMode),
+		streamProtocolCursor:        configChoiceIndex(configStreamProtocolChoices(), values.StreamProtocol),
+		defaultRequestModeCursor:    configChoiceIndex(configDefaultRequestModeChoices(), values.DefaultRequestMode),
 		requestModeAutoSwitchCursor: configChoiceIndex(configRequestModeAutoSwitchChoices(), boolChoiceValue(values.RequestModeAutoSwitch)),
 	}
 }
