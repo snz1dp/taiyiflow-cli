@@ -35,16 +35,16 @@ metadata:
 
 获取令牌后，选择以下任一方式附加认证：
 
-1. **URL query 参数**（推荐，适用于浏览器打开或 curl 下载）：
+1. **HTTP 请求头**（推荐）：
+   ```
+   Authorization: Bearer {令牌值}
+   ```
+
+2. **URL query 参数**（适用于浏览器直接打开或无法自定义请求头的场景）：
    ```
    {下载URL}?__TOKEN__={令牌值}
    ```
    若 URL 已有其他 query 参数，使用 `&__TOKEN__={令牌值}` 追加。
-
-2. **HTTP 请求头**（适用于程序化请求）：
-   ```
-   Authorization: Bearer {令牌值}
-   ```
 
 ## 注意事项
 
