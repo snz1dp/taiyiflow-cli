@@ -550,6 +550,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 			},
 		},
 	}
+	definitions = append(definitions, ssoTokenToolDefinitions()...)
 	definitions = append(definitions, browserClientToolDefinitions()...)
 	definitions = append(definitions, computerClientToolDefinitions()...)
 	definitions = append(definitions, scheduleClientToolDefinitions()...)
@@ -622,6 +623,7 @@ func allowedClientToolSetForMode(mode string) map[string]bool {
 		"skill_upload":              true,
 		"skill_delete":              true,
 		"switch_to_agent":           true,
+		"get_sso_token":             true,
 		"schedule_list":             true,
 		"schedule_runs":             true,
 		"mcp_list_servers":          true,
@@ -879,6 +881,8 @@ func previewClientTool(toolName string, arguments map[string]any) string {
 		return "task_cleanup"
 	case "task_list":
 		return "task_list"
+	case "get_sso_token":
+		return "get_sso_token"
 	case "terminal_capture":
 		return fmt.Sprintf("terminal_capture %s", fallbackString(stringValue(arguments["task_id"]), "<missing>"))
 	case "run_subtask":
@@ -1119,12 +1123,14 @@ func (r *ClientRuntime) skill(
 			return nil, newToolError("EXECUTION_FAILED", "%v", err)
 		}
 	}
+	// 替换技能正文中的服务端下载地址占位符
+	prompt := injectServerDownloadURL(item.Body, config)
 	return map[string]any{
 		"name":         item.Name,
 		"description":  item.Description,
 		"homepage":     item.Homepage,
 		"input":        argumentString(arguments, "input"),
-		"prompt":       item.Body,
+		"prompt":       prompt,
 		"markdown":     skills.Markdown(*item),
 		"path":         item.Path,
 		"skill_dir":    skills.SkillDir(*item),
@@ -1137,6 +1143,25 @@ func (r *ClientRuntime) skill(
 		"requires_env": skills.RequiredEnvKeys(*item),
 		"kind":         "prompt",
 	}, nil
+}
+
+// serverDownloadURLPlaceholder 是技能正文中服务端文件下载基础地址的占位符。
+const serverDownloadURLPlaceholder = "{{SERVER_DOWNLOAD_URL}}"
+
+// injectServerDownloadURL 将技能正文中的 {{SERVER_DOWNLOAD_URL}} 占位符
+// 替换为当前配置的实际服务端文件下载基础地址。
+// 若配置不完整则保留占位符原文不做替换。
+func injectServerDownloadURL(body string, config internalconfig.Config) string {
+	if !strings.Contains(body, serverDownloadURLPlaceholder) {
+		return body
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(config.BackendBaseURL), "/")
+	apiPrefix := internalconfig.NormalizeBackendAPIPrefix(config.BackendAPIPrefix)
+	if baseURL == "" {
+		return body
+	}
+	downloadURL := baseURL + apiPrefix + "/agents/download/"
+	return strings.ReplaceAll(body, serverDownloadURLPlaceholder, downloadURL)
 }
 
 // fetchSkillFromBackend 从后端查找并安装技能，安装完成后重新从本地加载。

@@ -534,6 +534,8 @@ func (r *ClientRuntime) executeClientToolPayload(
 		result, err = r.skillDelete(config, arguments)
 	case "switch_to_agent":
 		result, err = r.switchToAgent(arguments)
+	case "get_sso_token":
+		result, err = r.ssoToken(config)
 	default:
 		if isScheduleTool(toolName) {
 			result, err = r.scheduleTool(ctx, providerClient, config, toolName, arguments)

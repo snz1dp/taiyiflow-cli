@@ -39,6 +39,7 @@ var bundledSkillDefinitions = []BundledSkillDefinition{
 	{Name: "pdf", RelativeDir: "pdf", Summary: "当用户需要对 PDF 文件执行任何操作时使用此技能，包括读取、合并、拆分、表单填写、OCR 等。", DefaultEnabled: true, RequestTypes: []string{"ask", "plan", "agent"}},
 	{Name: "pptx", RelativeDir: "pptx", Summary: "当 .pptx 文件以任何方式涉及时使用此技能——创建、读取、编辑演示文稿。", DefaultEnabled: true, RequestTypes: []string{"ask", "plan", "agent"}},
 	{Name: "xlsx", RelativeDir: "xlsx", Summary: "当电子表格文件是主要输入或输出时使用此技能，包括读取、编辑、创建 .xlsx/.csv 文件。", DefaultEnabled: true, RequestTypes: []string{"ask", "plan", "agent"}},
+	{Name: "remote-file-access", RelativeDir: "remote-file-access", Summary: "当需要访问、引用或下载服务端产物文件时，使用正确的 URL 拼接规则构造下载地址。", DefaultEnabled: true, RequestTypes: []string{"ask", "plan", "agent"}},
 }
 
 func bundledSkillDefinitionByName(name string) (BundledSkillDefinition, bool) {
