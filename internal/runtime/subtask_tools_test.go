@@ -692,6 +692,80 @@ func TestExecuteClientCollaborationTaskFailureReportsToServer(t *testing.T) {
 	}
 }
 
+// TestParseSubtaskExecutionRequestInheritsCurrentRequestMode 验证子任务请求模式解析优先级：
+// 显式参数 > 继承主智能体 currentRequestMode > 默认 agent。
+func TestParseSubtaskExecutionRequestInheritsCurrentRequestMode(t *testing.T) {
+	tempDir := t.TempDir()
+	baseConfig := internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		ClientID:     "cli-123",
+		DeviceID:     "device-456",
+	}
+	basePayload := map[string]any{
+		"flow_id": "parent-flow",
+		"context": map[string]any{"session_id": "parent-session-1", "run_id": "parent-run-1", "message_id": "parent-message-1"},
+	}
+
+	tests := []struct {
+		name             string
+		currentMode      string
+		arguments        map[string]any
+		wantRequestMode  string
+	}{
+		{
+			name:            "未指定模式且主智能体为 plan 时继承 plan",
+			currentMode:     provider.RequestTypePlan,
+			arguments:       map[string]any{"prompt": "test"},
+			wantRequestMode: provider.RequestTypePlan,
+		},
+		{
+			name:            "未指定模式且主智能体为 ask 时继承 ask",
+			currentMode:     provider.RequestTypeAsk,
+			arguments:       map[string]any{"prompt": "test"},
+			wantRequestMode: provider.RequestTypeAsk,
+		},
+		{
+			name:            "显式指定 agent 时优先于继承的 plan",
+			currentMode:     provider.RequestTypePlan,
+			arguments:       map[string]any{"prompt": "test", "request_mode": "agent"},
+			wantRequestMode: provider.RequestTypeAgent,
+		},
+		{
+			name:            "未设置主智能体模式时默认 agent",
+			currentMode:     "",
+			arguments:       map[string]any{"prompt": "test"},
+			wantRequestMode: provider.RequestTypeAgent,
+		},
+		{
+			name:            "显式非法模式值经 NormalizeRequestType 归一为 ask",
+			currentMode:     provider.RequestTypeAgent,
+			arguments:       map[string]any{"prompt": "test", "request_mode": "bogus"},
+			wantRequestMode: provider.RequestTypeAsk,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			providerStub := &subtaskProviderStub{createdSessionID: "child-session-mode"}
+			runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+			if tt.currentMode != "" {
+				runtimeClient.SetCurrentRequestMode(tt.currentMode)
+			}
+
+			request, err := runtimeClient.parseSubtaskExecutionRequest(
+				context.Background(), providerStub, baseConfig, basePayload, tt.arguments,
+			)
+			if err != nil {
+				t.Fatalf("expected parse to succeed, got %v", err)
+			}
+			if request.RequestMode != tt.wantRequestMode {
+				t.Fatalf("expected request mode %q, got %q", tt.wantRequestMode, request.RequestMode)
+			}
+		})
+	}
+}
+
 func TestSplitThinkingContent(t *testing.T) {
 	tests := []struct {
 		name       string

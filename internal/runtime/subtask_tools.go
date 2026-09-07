@@ -150,7 +150,6 @@ func (r *ClientRuntime) runSubtask(
 			"error_message": "run_subtask 需要可用的 provider",
 		}, nil
 	}
-
 	requests, maxParallelism, err := r.parseSubtaskExecutionRequests(ctx, providerClient, config, payload, arguments)
 	if err != nil {
 		return map[string]any{
@@ -326,9 +325,15 @@ func (r *ClientRuntime) parseSubtaskExecutionRequest(
 	if flowID == "" {
 		return subtaskExecutionRequest{}, newToolError("PARAM_ERROR", "run_subtask 缺少 flow_id")
 	}
+	// 请求模式解析优先级：显式参数 > 继承主智能体当前模式 > 默认 agent。
+	// 继承父级模式可避免 ask/plan 只读模式下通过子任务提权到 agent 级工具集（对齐 chatui 端）。
 	requestMode := provider.RequestTypeAgent
 	if rawMode, ok := firstArgument(arguments, "request_mode", "requestMode"); ok {
 		requestMode = provider.NormalizeRequestType(stringValue(rawMode))
+	} else if r.currentRequestMode == provider.RequestTypeAsk ||
+		r.currentRequestMode == provider.RequestTypePlan ||
+		r.currentRequestMode == provider.RequestTypeAgent {
+		requestMode = r.currentRequestMode
 	}
 	workingDirectory, err := r.resolveAllowedDirectoryWithPolicy(config, argumentString(arguments, "workingDirectory", "working_directory"))
 	if err != nil {
