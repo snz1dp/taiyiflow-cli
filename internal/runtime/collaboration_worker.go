@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	goruntime "runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,11 @@ const (
 	collaborationWorkerFallbackTransport      = "http_update_fallback"
 	collaborationWorkerRecoveryStatusPending  = "pending"
 	collaborationWorkerRecoveryStatusDispatch = "dispatched"
+
+	// 定时任务 HTTP 回退回报重试参数（参考协同任务状态更新的重试策略）
+	scheduleReportFallbackMaxRetries    = 2
+	scheduleReportFallbackBaseDelay     = 1 * time.Second
+	scheduleReportFallbackBackoffFactor = 2
 )
 
 // errWorkerKicked 是哨兵错误，表示协同驻留进程被管理员踢下线，禁止自动重连。
@@ -465,6 +471,15 @@ func (w *collaborationWorker) executeScheduleTask(ctx context.Context, conn net.
 	}
 	defer w.deactivateSchedule(runRecordID)
 
+	// panic 兜底：协程内任何 panic 都回报 task.error，避免 worker 进程崩溃且后端记录停留在 pending。
+	// defer 为 LIFO，本 recover 先于上面的 deactivateSchedule 执行，recover 后仍会清理幂等键。
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			w.reportScheduleTaskPanic(payload, r, stack)
+		}
+	}()
+
 	w.logf("收到定时任务: name=%s schedule_id=%s", payload.Name, scheduleID)
 	w.observability.logTaskReceived("schedule", scheduleID, payload.Name)
 
@@ -480,6 +495,12 @@ func (w *collaborationWorker) executeScheduleTask(ctx context.Context, conn net.
 	// 获取并发信号量（阻塞等待）
 	select {
 	case <-ctx.Done():
+		// 等信号量期间连接中断或进程退出：任务未执行，用独立上下文回报一次失败，
+		// 避免后端 run record 停留在 pending/running。
+		w.reportScheduleRunFallback(ctx, payload, provider.ScheduleRunReportRequest{
+			Status:       "failed",
+			ErrorMessage: "客户端连接中断或退出，任务未执行",
+		})
 		return
 	case w.semaphore <- struct{}{}:
 	}
@@ -590,6 +611,20 @@ func (w *collaborationWorker) executeScheduleShellTask(ctx context.Context, conn
 	return nil
 }
 
+// reportScheduleTaskPanic 在 executeScheduleTask 协程 panic 后回报任务失败。
+// panic 场景下 WebSocket 连接状态不可信，直接走 HTTP 回退回报，避免后端记录停留。
+func (w *collaborationWorker) reportScheduleTaskPanic(payload scheduleTaskDispatchPayload, r any, stack []byte) {
+	errorMessage := firstNonEmptySubtask(
+		strings.TrimSpace(fmt.Sprintf("定时任务执行发生 panic: %v", r)),
+		"定时任务执行发生未知 panic",
+	)
+	w.logf("定时任务执行 panic: name=%s schedule_id=%s err=%s\n%s", payload.Name, payload.ScheduleID, errorMessage, stack)
+	w.reportScheduleRunFallback(context.Background(), payload, provider.ScheduleRunReportRequest{
+		Status:       "failed",
+		ErrorMessage: errorMessage,
+	})
+}
+
 // reportScheduleTaskSuccess 上报定时任务执行成功。
 // WebSocket 发送失败时回退到 HTTP 回报接口。
 func (w *collaborationWorker) reportScheduleTaskSuccess(ctx context.Context, conn net.Conn, payload scheduleTaskDispatchPayload, resultPayload map[string]any) {
@@ -605,6 +640,7 @@ func (w *collaborationWorker) reportScheduleTaskSuccess(ctx context.Context, con
 			Status:        "success",
 			ResultPayload: resultPayload,
 		})
+		return
 	}
 	w.logf("定时任务执行完成: name=%s schedule_id=%s", payload.Name, payload.ScheduleID)
 }
@@ -629,7 +665,7 @@ func (w *collaborationWorker) reportScheduleTaskError(ctx context.Context, conn 
 }
 
 // reportScheduleRunFallback 通过 HTTP 接口回报定时任务执行记录。
-// 作为 WebSocket 回报失败时的回退机制。
+// 作为 WebSocket 回报失败时的回退机制，失败时按指数退避自动重试，避免记录静默停留。
 func (w *collaborationWorker) reportScheduleRunFallback(ctx context.Context, payload scheduleTaskDispatchPayload, request provider.ScheduleRunReportRequest) {
 	config := w.currentConfig()
 	request.ClientID = strings.TrimSpace(config.ClientID)
@@ -646,9 +682,24 @@ func (w *collaborationWorker) reportScheduleRunFallback(ctx context.Context, pay
 	defer cancel()
 	_ = ctx // 原始上下文可能已取消，使用独立上下文确保回报可达
 
-	if err := w.provider.ReportScheduleRun(fallbackCtx, payload.RunRecordID, request); err != nil {
-		w.logf("定时任务 HTTP 回退回报失败: run_record_id=%s err=%v", payload.RunRecordID, err)
+	var lastErr error
+	for attempt := 0; attempt <= scheduleReportFallbackMaxRetries; attempt++ {
+		lastErr = w.provider.ReportScheduleRun(fallbackCtx, payload.RunRecordID, request)
+		if lastErr == nil {
+			return
+		}
+		if attempt < scheduleReportFallbackMaxRetries {
+			delay := scheduleReportFallbackBaseDelay * time.Duration(scheduleReportFallbackBackoffFactor<<attempt)
+			w.logf("定时任务 HTTP 回退回报失败，第 %d 次重试（等待 %v）: run_record_id=%s err=%v", attempt+1, delay, payload.RunRecordID, lastErr)
+			select {
+			case <-fallbackCtx.Done():
+				w.logf("定时任务 HTTP 回退回报重试期间被取消: run_record_id=%s err=%v", payload.RunRecordID, fallbackCtx.Err())
+				return
+			case <-time.After(delay):
+			}
+		}
 	}
+	w.logf("定时任务 HTTP 回退回报失败（已重试 %d 次）: run_record_id=%s err=%v", scheduleReportFallbackMaxRetries, payload.RunRecordID, lastErr)
 }
 
 func (w *collaborationWorker) reportTaskSuccess(ctx context.Context, conn net.Conn, taskID string, resultPayload map[string]any) {
