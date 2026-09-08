@@ -26,6 +26,7 @@ var probedRuntimeTools = []runtimeToolProbe{
 	{label: "python3.12", candidates: []string{"python3.12", "python3", "python"}, versionArg: "--version"},
 	{label: "rg", candidates: []string{"rg"}, versionArg: "--version"},
 	{label: "uv", candidates: []string{"uv"}, versionArg: "--version", cliSubDir: "uv"},
+	{label: "git", candidates: []string{"git"}, versionArg: "--version"},
 }
 
 // runtimeDetectTimeout 是单次工具探测的超时时间。
