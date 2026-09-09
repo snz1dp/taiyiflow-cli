@@ -97,9 +97,9 @@ func (o *Orchestrator) CheckAndDownload(ctx context.Context, deviceID string, fo
 		// 上报 download_failed
 		if checkResp.DeliveryID != "" {
 			_ = o.updater.ReportStatus(ctx, &ReportStatusRequest{
-				DeliveryID: checkResp.DeliveryID,
-				Action:     string(ReportDownloadFailed),
-				DeviceID:   deviceID,
+				DeliveryID:   checkResp.DeliveryID,
+				Action:       string(ReportDownloadFailed),
+				DeviceID:     deviceID,
 				ErrorMessage: err.Error(),
 			})
 		}
@@ -112,9 +112,9 @@ func (o *Orchestrator) CheckAndDownload(ctx context.Context, deviceID string, fo
 			// 上报 download_failed
 			if checkResp.DeliveryID != "" {
 				_ = o.updater.ReportStatus(ctx, &ReportStatusRequest{
-					DeliveryID: checkResp.DeliveryID,
-					Action:     string(ReportDownloadFailed),
-					DeviceID:   deviceID,
+					DeliveryID:   checkResp.DeliveryID,
+					Action:       string(ReportDownloadFailed),
+					DeviceID:     deviceID,
 					ErrorMessage: fmt.Sprintf("SHA256 校验不匹配: 期望 %s, 实际 %s", checkResp.FileSHA256, result.SHA256),
 				})
 			}

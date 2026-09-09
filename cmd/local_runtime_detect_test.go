@@ -134,5 +134,3 @@ func TestResetRuntimeToolsCache(t *testing.T) {
 		t.Error("expected runtimeToolsCache to be populated after re-detect")
 	}
 }
-
-

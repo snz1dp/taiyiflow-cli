@@ -11,11 +11,11 @@ import (
 
 // CreateSkillScaffoldResult 表示技能骨架创建结果
 type CreateSkillScaffoldResult struct {
-	Name      string
-	Slug      string
-	FilePath  string
-	SkillDir  string
-	Scope     string
+	Name     string
+	Slug     string
+	FilePath string
+	SkillDir string
+	Scope    string
 }
 
 // CreateSkillScaffold 在指定目录下创建技能包骨架文件 SKILL.md

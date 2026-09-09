@@ -17,71 +17,71 @@ import (
 )
 
 const (
-	defaultRootDirName               = ".snz1dp"
-	defaultConfigRel                 = "config/taiyiflow.yaml"
-	rootDirEnvName                   = "SNZ1DP_HOME"
-	DefaultBackendAPIPrefix          = "/taiyi/composer/api/v1"
-	DefaultAuthAPIPrefix             = "/xeai"
-	SkillInstallScopeUser            = "user"
-	SkillInstallScopeWorkspace       = "workspace"
-	DefaultHTTPTimeoutSeconds        = 600
-	DefaultCommandTimeoutSeconds     = 3600
-	MaxHTTPTimeoutSeconds            = 2000
-	MaxCommandTimeoutSeconds         = 6000
-	DefaultSubtaskTimeoutSeconds     = 3600
-	MaxSubtaskTimeoutSeconds         = 6000
-	DefaultStreamIdleTimeoutSeconds  = 1200
-	DefaultQRWaitTimeoutSeconds      = 120
-	DefaultToolConfirmTimeoutSeconds = 120
-	MinToolConfirmTimeoutSeconds     = 30
-	MaxToolConfirmTimeoutSeconds     = 300
-	DefaultAgentAutoLoopMaxRounds    = 0
-	MaxAgentAutoLoopMaxRounds        = 10000
-	DefaultMaxParallelismSubtask     = 3
-	MaxMaxParallelismSubtask         = 32
-	encryptedConfigValuePrefix       = "enc:v1:"
-	SandboxEscapePolicyConfirm       = "confirm"
-	SandboxEscapePolicyDeny          = "deny"
-	SandboxEscapePolicyAllow         = "allow"
-	SkillReviewPolicyConfirm         = "confirm"
-	SkillReviewPolicyIgnore          = "ignore"
-	WriteConfirmationPolicyConfirm   = "confirm"
-	WriteConfirmationPolicyDirect    = "direct"
+	defaultRootDirName                  = ".snz1dp"
+	defaultConfigRel                    = "config/taiyiflow.yaml"
+	rootDirEnvName                      = "SNZ1DP_HOME"
+	DefaultBackendAPIPrefix             = "/taiyi/composer/api/v1"
+	DefaultAuthAPIPrefix                = "/xeai"
+	SkillInstallScopeUser               = "user"
+	SkillInstallScopeWorkspace          = "workspace"
+	DefaultHTTPTimeoutSeconds           = 600
+	DefaultCommandTimeoutSeconds        = 3600
+	MaxHTTPTimeoutSeconds               = 2000
+	MaxCommandTimeoutSeconds            = 6000
+	DefaultSubtaskTimeoutSeconds        = 3600
+	MaxSubtaskTimeoutSeconds            = 6000
+	DefaultStreamIdleTimeoutSeconds     = 1200
+	DefaultQRWaitTimeoutSeconds         = 120
+	DefaultToolConfirmTimeoutSeconds    = 120
+	MinToolConfirmTimeoutSeconds        = 30
+	MaxToolConfirmTimeoutSeconds        = 300
+	DefaultAgentAutoLoopMaxRounds       = 0
+	MaxAgentAutoLoopMaxRounds           = 10000
+	DefaultMaxParallelismSubtask        = 3
+	MaxMaxParallelismSubtask            = 32
+	encryptedConfigValuePrefix          = "enc:v1:"
+	SandboxEscapePolicyConfirm          = "confirm"
+	SandboxEscapePolicyDeny             = "deny"
+	SandboxEscapePolicyAllow            = "allow"
+	SkillReviewPolicyConfirm            = "confirm"
+	SkillReviewPolicyIgnore             = "ignore"
+	WriteConfirmationPolicyConfirm      = "confirm"
+	WriteConfirmationPolicyDirect       = "direct"
 	ModeSwitchConfirmationPolicyConfirm = "confirm"
-	ModeSwitchConfirmationPolicySkip     = "skip"
-	SkillAutoInstallPolicyOff        = "off"
-	SkillAutoInstallPolicyConfirm    = "confirm"
-	SkillAutoInstallPolicyAllow      = "allow"
-	BrowserModeDisabled              = "disabled"
-	BrowserModeChromeSession         = "chrome_session"
-	BrowserModeIsolated              = "isolated"
-	BrowserPermissionModeAsk         = "ask"
-	BrowserPermissionModeFollowPlan  = "follow_a_plan"
-	BrowserPermissionModeSkipAll     = "skip_all_permission_checks"
-	ComputerPermissionModeAsk        = "ask"
-	ComputerPermissionModeFollowPlan = "follow_a_plan"
-	ComputerPermissionModeSkipAll    = "skip_all_permission_checks"
-	ShellSandboxModeOff              = "off"
-	ShellSandboxModeAuto             = "auto"
-	ShellSandboxModeEnforce          = "enforce"
-	StreamProtocolAuto               = "auto"
-	StreamProtocolSSE                = "sse"
-	StreamProtocolWebSocket          = "websocket"
-	DefaultRequestModeAgent          = "agent"
-	DefaultRequestModeAsk            = "ask"
-	DefaultRequestModePlan           = "plan"
-	BrowserChannelChrome             = "chrome"
-	BrowserChannelChromium           = "chromium"
-	BrowserChannelEdge               = "edge"
-	BrowserChannelBrave              = "brave"
-	BrowserExtensionSetupNative      = "native_messaging"
-	BrowserExtensionSetupManual      = "manual"
-	BrowserExtensionSetupNone        = "none"
-	DefaultBrowserConnectTimeout     = 15
-	MaxBrowserConnectTimeout         = 120
-	DefaultBrowserHostIdleTimeout    = 30
-	MinBrowserHostIdleTimeout        = 1
-	MaxBrowserHostIdleTimeout        = 3600
+	ModeSwitchConfirmationPolicySkip    = "skip"
+	SkillAutoInstallPolicyOff           = "off"
+	SkillAutoInstallPolicyConfirm       = "confirm"
+	SkillAutoInstallPolicyAllow         = "allow"
+	BrowserModeDisabled                 = "disabled"
+	BrowserModeChromeSession            = "chrome_session"
+	BrowserModeIsolated                 = "isolated"
+	BrowserPermissionModeAsk            = "ask"
+	BrowserPermissionModeFollowPlan     = "follow_a_plan"
+	BrowserPermissionModeSkipAll        = "skip_all_permission_checks"
+	ComputerPermissionModeAsk           = "ask"
+	ComputerPermissionModeFollowPlan    = "follow_a_plan"
+	ComputerPermissionModeSkipAll       = "skip_all_permission_checks"
+	ShellSandboxModeOff                 = "off"
+	ShellSandboxModeAuto                = "auto"
+	ShellSandboxModeEnforce             = "enforce"
+	StreamProtocolAuto                  = "auto"
+	StreamProtocolSSE                   = "sse"
+	StreamProtocolWebSocket             = "websocket"
+	DefaultRequestModeAgent             = "agent"
+	DefaultRequestModeAsk               = "ask"
+	DefaultRequestModePlan              = "plan"
+	BrowserChannelChrome                = "chrome"
+	BrowserChannelChromium              = "chromium"
+	BrowserChannelEdge                  = "edge"
+	BrowserChannelBrave                 = "brave"
+	BrowserExtensionSetupNative         = "native_messaging"
+	BrowserExtensionSetupManual         = "manual"
+	BrowserExtensionSetupNone           = "none"
+	DefaultBrowserConnectTimeout        = 15
+	MaxBrowserConnectTimeout            = 120
+	DefaultBrowserHostIdleTimeout       = 30
+	MinBrowserHostIdleTimeout           = 1
+	MaxBrowserHostIdleTimeout           = 3600
 )
 
 var defaultDocUnstructuredExts = []string{
@@ -161,46 +161,46 @@ var imageUnderstandingExtSet = map[string]struct{}{
 }
 
 type Config struct {
-	BackendBaseURL            string           `yaml:"backend_base_url"`
-	BackendAPIPrefix          string           `yaml:"backend_api_prefix,omitempty"`
-	AuthAPIPrefix             string           `yaml:"auth_api_prefix,omitempty"`
-	AccessToken               string           `yaml:"access_token,omitempty"`
-	PersistentToken           string           `yaml:"persistent_token,omitempty"`
-	ClientID                  string           `yaml:"client_id,omitempty"`
-	DeviceID                  string           `yaml:"device_id,omitempty"`
-	AuthUpdatedAt             string           `yaml:"auth_updated_at,omitempty"`
-	DefaultFlow               string           `yaml:"default_flow,omitempty"`
-	ApprovalMode              string           `yaml:"approval_mode"`
-	ReasoningEnabled          bool             `yaml:"reasoning_enabled,omitempty"`
-	Workdir                   string           `yaml:"workdir,omitempty"`
-	DocUnstructuredExts       []string         `yaml:"doc_unstructured_exts,omitempty"`
-	HTTPTimeoutSeconds        int              `yaml:"http_timeout_seconds,omitempty"`
-	SandboxEscapePolicy       string           `yaml:"sandbox_escape_policy,omitempty"`
-	CommandTimeoutSeconds     int              `yaml:"command_timeout_seconds,omitempty"`
-	SubtaskTimeoutSeconds     int              `yaml:"subtask_timeout_seconds,omitempty"`
-	StreamIdleTimeoutSeconds  int              `yaml:"stream_idle_timeout_seconds,omitempty"`
-	StreamProtocol            string           `yaml:"stream_protocol,omitempty"`
-	QRWaitTimeoutSeconds      int              `yaml:"qr_wait_timeout_seconds,omitempty"`
-	ToolConfirmTimeoutSeconds int              `yaml:"tool_confirm_timeout_seconds,omitempty"`
-	AgentAutoLoopEnabled      bool             `yaml:"agent_auto_loop_enabled,omitempty"`
-	AgentAutoLoopMaxRounds    int              `yaml:"agent_auto_loop_max_rounds,omitempty"`
-	MaxParallelismSubtask     int              `yaml:"max_parallelism_subtask,omitempty"`
-	LoopDecideFlowID          string           `yaml:"loop_decide_flow_id,omitempty"`
-	CrossSessionMemoryEnabled bool             `yaml:"cross_session_memory_enabled,omitempty"`
-	OutputLanguage            string           `yaml:"output_language"`
-	AuditEnabled              bool             `yaml:"audit_enabled,omitempty"`
-	SkillReviewPolicy         string           `yaml:"skill_review_policy,omitempty"`
-	WriteConfirmationPolicy   string           `yaml:"write_confirmation_policy,omitempty"`
-	ModeSwitchConfirmationPolicy string       `yaml:"mode_switch_confirmation_policy,omitempty"`
-	DefaultRequestMode           string       `yaml:"default_request_mode,omitempty"`
-	RequestModeAutoSwitch        bool         `yaml:"request_mode_auto_switch,omitempty"`
-	SandboxRoots              []string         `yaml:"sandbox_roots,omitempty"`
-	FileSearchExcludeDirs     []string         `yaml:"file_search_exclude_dirs,omitempty"`
-	PermissionRules           []PermissionRule `yaml:"permission_rules,omitempty"`
-	ShellSandboxMode          string           `yaml:"shell_sandbox_mode,omitempty"`
-	Browser                   BrowserConfig    `yaml:"browser,omitempty"`
-	Computer                  ComputerConfig   `yaml:"computer,omitempty"`
-	Skills                    SkillConfig      `yaml:"skills,omitempty"`
+	BackendBaseURL               string           `yaml:"backend_base_url"`
+	BackendAPIPrefix             string           `yaml:"backend_api_prefix,omitempty"`
+	AuthAPIPrefix                string           `yaml:"auth_api_prefix,omitempty"`
+	AccessToken                  string           `yaml:"access_token,omitempty"`
+	PersistentToken              string           `yaml:"persistent_token,omitempty"`
+	ClientID                     string           `yaml:"client_id,omitempty"`
+	DeviceID                     string           `yaml:"device_id,omitempty"`
+	AuthUpdatedAt                string           `yaml:"auth_updated_at,omitempty"`
+	DefaultFlow                  string           `yaml:"default_flow,omitempty"`
+	ApprovalMode                 string           `yaml:"approval_mode"`
+	ReasoningEnabled             bool             `yaml:"reasoning_enabled,omitempty"`
+	Workdir                      string           `yaml:"workdir,omitempty"`
+	DocUnstructuredExts          []string         `yaml:"doc_unstructured_exts,omitempty"`
+	HTTPTimeoutSeconds           int              `yaml:"http_timeout_seconds,omitempty"`
+	SandboxEscapePolicy          string           `yaml:"sandbox_escape_policy,omitempty"`
+	CommandTimeoutSeconds        int              `yaml:"command_timeout_seconds,omitempty"`
+	SubtaskTimeoutSeconds        int              `yaml:"subtask_timeout_seconds,omitempty"`
+	StreamIdleTimeoutSeconds     int              `yaml:"stream_idle_timeout_seconds,omitempty"`
+	StreamProtocol               string           `yaml:"stream_protocol,omitempty"`
+	QRWaitTimeoutSeconds         int              `yaml:"qr_wait_timeout_seconds,omitempty"`
+	ToolConfirmTimeoutSeconds    int              `yaml:"tool_confirm_timeout_seconds,omitempty"`
+	AgentAutoLoopEnabled         bool             `yaml:"agent_auto_loop_enabled,omitempty"`
+	AgentAutoLoopMaxRounds       int              `yaml:"agent_auto_loop_max_rounds,omitempty"`
+	MaxParallelismSubtask        int              `yaml:"max_parallelism_subtask,omitempty"`
+	LoopDecideFlowID             string           `yaml:"loop_decide_flow_id,omitempty"`
+	CrossSessionMemoryEnabled    bool             `yaml:"cross_session_memory_enabled,omitempty"`
+	OutputLanguage               string           `yaml:"output_language"`
+	AuditEnabled                 bool             `yaml:"audit_enabled,omitempty"`
+	SkillReviewPolicy            string           `yaml:"skill_review_policy,omitempty"`
+	WriteConfirmationPolicy      string           `yaml:"write_confirmation_policy,omitempty"`
+	ModeSwitchConfirmationPolicy string           `yaml:"mode_switch_confirmation_policy,omitempty"`
+	DefaultRequestMode           string           `yaml:"default_request_mode,omitempty"`
+	RequestModeAutoSwitch        bool             `yaml:"request_mode_auto_switch,omitempty"`
+	SandboxRoots                 []string         `yaml:"sandbox_roots,omitempty"`
+	FileSearchExcludeDirs        []string         `yaml:"file_search_exclude_dirs,omitempty"`
+	PermissionRules              []PermissionRule `yaml:"permission_rules,omitempty"`
+	ShellSandboxMode             string           `yaml:"shell_sandbox_mode,omitempty"`
+	Browser                      BrowserConfig    `yaml:"browser,omitempty"`
+	Computer                     ComputerConfig   `yaml:"computer,omitempty"`
+	Skills                       SkillConfig      `yaml:"skills,omitempty"`
 }
 
 type BrowserConfig struct {
@@ -251,32 +251,32 @@ type Manager struct {
 
 func Default() Config {
 	return Config{
-		BackendBaseURL:            "https://snz1.cn",
-		BackendAPIPrefix:          DefaultBackendAPIPrefix,
-		AuthAPIPrefix:             DefaultAuthAPIPrefix,
-		ApprovalMode:              "confirm",
-		ReasoningEnabled:          false,
-		SandboxEscapePolicy:       SandboxEscapePolicyConfirm,
-		HTTPTimeoutSeconds:        DefaultHTTPTimeoutSeconds,
-		CommandTimeoutSeconds:     DefaultCommandTimeoutSeconds,
-		DocUnstructuredExts:       append([]string(nil), defaultDocUnstructuredExts...),
-		SubtaskTimeoutSeconds:     DefaultSubtaskTimeoutSeconds,
-		StreamIdleTimeoutSeconds:  DefaultStreamIdleTimeoutSeconds,
-		QRWaitTimeoutSeconds:      DefaultQRWaitTimeoutSeconds,
-		ToolConfirmTimeoutSeconds: DefaultToolConfirmTimeoutSeconds,
-		AgentAutoLoopEnabled:      false,
-		AgentAutoLoopMaxRounds:    DefaultAgentAutoLoopMaxRounds,
-		MaxParallelismSubtask:     DefaultMaxParallelismSubtask,
-		CrossSessionMemoryEnabled: true,
-		OutputLanguage:            "zh-CN",
-		AuditEnabled:              false,
-		SkillReviewPolicy:         SkillReviewPolicyConfirm,
-		WriteConfirmationPolicy:   WriteConfirmationPolicyConfirm,
+		BackendBaseURL:               "https://snz1.cn",
+		BackendAPIPrefix:             DefaultBackendAPIPrefix,
+		AuthAPIPrefix:                DefaultAuthAPIPrefix,
+		ApprovalMode:                 "confirm",
+		ReasoningEnabled:             false,
+		SandboxEscapePolicy:          SandboxEscapePolicyConfirm,
+		HTTPTimeoutSeconds:           DefaultHTTPTimeoutSeconds,
+		CommandTimeoutSeconds:        DefaultCommandTimeoutSeconds,
+		DocUnstructuredExts:          append([]string(nil), defaultDocUnstructuredExts...),
+		SubtaskTimeoutSeconds:        DefaultSubtaskTimeoutSeconds,
+		StreamIdleTimeoutSeconds:     DefaultStreamIdleTimeoutSeconds,
+		QRWaitTimeoutSeconds:         DefaultQRWaitTimeoutSeconds,
+		ToolConfirmTimeoutSeconds:    DefaultToolConfirmTimeoutSeconds,
+		AgentAutoLoopEnabled:         false,
+		AgentAutoLoopMaxRounds:       DefaultAgentAutoLoopMaxRounds,
+		MaxParallelismSubtask:        DefaultMaxParallelismSubtask,
+		CrossSessionMemoryEnabled:    true,
+		OutputLanguage:               "zh-CN",
+		AuditEnabled:                 false,
+		SkillReviewPolicy:            SkillReviewPolicyConfirm,
+		WriteConfirmationPolicy:      WriteConfirmationPolicyConfirm,
 		ModeSwitchConfirmationPolicy: ModeSwitchConfirmationPolicyConfirm,
 		DefaultRequestMode:           DefaultRequestModeAgent,
 		RequestModeAutoSwitch:        true,
-		ShellSandboxMode:          ShellSandboxModeAuto,
-		FileSearchExcludeDirs:     append([]string(nil), defaultFileSearchExcludeDirs...),
+		ShellSandboxMode:             ShellSandboxModeAuto,
+		FileSearchExcludeDirs:        append([]string(nil), defaultFileSearchExcludeDirs...),
 		Browser: BrowserConfig{
 			Mode:                  BrowserModeChromeSession,
 			PermissionMode:        BrowserPermissionModeAsk,

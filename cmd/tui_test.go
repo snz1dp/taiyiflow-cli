@@ -466,7 +466,7 @@ func TestExecuteTUISkillsPickerInstallDetailRefreshesPickerAndPanel(t *testing.T
 		fetchSkillsResult: []provider.VisibleSkillPackage{
 			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "远程技能摘要", Version: "1.2.3"},
 		},
-		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.2.3"},
+		downloadSkillResult: &provider.SkillPackageContent{Content: skillContent, Version: "1.2.3"},
 		reportInstallResult: &provider.SkillInstallationRecord{},
 	}
 
@@ -545,7 +545,7 @@ func TestExecuteTUISkillsPickerInstallSelectUsesRememberedSessionScope(t *testin
 		fetchSkillsResult: []provider.VisibleSkillPackage{
 			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "远程技能摘要", Version: "1.2.3"},
 		},
-		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.2.3"},
+		downloadSkillResult: &provider.SkillPackageContent{Content: skillContent, Version: "1.2.3"},
 		reportInstallResult: &provider.SkillInstallationRecord{},
 	}
 	result, err := app.executeTUISkillsPickerCommand(context.Background(), stubClient, config, workspaceDir, "/skills-picker install-select remote-skill remote")
@@ -2116,9 +2116,9 @@ func TestShouldSuppressTUILogLine(t *testing.T) {
 
 func TestParseTUIToolSummary(t *testing.T) {
 	tests := []struct {
-		line        string
-		summary     string
-		ok          bool
+		line    string
+		summary string
+		ok      bool
 	}{
 		{"[本地工具] read_file foo.go 行 1-10", "read_file foo.go 行 1-10", true},
 		{"[本地命令] ls -la（成功，0.1s，退出码 0）", "ls -la（成功，0.1s，退出码 0）", true},

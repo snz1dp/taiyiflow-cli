@@ -66,7 +66,7 @@ category: test
 	}
 
 	expectedFiles := map[string]bool{
-		"my-test-skill/SKILL.md":          false,
+		"my-test-skill/SKILL.md":            false,
 		"my-test-skill/references/notes.md": false,
 	}
 	for _, file := range reader.File {

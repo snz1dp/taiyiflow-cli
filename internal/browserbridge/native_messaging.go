@@ -52,19 +52,19 @@ type NativeMessagingPaths struct {
 }
 
 type InstallResult struct {
-	Channel           string
-	HostName          string
-	ManifestPath      string
-	ManifestPaths     []string
-	LauncherPath      string
+	Channel            string
+	HostName           string
+	ManifestPath       string
+	ManifestPaths      []string
+	LauncherPath       string
 	RegistryRegistered bool
-	StatePath         string
-	SocketPath        string
-	ExtensionID       string
-	ExtensionOrigin   string
-	ExtensionDir      string
-	ExtensionBuildDir string
-	BinaryPath        string
+	StatePath          string
+	SocketPath         string
+	ExtensionID        string
+	ExtensionOrigin    string
+	ExtensionDir       string
+	ExtensionBuildDir  string
+	BinaryPath         string
 }
 
 type NativeMessagingStatus struct {
@@ -248,13 +248,13 @@ func InstallNativeMessagingHost(config internalconfig.BrowserConfig, binaryPath 
 		ManifestPaths:      append([]string(nil), manifestPaths...),
 		LauncherPath:       paths.LauncherPath,
 		RegistryRegistered: true,
-		StatePath:         paths.StatePath,
-		SocketPath:        paths.SocketPath,
-		ExtensionID:       paths.ExtensionID,
-		ExtensionOrigin:   paths.ExtensionOrigin,
-		ExtensionDir:      paths.ExtensionDir,
-		ExtensionBuildDir: paths.ExtensionBuildDir,
-		BinaryPath:        paths.BinaryPath,
+		StatePath:          paths.StatePath,
+		SocketPath:         paths.SocketPath,
+		ExtensionID:        paths.ExtensionID,
+		ExtensionOrigin:    paths.ExtensionOrigin,
+		ExtensionDir:       paths.ExtensionDir,
+		ExtensionBuildDir:  paths.ExtensionBuildDir,
+		BinaryPath:         paths.BinaryPath,
 	}, nil
 }
 

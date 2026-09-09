@@ -18,18 +18,18 @@ import (
 
 type stubMcpProvider struct {
 	provider.Provider
-	servers       []provider.MCPServerSummary
-	listErr       error
-	createResult  *provider.MCPServerSummary
-	createErr     error
-	updateResult  *provider.MCPServerSummary
-	updateErr     error
-	deleteErr     error
-	lastCreate    provider.MCPServerCreateRequest
-	lastUpdateID  string
-	lastUpdate    provider.MCPServerUpdateRequest
-	lastDeleteID  string
-	listFlowID    string
+	servers        []provider.MCPServerSummary
+	listErr        error
+	createResult   *provider.MCPServerSummary
+	createErr      error
+	updateResult   *provider.MCPServerSummary
+	updateErr      error
+	deleteErr      error
+	lastCreate     provider.MCPServerCreateRequest
+	lastUpdateID   string
+	lastUpdate     provider.MCPServerUpdateRequest
+	lastDeleteID   string
+	listFlowID     string
 	listClientType string
 }
 

@@ -220,9 +220,9 @@ func ResolveDirectories(config internalconfig.Config) ([]string, error) {
 
 // DiscoverResult 包含发现的所有技能以及加载失败的远程技能信息。
 type DiscoverResult struct {
-	Items                []Skill
-	Directory            string
-	BrokenRemoteSkills   []InstalledRemoteSkill
+	Items              []Skill
+	Directory          string
+	BrokenRemoteSkills []InstalledRemoteSkill
 }
 
 // Discover 发现本地技能目录中的所有技能，返回技能列表和目录信息。
@@ -280,10 +280,10 @@ func DiscoverDetailed(config internalconfig.Config) (DiscoverResult, error) {
 				skillDir := filepath.Dir(path)
 				if origin, originErr := readRemoteOrigin(skillDir); originErr == nil && origin != nil {
 					brokenRemoteSkills = append(brokenRemoteSkills, InstalledRemoteSkill{
-						Name:    origin.Slug,
-						Slug:    origin.Slug,
-						TargetDir: skillDir,
-						RegistryURL: origin.Registry,
+						Name:             origin.Slug,
+						Slug:             origin.Slug,
+						TargetDir:        skillDir,
+						RegistryURL:      origin.Registry,
 						InstalledVersion: origin.InstalledVersion,
 					})
 				}

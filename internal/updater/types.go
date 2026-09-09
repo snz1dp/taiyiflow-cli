@@ -30,12 +30,12 @@ type CheckUpdateResponse struct {
 type ReportAction string
 
 const (
-	ReportDownloadStarted  ReportAction = "download_started"
+	ReportDownloadStarted   ReportAction = "download_started"
 	ReportDownloadCompleted ReportAction = "download_completed"
-	ReportDownloadFailed   ReportAction = "download_failed"
-	ReportInstallStarted   ReportAction = "install_started"
-	ReportInstallCompleted ReportAction = "install_completed"
-	ReportInstallFailed    ReportAction = "install_failed"
+	ReportDownloadFailed    ReportAction = "download_failed"
+	ReportInstallStarted    ReportAction = "install_started"
+	ReportInstallCompleted  ReportAction = "install_completed"
+	ReportInstallFailed     ReportAction = "install_failed"
 )
 
 // ReportStatusRequest 对应后端 ClientReleaseReportStatusRequest。
@@ -81,10 +81,10 @@ type PersistState struct {
 
 // DownloadInfo 下载文件信息。
 type DownloadInfo struct {
-	State    DownloadState `json:"state"`
-	FileName string        `json:"file_name"`
-	FilePath string        `json:"file_path"`
-	FileSize int64         `json:"file_size"`
-	FileSHA256 string      `json:"file_sha256"`
-	Version  string        `json:"version"`
+	State      DownloadState `json:"state"`
+	FileName   string        `json:"file_name"`
+	FilePath   string        `json:"file_path"`
+	FileSize   int64         `json:"file_size"`
+	FileSHA256 string        `json:"file_sha256"`
+	Version    string        `json:"version"`
 }

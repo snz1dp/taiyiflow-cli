@@ -536,18 +536,18 @@ type SkillPackageContent struct {
 
 // SkillInstallationRecord 对应后端 SkillInstallationRecordRead
 type SkillInstallationRecord struct {
-	ID              string
-	SkillPackageID  string
-	SkillName       string
-	SkillVersion    string
-	Status          string
-	InstallSource   string
-	ClientID        string
-	DeviceID        string
-	ClientPlatform  string
-	ClientVersion   string
-	CreatedAt       string
-	UpdatedAt       string
+	ID             string
+	SkillPackageID string
+	SkillName      string
+	SkillVersion   string
+	Status         string
+	InstallSource  string
+	ClientID       string
+	DeviceID       string
+	ClientPlatform string
+	ClientVersion  string
+	CreatedAt      string
+	UpdatedAt      string
 }
 
 // SkillInstallationPage 安装记录分页结果
@@ -578,12 +578,12 @@ type UploadCustomSkillArchiveRequest struct {
 
 // ReportInstallationRequest 上报安装记录请求
 type ReportInstallationRequest struct {
-	SkillPackageID  string
-	ClientID        string
-	DeviceID        string
-	InstallSource   string
-	ClientPlatform  string
-	ClientVersion   string
+	SkillPackageID string
+	ClientID       string
+	DeviceID       string
+	InstallSource  string
+	ClientPlatform string
+	ClientVersion  string
 }
 
 type ClientCollaborationTask struct {
@@ -620,17 +620,17 @@ type CollaborationListParams struct {
 
 // CollaborationTaskPage 协同任务分页列表。
 type CollaborationTaskPage struct {
-	Offset int                         `json:"offset"`
-	Total  int                         `json:"total"`
-	Data   []ClientCollaborationTask   `json:"data"`
+	Offset int                       `json:"offset"`
+	Total  int                       `json:"total"`
+	Data   []ClientCollaborationTask `json:"data"`
 }
 
 // OnlineDesktopClient 在线桌面客户端信息。
 type OnlineDesktopClient struct {
-	ClientID   string `json:"client_id"`
-	DeviceID   string `json:"device_id"`
-	ClientType string `json:"client_type"`
-	Platform   string `json:"platform"`
+	ClientID    string `json:"client_id"`
+	DeviceID    string `json:"device_id"`
+	ClientType  string `json:"client_type"`
+	Platform    string `json:"platform"`
 	ConnectedAt string `json:"connected_at,omitempty"`
 }
 
@@ -862,18 +862,21 @@ type ScheduleRunRecordPage struct {
 
 // MCPServerSummary MCP 服务器摘要信息。
 type MCPServerSummary struct {
-	ID             string           `json:"id"`
-	Name           string           `json:"name"`
-	ServerURL      string           `json:"server_url"`
-	ServerType     string           `json:"server_type"`
-	Description    string           `json:"description,omitempty"`
-	AuthConfig     map[string]any   `json:"auth_config,omitempty"`
-	IsSystem       bool             `json:"is_system,omitempty"`
-	OwnerUserID    string           `json:"owner_user_id,omitempty"`
-	Enabled        *bool            `json:"enabled,omitempty"`
-	DefaultEnabled *bool            `json:"default_enabled,omitempty"`
-	FlowID         string           `json:"flow_id,omitempty"`
-	Tools          []MCPToolSummary `json:"tools,omitempty"`
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	ServerURL   string         `json:"server_url"`
+	ServerType  string         `json:"server_type"`
+	Description string         `json:"description,omitempty"`
+	AuthConfig  map[string]any `json:"auth_config,omitempty"`
+	// PassUserIdentity 表示调用该服务时是否传递用户登录会话令牌（仅 sse/streamable_http 生效），
+	// 与 taiyiflow-chatui 的 pass_user_identity 字段语义对齐。
+	PassUserIdentity bool             `json:"pass_user_identity,omitempty"`
+	IsSystem         bool             `json:"is_system,omitempty"`
+	OwnerUserID      string           `json:"owner_user_id,omitempty"`
+	Enabled          *bool            `json:"enabled,omitempty"`
+	DefaultEnabled   *bool            `json:"default_enabled,omitempty"`
+	FlowID           string           `json:"flow_id,omitempty"`
+	Tools            []MCPToolSummary `json:"tools,omitempty"`
 }
 
 // MCPToolSummary MCP 工具摘要信息。
@@ -886,20 +889,22 @@ type MCPToolSummary struct {
 
 // MCPServerCreateRequest 创建 MCP 服务器请求。
 type MCPServerCreateRequest struct {
-	Name           string `json:"name"`
-	ServerURL      string `json:"server_url"`
-	FlowID         string `json:"flow_id"`
-	ServerType     string `json:"server_type"`
-	Description    string `json:"description,omitempty"`
-	ClientType     string `json:"client_type,omitempty"`
-	DefaultEnabled *bool  `json:"default_enabled,omitempty"`
+	Name             string `json:"name"`
+	ServerURL        string `json:"server_url"`
+	FlowID           string `json:"flow_id"`
+	ServerType       string `json:"server_type"`
+	Description      string `json:"description,omitempty"`
+	ClientType       string `json:"client_type,omitempty"`
+	DefaultEnabled   *bool  `json:"default_enabled,omitempty"`
+	PassUserIdentity *bool  `json:"pass_user_identity,omitempty"`
 }
 
 // MCPServerUpdateRequest 更新 MCP 服务器请求（仅非 nil 字段会被提交）。
 type MCPServerUpdateRequest struct {
-	Name           *string `json:"name,omitempty"`
-	ServerURL      *string `json:"server_url,omitempty"`
-	ServerType     *string `json:"server_type,omitempty"`
-	Description    *string `json:"description,omitempty"`
-	DefaultEnabled *bool   `json:"default_enabled,omitempty"`
+	Name             *string `json:"name,omitempty"`
+	ServerURL        *string `json:"server_url,omitempty"`
+	ServerType       *string `json:"server_type,omitempty"`
+	Description      *string `json:"description,omitempty"`
+	DefaultEnabled   *bool   `json:"default_enabled,omitempty"`
+	PassUserIdentity *bool   `json:"pass_user_identity,omitempty"`
 }

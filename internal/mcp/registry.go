@@ -34,7 +34,16 @@ func NewRegistry() *Registry {
 // - 系统内置服务（is_system=true）始终启用
 // - 非系统服务若 ID 在本地禁用集合中则标记为禁用
 // - 工具级禁用通过 disabled_tool_keys 过滤
-func (r *Registry) LoadServers(ctx context.Context, providerClient provider.Provider, flowID string) error {
+//
+// userIdentityTokenProvider 在每次 MCP 请求构造请求头时实时解析当前用户登录会话令牌（access_token），
+// 注入到 pass_user_identity=true 的 sse/streamable_http 服务器配置中，
+// 调用时以 Authorization: Bearer 方式携带（与 chatui mcpClient.js 对齐）。
+// 采用 provider 而非静态字符串，确保令牌被自动刷新后 MCP 调用能拿到最新值。
+//
+// userIdentityRefresh 在 MCP 服务返回 401/403 时触发一次持久令牌刷新登录，返回 true 表示
+// 刷新成功且 access_token 已更新，调用方会用新令牌重试一次。覆盖“仅 MCP 服务认为令牌过期、
+// 但后端调用尚未触发自动刷新”的场景。可为 nil（无刷新能力时退化为不重试）。
+func (r *Registry) LoadServers(ctx context.Context, providerClient provider.Provider, flowID string, userIdentityTokenProvider func() string, userIdentityRefresh func(ctx context.Context) bool) error {
 	if flowID == "" {
 		return nil
 	}
@@ -95,6 +104,12 @@ func (r *Registry) LoadServers(ctx context.Context, providerClient provider.Prov
 			ServerType: srv.ServerType,
 			AuthConfig: srv.AuthConfig,
 			Tools:      enabledTools,
+		}
+		// 仅 sse/streamable_http 类型支持传递用户登录会话令牌（与 chatui supportsUserIdentity 对齐）
+		if srv.PassUserIdentity && (srv.ServerType == "sse" || srv.ServerType == "streamable_http") {
+			serverConfig.PassUserIdentity = true
+			serverConfig.UserIdentityTokenProvider = userIdentityTokenProvider
+			serverConfig.UserIdentityRefresh = userIdentityRefresh
 		}
 		r.servers = append(r.servers, serverConfig)
 	}

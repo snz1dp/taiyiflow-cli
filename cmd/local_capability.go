@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
@@ -18,16 +19,43 @@ type callbackAuthRefreshProvider struct {
 	client        *providerclient.Client
 	config        *internalconfig.Config
 	serviceConfig *provider.ServiceConfig
+	// refreshMu 串行化持久令牌刷新登录。callbackAuthRefreshProvider 可能被多个 goroutine
+	// 共享（后端 API 调用 + 并发 MCP 工具调用），加锁避免重复刷新风暴，并消除对 *config
+	// 的并发写入竞争（*p.config = updatedConfig 是整体结构体写入）。
+	refreshMu sync.Mutex
 }
 
 func (p *callbackAuthRefreshProvider) shouldRetryAfterAuthRefresh(ctx context.Context, err error) (bool, error) {
-	if err == nil || !isAuthenticationError(err) || p.app == nil || p.client == nil || p.config == nil {
+	if err == nil || !isAuthenticationError(err) {
 		return false, nil
 	}
+	retry, refreshErr := p.refreshAuth(ctx)
+	if refreshErr != nil {
+		return false, fmt.Errorf("%w；自动刷新登录失败: %v", err, refreshErr)
+	}
+	return retry, nil
+}
+
+// RefreshAuth 触发一次持久令牌刷新登录，返回 true 表示刷新成功且 access_token 已更新。
+// 供 MCP 调用在收到 401/403 时复用，与后端自动刷新登录语义对齐；忽略刷新错误细节，
+// 只关心是否拿到可用的新令牌（失败时 MCP 调用按原始鉴权错误返回）。
+func (p *callbackAuthRefreshProvider) RefreshAuth(ctx context.Context) bool {
+	retry, _ := p.refreshAuth(ctx)
+	return retry
+}
+
+// refreshAuth 执行实际的持久令牌刷新登录，通过 refreshMu 串行化。
+// 返回 (是否拿到新令牌, 刷新过程中的错误)。nil 依赖（app/client/config）视为不可刷新。
+func (p *callbackAuthRefreshProvider) refreshAuth(ctx context.Context) (bool, error) {
+	if p.app == nil || p.client == nil || p.config == nil {
+		return false, nil
+	}
+	p.refreshMu.Lock()
+	defer p.refreshMu.Unlock()
 
 	updatedConfig, _, refreshErr := p.app.tryPersistentLogin(ctx, p.client, *p.config)
 	if refreshErr != nil {
-		return false, fmt.Errorf("%w；自动刷新登录失败: %v", err, refreshErr)
+		return false, refreshErr
 	}
 	*p.config = updatedConfig
 	if strings.TrimSpace(updatedConfig.AccessToken) == "" {
@@ -389,6 +417,17 @@ func extractTaiyiflowClient(p provider.Provider) (*providerclient.Client, bool) 
 		return cp.client, true
 	}
 	return nil, false
+}
+
+// extractUserIdentityRefresh 从 provider 中提取 MCP 鉴权刷新闭包。
+// 仅当 provider 被 callbackAuthRefreshProvider 包装（即具备持久令牌自动刷新能力）时返回非 nil，
+// 注入到 MCP Registry，使 MCP 服务返回 401/403 时能触发一次刷新登录并用新令牌重试。
+// 未包装（无 PersistentToken）时返回 nil，MCP 调用退化为不重试，与现有行为一致。
+func extractUserIdentityRefresh(p provider.Provider) func(ctx context.Context) bool {
+	if cp, ok := p.(*callbackAuthRefreshProvider); ok {
+		return cp.RefreshAuth
+	}
+	return nil
 }
 
 func modeAllowsBuiltIn(mode string) bool {

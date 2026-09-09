@@ -8,8 +8,8 @@ import (
 
 func TestBuildSkillSearchKeywordsCombinesInputMissingAndSessionSummary(t *testing.T) {
 	state := &agent.SessionState{
-		SessionTitle:     "文档检索增强",
-		FlowDisplayName:  "企业问答助手",
+		SessionTitle:       "文档检索增强",
+		FlowDisplayName:    "企业问答助手",
 		ApprovedSkillNames: []string{"context-review"},
 		TodoItems: []agent.TodoItem{
 			{Title: "补齐知识库同步", Notes: "需要 milvus ingest pipeline"},

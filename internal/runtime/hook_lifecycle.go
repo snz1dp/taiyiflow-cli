@@ -12,9 +12,9 @@ import (
 type HookEventName string
 
 const (
-	HookPreToolCall HookEventName = "pre_tool_call"
+	HookPreToolCall  HookEventName = "pre_tool_call"
 	HookPostToolCall HookEventName = "post_tool_call"
-	HookOnComplete HookEventName = "on_complete"
+	HookOnComplete   HookEventName = "on_complete"
 )
 
 type HookEvent struct {

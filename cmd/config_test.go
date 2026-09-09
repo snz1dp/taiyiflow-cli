@@ -391,7 +391,6 @@ func TestRunConfigUnknownSubcommandSuggestsHelp(t *testing.T) {
 	}
 }
 
-
 func TestAssignConfigValueStreamProtocol(t *testing.T) {
 	tests := []struct {
 		name      string

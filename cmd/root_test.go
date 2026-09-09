@@ -24,39 +24,39 @@ import (
 )
 
 type stubProvider struct {
-	stream             <-chan provider.StreamEvent
-	streamErr          error
-	streamSession      *provider.StreamSession
-	messages           *provider.SessionMessageList
-	runStats           *provider.RunStats
-	sessionContext     *provider.SessionContextPreview
-	memoryTasks        *provider.MemoryConsolidationPage
-	memoryTasksErr     error
-	memoryTrigger      *provider.MemoryConsolidationTriggerResult
-	memoryTriggerErr   error
-	updateSessionTitle func(context.Context, string, string, string) (string, error)
-	skillPreview       *provider.SkillResolvePreview
-	skillPreviewErr    error
-	uploadResult       *provider.UploadResult
-	uploadErr          error
-	uploadHook         func(context.Context, string, string, string, string) (*provider.UploadResult, error)
-	runFlowResult      *provider.RunFlowResult
-	runFlowErr         error
-	runFlowHook        func(context.Context, provider.RunFlowRequest) (*provider.RunFlowResult, error)
-	lastRequest        provider.StreamRequest
-	lastResolveRequest provider.SkillResolveRequest
-	submitResults      *[]provider.ClientCallResult
-	submitHook         func(provider.ClientCallResult) error
-	fetchSkillsResult  []provider.VisibleSkillPackage
-	fetchSkillsErr     error
-	downloadSkillResult *provider.SkillPackageContent
-	downloadSkillErr   error
-	reportInstallResult *provider.SkillInstallationRecord
-	reportInstallErr   error
-	queryInstallationsResult *provider.SkillInstallationPage
-	queryInstallationsErr    error
+	stream                     <-chan provider.StreamEvent
+	streamErr                  error
+	streamSession              *provider.StreamSession
+	messages                   *provider.SessionMessageList
+	runStats                   *provider.RunStats
+	sessionContext             *provider.SessionContextPreview
+	memoryTasks                *provider.MemoryConsolidationPage
+	memoryTasksErr             error
+	memoryTrigger              *provider.MemoryConsolidationTriggerResult
+	memoryTriggerErr           error
+	updateSessionTitle         func(context.Context, string, string, string) (string, error)
+	skillPreview               *provider.SkillResolvePreview
+	skillPreviewErr            error
+	uploadResult               *provider.UploadResult
+	uploadErr                  error
+	uploadHook                 func(context.Context, string, string, string, string) (*provider.UploadResult, error)
+	runFlowResult              *provider.RunFlowResult
+	runFlowErr                 error
+	runFlowHook                func(context.Context, provider.RunFlowRequest) (*provider.RunFlowResult, error)
+	lastRequest                provider.StreamRequest
+	lastResolveRequest         provider.SkillResolveRequest
+	submitResults              *[]provider.ClientCallResult
+	submitHook                 func(provider.ClientCallResult) error
+	fetchSkillsResult          []provider.VisibleSkillPackage
+	fetchSkillsErr             error
+	downloadSkillResult        *provider.SkillPackageContent
+	downloadSkillErr           error
+	reportInstallResult        *provider.SkillInstallationRecord
+	reportInstallErr           error
+	queryInstallationsResult   *provider.SkillInstallationPage
+	queryInstallationsErr      error
 	uninstallSkillRecordResult *provider.SkillInstallationRecord
-	uninstallSkillRecordErr   error
+	uninstallSkillRecordErr    error
 }
 
 type sequenceStreamProvider struct {
@@ -3079,7 +3079,7 @@ func TestStreamTaskInstallsMissingSkillBeforeRequest(t *testing.T) {
 		fetchSkillsResult: []provider.VisibleSkillPackage{
 			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
 		},
-		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
+		downloadSkillResult: &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
 		reportInstallResult: &provider.SkillInstallationRecord{},
 	}
 
@@ -3171,7 +3171,7 @@ func TestStreamTaskInstallsMissingSkillWithStructuredErrorPayload(t *testing.T) 
 		fetchSkillsResult: []provider.VisibleSkillPackage{
 			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
 		},
-		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
+		downloadSkillResult: &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
 		reportInstallResult: &provider.SkillInstallationRecord{},
 	}
 
@@ -3228,7 +3228,7 @@ func TestStreamTaskUsesFreeTextSearchForUniqueSkillCandidate(t *testing.T) {
 		fetchSkillsResult: []provider.VisibleSkillPackage{
 			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
 		},
-		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
+		downloadSkillResult: &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
 		reportInstallResult: &provider.SkillInstallationRecord{},
 	}
 
@@ -3287,7 +3287,7 @@ func TestStreamTaskInstallsMissingSkillIntoLegacyGlobalDirectoryAndReloadsReques
 		fetchSkillsResult: []provider.VisibleSkillPackage{
 			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
 		},
-		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
+		downloadSkillResult: &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
 		reportInstallResult: &provider.SkillInstallationRecord{},
 	}
 
@@ -3357,7 +3357,7 @@ func TestStreamTaskAutoInstallUsesPinnedSessionInstallScope(t *testing.T) {
 		fetchSkillsResult: []provider.VisibleSkillPackage{
 			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
 		},
-		downloadSkillResult:  &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
+		downloadSkillResult: &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
 		reportInstallResult: &provider.SkillInstallationRecord{},
 	}
 

@@ -22,30 +22,30 @@ const (
 
 // workerExecutionRecord 本地执行记录。
 type workerExecutionRecord struct {
-	ID            string `json:"id"`
-	TaskType      string `json:"task_type"`
-	TaskID        string `json:"task_id,omitempty"`
-	ScheduleID    string `json:"schedule_id,omitempty"`
-	RunRecordID   string `json:"run_record_id,omitempty"`
-	Name          string `json:"name,omitempty"`
-	RequestMode   string `json:"request_mode,omitempty"`
-	Status        string `json:"status"`
-	ErrorMessage  string `json:"error_message,omitempty"`
-	StartedAt     string `json:"started_at"`
-	FinishedAt    string `json:"finished_at,omitempty"`
-	DurationMS    int64  `json:"duration_ms,omitempty"`
-	WorkingDir    string `json:"working_directory,omitempty"`
+	ID           string `json:"id"`
+	TaskType     string `json:"task_type"`
+	TaskID       string `json:"task_id,omitempty"`
+	ScheduleID   string `json:"schedule_id,omitempty"`
+	RunRecordID  string `json:"run_record_id,omitempty"`
+	Name         string `json:"name,omitempty"`
+	RequestMode  string `json:"request_mode,omitempty"`
+	Status       string `json:"status"`
+	ErrorMessage string `json:"error_message,omitempty"`
+	StartedAt    string `json:"started_at"`
+	FinishedAt   string `json:"finished_at,omitempty"`
+	DurationMS   int64  `json:"duration_ms,omitempty"`
+	WorkingDir   string `json:"working_directory,omitempty"`
 }
 
 // workerObservability 提供 Worker 的结构化日志和本地执行记录。
 type workerObservability struct {
-	mu          sync.Mutex
-	logPath     string
-	execPath    string
-	executions  []workerExecutionRecord
-	loaded      bool
-	warnedIO    bool
-	logf        func(format string, args ...any)
+	mu         sync.Mutex
+	logPath    string
+	execPath   string
+	executions []workerExecutionRecord
+	loaded     bool
+	warnedIO   bool
+	logf       func(format string, args ...any)
 }
 
 // newWorkerObservability 创建 Worker 可观测性实例。
@@ -212,9 +212,9 @@ func (o *workerObservability) logTaskReceived(taskType, taskID, name string) {
 // logTaskCompleted 记录任务完成。
 func (o *workerObservability) logTaskCompleted(taskType, taskID, status string, durationMS int64) {
 	o.logEvent("task.completed", map[string]any{
-		"task_type":  taskType,
-		"task_id":    taskID,
-		"status":     status,
+		"task_type":   taskType,
+		"task_id":     taskID,
+		"status":      status,
 		"duration_ms": durationMS,
 	})
 }

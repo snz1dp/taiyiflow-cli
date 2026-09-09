@@ -338,7 +338,7 @@ func (s *session) tabsContextLocked() (map[string]any, error) {
 		"tabs":          items,
 		"count":         len(items),
 	}, nil
-	}
+}
 
 func (s *session) tabsCreateLocked(arguments map[string]any) (map[string]any, error) {
 	url := strings.TrimSpace(stringArgument(arguments, "url"))
@@ -545,10 +545,10 @@ func (s *session) readConsoleLocked(arguments map[string]any) (map[string]any, e
 	items := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
 		items = append(items, map[string]any{
-			"level":      entry.Level,
-			"text":       entry.Text,
-			"timestamp":  entry.Timestamp,
-			"tab_id":     string(targetID),
+			"level":     entry.Level,
+			"text":      entry.Text,
+			"timestamp": entry.Timestamp,
+			"tab_id":    string(targetID),
 		})
 	}
 	result, err := s.currentTabStateLocked(targetID)
@@ -632,7 +632,7 @@ func (s *session) currentTabStateLocked(targetID target.ID) (map[string]any, err
 			"url":    info.URL,
 			"active": info.TargetID == s.activeTabID,
 		}, nil
-		}
+	}
 	return nil, fmt.Errorf("未找到标签页: %s", targetID)
 }
 

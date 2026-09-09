@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -45,6 +46,19 @@ type ServerConfig struct {
 	ServerType string           `json:"server_type"` // stdio / sse / streamable_http / other
 	AuthConfig map[string]any   `json:"auth_config"`
 	Tools      []ToolDefinition `json:"tools"`
+	// PassUserIdentity 为 true 时，调用 sse/streamable_http 服务会携带用户登录会话令牌，
+	// 与 taiyiflow-chatui mcpClient.js 的 pass_user_identity 语义对齐。
+	PassUserIdentity bool `json:"pass_user_identity"`
+	// UserIdentityTokenProvider 在每次构造请求头时实时解析当前用户登录会话令牌（access_token），
+	// 由 Registry 加载服务器列表时注入，仅在 PassUserIdentity 为 true 时调用。
+	// 采用惰性解析而非静态快照，确保令牌在一轮对话内被自动刷新（callbackAuthRefreshProvider）后，
+	// 后续 MCP 调用能拿到最新令牌，与 chatui 每次请求 resolveUserIdentityToken 的行为对齐。
+	UserIdentityTokenProvider func() string `json:"-"`
+	// UserIdentityRefresh 在 MCP 服务返回鉴权错误（401/403）时触发一次持久令牌刷新登录，
+	// 返回 true 表示刷新成功且 access_token 已更新，调用方应清除会话缓存并用新令牌重试一次。
+	// 仅在 PassUserIdentity 为 true 时由 Registry 注入，覆盖“仅 MCP 服务认为令牌过期、
+	// 但后端调用尚未触发自动刷新”的场景，与后端 callbackAuthRefreshProvider 的刷新语义对齐。
+	UserIdentityRefresh func(ctx context.Context) bool `json:"-"`
 }
 
 // jsonRPCRequest 表示 JSON-RPC 2.0 请求。
@@ -70,6 +84,21 @@ type jsonRPCError struct {
 
 func (e *jsonRPCError) Error() string {
 	return fmt.Sprintf("JSON-RPC error %d: %s", e.Code, e.Message)
+}
+
+// authRequiredError 表示 MCP 服务返回了鉴权错误（401/403）。
+// 顶层 CallTool 通过 errors.As 识别该类型，据此判断是否需要刷新令牌并重试，
+// 与普通 HTTP 错误（如 500/404）区分开，避免对非鉴权错误做无意义的刷新重试。
+type authRequiredError struct {
+	statusCode int
+	body       string
+}
+
+func (e *authRequiredError) Error() string {
+	if e.body == "" {
+		return fmt.Sprintf("MCP 服务器返回 HTTP %d", e.statusCode)
+	}
+	return fmt.Sprintf("MCP 服务器返回 HTTP %d: %s", e.statusCode, e.body)
 }
 
 // Client 是 MCP 协议客户端，支持 stdio / streamable_http / SSE 三种传输方式。
@@ -127,26 +156,58 @@ func (c *Client) FetchServerTools(ctx context.Context, server ServerConfig) ([]T
 }
 
 // CallTool 调用 MCP 服务器上的工具。
+//
+// 鉴权刷新重试：当 MCP 服务返回 401/403（authRequiredError）且该服务器配置了
+// PassUserIdentity + UserIdentityRefresh 时，触发一次持久令牌刷新登录；刷新成功则
+// 清除与旧令牌绑定的会话缓存，用新令牌重试一次。覆盖“仅 MCP 服务认为令牌过期、
+// 但后端调用尚未触发自动刷新”的场景，与后端 callbackAuthRefreshProvider 的刷新语义对齐。
+// 重试与首次调用共享同一 callToolTimeout 预算（401 通常快速返回，预算消耗极小）。
 func (c *Client) CallTool(ctx context.Context, server ServerConfig, toolName string, toolArgs map[string]any) (any, error) {
 	ctx, cancel := context.WithTimeout(ctx, callToolTimeout)
 	defer cancel()
 
-	var result json.RawMessage
-	var err error
+	result, err := c.callToolOnce(ctx, server, toolName, toolArgs)
+	if err == nil {
+		return extractToolCallResult(result)
+	}
 
+	var authErr *authRequiredError
+	if errors.As(err, &authErr) && server.PassUserIdentity && server.UserIdentityRefresh != nil {
+		if server.UserIdentityRefresh(ctx) {
+			// 刷新成功：清除旧令牌建立的会话缓存，用新令牌重试一次。
+			c.invalidateServerSession(server)
+			retryResult, retryErr := c.callToolOnce(ctx, server, toolName, toolArgs)
+			if retryErr != nil {
+				return nil, retryErr
+			}
+			return extractToolCallResult(retryResult)
+		}
+	}
+	return nil, err
+}
+
+// callToolOnce 按传输类型执行一次工具调用，不含鉴权刷新重试逻辑。
+func (c *Client) callToolOnce(ctx context.Context, server ServerConfig, toolName string, toolArgs map[string]any) (json.RawMessage, error) {
 	switch server.ServerType {
 	case "stdio":
-		result, err = c.callStdioTool(ctx, server, toolName, toolArgs)
+		return c.callStdioTool(ctx, server, toolName, toolArgs)
 	case "sse":
-		result, err = c.callSSETool(ctx, server, toolName, toolArgs)
+		return c.callSSETool(ctx, server, toolName, toolArgs)
 	default:
-		result, err = c.callStreamableHTTPTool(ctx, server, toolName, toolArgs)
+		return c.callStreamableHTTPTool(ctx, server, toolName, toolArgs)
 	}
-	if err != nil {
-		return nil, err
-	}
+}
 
-	return extractToolCallResult(result)
+// invalidateServerSession 清除指定服务器的会话缓存，使刷新令牌后的重试以新令牌重新建立会话。
+// streamable_http 清除 Mcp-Session-Id；sse 清除 endpoint 与保活连接（其 GET 握手携带旧令牌）。
+func (c *Client) invalidateServerSession(server ServerConfig) {
+	if server.ServerType == "sse" {
+		c.invalidateSSEEndpoint(server.ServerURL)
+		return
+	}
+	c.mu.Lock()
+	delete(c.httpSessionIDs, server.ServerURL)
+	c.mu.Unlock()
 }
 
 // Close 清理所有连接资源。
@@ -226,7 +287,7 @@ func (c *Client) httpJSONRPC(ctx context.Context, server ServerConfig, method st
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	applyAuthHeaders(req, server.AuthConfig)
+	applyAuthHeaders(req, server)
 
 	// 携带已缓存的 session ID
 	c.mu.Lock()
@@ -250,6 +311,10 @@ func (c *Client) httpJSONRPC(ctx context.Context, server ServerConfig, method st
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		// 401/403 返回可识别的鉴权错误类型，供顶层 CallTool 触发令牌刷新重试。
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, &authRequiredError{statusCode: resp.StatusCode, body: string(body)}
+		}
 		return nil, fmt.Errorf("MCP 服务器返回 HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -285,7 +350,7 @@ func (c *Client) httpNotify(ctx context.Context, server ServerConfig, method str
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	applyAuthHeaders(req, server.AuthConfig)
+	applyAuthHeaders(req, server)
 
 	c.mu.Lock()
 	if sessionID, ok := c.httpSessionIDs[server.ServerURL]; ok {
@@ -343,6 +408,12 @@ func (c *Client) callSSETool(ctx context.Context, server ServerConfig, toolName 
 	}
 	result, err := c.sseJSONRPC(ctx, server, endpoint, "tools/call", params)
 	if err != nil {
+		// 鉴权错误（401/403）不是 endpoint 失效问题，直接返回交给顶层刷新重试，
+		// 避免用旧令牌重连再发一次必然失败的请求。
+		var authErr *authRequiredError
+		if errors.As(err, &authErr) {
+			return nil, err
+		}
 		// endpoint 可能已失效（服务器重启），清除缓存并重试一次
 		c.invalidateSSEEndpoint(server.ServerURL)
 		endpoint, retryErr := c.sseConnect(ctx, server)
@@ -406,7 +477,7 @@ func (c *Client) sseConnect(ctx context.Context, server ServerConfig) (string, e
 		return "", err
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	applyAuthHeaders(req, server.AuthConfig)
+	applyAuthHeaders(req, server)
 
 	resp, err := c.sseHTTPClient.Do(req)
 	if err != nil {
@@ -417,6 +488,11 @@ func (c *Client) sseConnect(ctx context.Context, server ServerConfig) (string, e
 	if resp.StatusCode >= http.StatusBadRequest {
 		resp.Body.Close()
 		sseCancel()
+		// 401/403 返回可识别的鉴权错误类型，供顶层 CallTool 触发令牌刷新重试。
+		// SSE 的 GET 握手与 POST 调用携带同一 Authorization 头，令牌过期时握手即被拒绝。
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return "", &authRequiredError{statusCode: resp.StatusCode}
+		}
 		return "", fmt.Errorf("SSE 连接返回 HTTP %d", resp.StatusCode)
 	}
 
@@ -481,7 +557,7 @@ func (c *Client) sseJSONRPC(ctx context.Context, server ServerConfig, endpoint, 
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	applyAuthHeaders(req, server.AuthConfig)
+	applyAuthHeaders(req, server)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -491,6 +567,10 @@ func (c *Client) sseJSONRPC(ctx context.Context, server ServerConfig, endpoint, 
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		// 401/403 返回可识别的鉴权错误类型，供顶层 CallTool 触发令牌刷新重试。
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, &authRequiredError{statusCode: resp.StatusCode, body: string(body)}
+		}
 		return nil, fmt.Errorf("SSE endpoint 返回 HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -526,7 +606,7 @@ func (c *Client) sseNotify(ctx context.Context, server ServerConfig, endpoint, m
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	applyAuthHeaders(req, server.AuthConfig)
+	applyAuthHeaders(req, server)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -910,35 +990,46 @@ func parseSSEResponse(body io.Reader) (json.RawMessage, error) {
 	}
 }
 
-// applyAuthHeaders 根据 auth_config 为请求添加认证头。
-func applyAuthHeaders(req *http.Request, authConfig map[string]any) {
-	if authConfig == nil {
-		return
-	}
-
-	authType, _ := authConfig["type"].(string)
-	switch authType {
-	case "bearer":
-		if token, ok := authConfig["token"].(string); ok && token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-	case "api_key":
-		key, _ := authConfig["key"].(string)
-		header, _ := authConfig["header"].(string)
-		if header == "" {
-			header = "X-API-Key"
-		}
-		if key != "" {
-			req.Header.Set(header, key)
-		}
-	}
-
-	// 自定义请求头
-	if headers, ok := authConfig["headers"].(map[string]any); ok {
-		for k, v := range headers {
-			if strVal, ok := v.(string); ok {
-				req.Header.Set(k, strVal)
+// applyAuthHeaders 根据服务器配置为请求添加认证头。
+//
+// 与 taiyiflow-chatui mcpClient.js 的 buildAuthHeaders 对齐：
+// 当 PassUserIdentity 为 true 且 auth_config 未显式配置 Authorization 时，
+// 注入当前用户登录会话令牌（Bearer 方式），避免覆盖服务自有鉴权。
+func applyAuthHeaders(req *http.Request, server ServerConfig) {
+	authConfig := server.AuthConfig
+	if authConfig != nil {
+		authType, _ := authConfig["type"].(string)
+		switch authType {
+		case "bearer":
+			if token, ok := authConfig["token"].(string); ok && token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
 			}
+		case "api_key":
+			key, _ := authConfig["key"].(string)
+			header, _ := authConfig["header"].(string)
+			if header == "" {
+				header = "X-API-Key"
+			}
+			if key != "" {
+				req.Header.Set(header, key)
+			}
+		}
+
+		// 自定义请求头
+		if headers, ok := authConfig["headers"].(map[string]any); ok {
+			for k, v := range headers {
+				if strVal, ok := v.(string); ok {
+					req.Header.Set(k, strVal)
+				}
+			}
+		}
+	}
+
+	// 传递用户身份令牌：仅在未显式配置 Authorization 时注入，避免覆盖服务自有鉴权。
+	// 令牌通过 provider 在请求时实时解析，确保使用刷新后的最新令牌。
+	if server.PassUserIdentity && req.Header.Get("Authorization") == "" && server.UserIdentityTokenProvider != nil {
+		if token := strings.TrimSpace(server.UserIdentityTokenProvider()); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
 }

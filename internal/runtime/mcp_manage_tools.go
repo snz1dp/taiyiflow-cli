@@ -112,6 +112,10 @@ func mcpManageClientToolDefinitions() []map[string]any {
 						"type":        "boolean",
 						"description": "默认启用状态（可选，默认 true）。设为 false 时，其他客户端首次看到该服务时默认处于禁用状态",
 					},
+					"pass_user_identity": map[string]any{
+						"type":        "boolean",
+						"description": "是否传递用户登录令牌（可选，默认 false）。仅 streamable_http / sse 类型生效，开启后调用该服务时携带当前用户会话令牌（Bearer）",
+					},
 				},
 				"required":             []string{"name", "server_url", "server_type"},
 				"additionalProperties": false,
@@ -148,6 +152,10 @@ func mcpManageClientToolDefinitions() []map[string]any {
 					"default_enabled": map[string]any{
 						"type":        "boolean",
 						"description": "默认启用状态（可选，不传则不修改）。设为 false 时，其他客户端首次看到该服务时默认处于禁用状态",
+					},
+					"pass_user_identity": map[string]any{
+						"type":        "boolean",
+						"description": "是否传递用户登录令牌（可选，不传则不修改）。仅 streamable_http / sse 类型生效，开启后调用该服务时携带当前用户会话令牌（Bearer）",
 					},
 				},
 				"required":             []string{"server_name"},
@@ -216,6 +224,13 @@ func (r *ClientRuntime) mcpManageTool(ctx context.Context, providerClient provid
 	default:
 		return nil, newToolError("PARAM_ERROR", "不支持的 MCP 管理工具: %s", toolName)
 	}
+}
+
+// supportsUserIdentity 判断服务类型是否支持传递用户登录会话令牌。
+// 仅 streamable_http / sse 类型支持，stdio 类型不涉及 HTTP 鉴权头。
+// 与 taiyiflow-chatui mcp-builtin-tools.js 的 supportsUserIdentity 对齐。
+func supportsUserIdentity(serverType string) bool {
+	return serverType == "streamable_http" || serverType == "sse"
 }
 
 // mcpServerGroup 获取服务器的分组标签。
@@ -578,6 +593,14 @@ func (r *ClientRuntime) mcpAddServer(ctx context.Context, providerClient provide
 		}
 	}
 
+	// pass_user_identity：仅 streamable_http / sse 类型支持传递用户令牌，其它类型强制 false
+	if v, ok := arguments["pass_user_identity"]; ok {
+		if boolVal, isBool := v.(bool); isBool {
+			passIdentity := supportsUserIdentity(serverType) && boolVal
+			request.PassUserIdentity = &passIdentity
+		}
+	}
+
 	newServer, err := providerClient.CreateMCPServer(ctx, request)
 	if err != nil {
 		return nil, newToolError("EXECUTION_FAILED", "添加 MCP 服务器失败: %v", err)
@@ -652,9 +675,22 @@ func (r *ClientRuntime) mcpEditServer(ctx context.Context, providerClient provid
 			hasUpdate = true
 		}
 	}
+	if v, ok := arguments["pass_user_identity"]; ok {
+		if boolVal, isBool := v.(bool); isBool {
+			// 以编辑后的最终服务类型判断是否支持传递用户令牌（未传 server_type 时沿用原类型），
+			// 与 taiyiflow-chatui handleMcpEditServer 逻辑对齐
+			effectiveServerType := server.ServerType
+			if updateRequest.ServerType != nil {
+				effectiveServerType = *updateRequest.ServerType
+			}
+			passIdentity := supportsUserIdentity(effectiveServerType) && boolVal
+			updateRequest.PassUserIdentity = &passIdentity
+			hasUpdate = true
+		}
+	}
 
 	if !hasUpdate {
-		return nil, newToolError("PARAM_ERROR", "未提供任何需要修改的字段。可修改：name、server_url、server_type、description、default_enabled。")
+		return nil, newToolError("PARAM_ERROR", "未提供任何需要修改的字段。可修改：name、server_url、server_type、description、default_enabled、pass_user_identity。")
 	}
 
 	updated, err := providerClient.UpdateMCPServer(ctx, server.ID, updateRequest)

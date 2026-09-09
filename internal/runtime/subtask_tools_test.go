@@ -708,10 +708,10 @@ func TestParseSubtaskExecutionRequestInheritsCurrentRequestMode(t *testing.T) {
 	}
 
 	tests := []struct {
-		name             string
-		currentMode      string
-		arguments        map[string]any
-		wantRequestMode  string
+		name            string
+		currentMode     string
+		arguments       map[string]any
+		wantRequestMode string
 	}{
 		{
 			name:            "未指定模式且主智能体为 plan 时继承 plan",

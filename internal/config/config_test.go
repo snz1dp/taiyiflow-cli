@@ -706,7 +706,6 @@ func TestDefaultBundledSkillsDirUsesRootDir(t *testing.T) {
 	}
 }
 
-
 func TestNormalizeStreamProtocol(t *testing.T) {
 	cases := []struct {
 		input    string

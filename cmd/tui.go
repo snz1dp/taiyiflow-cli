@@ -272,7 +272,11 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			var mcpRegistry *internalmcp.Registry
 			if taiyiflowClient, ok := extractTaiyiflowClient(callbackProvider); ok {
 				registry := internalmcp.NewRegistry()
-				if loadErr := registry.LoadServers(runCtx, taiyiflowClient, currentFlow); loadErr == nil {
+				// 令牌以闭包惰性解析：config 由 providerWithCallbackAuthRefresh 持有同一指针，
+				// 自动刷新登录后闭包能读到最新 access_token，避免 MCP 调用携带陈旧令牌。
+				// userIdentityRefresh 复用同一 provider 的持久令牌刷新能力，使 MCP 服务返回 401/403
+				// 时能触发一次刷新登录并用新令牌重试（仅当 provider 具备刷新能力时非 nil）。
+				if loadErr := registry.LoadServers(runCtx, taiyiflowClient, currentFlow, func() string { return config.AccessToken }, extractUserIdentityRefresh(callbackProvider)); loadErr == nil {
 					mcpRegistry = registry
 					// 同时注入到两个 runtime：runtimeClient 负责工具执行，quietRuntimeClient 负责构建上送定义
 					runtimeClient.SetMCPRegistry(mcpRegistry)
@@ -1949,7 +1953,7 @@ func (w *tuiLogWriter) Flush() {
 // shouldSuppressTUILogLine 判断一行是否以已知的工具/确认提示前缀开头。
 // 注意：此函数只检查行首前缀，多行提示的续行由 tuiLogWriter.suppressMode 状态机处理。
 // suppressPrefixes 与 parseTUIToolSummary 的 summaryPrefixes 存在部分重叠
-//（[本地工具]、[本地命令]、[浏览器工具]、[桌面工具]），
+// （[本地工具]、[本地命令]、[浏览器工具]、[桌面工具]），
 // 因为这些前缀行既需要作为 ToolSummary 发出（parseTUIToolSummary），
 // 又需要在非 Summary 路径中被抑制（shouldSuppressTUILogLine），
 // 两者职责不同，保持独立列表更清晰。
@@ -3491,7 +3495,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			Workdir:                   strings.TrimSpace(config.Workdir),
 			HTTPTimeoutSeconds:        strconv.Itoa(config.HTTPTimeoutSeconds),
 			CommandTimeoutSeconds:     strconv.Itoa(config.CommandTimeoutSeconds),
-				StreamIdleTimeoutSeconds:  strconv.Itoa(config.StreamIdleTimeoutSeconds),
+			StreamIdleTimeoutSeconds:  strconv.Itoa(config.StreamIdleTimeoutSeconds),
 			StreamProtocol:            internalconfig.NormalizeStreamProtocol(config.StreamProtocol),
 			SubtaskTimeoutSeconds:     strconv.Itoa(config.SubtaskTimeoutSeconds),
 			CrossSessionMemoryEnabled: config.CrossSessionMemoryEnabled,
@@ -3513,7 +3517,7 @@ func (a *App) buildTUIConfigFormState(ctx context.Context, providerClient provid
 			SkillsInstallScope:        internalconfig.NormalizeSkillInstallScope(config.Skills.InstallScope),
 			SkillsAutoInstallPolicy:   internalconfig.NormalizeSkillAutoInstallPolicy(config.Skills.AutoInstallPolicy),
 			SkillsFreeTextSearch:      config.Skills.FreeTextSearchEnabled,
-				DocUnstructuredExts:       strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "),
+			DocUnstructuredExts:       strings.Join(prefixDocumentExts(config.DocUnstructuredExts), ", "),
 			ShellSandboxMode:          strings.TrimSpace(config.ShellSandboxMode),
 			DefaultRequestMode:        strings.TrimSpace(config.DefaultRequestMode),
 			RequestModeAutoSwitch:     config.RequestModeAutoSwitch,

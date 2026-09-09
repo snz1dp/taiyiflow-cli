@@ -85,14 +85,14 @@ func parseXrandrDisplayLayouts(output string) ([]displayLayout, error) {
 			displayID = strings.TrimLeft(nameToken, "+*")
 		}
 		layout := displayLayout{
-			DisplayID: displayID,
-			Width:     width,
-			Height:    height,
-			PixelWidth: width,
+			DisplayID:   displayID,
+			Width:       width,
+			Height:      height,
+			PixelWidth:  width,
 			PixelHeight: height,
-			OriginX:   originX,
-			OriginY:   originY,
-			Primary:   primary,
+			OriginX:     originX,
+			OriginY:     originY,
+			Primary:     primary,
 		}
 		if index, err := strconv.Atoi(strings.TrimSuffix(fields[0], ":")); err == nil {
 			layout.DisplayIndex = index + 1

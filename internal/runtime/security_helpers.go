@@ -32,7 +32,6 @@ func isSandboxEscapeError(err error) (sandboxEscapeError, bool) {
 	return sandboxEscapeError{}, false
 }
 
-
 func (r *ClientRuntime) resolveAllowedDirectoryWithPolicy(config internalconfig.Config, requested string) (string, error) {
 	resolved, err := r.resolveAllowedPathWithPolicy(config, requested, false)
 	if err == nil {
@@ -631,11 +630,11 @@ func guardDangerousCommand(payload commandArguments, config internalconfig.Confi
 	highRiskPatterns := []string{
 		"rm -rf /", "mkfs", "shutdown", "reboot", "dd if=", "killall", "sudo ",
 		// Fork bomb 变体
-		":(){",       // bash 经典写法 :(){ :|:& };:
-		":|:&",       // bash fork bomb 管道递归片段（无空格变体）
-		": () {",     // bash fork bomb 带空格变体 : () { : | : & } ; :
-		"fork while fork", // perl fork bomb
-		"os.fork()",  // python fork bomb
+		":(){",                // bash 经典写法 :(){ :|:& };:
+		":|:&",                // bash fork bomb 管道递归片段（无空格变体）
+		": () {",              // bash fork bomb 带空格变体 : () { : | : & } ; :
+		"fork while fork",     // perl fork bomb
+		"os.fork()",           // python fork bomb
 		"while true: os.fork", // python fork bomb 显式循环
 	}
 	for _, pattern := range highRiskPatterns {
@@ -889,25 +888,25 @@ func guardScriptSensitiveAccess(payload commandArguments, preview string) error 
 	}
 	// 脚本语言中常见的文件操作模式
 	fileAccessPatterns := []string{
-		"open(", "open (",          // Python open()
-		"io.read",                   // Python io.read()
-		"fileinput",                 // Python fileinput
+		"open(", "open (", // Python open()
+		"io.read",                    // Python io.read()
+		"fileinput",                  // Python fileinput
 		"shutil.copy", "shutil.move", // Python shutil
-		"os.path.join",              // Python os.path
-		"subprocess",                // Python subprocess
-		"open(my $fh",               // Perl open
-		"open(file",                 // Perl/PHP open
-		"file.open",                 // Ruby File.open
-		"file.read",                 // Ruby File.read
+		"os.path.join",                     // Python os.path
+		"subprocess",                       // Python subprocess
+		"open(my $fh",                      // Perl open
+		"open(file",                        // Perl/PHP open
+		"file.open",                        // Ruby File.open
+		"file.read",                        // Ruby File.read
 		"require('fs')", "require(\"fs\")", // Node.js fs
-		"readfilesync",              // Node.js readFileSync
-		"createReadStream",          // Node.js createReadStream
-		"file_get_contents",         // PHP file_get_contents
-		"fopen(",                    // PHP/C fopen
-		"get-content",               // PowerShell Get-Content
-		"get-item",                  // PowerShell Get-Item
-		"copy-item",                 // PowerShell Copy-Item
-		"import-csv",                // PowerShell Import-Csv
+		"readfilesync",      // Node.js readFileSync
+		"createReadStream",  // Node.js createReadStream
+		"file_get_contents", // PHP file_get_contents
+		"fopen(",            // PHP/C fopen
+		"get-content",       // PowerShell Get-Content
+		"get-item",          // PowerShell Get-Item
+		"copy-item",         // PowerShell Copy-Item
+		"import-csv",        // PowerShell Import-Csv
 	}
 	hasFileAccess := false
 	for _, p := range fileAccessPatterns {
@@ -980,12 +979,12 @@ func guardNetworkDownload(payload commandArguments, preview string, config inter
 	downloadPatterns := []string{
 		"curl -o ", "curl -o\t", "curl --output",
 		"wget ", "wget -o", "wget -o ",
-		"scp ",               // 远程复制到本地
+		"scp ", // 远程复制到本地
 		"rsync -r ", "rsync -a ",
 		"ftp ", "sftp ",
-		"fetch ",             // FreeBSD fetch
-		"aria2c ",            // aria2 下载工具
-		"axel ",              // axel 多线程下载
+		"fetch ",  // FreeBSD fetch
+		"aria2c ", // aria2 下载工具
+		"axel ",   // axel 多线程下载
 	}
 	for _, pattern := range downloadPatterns {
 		if strings.Contains(preview, pattern) {
@@ -1453,6 +1452,7 @@ func windowsUserDirPaths() []string {
 //     Remove-ItemProperty, Clear-Item
 //   - PowerShell 反向 Shell（TCPClient）已在 guardReverseShell 中覆盖
 //   - PowerShell -enc Base64 编码命令绕过
+//
 // 该检测在 auto 审批模式下生效。
 func guardWindowsDestructiveActions(payload commandArguments, preview string) error {
 	// --- CMD 破坏性命令 ---

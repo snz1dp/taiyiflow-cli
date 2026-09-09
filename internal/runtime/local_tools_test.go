@@ -985,8 +985,8 @@ func TestRequiresClientToolConfirmationRespectsModeSwitchPolicy(t *testing.T) {
 	}
 
 	confirmConfig := internalconfig.Config{
-		ApprovalMode:                  "auto",
-		ModeSwitchConfirmationPolicy:  internalconfig.ModeSwitchConfirmationPolicyConfirm,
+		ApprovalMode:                 "auto",
+		ModeSwitchConfirmationPolicy: internalconfig.ModeSwitchConfirmationPolicyConfirm,
 	}
 	if !RequiresClientToolConfirmation(confirmConfig, switchPayload) {
 		t.Fatal("expected switch_to_agent to require confirmation when policy is confirm")

@@ -134,13 +134,13 @@ func NewApp() (*App, error) {
 		stdout:        os.Stdout,
 		stderr:        os.Stderr,
 		stdin:         os.Stdin,
-		runtime:       func() *clientruntime.ClientRuntime {
-		r := clientruntime.NewClientRuntime(os.Stdin, os.Stdout, os.Stderr)
-		if loaded, err := configManager.Load(); err == nil {
-			r.SetToolConfirmTimeoutSeconds(loaded.ToolConfirmTimeoutSeconds)
-		}
-		return r
-	}(),
+		runtime: func() *clientruntime.ClientRuntime {
+			r := clientruntime.NewClientRuntime(os.Stdin, os.Stdout, os.Stderr)
+			if loaded, err := configManager.Load(); err == nil {
+				r.SetToolConfirmTimeoutSeconds(loaded.ToolConfirmTimeoutSeconds)
+			}
+			return r
+		}(),
 	}, nil
 }
 
@@ -938,7 +938,11 @@ func (a *App) streamTaskWithSkillRetry(
 	// 与 taiyiflow-chatui 的 mcp-store.loadServers + getFilteredToolDefinitions 对齐。
 	if taiyiflowClient, ok := extractTaiyiflowClient(providerClient); ok {
 		mcpRegistry := internalmcp.NewRegistry()
-		if loadErr := mcpRegistry.LoadServers(ctx, taiyiflowClient, flowID); loadErr != nil {
+		// 令牌以闭包惰性解析：config 由 providerWithCallbackAuthRefresh 持有同一指针，
+		// 自动刷新登录后闭包能读到最新 access_token，避免 MCP 调用携带陈旧令牌。
+		// userIdentityRefresh 复用同一 provider 的持久令牌刷新能力，使 MCP 服务返回 401/403
+		// 时能触发一次刷新登录并用新令牌重试（仅当 provider 具备刷新能力时非 nil）。
+		if loadErr := mcpRegistry.LoadServers(ctx, taiyiflowClient, flowID, func() string { return config.AccessToken }, extractUserIdentityRefresh(providerClient)); loadErr != nil {
 			fmt.Fprintf(a.stderr, "警告: 加载 MCP 服务器列表失败，本次请求将不携带外部 MCP 工具: %v\n", loadErr)
 		} else {
 			a.runtime.SetMCPRegistry(mcpRegistry)

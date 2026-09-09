@@ -139,9 +139,9 @@ type Client struct {
 
 	// streamProtocolMu 保护用户配置的流式协议与服务端下发的流式协议。
 	// GetServiceConfig 可能在后台刷新，Stream 在请求时读取，两者可能并发。
-	streamProtocolMu       sync.RWMutex
-	streamProtocol         string
-	serverStreamProtocol   string
+	streamProtocolMu     sync.RWMutex
+	streamProtocol       string
+	serverStreamProtocol string
 }
 
 type metadataResponse struct {
@@ -2167,8 +2167,8 @@ func (c *Client) ListClientCollaborations(ctx context.Context, params provider.C
 	}
 
 	var payload struct {
-		Offset int                            `json:"offset"`
-		Total  int                            `json:"total"`
+		Offset int                               `json:"offset"`
+		Total  int                               `json:"total"`
 		Data   []clientCollaborationTaskResponse `json:"data"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {

@@ -107,13 +107,13 @@ type ClientRuntime struct {
 	sandboxEscapeConfirmer      func(path string) (bool, error)
 	sandboxEscapePolicyOverride string
 	// toolConfirmTimeoutSeconds 为 stdio 模式下确认弹窗的超时秒数；<=0 表示不启用
-	toolConfirmTimeoutSeconds   int
-	streamEventLogsEnabled      bool
-	interactivePromptsEnabled   bool
-	hookHandlers                []HookHandler
+	toolConfirmTimeoutSeconds int
+	streamEventLogsEnabled    bool
+	interactivePromptsEnabled bool
+	hookHandlers              []HookHandler
 	// streamCallback 非 nil 时，runCommand 会将 stdout/stderr 实时转发给回调，
 	// 同时跳过 [执行客户端命令] 等事件日志头，适用于 TUI 流式输出场景。
-	streamCallback              func(text string, isError bool)
+	streamCallback func(text string, isError bool)
 	// callbackRetryDelay 控制回调提交失败后的重试间隔。
 	// 默认 3 秒，测试中可通过 SetCallbackRetryDelay 缩短。
 	callbackRetryDelay time.Duration
@@ -330,8 +330,8 @@ func (r *ClientRuntime) cloneRuntime() *ClientRuntime {
 		maxParallelismSubtask:       r.maxParallelismSubtask,
 		// pendingModeSwitch 被有意忽略：克隆运行时不应继承父运行时的模式切换请求，
 		// 模式切换仅由主运行时上的 switch_to_agent 工具触发，由 cmd 层消费主运行时的 pendingModeSwitch。
-		currentRequestMode:         r.currentRequestMode,
-		nonArtifactFiles:            append([]string(nil), r.nonArtifactFiles...),
+		currentRequestMode: r.currentRequestMode,
+		nonArtifactFiles:   append([]string(nil), r.nonArtifactFiles...),
 	}
 }
 
@@ -388,7 +388,7 @@ func (r *ClientRuntime) HandleBuiltInEvent(
 	providerClient provider.Provider,
 	config internalconfig.Config,
 	payload map[string]any,
-	) (returnErr error) {
+) (returnErr error) {
 	serverName := nestedString(payload, "server", "name")
 	commandName := nestedString(payload, "command", "name")
 	arguments := nestedMap(payload, "command", "arguments")
@@ -461,7 +461,7 @@ func (r *ClientRuntime) executeClientToolPayload(
 	providerClient provider.Provider,
 	config internalconfig.Config,
 	payload map[string]any,
-	) (toolName string, result any, err error) {
+) (toolName string, result any, err error) {
 	serverName := nestedString(payload, "server", "name")
 	toolName = canonicalClientToolName(nestedString(payload, "function", "name"))
 	arguments := nestedMap(payload, "function", "arguments")

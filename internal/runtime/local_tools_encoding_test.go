@@ -35,7 +35,7 @@ func TestTrimTrailingIncompleteUTF8(t *testing.T) {
 		{"截断4字节序列-缺2字节", []byte("hello\xf0\x9f"), 5},
 		{"截断4字节序列-缺1字节", []byte("hello\xf0\x9f\x98"), 5},
 		{"完整4字节序列", []byte("hello\xf0\x9f\x98\x80"), 9}, // "hello😀"
-		{"纯延续字节", []byte{0x80, 0x81, 0x82}, 3}, // 全是延续字节，找不到起始字节，返回原切片
+		{"纯延续字节", []byte{0x80, 0x81, 0x82}, 3},          // 全是延续字节，找不到起始字节，返回原切片
 		{"混合内容末尾截断", append(bytes.Repeat([]byte("a"), 100), 0xe5), 100},
 	}
 

@@ -42,16 +42,17 @@ type mcpToolRaw struct {
 // toSummary 将原始服务器对象转换为 provider.MCPServerSummary。
 func (s *mcpServerRaw) toSummary() provider.MCPServerSummary {
 	summary := provider.MCPServerSummary{
-		ID:          s.ID,
-		Name:        s.Name,
-		ServerURL:   s.ServerURL,
-		ServerType:  s.ServerType,
-		Description: s.Description,
-		AuthConfig:  s.AuthConfig,
-		IsSystem:    s.IsSystem,
-		OwnerUserID: s.OwnerUserID,
-		Enabled:     s.Enabled,
-		FlowID:      s.FlowID,
+		ID:               s.ID,
+		Name:             s.Name,
+		ServerURL:        s.ServerURL,
+		ServerType:       s.ServerType,
+		Description:      s.Description,
+		AuthConfig:       s.AuthConfig,
+		PassUserIdentity: s.PassUserIdentity,
+		IsSystem:         s.IsSystem,
+		OwnerUserID:      s.OwnerUserID,
+		Enabled:          s.Enabled,
+		FlowID:           s.FlowID,
 	}
 	for _, tool := range s.Tools {
 		summary.Tools = append(summary.Tools, provider.MCPToolSummary{

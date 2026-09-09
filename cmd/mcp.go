@@ -67,6 +67,7 @@ func (a *App) showMcpHelp() error {
 		"  --type <类型>              服务器类型: stdio、sse、streamable_http、other（默认 streamable_http）",
 		"  --description <描述>       服务器描述",
 		"  --default-enabled <bool>   默认启用状态（默认 true），设为 false 时新客户端默认禁用",
+		"  --pass-user-identity <bool> 调用时传递用户登录会话令牌（默认 false），仅 sse、streamable_http 类型生效",
 		"  --agent <ID>               指定智能体 ID（默认使用当前默认智能体）",
 		"",
 		"edit 选项:",
@@ -75,6 +76,7 @@ func (a *App) showMcpHelp() error {
 		"  --type <类型>              服务器类型: stdio、sse、streamable_http、other",
 		"  --description <描述>       服务器描述",
 		"  --default-enabled <bool>   默认启用状态",
+		"  --pass-user-identity <bool> 调用时传递用户登录会话令牌，仅 sse、streamable_http 类型生效",
 		"  --agent <ID>               指定智能体 ID（默认使用当前默认智能体）",
 		"",
 		"说明:",
@@ -188,6 +190,7 @@ func (a *App) mcpAdd(ctx context.Context, args []string) error {
 	serverType := flagSet.String("type", "streamable_http", "服务器类型: stdio、sse、streamable_http、other")
 	description := flagSet.String("description", "", "服务器描述")
 	defaultEnabled := flagSet.Bool("default-enabled", true, "默认启用状态，设为 false 时新客户端默认禁用")
+	passUserIdentity := flagSet.Bool("pass-user-identity", false, "调用时传递用户登录会话令牌，仅 sse、streamable_http 类型生效")
 	agentID := flagSet.String("agent", "", "指定智能体 ID")
 
 	if err := flagSet.Parse(args); err != nil {
@@ -237,6 +240,9 @@ func (a *App) mcpAdd(ctx context.Context, args []string) error {
 	if strings.TrimSpace(*description) != "" {
 		createData.Description = strings.TrimSpace(*description)
 	}
+	// pass_user_identity 仅 sse/streamable_http 类型生效，其它类型强制 false
+	passIdentity := *passUserIdentity && (*serverType == "sse" || *serverType == "streamable_http")
+	createData.PassUserIdentity = &passIdentity
 
 	server, err := client.CreateMCPServer(ctx, createData)
 	if err != nil {
@@ -261,6 +267,7 @@ func (a *App) mcpEdit(ctx context.Context, args []string) error {
 	serverType := flagSet.String("type", "", "服务器类型: stdio、sse、streamable_http、other")
 	description := flagSet.String("description", "", "服务器描述")
 	defaultEnabled := flagSet.String("default-enabled", "", "默认启用状态: true 或 false")
+	passUserIdentity := flagSet.String("pass-user-identity", "", "调用时传递用户登录会话令牌: true 或 false，仅 sse、streamable_http 类型生效")
 	agentID := flagSet.String("agent", "", "指定智能体 ID")
 
 	if err := flagSet.Parse(args[1:]); err != nil {
@@ -319,8 +326,35 @@ func (a *App) mcpEdit(ctx context.Context, args []string) error {
 		hasUpdate = true
 	}
 
+	// 解析 pass-user-identity 布尔值
+	var passUserIdentityPtr *bool
+	if strings.TrimSpace(*passUserIdentity) != "" {
+		val := strings.TrimSpace(*passUserIdentity)
+		if val == "true" || val == "1" {
+			b := true
+			passUserIdentityPtr = &b
+		} else if val == "false" || val == "0" {
+			b := false
+			passUserIdentityPtr = &b
+		} else {
+			return fmt.Errorf("--pass-user-identity 值无效: %s，可选: true、false", val)
+		}
+	}
+
+	// pass_user_identity 仅 sse/streamable_http 类型生效；
+	// 若本次同时指定了 --type 则按最终类型校验，非支持类型强制 false
+	if passUserIdentityPtr != nil {
+		if updateData.ServerType != nil && *passUserIdentityPtr &&
+			*updateData.ServerType != "sse" && *updateData.ServerType != "streamable_http" {
+			b := false
+			passUserIdentityPtr = &b
+		}
+		updateData.PassUserIdentity = passUserIdentityPtr
+		hasUpdate = true
+	}
+
 	if !hasUpdate {
-		return fmt.Errorf("未提供任何需要修改的字段。可修改: --name、--url、--type、--description、--default-enabled")
+		return fmt.Errorf("未提供任何需要修改的字段。可修改: --name、--url、--type、--description、--default-enabled、--pass-user-identity")
 	}
 
 	config, err := a.configManager.Load()

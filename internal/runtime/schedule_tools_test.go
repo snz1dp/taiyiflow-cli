@@ -66,7 +66,9 @@ func (s *stubScheduleProvider) ListScheduleRuns(_ context.Context, scheduleID, s
 	return &provider.ScheduleRunRecordPage{}, nil
 }
 
-func (s *stubScheduleProvider) SubmitClientCallResult(context.Context, provider.ClientCallResult) error { return nil }
+func (s *stubScheduleProvider) SubmitClientCallResult(context.Context, provider.ClientCallResult) error {
+	return nil
+}
 
 // --- scheduleCreate 校验测试 ---
 

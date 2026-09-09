@@ -1359,7 +1359,6 @@ func TestStreamRequestIncludesTweaks(t *testing.T) {
 	}
 }
 
-
 func TestStreamIdleTimeoutErrorMessage(t *testing.T) {
 	err := streamIdleTimeoutError{idleTimeout: 120 * time.Second}
 	message := err.Error()
