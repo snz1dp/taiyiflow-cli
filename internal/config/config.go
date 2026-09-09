@@ -937,7 +937,9 @@ func decryptConfigSecret(value string) (string, error) {
 		return "", err
 	}
 	// P2⑩ 修复：优先使用新密钥（含随机种子）解密，失败时回退到旧密钥（向后兼容）
-	keys := [][]byte{configSecretKey(), configSecretKeyLegacy()}
+	// v3 修复：密钥派生去除 hostname（macOS 上会随网络切换/睡眠唤醒漂移，导致密文永久解不开），
+	// 回退链为 v3（seed+home+rootDir）→ v2（seed+home+hostname+rootDir）→ v1（home+hostname+rootDir）
+	keys := [][]byte{configSecretKey(), configSecretKeyV2Legacy(), configSecretKeyLegacy()}
 	for _, key := range keys {
 		block, err := aes.NewCipher(key)
 		if err != nil {
@@ -960,9 +962,31 @@ func decryptConfigSecret(value string) (string, error) {
 	return "", fmt.Errorf("解密配置密文失败")
 }
 
+// configSecretKey 返回当前版本（v3）密钥。
+// v3 修复：派生因子中移除 os.Hostname()。macOS 上主机名会随网络切换、睡眠唤醒、
+// DHCP 续租等发生变化（HostName / LocalHostName / ComputerName 三者还可能互不一致），
+// 一旦变化，用旧主机名加密的密文将永久无法解密，表现为
+// "Unsupported state or unable to authenticate data"。
+// 随机性由 config-secret-seed 文件保证，不再依赖主机名。
 func configSecretKey() []byte {
-	seedParts := []string{"taiyiflow-cli/config-secret/v2"}
+	seedParts := []string{"taiyiflow-cli/config-secret/v3"}
 	// P2⑩ 修复：引入随机种子文件，使密钥不再仅由公开信息推导
+	if seed, err := readConfigSecretSeed(); err == nil && seed != "" {
+		seedParts = append(seedParts, seed)
+	}
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		seedParts = append(seedParts, strings.TrimSpace(homeDir))
+	}
+	if rootDir, err := DefaultRootDir(); err == nil {
+		seedParts = append(seedParts, strings.TrimSpace(rootDir))
+	}
+	sum := sha256.Sum256([]byte(strings.Join(seedParts, "|")))
+	return sum[:]
+}
+
+// configSecretKeyV2Legacy 返回 v2 密钥（含随机种子 + 主机名），用于向后兼容解密。
+func configSecretKeyV2Legacy() []byte {
+	seedParts := []string{"taiyiflow-cli/config-secret/v2"}
 	if seed, err := readConfigSecretSeed(); err == nil && seed != "" {
 		seedParts = append(seedParts, seed)
 	}
@@ -979,7 +1003,7 @@ func configSecretKey() []byte {
 	return sum[:]
 }
 
-// configSecretKeyLegacy 返回旧版密钥（不含随机种子），用于向后兼容解密。
+// configSecretKeyLegacy 返回 v1 密钥（不含随机种子），用于向后兼容解密。
 func configSecretKeyLegacy() []byte {
 	seedParts := []string{"taiyiflow-cli/config-secret/v1"}
 	if homeDir, err := os.UserHomeDir(); err == nil {
