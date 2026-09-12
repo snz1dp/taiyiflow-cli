@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -1453,6 +1454,10 @@ func windowsUserDirPaths() []string {
 //   - PowerShell 反向 Shell（TCPClient）已在 guardReverseShell 中覆盖
 //   - PowerShell -enc Base64 编码命令绕过
 //
+// formatDiskPattern 匹配磁盘格式化命令：format 后跟单个盘符加冒号（a-z 或 A-Z）。
+// 例如 "format c:"、"format D:"。不匹配 "format /fs"、"format -w" 等，
+// 以免误伤 npm run format、gofmt -w 等开发命令。
+var formatDiskPattern = regexp.MustCompile(`(?i)\bformat\s+[a-z]:`)
 // 该检测在 auto 审批模式下生效。
 func guardWindowsDestructiveActions(payload commandArguments, preview string) error {
 	// --- CMD 破坏性命令 ---
@@ -1520,30 +1525,12 @@ func guardWindowsDestructiveActions(payload commandArguments, preview string) er
 	}
 
 	// format 格式化磁盘
-	if strings.Contains(preview, "format ") {
-		// 检查是否包含盘符（如 format c: / format d: 等），或使用 /fs 参数
-		if strings.Contains(preview, "format /fs") || strings.Contains(preview, "format -") {
-			return newToolError("PERMISSION_DENIED",
-				"检测到格式化磁盘操作（format），该操作不可逆，已拦截")
-		}
-		// 优先检查从环境变量推断的系统盘
-		for _, sysPath := range windowsSystemRootPaths() {
-			// sysPath 形如 "c:\windows"，提取盘符前缀 "c:"
-			if len(sysPath) >= 2 && sysPath[1] == ':' {
-				driveLetter := sysPath[:2]
-				if strings.Contains(preview, "format "+driveLetter) {
-					return newToolError("PERMISSION_DENIED",
-						"检测到格式化磁盘操作（format），该操作不可逆，已拦截")
-				}
-			}
-		}
-		// 兜底：检查 format <盘符>: 模式，覆盖 a-z 所有盘符
-		for c := byte('a'); c <= 'z'; c++ {
-			if strings.Contains(preview, "format "+string(c)+":") {
-				return newToolError("PERMISSION_DENIED",
-					"检测到格式化磁盘操作（format），该操作不可逆，已拦截")
-			}
-		}
+	// 仅精确匹配 "format <盘符>:"（如 format c: / format d:），这是磁盘格式化的真实特征。
+	// 不再使用宽松的 "format " 子串匹配，避免误伤 npm run format、gofmt -w、
+	// ruff format、black --format 等常见开发命令。
+	if formatDiskPattern.MatchString(preview) {
+		return newToolError("PERMISSION_DENIED",
+			"检测到格式化磁盘操作（format），该操作不可逆，已拦截")
 	}
 
 	// diskpart 磁盘分区操作
