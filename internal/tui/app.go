@@ -834,6 +834,7 @@ type model struct {
 	todoPanelForceShow         bool
 	manualSnapshotRefresh      bool
 	historyLoading             bool
+	snapshotLoading            bool
 	skipSyncViewport           bool
 	// currentGuidanceCh 是当前请求的引导文本 channel，在 startRequest 中创建。
 	// 任务执行中用户按 shift+enter 直接提交引导文本，通过此 channel 发送给 runner。
@@ -1191,6 +1192,12 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 
 	initialEntries := buildInitialEntries(snapshot)
 	initialRequestStats := cloneRequestMetrics(snapshot.RequestStats)
+	// 当有 refreshSnapshot 处理器时，标记初始快照正在加载，
+	// 在 snapshotRefreshedMsg 回调返回前禁止用户输入。
+	initialSnapshotLoading := refreshSnapshot != nil
+	if initialSnapshotLoading {
+		inputModel.Blur()
+	}
 	eventCh := make(chan tea.Msg, 128)
 	if externalQueuedInputs != nil {
 		go relayExternalQueuedInputs(runCtx, eventCh, externalQueuedInputs)
@@ -1223,6 +1230,7 @@ func Run(ctx context.Context, snapshot Snapshot, flows []FlowItem, runner Runner
 		currentStreamingEntryIndex: -1,
 		flowCursor:                 currentFlowIndex(flows, snapshot.DefaultFlow),
 		startupCommand:             resolveInitialStartupCommand(snapshot, startupCommand),
+		snapshotLoading:            initialSnapshotLoading,
 	}, programOptions...)
 	finalModel, err := program.Run()
 	if err == nil {
@@ -1256,7 +1264,13 @@ func relayExternalQueuedInputs(ctx context.Context, eventCh chan<- tea.Msg, queu
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{textinput.Blink, m.input.Focus(), m.progress.SetPercent(m.state.percent), m.scheduleBackendRetry(), m.scheduleClockTick()}
+	cmds := []tea.Cmd{m.progress.SetPercent(m.state.percent), m.scheduleBackendRetry(), m.scheduleClockTick()}
+	if m.snapshotLoading {
+		// 快照加载期间保持输入框失焦，显示加载提示
+		m.syncInputPlaceholder()
+	} else {
+		cmds = append(cmds, textinput.Blink, m.input.Focus())
+	}
 	if m.refreshSnapshot != nil {
 		cmds = append(cmds, refreshSnapshotCmd(m.ctx, m.snapshot, m.refreshSnapshot))
 	}
@@ -1304,6 +1318,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.activityHint = ""
 		}
 		if typed.err != nil {
+			m.snapshotLoading = false
 			if manualSnapshotRefresh {
 				m.entries = append(m.entries, entry{role: "error", content: fmt.Sprintf("刷新当前历史消息失败: %v", typed.err)})
 				m.syncViewport()
@@ -1323,6 +1338,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		previousReason := strings.TrimSpace(m.snapshot.BackendStatusReason)
 		m.snapshot = typed.snapshot
 		m.historyLoading = false
+		m.snapshotLoading = false
 		// 当 TUI 处于忙碌状态（正在发送/流式接收/确认/执行）时，
 		// 保留当前 requestStats.RunID，避免快照刷新覆盖 startRequestStats 设置的 RunID，
 		// 否则后续 SSE 事件的 matchesStreamRun 校验会失败，导致消息无法输出到 TUI 消息区。
@@ -1361,6 +1377,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.entries = append(m.entries, entry{role: "system", content: "服务端连接已恢复，已退出只读模式。"})
 		}
 		m.syncLayout()
+		// 快照刷新完成后，如果不需要打开登录弹层且不在忙碌状态，聚焦输入框
+		if !shouldAutoOpenLoginOverlay(m.snapshot, previouslyAvailable, previouslyAuthRequired, m.localCommand != nil, m.loginForm != nil) && !m.isBusy() && !m.snapshot.AuthRequired {
+			m.input.Focus()
+		}
 		if shouldAutoOpenLoginOverlay(m.snapshot, previouslyAvailable, previouslyAuthRequired, m.localCommand != nil, m.loginForm != nil) {
 			return m, executeLocalCommandCmd(m.ctx, m.snapshot, "/login", m.localCommand)
 		}
@@ -2038,6 +2058,34 @@ func mouseScrollModeCmd(enabled bool) tea.Cmd {
 }
 
 func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// 快照加载期间禁止输入，仅允许导航键和退出
+	if m.snapshotLoading {
+		switch msg.String() {
+		case "ctrl+c":
+			m.quitting = true
+			return m, tea.Quit
+		case "pgup":
+			m.viewport.HalfViewUp()
+			return m, nil
+		case "pgdown":
+			m.viewport.HalfViewDown()
+			return m, nil
+		case "up":
+			m.viewport.LineUp(1)
+			return m, nil
+		case "down":
+			m.viewport.LineDown(1)
+			return m, nil
+		case "home":
+			m.viewport.GotoTop()
+			return m, nil
+		case "end":
+			m.viewport.GotoBottom()
+			return m, nil
+		default:
+			return m, nil
+		}
+	}
 	switch msg.String() {
 	case "ctrl+c":
 		if m.isBusy() && m.requestCancel != nil && !m.interrupting {
@@ -4119,7 +4167,9 @@ func (m model) View() string {
 		history = lipgloss.JoinHorizontal(lipgloss.Top, history, " ", todoPane)
 	}
 	inputView := m.input.View()
-	if m.askUserForm != nil || m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.knowledgePicker != nil || m.skillsPicker != nil || m.tasksPicker != nil || m.taskActionPicker != nil || m.approvalPicker != nil {
+	if m.snapshotLoading {
+		inputView = hintStyle.Render("正在加载服务端信息与历史消息，请稍候...")
+	} else if m.askUserForm != nil || m.pendingConfirm != nil || m.toolPanel != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.knowledgePicker != nil || m.skillsPicker != nil || m.tasksPicker != nil || m.taskActionPicker != nil || m.approvalPicker != nil {
 		inputView = hintStyle.Render("当前有未处理的弹层，请先完成操作。")
 	} else if commandHints := m.renderSlashCommandHints(); commandHints != "" {
 		inputView = lipgloss.JoinVertical(lipgloss.Left, inputView, "", commandHints)
@@ -7356,7 +7406,7 @@ func (m *model) syncTodoPanelVisibility(previousItems []TodoItem, currentItems [
 }
 
 func (m model) showSlashCommandHints() bool {
-	if m.pendingConfirm != nil || m.toolPanel != nil || m.loginForm != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.knowledgePicker != nil || m.skillsPicker != nil || m.tasksPicker != nil || m.taskActionPicker != nil || m.approvalPicker != nil || m.isBusy() {
+	if m.snapshotLoading || m.pendingConfirm != nil || m.toolPanel != nil || m.loginForm != nil || m.configForm != nil || m.showFlowPicker || m.sessionPicker != nil || m.knowledgePicker != nil || m.skillsPicker != nil || m.tasksPicker != nil || m.taskActionPicker != nil || m.approvalPicker != nil || m.isBusy() {
 		return false
 	}
 	trimmed := strings.TrimSpace(m.input.Value())
@@ -9733,6 +9783,10 @@ func (m *model) transitionProgress(phase progressPhase) tea.Cmd {
 }
 
 func (m *model) syncInputPlaceholder() {
+	if m.snapshotLoading {
+		m.input.Placeholder = "正在加载服务端信息与历史消息，请稍候..."
+		return
+	}
 	if m.snapshot.BackendAvailable {
 		if m.snapshot.AuthRequired {
 			m.input.Placeholder = "服务端已连接但未登录，登录表单已自动打开；也可手动执行 /login"
