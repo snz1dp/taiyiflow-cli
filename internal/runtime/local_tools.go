@@ -1628,17 +1628,85 @@ func matchAnyGlob(patterns []string, path string) bool {
 	return false
 }
 
+// matchGlob 判断 path 是否匹配 glob pattern。
+// 支持 brace expansion 语法（如 *.{js,vue}），展开后任一模式匹配即视为命中。
 func matchGlob(pattern string, path string) bool {
 	normalizedPattern := filepath.ToSlash(strings.TrimSpace(pattern))
 	normalizedPath := filepath.ToSlash(strings.TrimSpace(path))
 	if normalizedPattern == "" || normalizedPath == "" {
 		return false
 	}
-	if !strings.Contains(normalizedPattern, "/") {
-		matched, err := filepath.Match(normalizedPattern, filepath.Base(normalizedPath))
+	for _, expanded := range expandBraces(normalizedPattern) {
+		if matchGlobSingle(expanded, normalizedPath) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchGlobSingle 匹配单个不含 brace expansion 的 glob 模式。
+func matchGlobSingle(pattern string, path string) bool {
+	if !strings.Contains(pattern, "/") {
+		matched, err := filepath.Match(pattern, filepath.Base(path))
 		return err == nil && matched
 	}
-	return matchGlobSegments(strings.Split(normalizedPattern, "/"), strings.Split(normalizedPath, "/"))
+	return matchGlobSegments(strings.Split(pattern, "/"), strings.Split(path, "/"))
+}
+
+// expandBraces 展开 glob 模式中的 brace expansion（如 {js,vue}）。
+// 支持嵌套花括号，如 {a,{b,c}} 展开为 [a, b, c]。
+// 如果模式中没有花括号，返回仅含原模式的切片。
+func expandBraces(pattern string) []string {
+	depth := 0
+	start := -1
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '{':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case '}':
+			depth--
+			if depth == 0 && start >= 0 {
+				// 找到最外层花括号对: pattern[start+1:i]
+				inner := pattern[start+1 : i]
+				options := splitTopLevelCommas(inner)
+				prefix := pattern[:start]
+				suffix := pattern[i+1:]
+				results := make([]string, 0, len(options))
+				for _, opt := range options {
+					for _, expanded := range expandBraces(prefix + opt + suffix) {
+						results = append(results, expanded)
+					}
+				}
+				return results
+			}
+		}
+	}
+	return []string{pattern}
+}
+
+// splitTopLevelCommas 按顶层逗号分割字符串，忽略嵌套花括号内的逗号。
+func splitTopLevelCommas(s string) []string {
+	var parts []string
+	depth := 0
+	last := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+		case ',':
+			if depth == 0 {
+				parts = append(parts, s[last:i])
+				last = i + 1
+			}
+		}
+	}
+	parts = append(parts, s[last:])
+	return parts
 }
 
 func matchGlobSegments(patternSegments []string, pathSegments []string) bool {

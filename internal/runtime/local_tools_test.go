@@ -2565,3 +2565,151 @@ func TestComputerScreenshotAddsDefaultImageUnderstandingInputWhenMissing(t *test
 	assertScreenshotImageUnderstandingTweaks(t, providerStub.imageRunRequest)
 	assertImageCompressionStrategy(t, providerStub.imageRunRequest, provider.ImageCompressionStrategyPassthrough)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Brace Expansion 单元测试
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestExpandBracesNoBrace(t *testing.T) {
+	got := expandBraces("src/**/*.vue")
+	if len(got) != 1 || got[0] != "src/**/*.vue" {
+		t.Fatalf("expected [src/**/*.vue], got %v", got)
+	}
+}
+
+func TestExpandBracesSimple(t *testing.T) {
+	got := expandBraces("src/**/*.{js,vue}")
+	expected := []string{"src/**/*.js", "src/**/*.vue"}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 patterns, got %d: %v", len(got), got)
+	}
+	for i, exp := range expected {
+		if got[i] != exp {
+			t.Fatalf("expected %s, got %s", exp, got[i])
+		}
+	}
+}
+
+func TestExpandBracesThreeOptions(t *testing.T) {
+	got := expandBraces("src/**/*.{js,ts,vue}")
+	expected := []string{"src/**/*.js", "src/**/*.ts", "src/**/*.vue"}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 patterns, got %d: %v", len(got), got)
+	}
+	for i, exp := range expected {
+		if got[i] != exp {
+			t.Fatalf("expected %s, got %s", exp, got[i])
+		}
+	}
+}
+
+func TestExpandBracesNested(t *testing.T) {
+	got := expandBraces("src/*.{js,{ts,vue}}")
+	expected := []string{"src/*.js", "src/*.ts", "src/*.vue"}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 patterns, got %d: %v", len(got), got)
+	}
+	for i, exp := range expected {
+		if got[i] != exp {
+			t.Fatalf("expected %s, got %s", exp, got[i])
+		}
+	}
+}
+
+func TestExpandBracesMultipleBraces(t *testing.T) {
+	got := expandBraces("{src,lib}/**/*.{js,ts}")
+	expected := []string{"src/**/*.js", "src/**/*.ts", "lib/**/*.js", "lib/**/*.ts"}
+	if len(got) != 4 {
+		t.Fatalf("expected 4 patterns, got %d: %v", len(got), got)
+	}
+	for i, exp := range expected {
+		if got[i] != exp {
+			t.Fatalf("expected %s, got %s", exp, got[i])
+		}
+	}
+}
+
+func TestExpandBracesEmptyBrace(t *testing.T) {
+	// 空花括号不应展开
+	got := expandBraces("src/**/*.{js,}")
+	// 展开后为 ["src/**/*.js", "src/**/*."]"
+	if len(got) != 2 {
+		t.Fatalf("expected 2 patterns, got %d: %v", len(got), got)
+	}
+}
+
+func TestSplitTopLevelCommas(t *testing.T) {
+	got := splitTopLevelCommas("js,vue,ts")
+	expected := []string{"js", "vue", "ts"}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 parts, got %d: %v", len(got), got)
+	}
+	for i, exp := range expected {
+		if got[i] != exp {
+			t.Fatalf("expected %s, got %s", exp, got[i])
+		}
+	}
+}
+
+func TestSplitTopLevelCommasNested(t *testing.T) {
+	got := splitTopLevelCommas("a,{b,c},d")
+	expected := []string{"a", "{b,c}", "d"}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 parts, got %d: %v", len(got), got)
+	}
+	for i, exp := range expected {
+		if got[i] != exp {
+			t.Fatalf("expected %s, got %s", exp, got[i])
+		}
+	}
+}
+
+func TestMatchGlobWithBraceExpansion(t *testing.T) {
+	tests := []struct {
+		pattern string
+		path    string
+		want    bool
+	}{
+		{"src/**/*.{js,vue}", "src/components/App.vue", true},
+		{"src/**/*.{js,vue}", "src/utils/helper.js", true},
+		{"src/**/*.{js,vue}", "src/styles/main.css", false},
+		{"**/*.{js,vue}", "deeply/nested/file.ts", false},
+		{"**/*.{js,ts,vue}", "deeply/nested/file.ts", true},
+		{"src/**/*.{vue,js}", "src/pages/home/Index.vue", true},
+		{"src/**/*.{vue,js}", "src/pages/home/Index.tsx", false},
+		// 无花括号仍然正常工作
+		{"src/**/*.vue", "src/components/EChartsChart.vue", true},
+		{"src/**/*.vue", "src/components/EChartsChart.js", false},
+		// 简单文件名匹配
+		{"*.{js,vue}", "main.js", true},
+		{"*.{js,vue}", "main.css", false},
+	}
+	for _, tc := range tests {
+		got := matchGlob(tc.pattern, tc.path)
+		if got != tc.want {
+			t.Errorf("matchGlob(%q, %q) = %v, want %v", tc.pattern, tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestMatchGlobBraceWithSegments(t *testing.T) {
+	// 验证带路径分隔符的 brace expansion
+	tests := []struct {
+		pattern string
+		path    string
+		want    bool
+	}{
+		{"{src,lib}/**/*.js", "src/utils/helper.js", true},
+		{"{src,lib}/**/*.js", "lib/core/engine.js", true},
+		{"{src,lib}/**/*.js", "test/utils/helper.js", false},
+		{"{src,lib}/**/*.{js,ts}", "src/types/index.ts", true},
+		{"{src,lib}/**/*.{js,ts}", "lib/types/index.ts", true},
+		{"{src,lib}/**/*.{js,ts}", "src/types/index.vue", false},
+	}
+	for _, tc := range tests {
+		got := matchGlob(tc.pattern, tc.path)
+		if got != tc.want {
+			t.Errorf("matchGlob(%q, %q) = %v, want %v", tc.pattern, tc.path, got, tc.want)
+		}
+	}
+}
