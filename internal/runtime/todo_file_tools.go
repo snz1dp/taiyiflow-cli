@@ -23,7 +23,7 @@ func (r *ClientRuntime) globFiles(config internalconfig.Config, arguments map[st
 		return nil, newToolError("PARAM_ERROR", "glob_files 缺少 pattern")
 	}
 	// 展开花括号语法（如 *.{js,json} → *.js, *.json），因为 filepath.Match 不支持 {}
-	patterns := expandBracePatterns(pattern)
+	patterns := expandBraces(pattern)
 	if len(patterns) == 0 {
 		patterns = []string{pattern}
 	}
@@ -475,53 +475,4 @@ func hashSHA256(content []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// expandBracePatterns 展开 glob 模式中的花括号语法。
-// 例如：*.{js,json} → ["*.js", "*.json"]
-// 例如：src/*.{ts,js} → ["src/*.ts", "src/*.js"]
-// 如果模式中不含花括号，返回只包含原始模式的切片。
-func expandBracePatterns(pattern string) []string {
-	if !strings.Contains(pattern, "{") {
-		return []string{pattern}
-	}
-	result := []string{}
-	expandBraceRecursive(pattern, &result)
-	if len(result) == 0 {
-		return []string{pattern}
-	}
-	return result
-}
 
-// expandBraceRecursive 递归展开花括号，处理嵌套情况。
-func expandBraceRecursive(pattern string, result *[]string) {
-	start := strings.Index(pattern, "{")
-	if start == -1 {
-		*result = append(*result, pattern)
-		return
-	}
-	// 找到匹配的右花括号（考虑嵌套）
-	depth := 0
-	end := -1
-	for i := start; i < len(pattern); i++ {
-		if pattern[i] == '{' {
-			depth++
-		} else if pattern[i] == '}' {
-			depth--
-			if depth == 0 {
-				end = i
-				break
-			}
-		}
-	}
-	if end == -1 {
-		// 不匹配的左花括号，原样返回
-		*result = append(*result, pattern)
-		return
-	}
-	inner := pattern[start+1 : end]
-	options := strings.Split(inner, ",")
-	prefix := pattern[:start]
-	suffix := pattern[end+1:]
-	for _, option := range options {
-		expandBraceRecursive(prefix+option+suffix, result)
-	}
-}
