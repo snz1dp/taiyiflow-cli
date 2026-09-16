@@ -257,8 +257,9 @@ func (r *ClientRuntime) SetMaxParallelismSubtask(maxParallelism int) {
 }
 
 // MaxParallelismSubtask 返回子智能体的最大并发数。
+// 返回 0 表示禁用子智能体（不暴露 run_subtask 工具）。
 func (r *ClientRuntime) MaxParallelismSubtask() int {
-	if r == nil || r.maxParallelismSubtask < 1 {
+	if r == nil || r.maxParallelismSubtask < 0 {
 		return internalconfig.DefaultMaxParallelismSubtask
 	}
 	return r.maxParallelismSubtask

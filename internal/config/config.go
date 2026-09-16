@@ -672,6 +672,10 @@ func NormalizeAgentAutoLoopMaxRounds(value int) int {
 }
 
 func NormalizeMaxParallelismSubtask(value int) int {
+	// 0 是合法值，表示禁用子智能体（不暴露 run_subtask 工具）。
+	if value == 0 {
+		return 0
+	}
 	if value < 1 {
 		return DefaultMaxParallelismSubtask
 	}

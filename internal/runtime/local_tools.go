@@ -566,7 +566,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 		}
 		definitions = filtered
 	}
-	if !r.subtaskEnabled {
+	if !r.subtaskEnabled || r.MaxParallelismSubtask() == 0 {
 		filtered := definitions[:0]
 		for _, definition := range definitions {
 			name := strings.TrimSpace(stringValue(definition["name"]))

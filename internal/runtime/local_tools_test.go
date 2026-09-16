@@ -659,6 +659,7 @@ func TestClientMCPServersForModeHidesRunSubtaskWhenDisabled(t *testing.T) {
 func TestClientMCPServersForModeShowsRunSubtaskWhenEnabled(t *testing.T) {
 	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
 	runtimeClient.SetSubtaskEnabled(true)
+	runtimeClient.SetMaxParallelismSubtask(internalconfig.DefaultMaxParallelismSubtask)
 	servers := runtimeClient.ClientMCPServersForMode(provider.RequestTypeAgent, internalconfig.Config{})
 	definitions, ok := servers[localToolServerName].([]map[string]any)
 	if !ok {
