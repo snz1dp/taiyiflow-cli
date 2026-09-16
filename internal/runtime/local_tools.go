@@ -407,7 +407,7 @@ func (r *ClientRuntime) clientToolDefinitionsForMode(mode string) []map[string]a
 					"includePatterns": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 					"excludePatterns": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 					"caseSensitive":   map[string]any{"type": "boolean"},
-					"isRegexp":        map[string]any{"type": "boolean"},
+					"isRegexp":        map[string]any{"type": "boolean", "description": "是否将 pattern 作为正则表达式搜索。默认 false，pattern 作为固定字符串处理，此时 | 等正则操作符会被当作普通字符匹配。当 pattern 包含 |、()、[] 等正则语法时必须设为 true。"},
 					"includeHidden":   map[string]any{"type": "boolean"},
 					"outputMode":      map[string]any{"type": "string", "enum": []string{"content", "files_with_matches", "count"}},
 					"multiline":       map[string]any{"type": "boolean"},
