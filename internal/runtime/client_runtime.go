@@ -1213,7 +1213,22 @@ func (r *ClientRuntime) runSingleCommand(
 	}()
 
 	waitErr := command.Wait()
-	copyGroup.Wait()
+	// 有界等待：进程已退出但后台子进程（如 `&` 后台化）可能仍持有 stdout/stderr pipe 写端，
+	// 导致 io.Copy 无法收到 EOF，copyGroup.Wait() 永久阻塞。
+	// 设置 5 秒兜底超时，超时后使用已收集的输出继续处理。
+	done := make(chan struct{})
+	go func() {
+		copyGroup.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// 正常完成
+	case <-time.After(5 * time.Second):
+		// 超时兜底：后台进程持有 pipe fd，使用已收集的输出
+		_ = stdoutPipe.Close()
+		_ = stderrPipe.Close()
+	}
 
 	stdout := stdoutBuffer.String()
 	stderr := stderrBuffer.String()

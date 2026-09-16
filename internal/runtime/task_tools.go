@@ -339,7 +339,22 @@ func (m *localTaskManager) waitTask(
 		_, _ = io.Copy(taskStreamWriter{task: task, stderr: true}, stderrPipe)
 	}()
 	waitErr := command.Wait()
-	copyGroup.Wait()
+	// 有界等待：进程已退出但后台子进程（如 `&` 后台化）可能仍持有 stdout/stderr pipe 写端，
+	// 导致 io.Copy 无法收到 EOF，copyGroup.Wait() 永久阻塞。
+	// 设置 5 秒兜底超时，超时后关闭 pipe 并使用已收集的输出。
+	copyDone := make(chan struct{})
+	go func() {
+		copyGroup.Wait()
+		close(copyDone)
+	}()
+	select {
+	case <-copyDone:
+		// 正常完成
+	case <-time.After(5 * time.Second):
+		// 超时兜底：后台进程持有 pipe fd，关闭 pipe 释放阻塞的 io.Copy
+		_ = stdoutPipe.Close()
+		_ = stderrPipe.Close()
+	}
 
 	// 在 auto 沙盒模式下，如果命令因沙盒运行时错误失败（如 sandbox-exec
 	// 无法应用沙盒配置），清除已有输出并重建无沙盒命令重试。
