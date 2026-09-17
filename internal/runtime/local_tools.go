@@ -3,11 +3,13 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -1329,7 +1331,7 @@ func (r *ClientRuntime) skillDelete(config internalconfig.Config, arguments map[
 	}, nil
 }
 
-func (r *ClientRuntime) searchFilesLocal(_ context.Context, config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
+func (r *ClientRuntime) searchFilesLocal(ctx context.Context, config internalconfig.Config, arguments map[string]any) (map[string]any, error) {
 	pattern := argumentString(arguments, "pattern", "query")
 	if pattern == "" {
 		return nil, newToolError("PARAM_ERROR", "文件搜索缺少关键词")
@@ -1352,13 +1354,179 @@ func (r *ClientRuntime) searchFilesLocal(_ context.Context, config internalconfi
 	includeHidden := argumentBool(arguments, "includeHidden", "include_hidden")
 	includePatterns := normalizePatternList(argumentStringSlice(arguments, "includePatterns", "include_patterns"), strings.TrimSpace(stringValue(arguments["glob"])))
 	excludePatterns := normalizePatternList(argumentStringSlice(arguments, "excludePatterns", "exclude_patterns"))
-	matcher, err := buildSearchMatcher(pattern, argumentBool(arguments, "isRegexp", "is_regexp"), argumentBool(arguments, "caseSensitive", "case_sensitive"))
-	if err != nil {
-		return nil, newToolError("PARAM_ERROR", "%v", err)
-	}
+	isRegexp := argumentBool(arguments, "isRegexp", "is_regexp")
+	caseSensitive := argumentBool(arguments, "caseSensitive", "case_sensitive")
 	outputMode := strings.ToLower(strings.TrimSpace(fallbackString(argumentString(arguments, "outputMode", "output_mode"), "content")))
 	if outputMode != "content" && outputMode != "files_with_matches" && outputMode != "count" {
 		return nil, newToolError("PARAM_ERROR", "search_files 的输出模式(output mode)仅支持 content、files_with_matches、count")
+	}
+
+	// 优先尝试使用 ripgrep（自动尊重 .gitignore，性能更优）
+	if rgResult, rgErr := r.runRipgrepSearch(config, pattern, baseDir, arguments, maxResults, offset, outputMode); rgErr == nil {
+		return rgResult, nil
+	}
+
+	// ripgrep 不可用，回退到 Go 实现（含 .gitignore 过滤）
+	return r.searchFilesGo(ctx, config, pattern, baseDir, maxResults, offset, includeHidden, includePatterns, excludePatterns, isRegexp, caseSensitive, outputMode)
+}
+
+// runRipgrepSearch 使用 ripgrep 执行搜索，返回结构化结果。
+// ripgrep 自动尊重 .gitignore 和隐藏文件过滤，性能远优于纯 Go 实现。
+func (r *ClientRuntime) runRipgrepSearch(config internalconfig.Config, pattern string, searchDir string, arguments map[string]any, maxResults int, offset int, outputMode string) (map[string]any, error) {
+	rgPath, lookErr := exec.LookPath("rg")
+	if lookErr != nil {
+		return nil, fmt.Errorf("ripgrep not found: %w", lookErr)
+	}
+
+	isRegexp := argumentBool(arguments, "isRegexp", "is_regexp")
+	caseSensitive := argumentBool(arguments, "caseSensitive", "case_sensitive")
+	includeHidden := argumentBool(arguments, "includeHidden", "include_hidden")
+	glob := strings.TrimSpace(stringValue(arguments["glob"]))
+
+	rgArgs := []string{"--json", "--max-count", "5"}
+	if !caseSensitive {
+		rgArgs = append(rgArgs, "--ignore-case")
+	}
+	if !isRegexp {
+		rgArgs = append(rgArgs, "--fixed-strings")
+	}
+	if includeHidden {
+		rgArgs = append(rgArgs, "--hidden")
+	}
+	if outputMode == "files_with_matches" {
+		rgArgs = append(rgArgs, "--files-with-matches")
+	}
+	if outputMode == "count" {
+		rgArgs = append(rgArgs, "--count")
+	}
+	// glob 过滤：展开花括号语法（如 *.{js,vue}），因为 rg 不支持 brace expansion
+	if glob != "" {
+		for _, expanded := range expandBraces(glob) {
+			rgArgs = append(rgArgs, "-g", expanded)
+		}
+	}
+	rgArgs = append(rgArgs, "--", pattern, searchDir)
+
+	cmd := exec.CommandContext(context.Background(), rgPath, rgArgs...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// rg 返回非零退出码可能只是"无匹配"（exit code 1），不一定是错误
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			// 无匹配，返回空结果
+			return buildEmptySearchResult(searchDir, "ripgrep", outputMode), nil
+		}
+		return nil, fmt.Errorf("ripgrep 执行失败: %w, stderr: %s", err, stderr.String())
+	}
+
+	// 解析 rg --json 输出
+	return parseRipgrepJSON(stdout.Bytes(), searchDir, maxResults, offset, outputMode)
+}
+
+// parseRipgrepJSON 解析 ripgrep --json 格式输出，返回结构化结果。
+func parseRipgrepJSON(rawJSON []byte, searchDir string, maxResults int, offset int, outputMode string) (map[string]any, error) {
+	matches := []map[string]any{}
+	fileCounts := map[string]int{}
+	totalMatches := 0
+
+	for _, line := range bytes.Split(rawJSON, []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var msg struct {
+			Type string `json:"type"`
+			Data struct {
+				Path struct {
+					Text string `json:"text"`
+				} `json:"path"`
+				LineNumber int `json:"line_number"`
+				Lines      struct {
+					Text string `json:"text"`
+				} `json:"lines"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(line, &msg); err != nil {
+			continue
+		}
+		if msg.Type == "match" {
+			totalMatches++
+			relPath := msg.Data.Path.Text
+			lineNum := msg.Data.LineNumber
+			text := strings.TrimRight(msg.Data.Lines.Text, "\r\n\t ")
+			fileCounts[relPath]++
+			if totalMatches > offset && len(matches) < maxResults {
+				matches = append(matches, map[string]any{
+					"path":          filepath.Join(searchDir, relPath),
+					"relative_path": relPath,
+					"line":          lineNum,
+					"text":          text,
+				})
+			}
+		}
+	}
+
+	hasMore := len(matches) >= maxResults
+
+	if outputMode == "files_with_matches" {
+		files := make([]map[string]any, 0, len(fileCounts))
+		for relPath, count := range fileCounts {
+			files = append(files, map[string]any{"relative_path": relPath, "count": count})
+		}
+		sort.Slice(files, func(left, right int) bool {
+			return stringValue(files[left]["relative_path"]) < stringValue(files[right]["relative_path"])
+		})
+		return map[string]any{
+			"files":         files,
+			"count":         len(files),
+			"total_matches":  totalMatches,
+			"root":           searchDir,
+			"engine":         "ripgrep",
+			"output_mode":    outputMode,
+		}, nil
+	}
+	if outputMode == "count" {
+		return map[string]any{
+			"count":         totalMatches,
+			"matches":       []map[string]any{},
+			"total_matches": totalMatches,
+			"root":           searchDir,
+			"engine":         "ripgrep",
+			"output_mode":    outputMode,
+		}, nil
+	}
+	return map[string]any{
+		"matches":       matches,
+		"count":         len(matches),
+		"total_matches": totalMatches,
+		"offset":        offset,
+		"has_more":      hasMore,
+		"root":           searchDir,
+		"engine":         "ripgrep",
+		"output_mode":   outputMode,
+	}, nil
+}
+
+// buildEmptySearchResult 构建空搜索结果。
+func buildEmptySearchResult(searchDir string, engine string, outputMode string) map[string]any {
+	return map[string]any{
+		"matches":       []map[string]any{},
+		"count":         0,
+		"total_matches": 0,
+		"offset":        0,
+		"has_more":      false,
+		"root":           searchDir,
+		"engine":         engine,
+		"output_mode":   outputMode,
+	}
+}
+
+// searchFilesGo 是 ripgrep 不可用时的 Go 回退实现。
+// 在原有硬编码排除目录 + 隐藏路径过滤的基础上，增加了 .gitignore 解析与匹配。
+func (r *ClientRuntime) searchFilesGo(_ context.Context, config internalconfig.Config, pattern string, baseDir string, maxResults int, offset int, includeHidden bool, includePatterns []string, excludePatterns []string, isRegexp bool, caseSensitive bool, outputMode string) (map[string]any, error) {
+	matcher, err := buildSearchMatcher(pattern, isRegexp, caseSensitive)
+	if err != nil {
+		return nil, newToolError("PARAM_ERROR", "%v", err)
 	}
 	total := 0
 	hasMore := false
@@ -1369,6 +1537,10 @@ func (r *ClientRuntime) searchFilesLocal(_ context.Context, config internalconfi
 	if len(excludeDirs) == 0 {
 		excludeDirs = internalconfig.DefaultFileSearchExcludeDirs()
 	}
+
+	// 加载根目录 .gitignore
+	rootIgnoreRules := parseGitignoreFile(baseDir)
+
 	err = filepath.WalkDir(baseDir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -1383,11 +1555,21 @@ func (r *ClientRuntime) searchFilesLocal(_ context.Context, config internalconfi
 				if isHiddenPath(relativePath) && !includeHidden {
 					return filepath.SkipDir
 				}
+				// .gitignore 过滤
+				if len(rootIgnoreRules) > 0 && isGitignored(rootIgnoreRules, path, baseDir, true) {
+					return filepath.SkipDir
+				}
+				// 加载子目录的 .gitignore（嵌套继承）
+				rootIgnoreRules = loadGitignoreRules(path, rootIgnoreRules)
 			}
 			return nil
 		}
 		relativePath, _ := filepath.Rel(baseDir, path)
 		if isHiddenPath(relativePath) && !includeHidden {
+			return nil
+		}
+		// .gitignore 过滤
+		if len(rootIgnoreRules) > 0 && isGitignored(rootIgnoreRules, path, baseDir, false) {
 			return nil
 		}
 		if !matchesPatterns(relativePath, includePatterns, excludePatterns) {

@@ -50,6 +50,9 @@ func (r *ClientRuntime) globFiles(config internalconfig.Config, arguments map[st
 	if len(excludeDirs) == 0 {
 		excludeDirs = internalconfig.DefaultFileSearchExcludeDirs()
 	}
+	// 加载根目录 .gitignore
+	ignoreRules := parseGitignoreFile(baseDir)
+
 	err = filepath.WalkDir(baseDir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -70,6 +73,17 @@ func (r *ClientRuntime) globFiles(config internalconfig.Config, arguments map[st
 				return filepath.SkipDir
 			}
 			return nil
+		}
+		// .gitignore 过滤
+		if len(ignoreRules) > 0 && isGitignored(ignoreRules, path, baseDir, entry.IsDir()) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// 加载子目录的 .gitignore（嵌套继承）
+		if entry.IsDir() {
+			ignoreRules = loadGitignoreRules(path, ignoreRules)
 		}
 		if !matchAnyGlob(patterns, relPath) {
 			return nil
