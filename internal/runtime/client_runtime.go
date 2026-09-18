@@ -124,6 +124,7 @@ type ClientRuntime struct {
 	subtaskRequestedSkillNames []string
 	subtaskReasoningEnabled    bool
 	subtaskInternetSearch      bool
+	subtaskImageGeneration     bool
 	subtaskCrossSessionMemory  *bool
 	subtaskKnowledgeScopes     []string
 	subtaskKnowledgeDocs       []string
@@ -293,11 +294,12 @@ func (r *ClientRuntime) SetCurrentRequestMode(mode string) {
 
 // SetSubtaskCapabilities 注入子任务执行时需要继承的能力字段。
 // 由 cmd 层在发起 Stream 前调用，确保子任务拥有与主任务相同的 skills、MCP、reasoning、联网搜索、知识库等能力。
-func (r *ClientRuntime) SetSubtaskCapabilities(skillPackages any, requestedSkillNames []string, reasoningEnabled bool, internetSearch bool, crossSessionMemory *bool, knowledgeScopes []string, knowledgeDocs []string) {
+func (r *ClientRuntime) SetSubtaskCapabilities(skillPackages any, requestedSkillNames []string, reasoningEnabled bool, internetSearch bool, imageGeneration bool, crossSessionMemory *bool, knowledgeScopes []string, knowledgeDocs []string) {
 	r.subtaskSkillPackages = skillPackages
 	r.subtaskRequestedSkillNames = requestedSkillNames
 	r.subtaskReasoningEnabled = reasoningEnabled
 	r.subtaskInternetSearch = internetSearch
+	r.subtaskImageGeneration = imageGeneration
 	r.subtaskCrossSessionMemory = crossSessionMemory
 	r.subtaskKnowledgeScopes = knowledgeScopes
 	r.subtaskKnowledgeDocs = knowledgeDocs
@@ -325,6 +327,7 @@ func (r *ClientRuntime) cloneRuntime() *ClientRuntime {
 		subtaskRequestedSkillNames:  append([]string(nil), r.subtaskRequestedSkillNames...),
 		subtaskReasoningEnabled:     r.subtaskReasoningEnabled,
 		subtaskInternetSearch:       r.subtaskInternetSearch,
+		subtaskImageGeneration:      r.subtaskImageGeneration,
 		subtaskCrossSessionMemory:   r.subtaskCrossSessionMemory,
 		subtaskKnowledgeScopes:      append([]string(nil), r.subtaskKnowledgeScopes...),
 		subtaskKnowledgeDocs:        append([]string(nil), r.subtaskKnowledgeDocs...),

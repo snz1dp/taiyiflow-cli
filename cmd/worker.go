@@ -78,6 +78,7 @@ func (a *App) runWorker(ctx context.Context, args []string) error {
 		nil,
 		resolveReasoningEnabled(config, ""),
 		resolveInternetSearchEnabled(""),
+		false, // worker 无 flow metadata 上下文，默认不启用
 		boolPtr(config.CrossSessionMemoryEnabled),
 		nil,
 		nil,

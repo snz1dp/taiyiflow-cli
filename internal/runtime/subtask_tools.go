@@ -563,6 +563,7 @@ func (r *ClientRuntime) executeLocalSubtask(
 		InputType:                 "any",
 		Tweaks:                    buildSubtaskTweaks(request.WorkingDirectory, "client"),
 		InternetSearch:            r.subtaskInternetSearch,
+		ImageGenerationEnabled:    r.subtaskImageGeneration,
 		KnowledgeScopes:           append([]string(nil), r.subtaskKnowledgeScopes...),
 		KnowledgeDocs:             append([]string(nil), r.subtaskKnowledgeDocs...),
 		OutputType:                "any",

@@ -431,6 +431,8 @@ type streamRequestBody struct {
 	RequestedSkillNames       []string       `json:"requested_skill_names,omitempty"`
 	AgentInputs               map[string]any `json:"agent_inputs,omitempty"`
 	Reasoning                 bool           `json:"reasoning,omitempty"`
+	// 后端 schemas.py 字段名即为 image_generation_enabed（保留原拼写），此处对齐后端真值
+	ImageGenerationEnabed     bool           `json:"image_generation_enabed,omitempty"`
 	MasterFlowID              string         `json:"master_flow_id,omitempty"`
 	AvailableTools            []any          `json:"available_tools,omitempty"`
 	ClientMCPServers          map[string]any `json:"client_mcp_servers,omitempty"`
@@ -1445,6 +1447,7 @@ func buildStreamRequestBody(request provider.StreamRequest) streamRequestBody {
 		RequestedSkillNames:       request.RequestedSkillNames,
 		AgentInputs:               request.AgentInputs,
 		Reasoning:                 request.ReasoningEnabled,
+		ImageGenerationEnabed:     request.ImageGenerationEnabled,
 		MasterFlowID:              request.MasterFlowID,
 		AvailableTools:            request.AvailableTools,
 		ClientMCPServers:          request.ClientMCPServers,

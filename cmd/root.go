@@ -924,11 +924,17 @@ func (a *App) streamTaskWithSkillRetry(
 		}
 	}
 	// 注入子任务能力字段，确保 run_subtask 创建的子智能体拥有与主任务相同的能力
+	// flow metadata 声明支持 image_generation 特性时，请求中启用图片生成（对齐 taiyiflow-chatui supportImageGeneration）
+	imageGenerationEnabled := false
+	if metadata, metaErr := providerClient.GetMetadata(ctx, flowID); metaErr == nil {
+		imageGenerationEnabled = metadata.Capabilities.ImageGeneration
+	}
 	a.runtime.SetSubtaskCapabilities(
 		clientSkillPackages,
 		requestedSkillNames,
 		resolveReasoningEnabled(config, sessionState.ReasoningOverride),
 		resolveInternetSearchEnabled(sessionState.InternetSearchOverride),
+		imageGenerationEnabled,
 		boolPtr(config.CrossSessionMemoryEnabled),
 		nil,
 		nil,
@@ -956,6 +962,7 @@ func (a *App) streamTaskWithSkillRetry(
 		Tweaks:                    buildTaskTweaks(config, clientContextDir, commandExecutionTarget),
 		InputFiles:                append([]string(nil), inputFiles...),
 		InternetSearch:            resolveInternetSearchEnabled(sessionState.InternetSearchOverride),
+		ImageGenerationEnabled:    imageGenerationEnabled,
 		OutputType:                "any",
 		SessionID:                 sessionState.SessionID,
 		RunID:                     requestRunID,

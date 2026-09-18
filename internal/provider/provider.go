@@ -33,6 +33,7 @@ const (
 	FeatureAudioUnderstanding                            = "audio_understanding"
 	FeatureVideoUnderstanding                            = "video_understanding"
 	FeatureDocumentUnderstanding                         = "document_understanding"
+	FeatureImageGeneration                               = "image_generation"
 	FeatureSupportKnowledge                              = "support_knowledge"
 	FeatureSupportMCPTools                               = "support_mcp_tools"
 	FeatureSupportHumanAIDialogue                        = "support_human_ai_dialogue"
@@ -84,6 +85,7 @@ type StreamRequest struct {
 	RequestedSkillNames       []string
 	AgentInputs               map[string]any
 	ReasoningEnabled          bool
+	ImageGenerationEnabled    bool
 	MasterFlowID              string
 	AvailableTools            []any
 	ClientMCPServers          map[string]any
@@ -133,6 +135,7 @@ type ChatCapabilities struct {
 	AudioUnderstanding     bool
 	VideoUnderstanding     bool
 	DocumentUnderstanding  bool
+	ImageGeneration       bool
 }
 
 type ServiceFeatureFlags struct {
@@ -213,6 +216,8 @@ func NormalizeMetadataFeatures(features []string) ChatCapabilities {
 			capabilities.VideoUnderstanding = true
 		case FeatureDocumentUnderstanding:
 			capabilities.DocumentUnderstanding = true
+		case FeatureImageGeneration:
+			capabilities.ImageGeneration = true
 		default:
 			if _, exists := unknown[canonical]; exists {
 				continue

@@ -259,11 +259,17 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				primaryClient.UpdateSession(sessionState.SessionID)
 			}
 			// 注入子任务能力字段，确保 run_subtask 创建的子智能体拥有与主任务相同的能力
+			// flow metadata 声明支持 image_generation 特性时，请求中启用图片生成（对齐 taiyiflow-chatui supportImageGeneration）
+			imageGenerationEnabled := false
+			if metadata, metaErr := callbackProvider.GetMetadata(runCtx, currentFlow); metaErr == nil {
+				imageGenerationEnabled = metadata.Capabilities.ImageGeneration
+			}
 			runtimeClient.SetSubtaskCapabilities(
 				clientSkillPackages,
 				requestedSkillNames,
 				request.ReasoningEnabled,
 				request.InternetSearch,
+				imageGenerationEnabled,
 				boolPtr(config.CrossSessionMemoryEnabled),
 				append([]string(nil), request.KnowledgeScopes...),
 				append([]string(nil), request.KnowledgeDocs...),
@@ -297,6 +303,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				Tweaks:                    buildTaskTweaks(config, clientContextDir, commandExecutionTarget),
 				InputFiles:                append([]string(nil), request.InputFiles...),
 				InternetSearch:            request.InternetSearch,
+				ImageGenerationEnabled:    imageGenerationEnabled,
 				KnowledgeScopes:           append([]string(nil), request.KnowledgeScopes...),
 				KnowledgeDocs:             append([]string(nil), request.KnowledgeDocs...),
 				OutputType:                "any",
