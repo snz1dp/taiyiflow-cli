@@ -677,6 +677,23 @@ func TestClientMCPServersForModeShowsRunSubtaskWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestClientMCPServersForModeHidesRunSubtaskWhenMaxParallelismIsZero(t *testing.T) {
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	// subtaskEnabled = true，但 max_parallelism_subtask = 0 表示禁用子智能体
+	runtimeClient.SetSubtaskEnabled(true)
+	runtimeClient.SetMaxParallelismSubtask(0)
+	servers := runtimeClient.ClientMCPServersForMode(provider.RequestTypeAgent, internalconfig.Config{})
+	definitions, ok := servers[localToolServerName].([]map[string]any)
+	if !ok {
+		t.Fatalf("expected local tool definitions, got %#v", servers)
+	}
+	for _, item := range definitions {
+		if strings.TrimSpace(stringValue(item["name"])) == "run_subtask" {
+			t.Fatalf("expected run_subtask to be hidden when max_parallelism_subtask is 0, got %#v", item)
+		}
+	}
+}
+
 func TestFilterComputerToolDefinitionsByCapabilitiesHidesUnsupportedMouseTools(t *testing.T) {
 	definitions := []map[string]any{
 		{"name": computerToolDisplaysContext},

@@ -144,6 +144,14 @@ func (r *ClientRuntime) runSubtask(
 	payload map[string]any,
 	arguments map[string]any,
 ) (map[string]any, error) {
+	// 兜底：max_parallelism_subtask 配置为 0 时子智能体已禁用，工具定义本不应暴露。
+	// 但服务端可能缓存旧工具定义，或模型凭历史上下文强行发起调用，这里显式拒绝。
+	if r.MaxParallelismSubtask() == 0 {
+		return map[string]any{
+			"status":        "failed",
+			"error_message": "子智能体已禁用（max_parallelism_subtask = 0），run_subtask 不可用；如需启用请执行 taiyiflow-cli config set max_parallelism_subtask <1-32>",
+		}, nil
+	}
 	if providerClient == nil {
 		return map[string]any{
 			"status":        "failed",

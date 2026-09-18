@@ -159,7 +159,9 @@ type ClientRuntime struct {
 }
 
 func NewClientRuntime(stdin io.Reader, stdout io.Writer, stderr io.Writer) *ClientRuntime {
-	r := &ClientRuntime{stdin: stdin, stdout: stdout, stderr: stderr, browserToolExecutor: defaultBrowserToolExecutor{}, computerToolExecutor: defaultComputerToolExecutor{}, streamEventLogsEnabled: true, interactivePromptsEnabled: true, hookHandlers: []HookHandler{auditHookHandler}}
+	// maxParallelismSubtask 显式初始化为默认值：0 是"禁用子智能体"的合法配置值，
+	// 不能让 Go 零值与显式禁用语义混淆。cmd 层随后会用本地配置覆盖该值。
+	r := &ClientRuntime{stdin: stdin, stdout: stdout, stderr: stderr, browserToolExecutor: defaultBrowserToolExecutor{}, computerToolExecutor: defaultComputerToolExecutor{}, streamEventLogsEnabled: true, interactivePromptsEnabled: true, maxParallelismSubtask: internalconfig.DefaultMaxParallelismSubtask, hookHandlers: []HookHandler{auditHookHandler}}
 	r.RegisterHookHandler(r.nonArtifactCleanupHandler)
 	return r
 }

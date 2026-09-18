@@ -416,6 +416,66 @@ func (m *localTaskManager) waitTask(
 		}
 	}
 
+	// 在 auto 沙盒模式下，如果命令因沙盒运行时错误失败（如 sandbox-exec
+	// 无法应用沙盒配置），清除已有输出并重建无沙盒命令重试。
+	// 这与前台命令的 runCommandWithSandboxRetry 逻辑对齐。
+	if waitErr != nil && payload.Sandbox != nil && payload.Sandbox.Mode == internalconfig.ShellSandboxModeAuto {
+		task.mu.RLock()
+		stderrContent := task.stderr.String()
+		task.mu.RUnlock()
+		if isSandboxRuntimeError(waitErr) || isSandboxRuntimeError(fmt.Errorf("%s", stderrContent)) {
+			// 清除沙盒错误输出，准备重试
+			task.mu.Lock()
+			task.stdout.Reset()
+			task.stderr.Reset()
+			task.stdoutTruncated = false
+			task.stderrTruncated = false
+			task.mu.Unlock()
+			// 清空持久化的输出文件
+			if task.stdoutPath != "" {
+				_ = os.Truncate(task.stdoutPath, 0)
+			}
+			if task.stderrPath != "" {
+				_ = os.Truncate(task.stderrPath, 0)
+			}
+
+			rawPayload := payload
+			rawPayload.Sandbox = nil
+			retryCtx, retryCancel := context.WithCancel(context.Background())
+			// 替换 task 的 cancel 函数，确保重试命令仍可被 task_stop 取消
+			task.mu.Lock()
+			task.cancel = retryCancel
+			task.mu.Unlock()
+			retryCommand, retryErr := buildRawCommand(retryCtx, rawPayload)
+			if retryErr == nil {
+				retryCommand.Dir = payload.WorkingDirectory
+				retryCommand.Env = mergeEnv(payload.EnvOverrides)
+				if payload.HasStdin {
+					retryCommand.Stdin = strings.NewReader(payload.Stdin)
+				}
+				retryStdout, err := retryCommand.StdoutPipe()
+				if err == nil {
+					retryStderr, err := retryCommand.StderrPipe()
+					if err == nil && retryCommand.Start() == nil {
+						var retryGroup sync.WaitGroup
+						retryGroup.Add(2)
+						go func() {
+							defer retryGroup.Done()
+							_, _ = io.Copy(taskStreamWriter{task: task}, retryStdout)
+						}()
+						go func() {
+							defer retryGroup.Done()
+							_, _ = io.Copy(taskStreamWriter{task: task, stderr: true}, retryStderr)
+						}()
+						waitErr = retryCommand.Wait()
+						retryGroup.Wait()
+						command = retryCommand
+					}
+				}
+			}
+		}
+	}
+
 	task.mu.Lock()
 	task.completedAt = time.Now()
 	if command.ProcessState != nil {

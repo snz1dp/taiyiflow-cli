@@ -216,6 +216,47 @@ func TestExecuteClientToolPayloadRunSubtaskCreatesAndExecutesLocalCollaboration(
 	}
 }
 
+func TestExecuteClientToolPayloadRunSubtaskRejectedWhenMaxParallelismIsZero(t *testing.T) {
+	tempDir := t.TempDir()
+	providerStub := &subtaskProviderStub{
+		createdSessionID: "child-session-1",
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), io.Discard, io.Discard)
+	// 显式禁用子智能体：即使模型强行发起 run_subtask 调用，也应被兜底拒绝
+	runtimeClient.SetMaxParallelismSubtask(0)
+
+	_, resultAny, err := runtimeClient.ExecuteClientToolPayloadWithProvider(context.Background(), providerStub, internalconfig.Config{
+		Workdir:      tempDir,
+		ApprovalMode: "auto",
+		ClientID:     "cli-123",
+		DeviceID:     "device-456",
+	}, map[string]any{
+		"flow_id": "parent-flow",
+		"server":  map[string]any{"name": "local"},
+		"context": map[string]any{"session_id": "parent-session-1", "run_id": "parent-run-1", "message_id": "parent-message-1"},
+		"function": map[string]any{
+			"name":      "run_subtask",
+			"arguments": map[string]any{"prompt": "test"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected tool-level failure result without transport error, got %v", err)
+	}
+	result, ok := resultAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %#v", resultAny)
+	}
+	if result["status"] != "failed" {
+		t.Fatalf("expected failed status when max_parallelism_subtask is 0, got %#v", result)
+	}
+	if !strings.Contains(stringValue(result["error_message"]), "子智能体已禁用") {
+		t.Fatalf("expected disabled error message, got %#v", result["error_message"])
+	}
+	if len(providerStub.createdRequests) != 0 {
+		t.Fatalf("expected no collaboration task to be created, got %#v", providerStub.createdRequests)
+	}
+}
+
 func TestExecuteClientToolPayloadRunSubtaskSelfTargetPrefersDispatchedWorker(t *testing.T) {
 	tempDir := t.TempDir()
 	providerStub := &subtaskProviderStub{
