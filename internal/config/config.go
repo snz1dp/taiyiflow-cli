@@ -741,6 +741,16 @@ func DefaultSkillsDirLabel() string {
 	return fmt.Sprintf("用户目录 (%s)", dir)
 }
 
+// DefaultAgentSkillsDir 返回兼容其他 agent 的用户级技能目录 ~/.agent/skills。
+// 该目录用于加载第三方 agent（如 Claude Code 等约定 .agent/skills 的工具）安装的技能包。
+func DefaultAgentSkillsDir() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("获取用户目录失败: %w", err)
+	}
+	return filepath.Join(homeDir, ".agent", "skills"), nil
+}
+
 func DefaultBundledSkillsDir() (string, error) {
 	rootDir, err := DefaultRootDir()
 	if err != nil {

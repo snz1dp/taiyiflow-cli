@@ -440,14 +440,22 @@ func TestResolveDirectoriesPreferWorkspaceThenGlobalConfig(t *testing.T) {
 		t.Fatalf("resolve directories failed: %v", err)
 	}
 	expectedWorkspace := filepath.Join(workspaceDir, ".snz1dp", "skills")
-	if len(directories) != 2 {
-		t.Fatalf("expected workspace and global directories, got %#v", directories)
+	// ~/.agent/skills 兼容目录始终追加在末尾，作为最低优先级来源
+	agentSkillsDir, err := internalconfig.DefaultAgentSkillsDir()
+	if err != nil {
+		t.Fatalf("resolve agent skills dir failed: %v", err)
+	}
+	if len(directories) != 3 {
+		t.Fatalf("expected workspace, global and agent directories, got %#v", directories)
 	}
 	if directories[0] != expectedWorkspace {
 		t.Fatalf("expected workspace directory first, got %#v", directories)
 	}
 	if directories[1] != globalDir {
 		t.Fatalf("expected configured global directory second, got %#v", directories)
+	}
+	if directories[2] != agentSkillsDir {
+		t.Fatalf("expected agent directory last, got %#v", directories)
 	}
 }
 

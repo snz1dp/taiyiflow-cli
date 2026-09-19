@@ -202,6 +202,12 @@ func ResolveDirectories(config internalconfig.Config) ([]string, error) {
 		}
 		items = append(items, homeSkillsDir)
 	}
+	// 兼容其他 agent 的技能目录：追加 ~/.agent/skills 作为最低优先级来源。
+	// 该目录只读加载，不作为安装目标；同名技能按发现顺序去重，
+	// 工作区 > 全局配置/默认用户目录 > ~/.agent/skills。
+	if agentSkillsDir, err := internalconfig.DefaultAgentSkillsDir(); err == nil {
+		items = append(items, agentSkillsDir)
+	}
 	seen := map[string]bool{}
 	result := make([]string, 0, len(items))
 	for _, item := range items {
@@ -668,6 +674,8 @@ func resolveSkillWorkdir(configured string) string {
 	return filepath.Clean(resolved)
 }
 
+// classifySkillSource 判定技能目录来源类型。
+// 优先级顺序：workspace > custom > home > agent > bundled。
 func classifySkillSource(directory string, config internalconfig.Config) string {
 	workdir := resolveSkillWorkdir(config.Workdir)
 	if workdir != "" && filepath.Clean(directory) == filepath.Clean(filepath.Join(workdir, ".snz1dp", "skills")) {
@@ -678,6 +686,11 @@ func classifySkillSource(directory string, config internalconfig.Config) string 
 		resolvedConfigured, err := filepath.Abs(configured)
 		if err == nil && filepath.Clean(directory) == filepath.Clean(resolvedConfigured) {
 			return "custom"
+		}
+	}
+	if agentSkillsDir, err := internalconfig.DefaultAgentSkillsDir(); err == nil {
+		if filepath.Clean(directory) == filepath.Clean(agentSkillsDir) {
+			return "agent"
 		}
 	}
 	return "home"
@@ -710,6 +723,8 @@ func sourcePriority(source string) int {
 		return 1
 	case "home":
 		return 2
+	case "agent":
+		return 4
 	case "bundled":
 		return 3
 	default:
