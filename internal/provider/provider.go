@@ -157,6 +157,9 @@ type ServiceConfig struct {
 	LoopDecideFlowID       string
 	// StreamProtocol 是服务端配置的流式输出协议（sse / websocket）。
 	StreamProtocol string
+	// MaxParallelismSubtask 是服务端下发的子智能体最大并发数约束。
+	// nil 表示服务端未下发；0 表示禁用子智能体；>0 时作为本地配置的上限。
+	MaxParallelismSubtask *int
 }
 
 type KnowledgeBaseSummary struct {

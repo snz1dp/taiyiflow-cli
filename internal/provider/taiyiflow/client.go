@@ -186,6 +186,8 @@ type serviceConfigResponse struct {
 	AgentAutoLoopMaxRounds int                         `json:"agent_auto_loop_max_rounds"`
 	LoopDecideFlowID       string                      `json:"loop_decide_flow_id"`
 	StreamProtocol         string                      `json:"stream_protocol"`
+	// MaxParallelismSubtask 使用指针类型区分"未下发"（nil）与"下发 0"（禁用）
+	MaxParallelismSubtask *int `json:"max_parallelism_subtask,omitempty"`
 }
 
 type versionInfoResponse struct {
@@ -1310,6 +1312,7 @@ func (c *Client) GetServiceConfig(ctx context.Context) (*provider.ServiceConfig,
 		AgentAutoLoopMaxRounds: payload.AgentAutoLoopMaxRounds,
 		LoopDecideFlowID:       strings.TrimSpace(payload.LoopDecideFlowID),
 		StreamProtocol:         serverStreamProtocol,
+		MaxParallelismSubtask:  payload.MaxParallelismSubtask,
 	}, nil
 }
 
