@@ -59,7 +59,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		return err
 	}
 	if a.runtime != nil {
-		a.runtime.SetMaxParallelismSubtask(config.MaxParallelismSubtask)
+		// TUI 启动阶段尚未获取服务端配置，先按本地配置设置；runner 内部会结合 effectiveServiceConfig 重新解析。
+		a.runtime.SetMaxParallelismSubtask(resolveMaxParallelismSubtask(config, nil))
 	}
 	config, _, err = a.ensureClientIdentity(config)
 	if err != nil {
@@ -154,8 +155,6 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		// TUI 模式下子智能体默认启用
 		runtimeClient.SetSubtaskEnabled(true)
 		quietRuntimeClient.SetSubtaskEnabled(true)
-		runtimeClient.SetMaxParallelismSubtask(config.MaxParallelismSubtask)
-		quietRuntimeClient.SetMaxParallelismSubtask(config.MaxParallelismSubtask)
 		// 设置用户执行引导 channel，submitCallback 会在回调提交前排空。
 		runtimeClient.SetGuidanceChannel(request.GuidanceCh)
 		quietRuntimeClient.SetGuidanceChannel(request.GuidanceCh)
@@ -221,6 +220,10 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if effectiveServiceConfig == nil {
 				effectiveServiceConfig = serviceConfig
 			}
+			// 结合服务端下发的并发上限解析子智能体最大并发数，同步注入两个 runtime
+			maxParallelism := resolveMaxParallelismSubtask(config, effectiveServiceConfig)
+			runtimeClient.SetMaxParallelismSubtask(maxParallelism)
+			quietRuntimeClient.SetMaxParallelismSubtask(maxParallelism)
 			resolvedContextDir := resolveLocalWorkdir(firstNonEmpty(sessionState.ContextDir, workdir))
 			skillConfig := a.resolveEffectiveSkillConfig(config, resolvedContextDir)
 			// 尝试恢复 SKILL.md 损坏或缺失的远程安装技能

@@ -273,7 +273,7 @@ func (a *App) runInteractive(ctx context.Context, options rootOptions) error {
 		return err
 	}
 	if a.runtime != nil {
-		a.runtime.SetMaxParallelismSubtask(config.MaxParallelismSubtask)
+		a.runtime.SetMaxParallelismSubtask(resolveMaxParallelismSubtask(config, nil))
 	}
 	config, _, err = a.ensureClientIdentity(config)
 	if err != nil {
@@ -672,7 +672,7 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 		return err
 	}
 	if a.runtime != nil {
-		a.runtime.SetMaxParallelismSubtask(config.MaxParallelismSubtask)
+		a.runtime.SetMaxParallelismSubtask(resolveMaxParallelismSubtask(config, nil))
 	}
 	config, _, err = a.ensureClientIdentity(config)
 	if err != nil {
@@ -792,6 +792,32 @@ func applyExplicitTaskSessionID(state agent.SessionState, sessionID string) agen
 	}
 	state.SessionID = trimmedSessionID
 	return state
+}
+
+// resolveMaxParallelismSubtask 解析子智能体的最大并发数。
+// 优先级：CLI 本地配置 > 服务端配置；服务端下发值作为本地配置的上限约束：
+//   - 服务端未下发（serviceConfig 为 nil 或 MaxParallelismSubtask 指针为 nil）：直接使用本地配置；
+//   - 服务端下发 0：禁用子智能体；
+//   - 服务端下发 >0：取本地配置与服务端上限中的较小值。
+// 本地配置为 0 表示用户显式禁用，无论服务端如何下发均保持禁用。
+// 返回 0 表示禁用子智能体（不暴露 run_subtask 工具）。
+func resolveMaxParallelismSubtask(config internalconfig.Config, serviceConfig *provider.ServiceConfig) int {
+	localMaxParallelism := internalconfig.NormalizeMaxParallelismSubtask(config.MaxParallelismSubtask)
+	if serviceConfig == nil || serviceConfig.MaxParallelismSubtask == nil {
+		return localMaxParallelism
+	}
+	serverMaxParallelism := *serviceConfig.MaxParallelismSubtask
+	if serverMaxParallelism <= 0 {
+		return 0
+	}
+	serverMaxParallelism = internalconfig.NormalizeMaxParallelismSubtask(serverMaxParallelism)
+	if localMaxParallelism == 0 {
+		return 0
+	}
+	if localMaxParallelism > serverMaxParallelism {
+		return serverMaxParallelism
+	}
+	return localMaxParallelism
 }
 
 func (a *App) streamTask(
@@ -939,7 +965,8 @@ func (a *App) streamTaskWithSkillRetry(
 		nil,
 		nil,
 	)
-	a.runtime.SetMaxParallelismSubtask(config.MaxParallelismSubtask)
+	// streamTaskWithSkillRetry 内部会基于服务端配置重新解析并发上限，这里先按本地配置设置初始值。
+	a.runtime.SetMaxParallelismSubtask(resolveMaxParallelismSubtask(config, extractServiceConfig(providerClient)))
 	// 加载外部 MCP 服务器注册表，将后端配置的 MCP 服务器工具合并到 client_mcp_servers。
 	// 与 taiyiflow-chatui 的 mcp-store.loadServers + getFilteredToolDefinitions 对齐。
 	if taiyiflowClient, ok := extractTaiyiflowClient(providerClient); ok {

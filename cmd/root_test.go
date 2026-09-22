@@ -1713,6 +1713,80 @@ func TestResolveAgentAutoLoopEnabledDerivedFromMaxRounds(t *testing.T) {
 	}
 }
 
+func TestResolveMaxParallelismSubtask(t *testing.T) {
+	intPtr := func(v int) *int { return &v }
+
+	tests := []struct {
+		name          string
+		localValue    int
+		serviceConfig *provider.ServiceConfig
+		expected      int
+	}{
+		{
+			name:       "服务端未下发时使用本地配置",
+			localValue: 5,
+			expected:   5,
+		},
+		{
+			name:          "服务端指针为 nil 时使用本地配置",
+			localValue:    5,
+			serviceConfig: &provider.ServiceConfig{},
+			expected:      5,
+		},
+		{
+			name:          "服务端下发 0 时禁用子智能体",
+			localValue:    5,
+			serviceConfig: &provider.ServiceConfig{MaxParallelismSubtask: intPtr(0)},
+			expected:      0,
+		},
+		{
+			name:          "本地配置大于服务端上限时取较小值",
+			localValue:    10,
+			serviceConfig: &provider.ServiceConfig{MaxParallelismSubtask: intPtr(4)},
+			expected:      4,
+		},
+		{
+			name:          "本地配置小于服务端上限时保持本地值",
+			localValue:    2,
+			serviceConfig: &provider.ServiceConfig{MaxParallelismSubtask: intPtr(8)},
+			expected:      2,
+		},
+		{
+			name:          "本地配置 0 表示显式禁用，服务端下发无效",
+			localValue:    0,
+			serviceConfig: &provider.ServiceConfig{MaxParallelismSubtask: intPtr(8)},
+			expected:      0,
+		},
+		{
+			name:          "本地与服务端值相等时保持不变",
+			localValue:    3,
+			serviceConfig: &provider.ServiceConfig{MaxParallelismSubtask: intPtr(3)},
+			expected:      3,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config := internalconfig.Default()
+			config.MaxParallelismSubtask = tc.localValue
+			got := resolveMaxParallelismSubtask(config, tc.serviceConfig)
+			if got != tc.expected {
+				t.Fatalf("expected max parallelism %d, got %d", tc.expected, got)
+			}
+		})
+	}
+}
+
+func TestResolveMaxParallelismSubtaskNormalizesLocalValue(t *testing.T) {
+	// 本地配置超过上限时先归一化，再与服务端约束取较小值
+	config := internalconfig.Default()
+	config.MaxParallelismSubtask = internalconfig.MaxMaxParallelismSubtask + 10
+	got := resolveMaxParallelismSubtask(config, nil)
+	if got != internalconfig.MaxMaxParallelismSubtask {
+		t.Fatalf("expected normalized max parallelism %d, got %d", internalconfig.MaxMaxParallelismSubtask, got)
+	}
+}
+
 func TestDisableCLIFocusReportingWritesSequenceToTerminalOutput(t *testing.T) {
 	app := newTestAppWithSessionStore(t)
 	stdout := &fakeTTYWriter{fd: 1}
