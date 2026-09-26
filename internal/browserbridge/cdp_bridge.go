@@ -352,11 +352,16 @@ func (s *session) tabsCreateLocked(arguments map[string]any) (map[string]any, er
 		return nil, fmt.Errorf("创建浏览器标签页失败: %w", err)
 	}
 	s.activeTabID = createdID
-	if _, err := s.ensureTabContextLocked(createdID); err != nil {
+	tab, err := s.ensureTabContextLocked(createdID)
+	if err != nil {
 		return nil, err
 	}
 	if boolArgument(arguments, true, "activate") {
 		_ = target.ActivateTarget(createdID).Do(callCtx)
+	}
+	// ★ 页面加载状态核查：新标签页打开后立即执行后续元素操作会挂起
+	if _, err := s.waitPageInteractiveLocked(tab, browserTimeout(s.browserConfig)); err != nil {
+		return nil, fmt.Errorf("页面未就绪: %w", err)
 	}
 	result, err := s.currentTabStateLocked(createdID)
 	if err != nil {
@@ -406,6 +411,10 @@ func (s *session) clickLocked(arguments map[string]any) (map[string]any, error) 
 	}
 	actionCtx, cancel := context.WithTimeout(tab.ctx, browserTimeout(s.browserConfig))
 	defer cancel()
+	// ★ 页面加载状态核查：页面仍在导航/loading 时直接操作元素会挂起直到超时
+	if _, err := s.waitPageInteractiveLocked(tab, browserTimeout(s.browserConfig)); err != nil {
+		return nil, fmt.Errorf("页面未就绪: %w", err)
+	}
 	if err := chromedp.Run(actionCtx,
 		chromedp.WaitVisible(selector, chromedp.ByQuery),
 		chromedp.Click(selector, chromedp.ByQuery),
@@ -435,6 +444,12 @@ func (s *session) typeLocked(arguments map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// ★ 页面加载状态核查：页面仍在导航/loading 时直接操作元素会挂起直到超时
+	if _, err := s.waitPageInteractiveLocked(tab, browserTimeout(s.browserConfig)); err != nil {
+		return nil, fmt.Errorf("页面未就绪: %w", err)
+	}
+	actionCtx, cancel := context.WithTimeout(tab.ctx, browserTimeout(s.browserConfig))
+	defer cancel()
 	actions := []chromedp.Action{
 		chromedp.WaitVisible(selector, chromedp.ByQuery),
 		chromedp.Focus(selector, chromedp.ByQuery),
@@ -446,8 +461,6 @@ func (s *session) typeLocked(arguments map[string]any) (map[string]any, error) {
 	if boolArgument(arguments, false, "press_enter", "pressEnter") {
 		actions = append(actions, chromedp.SendKeys(selector, kb.Enter, chromedp.ByQuery))
 	}
-	actionCtx, cancel := context.WithTimeout(tab.ctx, browserTimeout(s.browserConfig))
-	defer cancel()
 	if err := chromedp.Run(actionCtx, actions...); err != nil {
 		return nil, fmt.Errorf("输入页面内容失败: %w", err)
 	}
@@ -477,6 +490,10 @@ func (s *session) screenshotLocked(arguments map[string]any) (map[string]any, er
 	var imageBytes []byte
 	actionCtx, cancel := context.WithTimeout(tab.ctx, browserTimeout(s.browserConfig))
 	defer cancel()
+	// ★ 页面加载状态核查：页面仍在导航/loading 时截图可能拍到空白或挂起
+	if _, err := s.waitPageInteractiveLocked(tab, browserTimeout(s.browserConfig)); err != nil {
+		return nil, fmt.Errorf("页面未就绪: %w", err)
+	}
 	if err := chromedp.Run(actionCtx, chromedp.FullScreenshot(&imageBytes, 90)); err != nil {
 		return nil, fmt.Errorf("截取页面截图失败: %w", err)
 	}
@@ -514,6 +531,10 @@ func (s *session) readTextLocked(arguments map[string]any) (map[string]any, erro
 	var raw map[string]any
 	actionCtx, cancel := context.WithTimeout(tab.ctx, browserTimeout(s.browserConfig))
 	defer cancel()
+	// ★ 页面加载状态核查：页面仍在导航/loading 时直接执行脚本会挂起直到超时
+	if _, err := s.waitPageInteractiveLocked(tab, browserTimeout(s.browserConfig)); err != nil {
+		return nil, fmt.Errorf("页面未就绪: %w", err)
+	}
 	if err := chromedp.Run(actionCtx, chromedp.Evaluate(readTextExpression(selector, maxChars), &raw)); err != nil {
 		return nil, fmt.Errorf("读取页面文本失败: %w", err)
 	}
@@ -615,6 +636,75 @@ func (s *session) ensureTabContextLocked(targetID target.ID) (*tabSession, error
 	tab := &tabSession{ctx: tabCtx, cancel: cancel}
 	s.tabs[targetID] = tab
 	return tab, nil
+}
+
+// pageReadyStateExpression 等待页面进入可交互状态的 JS 表达式：
+// readyState 达到 interactive/complete 时立即 resolve；4 秒兜底后返回当前状态，避免无限挂起。
+const pageReadyStateExpression = `new Promise(resolve => {
+	const check = () => {
+		if (document.readyState === 'interactive' || document.readyState === 'complete') {
+			resolve(document.readyState);
+		}
+	};
+	check();
+	document.addEventListener('readystatechange', check);
+	setTimeout(() => resolve(document.readyState), 4000);
+})`
+
+/**
+ * waitPageInteractiveLocked 等待页面达到可交互状态（readyState >= interactive）。
+ *
+ * 页面仍在导航时执行上下文可能被销毁，Evaluate 会报错，此时短暂等待后重试；
+ * 超时后不报错，返回最后观测到的 readyState，由调用方决定是否继续元素操作。
+ *
+ * @param tab 目标标签页会话
+ * @param timeout 最长等待时长
+ * @returns 最后观测到的 readyState 字符串；页面状态完全未知时返回错误
+ */
+func (s *session) waitPageInteractiveLocked(tab *tabSession, timeout time.Duration) (string, error) {
+	return waitPageInteractiveWithEvaluator(tab, timeout, func(ctx context.Context, expr string) (string, error) {
+		var state string
+		if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &state, chromedp.EvalAsValue)); err != nil {
+			return "", err
+		}
+		return state, nil
+	})
+}
+
+/**
+ * waitPageInteractiveWithEvaluator 通用的页面就绪等待实现，支持注入 evaluate 执行器便于单元测试。
+ *
+ * @param tab 目标标签页会话
+ * @param timeout 最长等待时长
+ * @param evaluate 在指定上下文执行 JS 表达式并返回 readyState 字符串的函数
+ * @returns 最后观测到的 readyState 字符串；页面状态完全未知时返回错误
+ */
+func waitPageInteractiveWithEvaluator(tab *tabSession, timeout time.Duration, evaluate func(ctx context.Context, expr string) (string, error)) (string, error) {
+	deadline := time.Now().Add(timeout)
+	lastState := ""
+	lastErr := error(nil)
+	for {
+		callCtx, cancel := context.WithTimeout(tab.ctx, time.Until(deadline))
+		state, err := evaluate(callCtx, pageReadyStateExpression)
+		cancel()
+		if err == nil {
+			lastState = state
+			lastErr = nil
+			if state == "interactive" || state == "complete" {
+				return state, nil
+			}
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			if lastState == "" && lastErr != nil {
+				return "", fmt.Errorf("页面加载状态未知: %w", lastErr)
+			}
+			return lastState, nil
+		}
+		// 导航中上下文销毁或仍在 loading：短暂等待后重试
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 func (s *session) currentTabStateLocked(targetID target.ID) (map[string]any, error) {
