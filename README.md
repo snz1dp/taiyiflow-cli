@@ -24,6 +24,15 @@
 - TUI 与交互式会话中的 `/skills` 弹窗已支持“本地技能 / 远程仓库”双标签页，可直接浏览远程技能并执行安装、更新、删除。
 - 默认未被显式禁用的本地技能都会纳入渐进式披露候选，并在发起 stream 请求时通过 `client_skill_packages` 一并上送，包含技能元数据、正文内容与完整 markdown 文档，便于服务端按名称匹配或直接消费技能内容。
 
+## 插件开发套件（Plugin DevKit）
+
+插件作者视角的开发链路（详见 `taiyiflow-electron/.github/prompts/plugin-devkit-plan.md`）：
+
+- `taiyiflow-cli plugin init <name>`：生成插件工程骨架（plugin.json + ui/ + prompts/ + SKILL.md，模板对齐 examples/hello-plugin），生成后可直接 validate 通过。
+- `taiyiflow-cli plugin validate <dir>`：本地校验 plugin.json（与宿主共享同一份 `plugin-manifest.schema.json`，go:embed 嵌入，报错精确到字段路径），可进 CI 流水线。
+- `taiyiflow-cli plugin dev <dir> [--workspace 宿主仓库目录]`：把插件目录写入宿主 `.plugin-dev.json`，随后在宿主仓库执行 `quasar dev` 即自动 dev-load 加载（DEV 角标 + mock 命中 + plugin.json watch 热重载）。
+- `taiyiflow-cli plugin pack <dir> [--out 输出目录]`：打包为可分发产物（发布前强制 validate），产出 `{id}-{version}.zip` + 旁置 `.sha256` 文件（`hex  文件名` 格式，与 sha256sum 兼容；同内容确定性 hash）。私有分发：zip + sha256 直接交付用户本地安装。
+
 ## 构建
 
 - VS Code 默认构建任务：build taiyiflow-cli

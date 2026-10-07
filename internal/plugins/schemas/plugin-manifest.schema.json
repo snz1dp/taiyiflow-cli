@@ -1,0 +1,406 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "taiyiflow:plugin-manifest",
+  "title": "太乙智启插件清单（plugin.json）",
+  "description": "宿主与 CLI 共享的插件 manifest 校验 schema。宿主（src/plugins/manifest-validator.js）与 taiyiflow-cli plugin validate 引用同一份，保证「校验通过的就能被宿主加载」。",
+  "type": "object",
+  "required": ["id", "name", "version"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "插件唯一标识，推荐反向域名格式，如 com.acme.daily-report；内置插件以 builtin. 为前缀",
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"
+    },
+    "name": {
+      "type": "string",
+      "description": "人类可读名称",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "description": { "type": "string", "maxLength": 512 },
+    "version": {
+      "type": "string",
+      "description": "semver 版本号",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?$"
+    },
+    "minHostVersion": {
+      "type": "string",
+      "description": "宿主最低版本（semver），宿主低于该版本时拒绝加载",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?$"
+    },
+    "apiVersion": {
+      "type": "string",
+      "description": "宿主 API 大版本（预留，semver major），对齐 SDK 版本契约",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?$"
+    },
+    "author": { "type": "string", "maxLength": 128 },
+    "capabilities": {
+      "type": "array",
+      "description": "端能力声明：desktop / web。缺省视为两端可用；manifest-validator 在 WEB 端过滤仅 desktop 的贡献点",
+      "items": { "type": "string", "enum": ["desktop", "web"] },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "devMode": {
+      "type": "boolean",
+      "description": "dev 声明：仅 dev 加载通道（plugin:dev-load）注册，不参与版本差异同步与生产统计",
+      "default": false
+    },
+    "devKit": {
+      "type": "object",
+      "description": "DevKit 开发调试声明（架构文档 11.1 组件 4）。仅 dev 插件（devMode: true）生效，正式插件声明也会被忽略",
+      "additionalProperties": false,
+      "properties": {
+        "mockResponses": {
+          "type": "object",
+          "description": "server:route mock 映射：route → 固定 commands 数组。命中时 action-router 直接返回不发起网络请求（纯前端/第三方 UI 开发者脱离服务端调试）",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["cmd"],
+              "properties": {
+                "cmd": { "type": "string", "description": "指令名：open_panel / open_browser_tab / insert_prompt / send_message / toast / set_mcp" }
+              }
+            }
+          }
+        },
+        "serverRouteBase": {
+          "type": "string",
+          "description": "本地联调模式：指向本地 taiyiflow-dev 服务地址（如 http://localhost:8000），内部开发者使用",
+          "pattern": "^https?://"
+        }
+      }
+    },
+    "permissions": {
+      "type": "array",
+      "description": "权限声明。client:ipc 动作执行前由 permission-manager 校验：声明 ipc.inapp-browser 才允许 inapp-browser:* 通道",
+      "items": {
+        "type": "string",
+        "enum": [
+          "ui.headerAction",
+          "ui.inputToolbar",
+          "ui.sidePanel",
+          "ui.navEntry",
+          "ui.browserTab",
+          "ui.welcomePrompt",
+          "ui.welcomeWidget",
+          "ui.inputPlaceholder",
+          "ui.model",
+          "ipc.inapp-browser",
+          "ipc.agent-tools",
+          "event.route",
+          "tunnel.tcp",
+          "prompt.template"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "contributions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "headerActions": {
+          "type": "array",
+          "description": "标题栏右侧按钮贡献点",
+          "items": { "$ref": "#/definitions/headerAction" }
+        },
+        "inputToolbarButtons": {
+          "type": "array",
+          "description": "对话输入框上方按钮贡献点",
+          "items": { "$ref": "#/definitions/inputToolbarButton" }
+        },
+        "sidePanels": {
+          "type": "array",
+          "description": "右侧视图贡献点。placement=drawer-panel 注册进 sidebar 面板注册表（独立右侧视图）；placement=artifacts-tab 注册进 AgentArtifacts Tab 组",
+          "items": { "$ref": "#/definitions/sidePanel" }
+        },
+        "browserTabs": {
+          "type": "array",
+          "description": "内置浏览器 Tab 贡献点（仅 desktop，WEB 端被 manifest-validator 过滤）",
+          "items": { "$ref": "#/definitions/browserTab" }
+        },
+        "navEntries": {
+          "type": "array",
+          "description": "左侧导航项贡献点",
+          "items": { "$ref": "#/definitions/navEntry" }
+        },
+        "welcomePrompts": {
+          "type": "array",
+          "description": "首次对话页示例问题标签贡献点（FirstChat questions 区域，与 flow 元信息 questions 合并渲染）",
+          "items": { "$ref": "#/definitions/welcomePrompt" }
+        },
+        "welcomeWidgets": {
+          "type": "array",
+          "description": "首次对话页欢迎语下方自定义区块贡献点（插件自带 Vue 组件）",
+          "items": { "$ref": "#/definitions/welcomeWidget" }
+        },
+        "inputPlaceholders": {
+          "type": "array",
+          "description": "对话输入框 placeholder 文案贡献点（FirstChat/Index chatInputPlaceholder，多插件贡献时取 order 最小的可见项，优先级低于录音提示与模式描述）",
+          "items": { "$ref": "#/definitions/inputPlaceholder" }
+        },
+        "models": {
+          "type": "array",
+          "description": "模型列表贡献点（输入框模型选择器 ModelSelector，多插件贡献时按 order 合并去重；仅一个模型时选择器不渲染）",
+          "items": { "$ref": "#/definitions/model" }
+        },
+        "promptTemplates": {
+          "type": "array",
+          "description": "提示词模板贡献点",
+          "items": { "$ref": "#/definitions/promptTemplate" }
+        },
+        "mcpPolicies": { "$ref": "#/definitions/mcpPolicies" },
+        "agentTools": {
+          "type": "array",
+          "description": "智能体工具贡献点（server:route handler 形式）",
+          "items": { "$ref": "#/definitions/agentTool" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "action": {
+      "type": "object",
+      "description": "统一动作声明：action.type 决定执行位置",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["server:route", "client:ipc", "agent:prompt", "ui:panel"]
+        },
+        "route": {
+          "type": "string",
+          "description": "server:route 专用：服务端插件路由，如 /plugins/daily-report/invoke"
+        },
+        "endpoint": {
+          "type": "string",
+          "description": "server:route 专用（预留，第三方 webhook 形态 B）：插件自托管后端地址，服务端转发"
+        },
+        "handler": {
+          "type": "string",
+          "description": "server:route 专用（预留，插件自带 handler 形态 C）：包内 server/handler.js 路径，服务端沙箱执行"
+        },
+        "channel": {
+          "type": "string",
+          "description": "client:ipc 专用：IPC 通道名，如 inapp-browser:open-panel"
+        },
+        "payload": {
+          "type": "object",
+          "description": "动作载荷（server:route 请求体 / client:ipc 参数 / agent:prompt 模板变量）"
+        },
+        "panelId": {
+          "type": "string",
+          "description": "ui:panel 专用：要打开的 sidePanel 贡献 id"
+        },
+        "text": {
+          "type": "string",
+          "description": "agent:prompt 专用：提示词文本（支持 {{variable}} 占位）"
+        },
+        "template": {
+          "type": "string",
+          "description": "agent:prompt 专用：引用 promptTemplates 贡献的模板文件"
+        }
+      }
+    },
+    "headerAction": {
+      "type": "object",
+      "required": ["id", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+        "icon": { "type": "string", "description": "Quasar 图标名或包内资源路径（ui/icon.svg）" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "tooltip": { "type": "string", "maxLength": 128 },
+        "order": { "type": "number", "description": "排序权重，小的靠前；内置按钮默认 0" },
+        "visibleWhen": { "$ref": "#/definitions/visibleWhen" },
+        "collapsedLabel": { "type": "string", "description": "紧凑模式（≤800px 收纳菜单）里的菜单项文案，缺省用 label" },
+        "action": { "$ref": "#/definitions/action" }
+      }
+    },
+    "inputToolbarButton": {
+      "type": "object",
+      "required": ["id", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+        "icon": { "type": "string" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 16 },
+        "tooltip": { "type": "string", "maxLength": 128 },
+        "order": { "type": "number" },
+        "visibleWhen": { "$ref": "#/definitions/visibleWhen" },
+        "action": { "$ref": "#/definitions/action" }
+      }
+    },
+    "sidePanel": {
+      "type": "object",
+      "required": ["id", "placement", "tabTitle"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+        "placement": { "type": "string", "enum": ["drawer-panel", "artifacts-tab"] },
+        "tabTitle": { "type": "string", "minLength": 1, "maxLength": 16 },
+        "tabIcon": { "type": "string" },
+        "component": {
+          "type": "string",
+          "description": "包内 Vue 组件路径（ui/panel.vue），宿主用动态组件加载"
+        },
+        "hostComponent": {
+          "type": "string",
+          "description": "内置插件专用：直接引用宿主已注册组件（如 ScheduleTaskPanel），避免打包重复"
+        },
+        "width": { "type": "number", "description": "drawer-panel 缺省宽度（px）", "minimum": 240, "maximum": 1200 },
+        "defaultOpen": { "type": "boolean", "default": false },
+        "order": { "type": "number" }
+      }
+    },
+    "browserTab": {
+      "type": "object",
+      "required": ["id", "title", "url"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "url": { "type": "string", "pattern": "^https?://", "description": "必须 http(s) URL" },
+        "iconUrl": { "type": "string" }
+      }
+    },
+    "navEntry": {
+      "type": "object",
+      "required": ["id", "label", "route"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 16 },
+        "icon": { "type": "string" },
+        "route": { "type": "string", "description": "前端路由路径，如 /plugins/daily-report/page" },
+        "order": { "type": "number" }
+      }
+    },
+    "welcomePrompt": {
+      "type": "object",
+      "description": "首次对话页示例问题标签（点击经 action-router 分发，agent:prompt 类型填入输入框）",
+      "required": ["id", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+        "icon": { "type": "string", "description": "Quasar 图标名或包内资源路径" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "tooltip": { "type": "string", "maxLength": 128 },
+        "order": { "type": "number" },
+        "visibleWhen": { "$ref": "#/definitions/visibleWhen" },
+        "action": { "$ref": "#/definitions/action" }
+      }
+    },
+    "welcomeWidget": {
+      "type": "object",
+      "description": "首次对话页欢迎语下方自定义区块（插件自带 Vue 组件，宿主动态加载）",
+      "required": ["id", "component"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+        "component": {
+          "type": "string",
+          "description": "包内 Vue 组件路径（ui/welcome-widget.vue），宿主用动态组件加载"
+        },
+        "hostComponent": {
+          "type": "string",
+          "description": "内置插件专用：直接引用宿主已注册组件，避免打包重复"
+        },
+        "order": { "type": "number" },
+        "visibleWhen": { "$ref": "#/definitions/visibleWhen" }
+      }
+    },
+    "inputPlaceholder": {
+      "type": "object",
+      "description": "对话输入框 placeholder 文案贡献（多插件贡献时取 order 最小的可见项，优先级低于录音提示与模式描述）",
+      "required": ["id", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "placeholder 文案文本"
+        },
+        "order": { "type": "number" },
+        "visibleWhen": { "$ref": "#/definitions/visibleWhen" }
+      }
+    },
+    "model": {
+      "type": "object",
+      "description": "模型列表贡献（输入框模型选择器 ModelSelector，多插件贡献时按 order 合并去重；仅一个模型时选择器不渲染）",
+      "required": ["id", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "description": "模型显示名称"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "模型描述文案（下拉项副标题）"
+        },
+        "icon": { "type": "string", "description": "Quasar 图标名或包内资源路径" },
+        "order": { "type": "number", "description": "排序权重，小的靠前；stub 默认模型兜底 order 为 100000" },
+        "forceReasoning": {
+          "type": "boolean",
+          "default": true,
+          "description": "选中该模型时是否强制开启深度思考（默认 true，锁定深度思考按钮）"
+        }
+      }
+    },
+    "promptTemplate": {
+      "type": "object",
+      "required": ["file", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "file": { "type": "string", "description": "包内模板文件路径（prompts/daily-report.json）" },
+        "type": { "type": "string", "enum": ["user_prompt", "system_prompt"], "description": "user_prompt 填入输入框；system_prompt 注入系统提示词（服务端 _build_system_message 拼装）" },
+        "content": { "type": "string", "description": "system_prompt 专用：内联提示词文本（与 file 二选一，优先级高于 file）" },
+        "arguments": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "mcpPolicies": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enable": { "type": "array", "items": { "type": "string" } },
+        "disable": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "agentTool": {
+      "type": "object",
+      "required": ["name", "description", "handler"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "minLength": 3, "maxLength": 64 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "handler": {
+          "type": "string",
+          "description": "server:route:/plugins/{id}/tool/{name} 形式"
+        }
+      }
+    },
+    "visibleWhen": {
+      "type": "object",
+      "description": "可见性条件（渲染层求值，宿主上下文提供变量）",
+      "additionalProperties": false,
+      "properties": {
+        "desktop": { "type": "boolean", "description": "仅桌面（宽 > 768px 或 Electron）时可见" },
+        "electron": { "type": "boolean", "description": "仅 Electron 环境可见" },
+        "chatPage": { "type": "boolean", "description": "仅对话页可见" },
+        "notFirstChat": { "type": "boolean", "description": "仅非首次对话页可见" },
+        "hasSessionMessages": { "type": "boolean", "description": "仅当前会话有消息时可见" },
+        "custom": { "type": "string", "description": "自定义求值函数名（宿主注册的上下文求值器 id）" }
+      }
+    }
+  }
+}

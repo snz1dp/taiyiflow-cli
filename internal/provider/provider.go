@@ -135,7 +135,7 @@ type ChatCapabilities struct {
 	AudioUnderstanding     bool
 	VideoUnderstanding     bool
 	DocumentUnderstanding  bool
-	ImageGeneration       bool
+	ImageGeneration        bool
 }
 
 type ServiceFeatureFlags struct {
@@ -542,6 +542,82 @@ type SkillPackageContent struct {
 	IsZip    bool
 }
 
+// AgentApp 对应后端 AgentAppRead（智能体应用 = 插件集合 + Prompt 模板 + Skills + MCP 策略的编排声明）。
+//
+// Manifest 为服务端下发的编排清单（contributions/mcpPolicies/promptTemplates/agentTools），
+// CLI 只读消费，不做本地安装编排（插件落盘安装由 Electron 宿主负责，见 P6.1）。
+type AgentApp struct {
+	ID          string
+	Name        string
+	DisplayName string
+	Description string
+	Icon        string
+	Version     string
+	Manifest    map[string]any
+	FlowID      string
+	AccessScope string
+	UpdatedAt   string
+}
+
+// AgentAppPlugin 对应后端 AgentPluginRead（应用 manifest 引用的插件，含下载地址）。
+//
+// ArtifactURI/ArtifactHash 为插件包下载地址与 SHA256 校验值；为空表示该插件
+// 无可分发产物（悬空引用或未上传），CLI 展示时需标注。
+type AgentAppPlugin struct {
+	ID           string
+	Name         string
+	DisplayName  string
+	Description  string
+	Version      string
+	ArtifactURI  string
+	ArtifactHash string
+	Enabled      bool
+	UpdatedAt    string
+}
+
+// AgentAppPluginPage 对应后端 AgentAppPluginPage（应用插件列表分页响应）。
+//
+// Warnings 为引用完整性告警（悬空引用/插件被禁用等），服务端不阻断列表。
+type AgentAppPluginPage struct {
+	Data     []AgentAppPlugin
+	Total    int
+	Offset   int
+	Limit    int
+	Warnings []string
+}
+
+// AgentAppInstallRecord 对应后端 AgentAppInstallRecordRead（用户级安装记录）。
+//
+// Status 取值：installed（已安装）/ uninstalled（已卸载，记录保留）。
+type AgentAppInstallRecord struct {
+	ID             string
+	AgentAppID     string
+	AppName        string
+	AppVersion     string
+	Status         string
+	Enabled        bool
+	ClientPlatform string
+	InstalledAt    string
+	UninstalledAt  string
+}
+
+// AgentAppInstallRecordPage 对应后端 AgentAppInstallRecordPage（安装记录分页响应）。
+type AgentAppInstallRecordPage struct {
+	Data   []AgentAppInstallRecord
+	Total  int
+	Offset int
+	Limit  int
+}
+
+// AgentAppInstallRequest 对应后端 AgentAppInstallRequest（安装请求，终端信息可选）。
+type AgentAppInstallRequest struct {
+	AgentAppID     string
+	ClientID       string
+	DeviceID       string
+	ClientPlatform string
+	ClientVersion  string
+}
+
 // SkillInstallationRecord 对应后端 SkillInstallationRecordRead
 type SkillInstallationRecord struct {
 	ID             string
@@ -696,6 +772,13 @@ type Provider interface {
 	ReportInstallation(ctx context.Context, request ReportInstallationRequest) (*SkillInstallationRecord, error)
 	QueryInstallations(ctx context.Context, params QueryInstallationsParams) (*SkillInstallationPage, error)
 	UninstallSkillRecord(ctx context.Context, recordID string) (*SkillInstallationRecord, error)
+
+	// 智能体应用（AgentApp）管理 API（P6.2：CLI 只读消费 + 安装记录操作）
+	ListAgentApps(ctx context.Context, installedOnly bool, offset, limit int) ([]AgentApp, error)
+	ListAgentAppPlugins(ctx context.Context, agentAppID string, offset, limit int) (*AgentAppPluginPage, error)
+	ListAgentAppInstallRecords(ctx context.Context, statusFilter string, offset, limit int) (*AgentAppInstallRecordPage, error)
+	InstallAgentApp(ctx context.Context, request AgentAppInstallRequest) (*AgentAppInstallRecord, error)
+	UninstallAgentApp(ctx context.Context, agentAppID string) (*AgentAppInstallRecord, error)
 }
 
 // FetchVisibleSkillsParams 查询可见技能列表参数

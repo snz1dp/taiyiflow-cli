@@ -163,6 +163,10 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.runLogin(ctx, args[1:])
 	case "skills":
 		return a.runSkills(ctx, args[1:])
+	case "plugin":
+		return a.runPlugin(ctx, args[1:])
+	case "agentapp":
+		return a.runAgentApp(ctx, args[1:])
 	case "cli":
 		return errors.New("`cli` 子命令已移除，请改用 `taiyiflow-cli task`")
 	case "config":
@@ -1564,6 +1568,8 @@ func (a *App) printRootUsage() {
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli mcp [list|add|remove|enable|disable|enable-tool|disable-tool|status]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli memory [status|trigger] [flow=<智能体>] [参数]")
 	fmt.Fprintf(a.stdout, "  %s\n", skillsCommandSynopsis())
+	fmt.Fprintf(a.stdout, "  %s\n", pluginCommandSynopsis())
+	fmt.Fprintf(a.stdout, "  %s\n", agentappCommandSynopsis())
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli upgrade [--force] [--manifest-url URL] [--check-api]")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli doctor")
 	fmt.Fprintln(a.stdout, "  taiyiflow-cli about")
