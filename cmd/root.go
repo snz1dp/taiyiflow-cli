@@ -18,6 +18,7 @@ import (
 	"golang.org/x/term"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agentloop"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/instructions"
@@ -55,6 +56,8 @@ type App struct {
 	skillInstallScopePinned  bool
 }
 
+type agentLoopTaskActionKey struct{}
+
 type rootOptions struct {
 	Flow                      string
 	SessionID                 string
@@ -70,6 +73,8 @@ type rootOptions struct {
 	CrossSessionMemoryEnabled bool
 	CrossSessionMemorySet     bool
 	EnableSubtask             bool
+	Resume                    bool
+	Attach                    bool
 	ConfigOverrides           stringArrayFlag
 }
 
@@ -167,6 +172,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.runPlugin(ctx, args[1:])
 	case "agentapp":
 		return a.runAgentApp(ctx, args[1:])
+	case "agentloop":
+		return a.runAgentLoop(ctx, args[1:])
 	case "cli":
 		return errors.New("`cli` 子命令已移除，请改用 `taiyiflow-cli task`")
 	case "config":
@@ -225,6 +232,8 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	flagSet.BoolVar(&options.CrossSessionMemoryEnabled, "cross-session-memory-enabled", false, "跨会话记忆（true|false），默认使用系统配置")
 	flagSet.Var(&options.ConfigOverrides, "config-override", "临时覆盖配置项（key=value），可多次使用，仅影响当前命令")
 	flagSet.BoolVar(&options.EnableSubtask, "enable-subtask", false, "在非交互式模式下启用子智能体（run_subtask）功能")
+	flagSet.BoolVar(&options.Resume, "resume", false, "从当前会话的可恢复检查点显式恢复 AgentLoop，不重复发送用户输入")
+	flagSet.BoolVar(&options.Attach, "attach", false, "以只读方式观察当前会话的远程执行，不执行本地工具")
 
 	if err := flagSet.Parse(args); err != nil {
 		return err
@@ -237,6 +246,21 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	})
 	if options.NewSession && strings.TrimSpace(options.SessionID) != "" {
 		return errors.New("--new 与 --session-id 不能同时使用")
+	}
+	if options.Resume && options.Attach {
+		return errors.New("--resume 与 --attach 不能同时使用")
+	}
+	if options.Attach && options.NewSession {
+		return errors.New("--attach 与 --new 不能同时使用")
+	}
+	if options.Resume && options.NewSession {
+		return errors.New("--resume 与 --new 不能同时使用")
+	}
+	if options.Resume && strings.TrimSpace(options.UploadFile) != "" {
+		return errors.New("--resume 不能携带 --file")
+	}
+	if options.Attach && strings.TrimSpace(options.UploadFile) != "" {
+		return errors.New("--attach 不能携带 --file")
 	}
 	requestMode, err := resolveTaskRequestMode(options.RequestMode)
 	if err != nil {
@@ -257,8 +281,21 @@ func (a *App) runTask(ctx context.Context, args []string) error {
 	options.InternetSearchMode = internetSearchMode
 
 	task := strings.TrimSpace(strings.Join(flagSet.Args(), " "))
-	if task == "" && !options.Continue {
+	if options.Resume && task != "" {
+		return errors.New("--resume 不接受新的任务输入；请使用不带 --resume 的 task 发起新执行")
+	}
+	if options.Attach && task != "" {
+		return errors.New("--attach 不接受新的任务输入")
+	}
+	if task == "" && !options.Continue && !options.Resume && !options.Attach {
 		return a.runInteractive(ctx, options)
+	}
+	if options.Resume {
+		ctx = context.WithValue(ctx, agentLoopTaskActionKey{}, provider.ExecutionModeResume)
+		options.RequestMode = provider.RequestTypeAgent
+	}
+	if options.Attach {
+		options.RequestMode = provider.RequestTypeAgent
 	}
 
 	return a.runTaskOnce(ctx, options, task)
@@ -725,6 +762,13 @@ func (a *App) runTaskOnce(ctx context.Context, options rootOptions, task string)
 		return err
 	}
 	sessionState = applyExplicitTaskSessionID(sessionState, options.SessionID)
+	if options.Attach {
+		if strings.TrimSpace(sessionState.SessionID) == "" {
+			return errors.New("当前没有可观察的会话，请使用 --session-id 指定")
+		}
+		observerProvider := a.providerWithCallbackAuthRefresh(providerClient, &config)
+		return a.streamAgentLoopAttach(ctx, observerProvider, config, flowID, sessionState.SessionID)
+	}
 	if options.ReasoningMode != "" {
 		sessionState.ReasoningOverride = options.ReasoningMode
 	}
@@ -803,6 +847,7 @@ func applyExplicitTaskSessionID(state agent.SessionState, sessionID string) agen
 //   - 服务端未下发（serviceConfig 为 nil 或 MaxParallelismSubtask 指针为 nil）：直接使用本地配置；
 //   - 服务端下发 0：禁用子智能体；
 //   - 服务端下发 >0：取本地配置与服务端上限中的较小值。
+//
 // 本地配置为 0 表示用户显式禁用，无论服务端如何下发均保持禁用。
 // 返回 0 表示禁用子智能体（不暴露 run_subtask 工具）。
 func resolveMaxParallelismSubtask(config internalconfig.Config, serviceConfig *provider.ServiceConfig) int {
@@ -942,13 +987,17 @@ func (a *App) streamTaskWithSkillRetry(
 		fmt.Fprintf(a.stderr, "警告: 加载项目指令文件失败: %v\n", instrErr)
 	}
 	commandExecutionTarget := "client"
+	resumeExecution := ctx.Value(agentLoopTaskActionKey{}) == provider.ExecutionModeResume
 	requestRunID := newRequestRunID()
+	if resumeExecution {
+		requestRunID = sessionState.LastRunID
+	}
 	ensuredSessionID, err := clientruntime.EnsureSessionID(ctx, providerClient, sessionState.SessionID)
 	if err != nil {
 		return sessionState, err
 	}
 	sessionState.SessionID = ensuredSessionID
-	if applySessionRequestLineage(&sessionState, flowID, firstNonEmpty(sessionState.Workdir, config.Workdir), sessionState.RequestMode, requestRunID) {
+	if !resumeExecution && applySessionRequestLineage(&sessionState, flowID, firstNonEmpty(sessionState.Workdir, config.Workdir), sessionState.RequestMode, requestRunID) {
 		if err := saveSessionStateIfReady(a.sessionStore, sessionState); err != nil {
 			return sessionState, err
 		}
@@ -986,7 +1035,7 @@ func (a *App) streamTaskWithSkillRetry(
 			defer mcpRegistry.Close()
 		}
 	}
-	stream, streamSession, err := providerClient.Stream(ctx, provider.StreamRequest{
+	streamRequest := provider.StreamRequest{
 		FlowID:                    flowID,
 		Input:                     strings.TrimSpace(task),
 		InputType:                 "any",
@@ -1012,7 +1061,34 @@ func (a *App) streamTaskWithSkillRetry(
 		ClientMCPServers:          a.runtime.ClientMCPServersForMode(sessionState.RequestMode, runtimeConfig),
 		ClientSkillPackages:       clientSkillPackages,
 		ClientInstructions:        clientInstructions,
-	})
+	}
+	executeStream := providerClient.Stream
+	var agentLoopStore *agentloop.Store
+	var agentLoopController *agentloop.Controller
+	a.runtime.SetAgentLoopStore(nil)
+	if normalizeRequestMode(sessionState.RequestMode) == provider.RequestTypeAgent {
+		var storeErr error
+		agentLoopStore, storeErr = agentloop.DefaultStore()
+		if storeErr != nil {
+			return sessionState, storeErr
+		}
+		a.runtime.SetAgentLoopStore(agentLoopStore)
+		controller := agentloop.NewController(providerClient, agentLoopStore)
+		agentLoopController = controller
+		executeStream = controller.Execute
+		if resumeExecution {
+			recoveryState, stateErr := agentLoopStore.LoadRecovery(sessionState.SessionID)
+			if stateErr != nil {
+				return sessionState, stateErr
+			}
+			requestRunID = recoveryState.RunID
+			streamRequest.RunID = requestRunID
+			executeStream = func(streamCtx context.Context, _ provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
+				return controller.Resume(streamCtx, sessionState.SessionID)
+			}
+		}
+	}
+	stream, streamSession, err := executeStream(ctx, streamRequest)
 	if err != nil {
 		return sessionState, err
 	}
@@ -1127,7 +1203,15 @@ func (a *App) streamTaskWithSkillRetry(
 			}
 		case provider.EventError:
 			normalizedErr := normalizeStreamEventError(event.Data["error"])
-			if retryCount < 1 {
+			allowSkillRetry := true
+			if agentLoopStore != nil {
+				recoveryState, stateErr := agentLoopStore.LoadRecovery(sessionState.SessionID)
+				if stateErr != nil {
+					return sessionState, stateErr
+				}
+				allowSkillRetry = recoveryState.PendingStart
+			}
+			if retryCount < 1 && allowSkillRetry {
 				missingSkillNames := detectMissingSkillNames(event.Data, normalizedErr)
 				if len(missingSkillNames) > 0 {
 					installedAny, installErr := a.autoInstallCandidates(
@@ -1194,6 +1278,12 @@ func (a *App) streamTaskWithSkillRetry(
 			return sessionState, normalizedErr
 		case provider.EventBuiltIn:
 			clearRenderedStreamingSuffix()
+			if agentLoopController != nil && !agentLoopController.ToolsAllowed(sessionState.SessionID, firstNonEmpty(stringMapValue(event.Data, "run_id"), requestRunID)) {
+				if err := submitClientCallFailure(ctx, providerClient, runtimeConfig, event.Data, "用户已暂停或停止当前执行，拒绝派发新的本地命令"); err != nil {
+					return sessionState, err
+				}
+				continue
+			}
 			if !modeAllowsBuiltIn(sessionState.RequestMode) {
 				if err := submitClientCallFailure(ctx, providerClient, runtimeConfig, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(sessionState.RequestMode))); err != nil {
 					return sessionState, err
@@ -1209,6 +1299,12 @@ func (a *App) streamTaskWithSkillRetry(
 		case provider.EventClientTool:
 			clearRenderedStreamingSuffix()
 			toolName := nestedStringValue(event.Data, "function", "name")
+			if agentLoopController != nil && !agentLoopController.ToolsAllowed(sessionState.SessionID, firstNonEmpty(stringMapValue(event.Data, "run_id"), requestRunID)) {
+				if err := submitClientCallFailure(ctx, providerClient, runtimeConfig, event.Data, "用户已暂停或停止当前执行，拒绝派发新的本地工具"); err != nil {
+					return sessionState, err
+				}
+				continue
+			}
 			if !modeAllowsClientTool(sessionState.RequestMode, toolName) {
 				if err := submitClientCallFailure(ctx, providerClient, runtimeConfig, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(sessionState.RequestMode), toolName)); err != nil {
 					return sessionState, err

@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
@@ -41,6 +40,7 @@ func buildSandboxedCommand(ctx context.Context, payload commandArguments) (*exec
 		// Enforce mode: surface the error.
 		return nil, fmt.Errorf("shell sandbox (enforce) 不可用: %w", err)
 	}
+	configureProcessTree(wrapped)
 	return wrapped, nil
 }
 
@@ -48,42 +48,20 @@ func buildSandboxedCommand(ctx context.Context, payload commandArguments) (*exec
 // This is the original buildCommand logic, extracted for reuse.
 func buildRawCommand(ctx context.Context, payload commandArguments) (*exec.Cmd, error) {
 	if payload.Mode == "shell" {
+		var cmd *exec.Cmd
 		if runtime.GOOS == "windows" {
-			cmd := exec.CommandContext(ctx, "cmd", "/C", payload.RawCommand)
-			setWindowsProcessTreeCancel(cmd)
-			return cmd, nil
+			cmd = exec.CommandContext(ctx, "cmd", "/C", payload.RawCommand)
+		} else {
+			cmd = exec.CommandContext(ctx, "sh", "-lc", payload.RawCommand)
 		}
-		return exec.CommandContext(ctx, "sh", "-lc", payload.RawCommand), nil
+		configureProcessTree(cmd)
+		return cmd, nil
 	}
 	// 结构化命令模式：返回命令名由 PATH 解析（CLI 目录已追加到 PATH 末尾）
 	resolvedCommand := resolveCommandInCLIDir(payload.Command)
 	cmd := exec.CommandContext(ctx, resolvedCommand, payload.Args...)
-	setWindowsProcessTreeCancel(cmd)
+	configureProcessTree(cmd)
 	return cmd, nil
-}
-
-// setWindowsProcessTreeCancel overrides cmd.Cancel to kill the entire process tree on Windows.
-//
-// Go's default Cancel calls os.Process.Kill() which on Windows invokes TerminateProcess,
-// only terminating the direct child process (e.g., cmd.exe). Grandchild processes
-// (e.g., ssh.exe spawned by cmd.exe) continue running, holding stdin/stdout pipes open
-// and causing command.Wait() to block indefinitely — the exact "stuck" issue.
-//
-// Using taskkill /F /T /PID forcibly terminates the process and all its descendants.
-// On non-Windows platforms this function is a no-op.
-func setWindowsProcessTreeCancel(cmd *exec.Cmd) {
-	if runtime.GOOS != "windows" {
-		return
-	}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return os.ErrProcessDone
-		}
-		kill := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid))
-		kill.Stdout = nil
-		kill.Stderr = nil
-		return kill.Run()
-	}
 }
 
 // resolveShellSandbox resolves the sandbox configuration from Config.

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agentloop"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
@@ -557,7 +558,7 @@ func (r *ClientRuntime) executeLocalSubtask(
 	// Subtasks receive their instructions from the parent task's prompt.
 	// Passing ClientInstructions here would cause double-injection of
 	// project-level instruction files (CLAUDE.md, AGENT.md, etc.).
-	stream, streamSession, err := providerClient.Stream(executionCtx, provider.StreamRequest{
+	streamRequest := provider.StreamRequest{
 		FlowID:                    request.FlowID,
 		Input:                     request.Prompt,
 		InputType:                 "any",
@@ -581,7 +582,16 @@ func (r *ClientRuntime) executeLocalSubtask(
 		ClientMCPServers:          filterSubtaskExcludedTools(filterMCPServersByNames(r.ClientMCPServersForMode(request.RequestMode, config), r.subtaskClientMCPServerNames)),
 		ClientSkillPackages:       r.subtaskSkillPackages,
 		ParentID:                  request.ParentRunID,
-	})
+	}
+	executeStream := providerClient.Stream
+	if request.RequestMode == provider.RequestTypeAgent {
+		agentLoopStore, storeErr := agentloop.DefaultStore()
+		if storeErr != nil {
+			return subtaskExecutionResult{}, storeErr
+		}
+		executeStream = agentloop.NewController(providerClient, agentLoopStore).Execute
+	}
+	stream, streamSession, err := executeStream(executionCtx, streamRequest)
 	if err != nil {
 		return subtaskExecutionResult{}, newToolError("EXECUTION_FAILED", "执行子任务流失败: %v", err)
 	}

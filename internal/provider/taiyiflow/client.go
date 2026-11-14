@@ -434,13 +434,20 @@ type streamRequestBody struct {
 	AgentInputs               map[string]any `json:"agent_inputs,omitempty"`
 	Reasoning                 bool           `json:"reasoning,omitempty"`
 	// 后端 schemas.py 字段名即为 image_generation_enabed（保留原拼写），此处对齐后端真值
-	ImageGenerationEnabed     bool           `json:"image_generation_enabed,omitempty"`
-	MasterFlowID              string         `json:"master_flow_id,omitempty"`
-	AvailableTools            []any          `json:"available_tools,omitempty"`
-	ClientMCPServers          map[string]any `json:"client_mcp_servers,omitempty"`
-	ClientSkillPackages       any            `json:"client_skill_packages,omitempty"`
-	ClientInstructions        any            `json:"client_instructions,omitempty"`
-	ParentID                  string         `json:"parent_id,omitempty"`
+	ImageGenerationEnabed bool           `json:"image_generation_enabed,omitempty"`
+	MasterFlowID          string         `json:"master_flow_id,omitempty"`
+	AvailableTools        []any          `json:"available_tools,omitempty"`
+	ClientMCPServers      map[string]any `json:"client_mcp_servers,omitempty"`
+	ClientSkillPackages   any            `json:"client_skill_packages,omitempty"`
+	ClientInstructions    any            `json:"client_instructions,omitempty"`
+	ParentID              string         `json:"parent_id,omitempty"`
+	ExecutionMode         string         `json:"execution_mode,omitempty"`
+	ExecutionAttemptID    string         `json:"execution_attempt_id,omitempty"`
+	CheckpointID          string         `json:"checkpoint_id,omitempty"`
+	CheckpointVersion     int            `json:"checkpoint_version,omitempty"`
+	AfterEventID          string         `json:"after_event_id,omitempty"`
+	SubscriptionID        string         `json:"subscription_id,omitempty"`
+	Model                 string         `json:"model,omitempty"`
 }
 
 type clientCallResultBody struct {
@@ -1457,6 +1464,13 @@ func buildStreamRequestBody(request provider.StreamRequest) streamRequestBody {
 		ClientSkillPackages:       request.ClientSkillPackages,
 		ClientInstructions:        request.ClientInstructions,
 		ParentID:                  request.ParentID,
+		ExecutionMode:             strings.TrimSpace(request.ExecutionMode),
+		ExecutionAttemptID:        strings.TrimSpace(request.ExecutionAttemptID),
+		CheckpointID:              strings.TrimSpace(request.CheckpointID),
+		CheckpointVersion:         request.CheckpointVersion,
+		AfterEventID:              strings.TrimSpace(request.AfterEventID),
+		SubscriptionID:            strings.TrimSpace(request.SubscriptionID),
+		Model:                     strings.TrimSpace(request.Model),
 	}
 }
 
@@ -1679,6 +1693,7 @@ func readWebSocketStream(ctx context.Context, conn net.Conn, idleTimeout time.Du
 // 解析为与 SSE 链路一致的流式事件；data 字段已是解析后的对象，Raw 保留其 JSON 原文。
 func parseWebSocketStreamMessage(payload []byte) (provider.StreamEvent, bool) {
 	var envelope struct {
+		ID    string          `json:"id"`
 		Event string          `json:"event"`
 		Data  json.RawMessage `json:"data"`
 	}
@@ -1692,7 +1707,12 @@ func parseWebSocketStreamMessage(payload []byte) (provider.StreamEvent, bool) {
 			data = map[string]any{"raw": raw, "error": err.Error()}
 		}
 	}
+	eventID := strings.TrimSpace(envelope.ID)
+	if eventID == "" {
+		eventID, _ = data["event_id"].(string)
+	}
 	event := provider.StreamEvent{
+		ID:   strings.TrimSpace(eventID),
 		Type: provider.StreamEventType(firstNonEmpty(strings.TrimSpace(envelope.Event), string(provider.EventMessage))),
 		Data: data,
 		Raw:  raw,
@@ -2561,10 +2581,11 @@ func readSSE(ctx context.Context, reader io.Reader, output chan<- provider.Strea
 	bufReader := bufio.NewReader(reader)
 
 	var eventName string
+	var eventID string
 	var dataLines []string
 
 	flush := func() {
-		if eventName == "" && len(dataLines) == 0 {
+		if eventName == "" && eventID == "" && len(dataLines) == 0 {
 			return
 		}
 		raw := strings.Join(dataLines, "\n")
@@ -2575,12 +2596,17 @@ func readSSE(ctx context.Context, reader io.Reader, output chan<- provider.Strea
 			}
 		}
 		typeName := provider.StreamEventType(firstNonEmpty(eventName, string(provider.EventMessage)))
+		resolvedEventID := strings.TrimSpace(eventID)
+		if resolvedEventID == "" {
+			resolvedEventID, _ = payload["event_id"].(string)
+		}
 		// P2⑨ 修复：带 context 检查的 channel 发送
 		select {
-		case output <- provider.StreamEvent{Type: typeName, Data: payload, Raw: raw}:
+		case output <- provider.StreamEvent{ID: strings.TrimSpace(resolvedEventID), Type: typeName, Data: payload, Raw: raw}:
 		case <-ctx.Done():
 		}
 		eventName = ""
+		eventID = ""
 		dataLines = nil
 	}
 
@@ -2592,6 +2618,8 @@ func readSSE(ctx context.Context, reader io.Reader, output chan<- provider.Strea
 			flush()
 		} else if strings.HasPrefix(line, "event:") {
 			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		} else if strings.HasPrefix(line, "id:") {
+			eventID = strings.TrimSpace(strings.TrimPrefix(line, "id:"))
 		} else if strings.HasPrefix(line, "data:") {
 			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 		}
@@ -2631,7 +2659,7 @@ func readHTTPError(prefix string, response *http.Response) error {
 	if message == "" {
 		message = response.Status
 	}
-	return fmt.Errorf("%s: %s", prefix, message)
+	return &provider.HTTPError{Prefix: prefix, StatusCode: response.StatusCode, Body: message}
 }
 
 func mapSearchResults(items []searchResultResponse) []provider.SearchResult {

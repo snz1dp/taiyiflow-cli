@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agentloop"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 )
@@ -438,6 +440,37 @@ func TestSubmitCallback_ProviderReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "network error") {
 		t.Fatalf("错误应包含 'network error'，实际: %v", err)
+	}
+}
+
+func TestSubmitCallback_PersistsBeforeRetryAndFlushesLater(t *testing.T) {
+	rt := NewClientRuntime(nil, nil, nil)
+	rt.SetCallbackRetryDelay(time.Millisecond, 1)
+	store := agentloop.NewStore(t.TempDir())
+	rt.SetAgentLoopStore(store)
+	stub := &callbackProviderStub{callbackErr: fmt.Errorf("network error")}
+	config := internalconfig.Config{HTTPTimeoutSeconds: 30}
+
+	if err := rt.submitCallback(context.Background(), stub, config, validCallbackPayload(), true, map[string]any{"stdout": "secret-result"}, ""); err != nil {
+		t.Fatalf("持久化后的临时网络失败不应丢失结果或中断执行: %v", err)
+	}
+	pending, err := store.LoadToolCallback("flow-1", "sess-1", "run-1", "call-1")
+	if err != nil {
+		t.Fatalf("首次上报前必须持久化工具结果: %v", err)
+	}
+	if pending.Attempts != 2 || pending.CreatedAt.IsZero() {
+		t.Fatalf("unexpected pending callback: %#v", pending)
+	}
+	stub.mu.Lock()
+	stub.callbackErr = nil
+	stub.mu.Unlock()
+	store.SetClock(func() time.Time { return time.Now().Add(16 * time.Minute) })
+	controller := agentloop.NewController(stub, store)
+	if err := controller.FlushToolCallbacks(context.Background(), "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadToolCallback("flow-1", "sess-1", "run-1", "call-1"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("成功补报后应删除待补报项: %v", err)
 	}
 }
 
@@ -1010,5 +1043,67 @@ func TestSubmitCallback_RetrySucceedsOnLastAttempt(t *testing.T) {
 	}
 	if stub.callCount != 4 {
 		t.Fatalf("应在第 4 次调用时成功，实际调用 %d 次", stub.callCount)
+	}
+}
+
+// TestSubmitCallback_TopLevelSessionIDResolved 校验只带顶层 session_id/run_id 的历史载荷
+// 仍能解析出身份并直接上报，而不是因取空被判缺字段。
+func TestSubmitCallback_TopLevelSessionIDResolved(t *testing.T) {
+	rt := NewClientRuntime(nil, nil, nil)
+	stub := &callbackProviderStub{}
+	config := internalconfig.Config{HTTPTimeoutSeconds: 30}
+
+	payload := map[string]any{
+		"flow_id":    "flow-1",
+		"session_id": "sess-top",
+		"run_id":     "run-top",
+		"function":   map[string]any{"id": "call-1"},
+	}
+	if err := rt.submitCallback(context.Background(), stub, config, payload, true, nil, ""); err != nil {
+		t.Fatalf("顶层 session/run 应可解析并上报: %v", err)
+	}
+	if !stub.callbackCalled {
+		t.Fatal("应调用 Provider.SubmitClientCallResult")
+	}
+	if stub.callback.SessionID != "sess-top" || stub.callback.RunID != "run-top" {
+		t.Fatalf("顶层 session/run 应被解析: %#v", stub.callback)
+	}
+}
+
+// TestSubmitCallback_EnqueueSkippedWhenSessionMissing 校验缺会话标识时不落补偿队列、
+// 直接上报，且上报失败时返回错误而非谎称“已持久化等待补报”。
+func TestSubmitCallback_EnqueueSkippedWhenSessionMissing(t *testing.T) {
+	rt := NewClientRuntime(nil, nil, nil)
+	rt.SetAgentLoopStore(agentloop.NewStore(t.TempDir()))
+	stub := &callbackProviderStub{callbackErr: fmt.Errorf("network down")}
+	rt.SetCallbackRetryDelay(time.Millisecond, 1)
+	config := internalconfig.Config{HTTPTimeoutSeconds: 30}
+
+	payload := map[string]any{
+		"flow_id":  "flow-1",
+		"context":  map[string]any{"run_id": "run-1"},
+		"function": map[string]any{"id": "call-1"},
+	}
+	err := rt.submitCallback(context.Background(), stub, config, payload, true, nil, "")
+	if err == nil {
+		t.Fatal("缺会话且上报失败时应返回错误（未落队列）")
+	}
+}
+
+func TestCheckAgentLoopToolDispatch_TopLevelOnlyAllows(t *testing.T) {
+	rt := NewClientRuntime(nil, nil, nil)
+	rt.SetAgentLoopStore(agentloop.NewStore(t.TempDir()))
+	// 只有顶层 session_id（无 context.*），早期实现会因取空误拒派发。
+	payload := map[string]any{
+		"flow_id":    "flow-1",
+		"session_id": "sess-1",
+		"run_id":     "run-1",
+	}
+	if err := rt.checkAgentLoopToolDispatch(payload); err != nil {
+		t.Fatalf("无匹配恢复状态时应放行派发: %v", err)
+	}
+	// 完全无法解析会话标识同样放行（历史宽松语义）。
+	if err := rt.checkAgentLoopToolDispatch(map[string]any{"flow_id": "flow-1"}); err != nil {
+		t.Fatalf("会话不可解析时应放行派发: %v", err)
 	}
 }

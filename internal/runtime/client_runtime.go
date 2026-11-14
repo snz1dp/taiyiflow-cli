@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agentloop"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/skills"
@@ -156,7 +157,8 @@ type ClientRuntime struct {
 	// mcpRegistry 是外部 MCP 服务器注册表，用于将后端配置的 MCP 服务器工具
 	// 合并到 client_mcp_servers 请求中，并路由非 local 的工具调用。
 	// 与 taiyiflow-chatui 的 mcp-store + mcpClient 功能对齐。
-	mcpRegistry MCPRegistry
+	mcpRegistry    MCPRegistry
+	agentLoopStore *agentloop.Store
 }
 
 func NewClientRuntime(stdin io.Reader, stdout io.Writer, stderr io.Writer) *ClientRuntime {
@@ -188,6 +190,10 @@ func (r *ClientRuntime) SetToolConfirmTimeoutSeconds(seconds int) {
 // executeClientToolPayload 会将非 local 服务器的工具调用路由到注册表。
 func (r *ClientRuntime) SetMCPRegistry(registry MCPRegistry) {
 	r.mcpRegistry = registry
+}
+
+func (r *ClientRuntime) SetAgentLoopStore(store *agentloop.Store) {
+	r.agentLoopStore = store
 }
 
 // ReadStdinWithTimeout 从 stdin 读取一行，超时后返回空字符串和 nil error。
@@ -338,6 +344,7 @@ func (r *ClientRuntime) cloneRuntime() *ClientRuntime {
 		// 模式切换仅由主运行时上的 switch_to_agent 工具触发，由 cmd 层消费主运行时的 pendingModeSwitch。
 		currentRequestMode: r.currentRequestMode,
 		nonArtifactFiles:   append([]string(nil), r.nonArtifactFiles...),
+		agentLoopStore:     r.agentLoopStore,
 	}
 }
 
@@ -410,6 +417,11 @@ func (r *ClientRuntime) HandleBuiltInEvent(
 		returnErr = r.submitCallback(ctx, providerClient, config, payload, false, nil, toolErr.Error())
 		return returnErr
 	}
+	if err := r.checkAgentLoopToolDispatch(payload); err != nil {
+		toolErr = err
+		returnErr = r.submitCallback(ctx, providerClient, config, payload, false, nil, err.Error())
+		return returnErr
+	}
 
 	policy := nestedMap(payload, "command", "policy")
 	if policyConfirmationRequired(policy) {
@@ -468,6 +480,9 @@ func (r *ClientRuntime) executeClientToolPayload(
 	config internalconfig.Config,
 	payload map[string]any,
 ) (toolName string, result any, err error) {
+	if err := r.checkAgentLoopToolDispatch(payload); err != nil {
+		return canonicalClientToolName(nestedString(payload, "function", "name")), nil, err
+	}
 	serverName := nestedString(payload, "server", "name")
 	toolName = canonicalClientToolName(nestedString(payload, "function", "name"))
 	arguments := nestedMap(payload, "function", "arguments")
@@ -603,6 +618,33 @@ func enrichToolArgumentsWithContext(arguments map[string]any, payload map[string
 		}
 	}
 	return cloned
+}
+
+func (r *ClientRuntime) checkAgentLoopToolDispatch(payload map[string]any) error {
+	if r.agentLoopStore == nil {
+		return nil
+	}
+	sessionID := resolveContextString(payload, "session_id")
+	runID := resolveContextString(payload, "run_id")
+	if sessionID == "" {
+		// 载荷无法解析出会话标识时沿用历史宽松语义，交由服务端身份校验兜底；
+		// 真正的状态存储错误（损坏/版本不符）仍在下方 fail-closed。
+		return nil
+	}
+	state, err := r.agentLoopStore.LoadRecovery(sessionID)
+	if err != nil {
+		return fmt.Errorf("无法确认 AgentLoop 用户控制状态，拒绝派发工具: %w", err)
+	}
+	if state.FlowID == "" && state.RunID == "" {
+		return nil
+	}
+	if state.RunID == "" || state.RunID != runID {
+		return fmt.Errorf("AgentLoop 执行身份已变化，拒绝派发旧工具调用")
+	}
+	if state.Intent == agentloop.IntentStopped || state.Intent == agentloop.IntentUserPause {
+		return fmt.Errorf("用户已暂停或停止当前执行，拒绝派发新的本地工具")
+	}
+	return nil
 }
 
 func (r *ClientRuntime) SubmitClientToolCallback(
@@ -949,17 +991,26 @@ func (r *ClientRuntime) submitCallback(
 		r.guidanceText = ""
 	}
 	callback := provider.ClientCallResult{
-		FlowID:       stringValue(payload["flow_id"]),
-		SessionID:    nestedString(payload, "context", "session_id"),
-		MessageID:    nestedString(payload, "context", "message_id"),
-		RunID:        nestedString(payload, "context", "run_id"),
-		CallID:       nestedString(payload, "function", "id"),
+		FlowID:       strings.TrimSpace(stringValue(payload["flow_id"])),
+		SessionID:    resolveContextString(payload, "session_id"),
+		MessageID:    resolveContextString(payload, "message_id"),
+		RunID:        resolveContextString(payload, "run_id"),
+		CallID:       strings.TrimSpace(nestedString(payload, "function", "id")),
 		Success:      success,
 		Result:       result,
 		ErrorMessage: errorMessage,
 	}
 	if callback.FlowID == "" || callback.RunID == "" || callback.CallID == "" {
 		return fmt.Errorf("客户端回调缺少关键字段")
+	}
+	// 仅在身份完整（含会话标识）时落盘补偿队列；缺会话标识的载荷沿用历史直发语义，
+	// 避免因校验失败而连上报都不再发起。
+	queued := false
+	if r.agentLoopStore != nil && callback.SessionID != "" {
+		if _, err := r.agentLoopStore.EnqueueToolCallback(callback, time.Now().UTC()); err != nil {
+			return fmt.Errorf("持久化客户端工具结果失败，尚未发起上报: %w", err)
+		}
+		queued = true
 	}
 
 	retryDelay := r.callbackRetryDelay
@@ -976,16 +1027,39 @@ func (r *ClientRuntime) submitCallback(
 	callbackCtx, cancel := DetachedCallbackContext(ctx, time.Duration(config.HTTPTimeoutSeconds)*time.Second)
 	defer cancel()
 
-	// 首次尝试 + 最多 maxRetries 次重试，失败后返回错误以终止当前 SSE 请求，避免会话卡住。
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		lastErr = providerClient.SubmitClientCallResult(callbackCtx, callback)
 		if lastErr == nil {
+			if queued {
+				return r.agentLoopStore.RemoveToolCallback(callback.FlowID, callback.SessionID, callback.RunID, callback.CallID)
+			}
 			return nil
 		}
-		if attempt < maxRetries {
-			time.Sleep(retryDelay)
+		if queued {
+			if agentloop.IsLateToolResultRejected(lastErr) {
+				return r.agentLoopStore.RemoveToolCallback(callback.FlowID, callback.SessionID, callback.RunID, callback.CallID)
+			}
+			if _, markErr := r.agentLoopStore.MarkToolCallbackAttempt(callback.FlowID, callback.SessionID, callback.RunID, callback.CallID); markErr != nil {
+				return errors.Join(lastErr, markErr)
+			}
 		}
+		if attempt < maxRetries {
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-callbackCtx.Done():
+				timer.Stop()
+				lastErr = callbackCtx.Err()
+				attempt = maxRetries
+			case <-timer.C:
+			}
+		}
+	}
+	if queued {
+		if r.stderr != nil {
+			fmt.Fprintf(r.stderr, "警告: 客户端工具结果已持久化，等待网络恢复后继续补报: call_id=%s err=%v\n", callback.CallID, lastErr)
+		}
+		return nil
 	}
 	return fmt.Errorf("回调提交失败（已重试 %d 次）: %w", maxRetries, lastErr)
 }
@@ -2082,6 +2156,15 @@ func nestedString(payload map[string]any, keys ...string) string {
 		current = next
 	}
 	return ""
+}
+
+// resolveContextString 兼容两种回调载荷形态：优先取 context.<key>，回落到顶层 <key>。
+// 早期实现仅读 context.*，导致只带顶层 session_id/run_id 的载荷被判空，误伤派发与上报。
+func resolveContextString(payload map[string]any, key string) string {
+	if value := strings.TrimSpace(nestedString(payload, "context", key)); value != "" {
+		return value
+	}
+	return strings.TrimSpace(stringValue(payload[key]))
 }
 
 func stringValue(value any) string {

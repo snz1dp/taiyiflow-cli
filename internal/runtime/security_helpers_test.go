@@ -7,6 +7,23 @@ import (
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 )
 
+func TestUnknownPermissionActionFailsClosed(t *testing.T) {
+	cfg := internalconfig.Config{
+		ApprovalMode:    "auto",
+		PermissionRules: []internalconfig.PermissionRule{{ToolName: "shell_exec", Action: "unexpected"}},
+	}
+	if action, matched := evaluatePermissionAction(cfg, "shell_exec", "printf safe"); !matched || action != "deny" {
+		t.Fatalf("unknown permission action must deny: action=%q matched=%t", action, matched)
+	}
+	runtimeClient := NewClientRuntime(strings.NewReader(""), nil, nil)
+	if err := runtimeClient.authorizeClientTool("shell_exec", map[string]any{"raw_command": "printf safe"}, cfg); err == nil {
+		t.Fatal("unknown permission action must not execute in auto mode")
+	}
+	if err := guardDangerousCommand(commandArguments{Mode: "shell", RawCommand: "printf safe"}, cfg); err == nil {
+		t.Fatal("normalized command policy re-evaluation must deny unknown actions")
+	}
+}
+
 // TestGuardDangerousCommandForkBombBashClassic verifies that the classic bash
 // fork bomb pattern ":(){ :|:& };:" is blocked in auto approval mode.
 func TestGuardDangerousCommandForkBombBashClassic(t *testing.T) {

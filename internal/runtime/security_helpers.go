@@ -1458,6 +1458,7 @@ func windowsUserDirPaths() []string {
 // 例如 "format c:"、"format D:"。不匹配 "format /fs"、"format -w" 等，
 // 以免误伤 npm run format、gofmt -w 等开发命令。
 var formatDiskPattern = regexp.MustCompile(`(?i)\bformat\s+[a-z]:`)
+
 // 该检测在 auto 审批模式下生效。
 func guardWindowsDestructiveActions(payload commandArguments, preview string) error {
 	// --- CMD 破坏性命令 ---
@@ -1800,13 +1801,22 @@ func evaluatePermissionAction(config internalconfig.Config, toolName string, com
 	normalizedCommand := strings.ToLower(strings.TrimSpace(commandPreview))
 	for _, rule := range config.PermissionRules {
 		if tool := strings.ToLower(strings.TrimSpace(rule.ToolName)); tool != "" && tool == normalizedTool {
-			return internalconfig.NormalizePermissionAction(rule.Action), true
+			return runtimePermissionAction(rule.Action), true
 		}
 		if prefix := strings.ToLower(strings.TrimSpace(rule.CommandPrefix)); prefix != "" && strings.HasPrefix(normalizedCommand, prefix) {
-			return internalconfig.NormalizePermissionAction(rule.Action), true
+			return runtimePermissionAction(rule.Action), true
 		}
 	}
 	return "", false
+}
+
+func runtimePermissionAction(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "allow", "ask", "deny":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "deny"
+	}
 }
 
 func isHiddenPath(path string) bool {

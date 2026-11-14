@@ -382,6 +382,54 @@ func (p *callbackAuthRefreshProvider) UpdateClientCollaboration(ctx context.Cont
 	return p.Provider.UpdateClientCollaboration(ctx, taskID, request)
 }
 
+func (p *callbackAuthRefreshProvider) GetSessionExecution(ctx context.Context, sessionID string) (*provider.SessionExecutionMetadata, error) {
+	execution, err := p.Provider.GetSessionExecution(ctx, sessionID)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return execution, err
+	}
+	return p.Provider.GetSessionExecution(ctx, sessionID)
+}
+
+func (p *callbackAuthRefreshProvider) PauseAgentLoop(ctx context.Context, sessionID string, request provider.AgentLoopControlRequest) (*provider.AgentLoopControlResponse, error) {
+	response, err := p.Provider.PauseAgentLoop(ctx, sessionID, request)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return response, err
+	}
+	return p.Provider.PauseAgentLoop(ctx, sessionID, request)
+}
+
+func (p *callbackAuthRefreshProvider) CancelAgentLoop(ctx context.Context, sessionID string, request provider.AgentLoopControlRequest) (*provider.AgentLoopControlResponse, error) {
+	response, err := p.Provider.CancelAgentLoop(ctx, sessionID, request)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return response, err
+	}
+	return p.Provider.CancelAgentLoop(ctx, sessionID, request)
+}
+
+func (p *callbackAuthRefreshProvider) ListResumableAgentLoopCheckpoints(ctx context.Context, query provider.AgentLoopCheckpointQuery) ([]provider.AgentLoopCheckpoint, error) {
+	checkpoints, err := p.Provider.ListResumableAgentLoopCheckpoints(ctx, query)
+	retry, refreshErr := p.shouldRetryAfterAuthRefresh(ctx, err)
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if !retry {
+		return checkpoints, err
+	}
+	return p.Provider.ListResumableAgentLoopCheckpoints(ctx, query)
+}
+
 func (a *App) providerWithCallbackAuthRefresh(providerClient provider.Provider, config *internalconfig.Config) provider.Provider {
 	if existing, ok := providerClient.(*callbackAuthRefreshProvider); ok {
 		existing.config = config

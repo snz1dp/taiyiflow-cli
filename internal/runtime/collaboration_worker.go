@@ -124,6 +124,7 @@ type collaborationWorker struct {
 	activeTask     map[string]struct{}
 	activeSchedule map[string]struct{}
 	observability  *workerObservability
+	agentLoop      *workerAgentLoopCoordinator
 }
 
 func (r *ClientRuntime) RunCollaborationWorker(
@@ -187,6 +188,7 @@ func newCollaborationWorker(
 		activeTask:     map[string]struct{}{},
 		activeSchedule: map[string]struct{}{},
 		observability:  newWorkerObservability(logf),
+		agentLoop:      newWorkerAgentLoopCoordinator(clonedRuntime, providerClient, logf),
 	}
 }
 
@@ -299,6 +301,7 @@ func (w *collaborationWorker) handleServerEnvelope(ctx context.Context, conn net
 	switch strings.TrimSpace(envelope.Event) {
 	case collaborationEventConnectionReady:
 		startPing = true
+		w.startAgentLoopDiscovery(ctx)
 		if err := w.sendEnvelope(conn, collaborationEventTasksFetchRecent, map[string]any{"limit": w.options.RecentTaskLimit}); err != nil {
 			return false, err
 		}
@@ -349,6 +352,18 @@ func (w *collaborationWorker) handleServerEnvelope(ctx context.Context, conn net
 			return false, fmt.Errorf("解析定时任务下发事件失败: %w", err)
 		}
 		go w.executeScheduleTask(ctx, conn, payload)
+	case collaborationEventAgentLoopResumeRequested:
+		var payload agentLoopResumeNotification
+		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+			return false, fmt.Errorf("解析 AgentLoop 恢复通知失败: %w", err)
+		}
+		w.scheduleAgentLoopNotification(ctx, conn, payload)
+	case collaborationEventAgentLoopCheckpointState:
+		var payload agentLoopResumeNotification
+		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+			return false, fmt.Errorf("解析 AgentLoop 检查点状态失败: %w", err)
+		}
+		w.recordAgentLoopCheckpointState(payload)
 	}
 	return startPing, nil
 }
@@ -885,6 +900,7 @@ func buildCollaborationWorkerWebSocketURL(config internalconfig.Config) (string,
 	queryValues.Set("platform", goruntime.GOOS+"-"+goruntime.GOARCH)
 	queryValues.Set("client_version", buildinfo.Version)
 	queryValues.Set("connection_role", "collaboration_worker")
+	queryValues.Set("capabilities", strings.Join([]string{"task.remote_task.v1", "task.dialogue_subtask.v1", collaborationCapabilityAgentLoopResume}, ","))
 	queryValues.Set("session_id", fmt.Sprintf("worker-%d", time.Now().UnixNano()))
 	baseURL.RawQuery = queryValues.Encode()
 	return baseURL.String(), nil

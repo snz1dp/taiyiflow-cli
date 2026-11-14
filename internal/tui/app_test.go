@@ -427,6 +427,81 @@ func TestRetryLastFailedRequestReusesInputWithNewRunID(t *testing.T) {
 	}
 }
 
+func TestAttachAndDetachUseLocalObserverCancellation(t *testing.T) {
+	appModel := model{
+		ctx:      context.Background(),
+		snapshot: Snapshot{BackendAvailable: true},
+		input:    textarea.New(),
+		eventCh:  make(chan tea.Msg, 4),
+		progress: progress.New(progress.WithDefaultGradient()),
+		state:    newProgressState(progressIdle),
+		runner: func(ctx context.Context, request Request, emit func(Event), confirm func(ConfirmRequest) bool, askUser func(clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error)) error {
+			return nil
+		},
+	}
+	if cmd := appModel.attachAgentLoop(); cmd == nil {
+		t.Fatal("expected attach to start an observer stream")
+	}
+	if appModel.lastRetryableRequest == nil || appModel.lastRetryableRequest.AgentLoopAction != AgentLoopActionAttach || appModel.lastRetryableRequest.Input != "" || appModel.requestCancel == nil {
+		t.Fatalf("unexpected attach request: %#v", appModel.lastRetryableRequest)
+	}
+	if cmd := appModel.detachAgentLoop(); cmd != nil {
+		t.Fatal("detach should only cancel the local observer context")
+	}
+	if !strings.Contains(appModel.activityHint, "远程执行不会被停止") {
+		t.Fatalf("unexpected detach status: %q", appModel.activityHint)
+	}
+}
+
+func TestBusyCancelStopsLocalStreamImmediately(t *testing.T) {
+	cancelled := false
+	controlled := false
+	input := textarea.New()
+	input.SetValue("/cancel")
+	appModel := model{
+		ctx:      context.Background(),
+		snapshot: Snapshot{BackendAvailable: true, SessionID: "s1"},
+		input:    input,
+		state:    newProgressState(progressSending),
+		localCommand: func(context.Context, string, Snapshot) (LocalCommandResult, error) {
+			controlled = true
+			return LocalCommandResult{Handled: true}, nil
+		},
+		requestCancel: func() { cancelled = true },
+	}
+	updated, _ := appModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(model)
+	if !cancelled || !controlled || len(got.queuedInputs) != 0 {
+		t.Fatalf("cancel = %v controlled = %v queued = %#v", cancelled, controlled, got.queuedInputs)
+	}
+	if !isAvailableInReadOnlyMode("/pause") || !isAvailableInReadOnlyMode("/detach") || !isAvailableInReadOnlyMode("/resume") {
+		t.Fatal("busy control commands must bypass queued input")
+	}
+}
+
+func TestResumeDetachesActiveObserver(t *testing.T) {
+	appModel := model{
+		ctx:      context.Background(),
+		snapshot: Snapshot{BackendAvailable: true},
+		input:    textarea.New(),
+		eventCh:  make(chan tea.Msg, 8),
+		progress: progress.New(progress.WithDefaultGradient()),
+		state:    newProgressState(progressIdle),
+		runner: func(ctx context.Context, request Request, emit func(Event), confirm func(ConfirmRequest) bool, askUser func(clientruntime.AskUserRequest) (clientruntime.AskUserResponse, error)) error {
+			return nil
+		},
+	}
+	if cmd := appModel.attachAgentLoop(); cmd == nil {
+		t.Fatal("expected attach to start")
+	}
+	if cmd := appModel.resumeAgentLoop(); cmd == nil {
+		t.Fatal("expected explicit resume to replace the observer")
+	}
+	if appModel.lastRetryableRequest == nil || appModel.lastRetryableRequest.AgentLoopAction != AgentLoopActionResume || appModel.lastRetryableRequest.RunID != "" {
+		t.Fatalf("unexpected resume request: %#v", appModel.lastRetryableRequest)
+	}
+}
+
 func TestEnterExecutesLoginSlashCommandImmediately(t *testing.T) {
 	input := textarea.New()
 	input.SetValue("/login")

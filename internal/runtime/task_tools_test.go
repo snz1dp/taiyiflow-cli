@@ -473,11 +473,22 @@ func TestShellExecBackgroundSupportsStructuredBuiltinCommand(t *testing.T) {
 		t.Fatalf("shellExec background failed: %v", err)
 	}
 	taskID := result["task_id"].(string)
+	sharedLocalTaskManager.mu.RLock()
+	task := sharedLocalTaskManager.tasks[taskID]
+	sharedLocalTaskManager.mu.RUnlock()
+	if task == nil {
+		t.Fatal("background task was not registered")
+	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		output, outputErr := runtimeClient.taskOutput(configValue, map[string]any{"task_id": taskID})
 		if outputErr == nil && stringValue(output["status"]) != "running" {
+			select {
+			case <-task.done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("background task status changed before persistence completed")
+			}
 			// 任务完成后仍可查询，不再自动清理
 			return
 		}

@@ -173,7 +173,22 @@ func (s *stubProvider) ResolveSkillPreview(_ context.Context, request provider.S
 
 func (s *stubProvider) Stream(_ context.Context, request provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
 	s.lastRequest = request
-	return s.stream, s.streamSession, s.streamErr
+	if s.stream == nil || request.RunID == "" {
+		return s.stream, s.streamSession, s.streamErr
+	}
+	stream := make(chan provider.StreamEvent)
+	go func() {
+		defer close(stream)
+		for event := range s.stream {
+			if event.Type == provider.EventBuiltIn || event.Type == provider.EventClientTool {
+				if eventContext, ok := event.Data["context"].(map[string]any); ok {
+					eventContext["run_id"] = request.RunID
+				}
+			}
+			stream <- event
+		}
+	}()
+	return stream, s.streamSession, s.streamErr
 }
 
 func (s stubProvider) GetRunStats(context.Context, string, string, string) (*provider.RunStats, error) {
@@ -182,6 +197,22 @@ func (s stubProvider) GetRunStats(context.Context, string, string, string) (*pro
 
 func (s stubProvider) GetSessionContextWindow(context.Context, string, string) (*provider.SessionContextPreview, error) {
 	return s.sessionContext, nil
+}
+
+func (s stubProvider) GetSessionExecution(context.Context, string) (*provider.SessionExecutionMetadata, error) {
+	return &provider.SessionExecutionMetadata{}, nil
+}
+
+func (s stubProvider) PauseAgentLoop(context.Context, string, provider.AgentLoopControlRequest) (*provider.AgentLoopControlResponse, error) {
+	return &provider.AgentLoopControlResponse{}, nil
+}
+
+func (s stubProvider) CancelAgentLoop(context.Context, string, provider.AgentLoopControlRequest) (*provider.AgentLoopControlResponse, error) {
+	return &provider.AgentLoopControlResponse{}, nil
+}
+
+func (s stubProvider) ListResumableAgentLoopCheckpoints(context.Context, provider.AgentLoopCheckpointQuery) ([]provider.AgentLoopCheckpoint, error) {
+	return nil, nil
 }
 
 func (s stubProvider) ListMemoryConsolidations(context.Context, provider.MemoryConsolidationQuery) (*provider.MemoryConsolidationPage, error) {
@@ -2233,9 +2264,15 @@ func TestRunTaskOnceRejectsAskUserWithoutPrompting(t *testing.T) {
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"session_id":"session-created"}`)
 		case backendAPIPath("/run/flow-1/stream"):
+			var streamRequest struct {
+				RunID string `json:"run_id"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&streamRequest); err != nil {
+				t.Fatalf("decode stream request failed: %v", err)
+			}
 			writer.Header().Set("Content-Type", "text/event-stream")
 			fmt.Fprint(writer, "event: client_tool\n")
-			fmt.Fprint(writer, "data: {\"flow_id\":\"flow-1\",\"context\":{\"session_id\":\"session-created\",\"run_id\":\"run-1\",\"message_id\":\"message-1\"},\"server\":{\"name\":\"local\"},\"function\":{\"id\":\"call-1\",\"name\":\"ask_user\",\"arguments\":{\"questions\":[{\"name\":\"value\",\"label\":\"请输入值\"}]}}}\n\n")
+			fmt.Fprintf(writer, "data: {\"flow_id\":\"flow-1\",\"context\":{\"session_id\":\"session-created\",\"run_id\":%q,\"message_id\":\"message-1\"},\"server\":{\"name\":\"local\"},\"function\":{\"id\":\"call-1\",\"name\":\"ask_user\",\"arguments\":{\"questions\":[{\"name\":\"value\",\"label\":\"请输入值\"}]}}}\n\n", streamRequest.RunID)
 			fmt.Fprint(writer, "event: close\ndata: {}\n\n")
 		case backendAPIPath("/agents/client/call/result"):
 			callbackCalled = true
@@ -2325,8 +2362,14 @@ func TestRunTaskOnceDoesNotForwardHostStdinToShellExec(t *testing.T) {
 			writer.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(writer, `{"session_id":"session-created"}`)
 		case backendAPIPath("/run/flow-1/stream"):
+			var streamRequest struct {
+				RunID string `json:"run_id"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&streamRequest); err != nil {
+				t.Fatalf("decode stream request failed: %v", err)
+			}
 			writer.Header().Set("Content-Type", "text/event-stream")
-			payload := fmt.Sprintf(`{"flow_id":"flow-1","context":{"session_id":"session-created","run_id":"run-1","message_id":"message-1"},"function":{"id":"call-1"},"server":{"name":"built_in_command"},"command":{"name":"run_command_via_client","arguments":{"command":%q,"args":["-test.run=TestRunTaskOnceDoesNotForwardHostStdinToShellExec$"],"env":{"TAIYIFLOW_HELPER_PROCESS":"stdin-echo"}},"policy":{"confirmation_required":false}}}`, os.Args[0])
+			payload := fmt.Sprintf(`{"flow_id":"flow-1","context":{"session_id":"session-created","run_id":%q,"message_id":"message-1"},"function":{"id":"call-1"},"server":{"name":"built_in_command"},"command":{"name":"run_command_via_client","arguments":{"command":%q,"args":["-test.run=TestRunTaskOnceDoesNotForwardHostStdinToShellExec$"],"env":{"TAIYIFLOW_HELPER_PROCESS":"stdin-echo"}},"policy":{"confirmation_required":false}}}`, streamRequest.RunID, os.Args[0])
 			fmt.Fprint(writer, "event: built_in\n")
 			fmt.Fprintf(writer, "data: %s\n\n", payload)
 			fmt.Fprint(writer, "event: close\ndata: {}\n\n")
@@ -3169,14 +3212,18 @@ func TestStreamTaskInstallsMissingSkillBeforeRequest(t *testing.T) {
 	stream := make(chan provider.StreamEvent, 1)
 	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "未找到技能: Remote Skill"}}
 	close(stream)
-	providerStub := &stubProvider{
-		stream: stream,
-		fetchSkillsResult: []provider.VisibleSkillPackage{
-			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
-		},
-		downloadSkillResult: &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
-		reportInstallResult: &provider.SkillInstallationRecord{},
+	providerStub := &sequenceStreamProvider{streams: []<-chan provider.StreamEvent{
+		stream,
+		streamWithEvents(
+			provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"name": "start-flow"}},
+			provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{"name": "close"}},
+		),
+	}}
+	providerStub.fetchSkillsResult = []provider.VisibleSkillPackage{
+		{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
 	}
+	providerStub.downloadSkillResult = &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"}
+	providerStub.reportInstallResult = &provider.SkillInstallationRecord{}
 
 	config := internalconfig.Default()
 	config.Workdir = workspaceDir
@@ -3261,14 +3308,18 @@ func TestStreamTaskInstallsMissingSkillWithStructuredErrorPayload(t *testing.T) 
 		},
 	}}
 	close(stream)
-	providerStub := &stubProvider{
-		stream: stream,
-		fetchSkillsResult: []provider.VisibleSkillPackage{
-			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
-		},
-		downloadSkillResult: &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
-		reportInstallResult: &provider.SkillInstallationRecord{},
+	providerStub := &sequenceStreamProvider{streams: []<-chan provider.StreamEvent{
+		stream,
+		streamWithEvents(
+			provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"name": "start-flow"}},
+			provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{"name": "close"}},
+		),
+	}}
+	providerStub.fetchSkillsResult = []provider.VisibleSkillPackage{
+		{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
 	}
+	providerStub.downloadSkillResult = &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"}
+	providerStub.reportInstallResult = &provider.SkillInstallationRecord{}
 
 	config := internalconfig.Default()
 	config.Workdir = workspaceDir
@@ -3318,14 +3369,18 @@ func TestStreamTaskUsesFreeTextSearchForUniqueSkillCandidate(t *testing.T) {
 	stream := make(chan provider.StreamEvent, 1)
 	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "未找到技能: Unknown Skill"}}
 	close(stream)
-	providerStub := &stubProvider{
-		stream: stream,
-		fetchSkillsResult: []provider.VisibleSkillPackage{
-			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
-		},
-		downloadSkillResult: &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
-		reportInstallResult: &provider.SkillInstallationRecord{},
+	providerStub := &sequenceStreamProvider{streams: []<-chan provider.StreamEvent{
+		stream,
+		streamWithEvents(
+			provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"name": "start-flow"}},
+			provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{"name": "close"}},
+		),
+	}}
+	providerStub.fetchSkillsResult = []provider.VisibleSkillPackage{
+		{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
 	}
+	providerStub.downloadSkillResult = &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"}
+	providerStub.reportInstallResult = &provider.SkillInstallationRecord{}
 
 	config := internalconfig.Default()
 	config.Workdir = workspaceDir
@@ -3377,14 +3432,18 @@ func TestStreamTaskInstallsMissingSkillIntoLegacyGlobalDirectoryAndReloadsReques
 	stream := make(chan provider.StreamEvent, 1)
 	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "未找到技能: Remote Skill"}}
 	close(stream)
-	providerStub := &stubProvider{
-		stream: stream,
-		fetchSkillsResult: []provider.VisibleSkillPackage{
-			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
-		},
-		downloadSkillResult: &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
-		reportInstallResult: &provider.SkillInstallationRecord{},
+	providerStub := &sequenceStreamProvider{streams: []<-chan provider.StreamEvent{
+		stream,
+		streamWithEvents(
+			provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"name": "start-flow"}},
+			provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{"name": "close"}},
+		),
+	}}
+	providerStub.fetchSkillsResult = []provider.VisibleSkillPackage{
+		{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
 	}
+	providerStub.downloadSkillResult = &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"}
+	providerStub.reportInstallResult = &provider.SkillInstallationRecord{}
 
 	config := internalconfig.Default()
 	config.Workdir = workspaceDir
@@ -3447,14 +3506,18 @@ func TestStreamTaskAutoInstallUsesPinnedSessionInstallScope(t *testing.T) {
 	stream := make(chan provider.StreamEvent, 1)
 	stream <- provider.StreamEvent{Type: provider.EventError, Data: map[string]any{"error": "未找到技能: Remote Skill"}}
 	close(stream)
-	providerStub := &stubProvider{
-		stream: stream,
-		fetchSkillsResult: []provider.VisibleSkillPackage{
-			{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
-		},
-		downloadSkillResult: &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"},
-		reportInstallResult: &provider.SkillInstallationRecord{},
+	providerStub := &sequenceStreamProvider{streams: []<-chan provider.StreamEvent{
+		stream,
+		streamWithEvents(
+			provider.StreamEvent{Type: provider.EventMessage, Data: map[string]any{"name": "start-flow"}},
+			provider.StreamEvent{Type: provider.EventClose, Data: map[string]any{"name": "close"}},
+		),
+	}}
+	providerStub.fetchSkillsResult = []provider.VisibleSkillPackage{
+		{ID: "remote-skill", Name: "remote-skill", DisplayName: "Remote Skill", Summary: "上下文审查技能", Version: "1.0.0"},
 	}
+	providerStub.downloadSkillResult = &provider.SkillPackageContent{Content: skillContent, Version: "1.0.0"}
+	providerStub.reportInstallResult = &provider.SkillInstallationRecord{}
 
 	config := internalconfig.Default()
 	config.Workdir = workspaceDir

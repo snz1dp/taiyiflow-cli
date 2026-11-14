@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -50,10 +51,39 @@ func NormalizeRequestType(value string) string {
 	}
 }
 
+const (
+	ExecutionModeStart  = "start"
+	ExecutionModeResume = "resume"
+	ExecutionModeAttach = "attach"
+)
+
+type HTTPError struct {
+	Prefix     string
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	message := strings.TrimSpace(e.Body)
+	if message == "" {
+		message = fmt.Sprintf("HTTP %d", e.StatusCode)
+	}
+	return fmt.Sprintf("%s: %s", e.Prefix, message)
+}
+
 type StreamEvent struct {
+	ID   string
 	Type StreamEventType
 	Data map[string]any
 	Raw  string
+}
+
+func (e StreamEvent) EventID() string {
+	if strings.TrimSpace(e.ID) != "" {
+		return strings.TrimSpace(e.ID)
+	}
+	value, _ := e.Data["event_id"].(string)
+	return strings.TrimSpace(value)
 }
 
 type StreamRequest struct {
@@ -92,6 +122,13 @@ type StreamRequest struct {
 	ClientSkillPackages       any
 	ClientInstructions        any
 	ParentID                  string
+	ExecutionMode             string
+	ExecutionAttemptID        string
+	CheckpointID              string
+	CheckpointVersion         int
+	AfterEventID              string
+	SubscriptionID            string
+	Model                     string
 }
 
 type SkillResolveRequest struct {
@@ -481,6 +518,63 @@ type ClientCallResult struct {
 	ErrorMessage string
 }
 
+type AgentLoopControlRequest struct {
+	RunID     string
+	RequestID string
+	ClientID  string
+	DeviceID  string
+}
+
+type AgentLoopControlResponse struct {
+	SessionID              string
+	RunID                  string
+	Status                 string
+	RequestID              string
+	CheckpointID           string
+	SubtaskCancelRequested int
+	SubtaskCancelPending   int
+	SubtaskCancelFailed    bool
+}
+
+type AgentLoopCheckpoint struct {
+	ID                 string
+	FlowID             string
+	SessionID          string
+	RunID              string
+	OriginClientID     string
+	OriginDeviceID     string
+	Status             string
+	Version            int
+	ResumeStage        string
+	PauseReason        string
+	RequiresUserResume bool
+	WaitingCallIDs     []string
+	PendingCallIDs     []string
+	UncertainCallIDs   []string
+	UpdatedAt          time.Time
+	ExpiresAt          time.Time
+}
+
+type AgentLoopCheckpointQuery struct {
+	ClientID  string
+	DeviceID  string
+	FlowID    string
+	SessionID string
+}
+
+type SessionExecutionMetadata struct {
+	SessionID          string
+	FlowID             string
+	Executing          bool
+	ExecutingRunID     string
+	ExecutionAttemptID string
+	RunStatus          string
+	OriginClientID     string
+	OriginDeviceID     string
+	CurrentEventID     string
+	CurrentEventSeq    int64
+}
+
 type RunFlowRequest struct {
 	FlowID    string
 	SessionID string
@@ -736,6 +830,10 @@ type Provider interface {
 	GetMetadata(ctx context.Context, flowID string) (*Metadata, error)
 	ResolveSkillPreview(ctx context.Context, request SkillResolveRequest) (*SkillResolvePreview, error)
 	Stream(ctx context.Context, request StreamRequest) (<-chan StreamEvent, *StreamSession, error)
+	GetSessionExecution(ctx context.Context, sessionID string) (*SessionExecutionMetadata, error)
+	PauseAgentLoop(ctx context.Context, sessionID string, request AgentLoopControlRequest) (*AgentLoopControlResponse, error)
+	CancelAgentLoop(ctx context.Context, sessionID string, request AgentLoopControlRequest) (*AgentLoopControlResponse, error)
+	ListResumableAgentLoopCheckpoints(ctx context.Context, query AgentLoopCheckpointQuery) ([]AgentLoopCheckpoint, error)
 	GetRunStats(ctx context.Context, flowID string, sessionID string, runID string) (*RunStats, error)
 	GetSessionContextWindow(ctx context.Context, flowID string, sessionID string) (*SessionContextPreview, error)
 	ListMemoryConsolidations(ctx context.Context, query MemoryConsolidationQuery) (*MemoryConsolidationPage, error)

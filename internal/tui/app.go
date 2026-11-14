@@ -413,6 +413,11 @@ type Event struct {
 	TodoItems          []TodoItem
 }
 
+const (
+	AgentLoopActionResume = "resume"
+	AgentLoopActionAttach = "attach"
+)
+
 type Request struct {
 	Input            string
 	InputFiles       []string
@@ -421,6 +426,7 @@ type Request struct {
 	KnowledgeScopes  []string
 	KnowledgeDocs    []string
 	RunID            string
+	AgentLoopAction  string
 	RequestMode      string
 	ReasoningEnabled bool
 	AutoLoopRound    int
@@ -1127,6 +1133,11 @@ var (
 var slashCommands = []slashCommand{
 	{Trigger: "/new", Completion: "/new ", Description: "重置当前智能体的本地会话，可写成 /new <任务> 直接发起对话"},
 	{Trigger: "/retry", Completion: "/retry", Description: "重新发起最近一次失败的请求"},
+	{Trigger: "/pause", Completion: "/pause", Description: "请求暂停当前 AgentLoop，等待服务端生成检查点"},
+	{Trigger: "/cancel", Completion: "/cancel", Description: "请求停止当前 AgentLoop 并等待服务端终止"},
+	{Trigger: "/resume", Completion: "/resume", Description: "从当前会话的可恢复检查点显式恢复执行"},
+	{Trigger: "/attach", Completion: "/attach", Description: "只读观察当前会话的远程执行，不执行本地工具"},
+	{Trigger: "/detach", Completion: "/detach", Description: "退出只读观察，不停止远程执行"},
 	{Trigger: "/refresh", Completion: "/refresh", Description: "刷新当前会话的历史消息"},
 	{Trigger: "/clear", Completion: "/clear", Description: "清空当前界面消息"},
 	{Trigger: "/internet", Completion: "/internet ", Description: "查看或切换当前对话的联网搜索"},
@@ -2091,7 +2102,10 @@ func (m model) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.isBusy() && m.requestCancel != nil && !m.interrupting {
 			m.interrupting = true
 			m.requestCancel()
-			m.activityHint = "请求已中断"
+			m.activityHint = "正在停止本地执行并请求服务端取消..."
+			if m.lastRetryableRequest != nil && m.lastRetryableRequest.AgentLoopAction == AgentLoopActionAttach {
+				m.activityHint = "正在退出只读观察，远程执行不会被停止..."
+			}
 			m.streamingIndicatorActive = false
 			m.streamingIndicatorFrame = 0
 			m.syncViewport()
@@ -3979,7 +3993,7 @@ func (m *model) startRequest(request Request, appendUserEntry bool) tea.Cmd {
 	request.InputFiles = append([]string(nil), request.InputFiles...)
 	request.KnowledgeScopes = append([]string(nil), request.KnowledgeScopes...)
 	request.KnowledgeDocs = append([]string(nil), request.KnowledgeDocs...)
-	if strings.TrimSpace(request.RunID) == "" {
+	if strings.TrimSpace(request.RunID) == "" && request.AgentLoopAction != AgentLoopActionResume {
 		request.RunID = newRequestRunID()
 	}
 	// 非续跑请求（AutoLoopRound == 0）重置续跑计数
@@ -6703,6 +6717,8 @@ func isAvailableInReadOnlyMode(input string) bool {
 		return true
 	case trimmed == "/help", trimmed == "/clear", trimmed == "/exit":
 		return true
+	case trimmed == "/pause", trimmed == "/cancel", trimmed == "/resume", trimmed == "/detach":
+		return true
 	case trimmed == "/skills", strings.HasPrefix(trimmed, "/skills "):
 		return true
 	case trimmed == "/review", strings.HasPrefix(trimmed, "/review "):
@@ -7077,6 +7093,15 @@ func (m *model) handleSlashCommand(input string) (bool, tea.Cmd) {
 	case strings.EqualFold(trimmed, "/retry"):
 		m.input.SetValue("")
 		return true, m.retryLastFailedRequest()
+	case strings.EqualFold(trimmed, "/resume"):
+		m.input.SetValue("")
+		return true, m.resumeAgentLoop()
+	case strings.EqualFold(trimmed, "/attach"):
+		m.input.SetValue("")
+		return true, m.attachAgentLoop()
+	case strings.EqualFold(trimmed, "/detach"):
+		m.input.SetValue("")
+		return true, m.detachAgentLoop()
 	case strings.EqualFold(trimmed, "/refresh"):
 		return true, m.handleRefreshSlashCommand()
 	case strings.EqualFold(trimmed, "/agents"):
@@ -7130,7 +7155,61 @@ func (m *model) retryLastFailedRequest() tea.Cmd {
 	}
 	request := *cloneRequest(*m.lastRetryableRequest)
 	request.RunID = newRequestRunID()
+	request.AgentLoopAction = ""
 	return m.startRequest(request, true)
+}
+
+func (m *model) resumeAgentLoop() tea.Cmd {
+	if m.isBusy() {
+		if m.lastRetryableRequest == nil || m.lastRetryableRequest.AgentLoopAction != AgentLoopActionAttach || m.requestCancel == nil {
+			m.entries = append(m.entries, entry{role: "error", content: "当前请求仍在执行，无法恢复另一个执行。"})
+			m.refreshLayoutAfterStateChange()
+			return nil
+		}
+		m.requestCancel()
+	}
+	request := m.buildRequest("", "")
+	if m.lastRetryableRequest != nil {
+		request = *cloneRequest(*m.lastRetryableRequest)
+	}
+	request.Input = ""
+	request.InputFiles = nil
+	request.RunID = ""
+	request.AgentLoopAction = AgentLoopActionResume
+	return m.startRequest(request, false)
+}
+
+func (m *model) attachAgentLoop() tea.Cmd {
+	if m.isBusy() {
+		m.entries = append(m.entries, entry{role: "error", content: "当前请求仍在执行，请先完成或退出当前请求。"})
+		m.refreshLayoutAfterStateChange()
+		return nil
+	}
+	if !m.snapshot.BackendAvailable {
+		m.entries = append(m.entries, entry{role: "error", content: m.backendUnavailableMessage()})
+		m.refreshLayoutAfterStateChange()
+		return nil
+	}
+	request := m.buildRequest("", "")
+	request.RequestMode = "agent"
+	request.AgentLoopAction = AgentLoopActionAttach
+	command := m.startRequest(request, false)
+	m.activityHint = "正在只读观察远程执行；输入 /detach 退出，不会停止远程执行。"
+	m.refreshLayoutAfterStateChange()
+	return command
+}
+
+func (m *model) detachAgentLoop() tea.Cmd {
+	if m.requestCancel == nil || m.lastRetryableRequest == nil || m.lastRetryableRequest.AgentLoopAction != AgentLoopActionAttach {
+		m.entries = append(m.entries, entry{role: "system", content: "当前没有正在进行的只读观察。"})
+		m.refreshLayoutAfterStateChange()
+		return nil
+	}
+	m.requestCancel()
+	m.activityHint = "正在退出只读观察，远程执行不会被停止..."
+	m.entries = append(m.entries, entry{role: "system", content: "已请求退出只读观察；远程执行继续运行。"})
+	m.refreshLayoutAfterStateChange()
+	return nil
 }
 
 func isTodoSlashCommand(command string) bool {
@@ -7206,6 +7285,11 @@ func todoPanelStatusText(hidden bool, forceShow bool, items []TodoItem) string {
 func (m *model) handleLocalSlashCommand(command string) (bool, tea.Cmd) {
 	if m.localCommand == nil {
 		return false, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(command), "/cancel") && m.requestCancel != nil {
+		m.interrupting = true
+		m.requestCancel()
+		m.activityHint = "正在停止本地执行并请求服务端取消..."
 	}
 	// ! 命令使用异步非流式执行路径：命令执行完毕后一次性显示全部输出，不阻塞 TUI。
 	if strings.HasPrefix(command, "!") {
@@ -10531,7 +10615,7 @@ func isExecutableSlashCommandInput(input string) bool {
 	switch {
 	case strings.EqualFold(trimmed, "/agents"):
 		return true
-	case strings.EqualFold(trimmed, "/retry"):
+	case strings.EqualFold(trimmed, "/retry"), strings.EqualFold(trimmed, "/resume"), strings.EqualFold(trimmed, "/pause"), strings.EqualFold(trimmed, "/cancel"), strings.EqualFold(trimmed, "/attach"), strings.EqualFold(trimmed, "/detach"):
 		return true
 	case strings.EqualFold(trimmed, "/internet"):
 		return true

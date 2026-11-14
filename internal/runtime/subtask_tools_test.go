@@ -34,6 +34,22 @@ type subtaskProviderStub struct {
 	currentTask              provider.ClientCollaborationTask
 }
 
+func (s *subtaskProviderStub) GetSessionExecution(context.Context, string) (*provider.SessionExecutionMetadata, error) {
+	return &provider.SessionExecutionMetadata{}, nil
+}
+
+func (s *subtaskProviderStub) ListResumableAgentLoopCheckpoints(context.Context, provider.AgentLoopCheckpointQuery) ([]provider.AgentLoopCheckpoint, error) {
+	return nil, nil
+}
+
+func (s *subtaskProviderStub) PauseAgentLoop(context.Context, string, provider.AgentLoopControlRequest) (*provider.AgentLoopControlResponse, error) {
+	return &provider.AgentLoopControlResponse{}, nil
+}
+
+func (s *subtaskProviderStub) CancelAgentLoop(context.Context, string, provider.AgentLoopControlRequest) (*provider.AgentLoopControlResponse, error) {
+	return &provider.AgentLoopControlResponse{}, nil
+}
+
 func (s *subtaskProviderStub) CreateSessionID(context.Context) (string, error) {
 	if strings.TrimSpace(s.createdSessionID) != "" {
 		return s.createdSessionID, nil

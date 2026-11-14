@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agent"
+	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/agentloop"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/buildinfo"
 	internalconfig "snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/config"
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/instructions"
@@ -42,6 +43,64 @@ func (a *App) prepareInitialTUIAuthentication(
 ) internalconfig.Config {
 	updatedConfig, _, _ := a.ensureProviderAuthenticated(ctx, providerClient, config)
 	return updatedConfig
+}
+
+func (a *App) runTUIAgentLoopAttach(ctx context.Context, providerClient provider.Provider, config internalconfig.Config, flowID, sessionID string, emit func(tui.Event)) error {
+	store, err := agentloop.DefaultStore()
+	if err != nil {
+		return err
+	}
+	controller := agentloop.NewController(providerClient, store)
+	assistantRenderState := tuiAssistantRenderState{}
+	lastMetadata := ""
+	polling := false
+	return controller.Attach(ctx, agentloop.ObserverRequest{
+		FlowID: flowID, SessionID: sessionID, ClientID: config.ClientID, DeviceID: config.DeviceID,
+	}, agentloop.ObserverHandlers{
+		OnMetadata: func(metadata *provider.SessionExecutionMetadata) error {
+			if metadata == nil {
+				return nil
+			}
+			text := fmt.Sprintf("远程执行：executing=%t run_id=%s status=%s", metadata.Executing, firstNonEmpty(metadata.ExecutingRunID, "-"), firstNonEmpty(metadata.RunStatus, "-"))
+			if text != lastMetadata {
+				emit(tui.Event{Kind: tui.EventSystemNote, Text: text})
+				lastMetadata = text
+			}
+			return nil
+		},
+		OnSnapshot: func(messages *provider.SessionMessageList) error {
+			count := 0
+			if messages != nil {
+				count = len(messages.Items)
+			}
+			emit(tui.Event{Kind: tui.EventSystemNote, Text: fmt.Sprintf("只读快照已刷新：%d 条消息；观察模式不会执行本地工具。", count)})
+			return nil
+		},
+		OnStatus: func(status agentloop.ObserverStatus) error {
+			if status.Polling && !polling {
+				emit(tui.Event{Kind: tui.EventProgressNote, Text: "观察流连续断开，已降级为远程状态轮询。"})
+			}
+			polling = status.Polling
+			return nil
+		},
+		OnEvent: func(event provider.StreamEvent) error {
+			switch event.Type {
+			case provider.EventMessage:
+				if assistantChunk, ok := buildTUIAssistantChunkEvent(event.Data); ok {
+					emitTUIAssistantChunk(emit, &assistantRenderState, assistantChunk)
+					return nil
+				}
+				if message := strings.TrimSpace(stringMapValue(event.Data, "message")); message != "" {
+					emit(tui.Event{Kind: tui.EventProgressNote, Text: message})
+				}
+			case provider.EventError:
+				emit(tui.Event{Kind: tui.EventErrorNote, Text: stringMapValue(event.Data, "error")})
+			case provider.EventClose:
+				emit(tui.Event{Kind: tui.EventSystemNote, Text: "远程执行观察已结束。"})
+			}
+			return nil
+		},
+	})
 }
 
 func (a *App) runTUI(ctx context.Context, args []string) error {
@@ -145,6 +204,12 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		sessionState, err := a.prepareSession(currentFlow, false, workdir, request.RequestMode)
 		if err != nil {
 			return err
+		}
+		if request.AgentLoopAction == tui.AgentLoopActionAttach {
+			if strings.TrimSpace(sessionState.SessionID) == "" {
+				return fmt.Errorf("当前没有可观察的会话")
+			}
+			return a.runTUIAgentLoopAttach(runCtx, authRefreshProvider(), config, currentFlow, sessionState.SessionID, emit)
 		}
 
 		logWriter := &tuiLogWriter{emit: emit}
@@ -255,7 +320,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				return ensureErr
 			}
 			sessionState.SessionID = ensuredSessionID
-			if applySessionRequestLineage(&sessionState, currentFlow, firstNonEmpty(sessionState.Workdir, workdir), request.RequestMode, request.RunID) {
+			if request.AgentLoopAction != tui.AgentLoopActionResume && applySessionRequestLineage(&sessionState, currentFlow, firstNonEmpty(sessionState.Workdir, workdir), request.RequestMode, request.RunID) {
 				if err := saveSessionStateIfReady(a.sessionStore, sessionState); err != nil {
 					return err
 				}
@@ -299,7 +364,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 			if mcpRegistry != nil {
 				defer mcpRegistry.Close()
 			}
-			stream, streamSession, streamErr := callbackProvider.Stream(runCtx, provider.StreamRequest{
+			streamRequest := provider.StreamRequest{
 				FlowID:                    currentFlow,
 				Input:                     buildStreamInputWithTodoContext(sessionState.TodoItems, request.Input),
 				InputType:                 "any",
@@ -327,7 +392,34 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 				ClientMCPServers:          quietRuntimeClient.ClientMCPServersForMode(request.RequestMode, config),
 				ClientSkillPackages:       clientSkillPackages,
 				ClientInstructions:        clientInstructions,
-			})
+			}
+			executeStream := callbackProvider.Stream
+			var agentLoopStore *agentloop.Store
+			var agentLoopController *agentloop.Controller
+			if normalizeRequestMode(request.RequestMode) == provider.RequestTypeAgent {
+				var storeErr error
+				agentLoopStore, storeErr = agentloop.DefaultStore()
+				if storeErr != nil {
+					return storeErr
+				}
+				runtimeClient.SetAgentLoopStore(agentLoopStore)
+				quietRuntimeClient.SetAgentLoopStore(agentLoopStore)
+				controller := agentloop.NewController(callbackProvider, agentLoopStore)
+				agentLoopController = controller
+				executeStream = controller.Execute
+				if request.AgentLoopAction == tui.AgentLoopActionResume {
+					recoveryState, stateErr := agentLoopStore.LoadRecovery(sessionState.SessionID)
+					if stateErr != nil {
+						return stateErr
+					}
+					request.RunID = recoveryState.RunID
+					streamRequest.RunID = recoveryState.RunID
+					executeStream = func(streamCtx context.Context, _ provider.StreamRequest) (<-chan provider.StreamEvent, *provider.StreamSession, error) {
+						return controller.Resume(streamCtx, sessionState.SessionID)
+					}
+				}
+			}
+			stream, streamSession, streamErr := executeStream(runCtx, streamRequest)
 			if streamErr != nil {
 				return fmt.Errorf("%s", explainBackendFailure(streamErr))
 			}
@@ -442,6 +534,13 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					if metrics := buildTUIStreamStatsMetrics(event.Data); metrics != nil {
 						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
 					}
+					if agentLoopController != nil && !agentLoopController.ToolsAllowed(sessionState.SessionID, firstNonEmpty(stringMapValue(event.Data, "run_id"), request.RunID)) {
+						emit(tui.Event{Kind: tui.EventErrorNote, Text: "用户已暂停或停止当前执行，已拒绝新的本地命令。"})
+						if err := submitClientCallFailure(runCtx, callbackProvider, localConfig, event.Data, "用户已暂停或停止当前执行"); err != nil {
+							return err
+						}
+						continue
+					}
 					if !modeAllowsBuiltIn(request.RequestMode) {
 						emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝本地命令执行：当前为%s。", requestModeLabel(request.RequestMode))})
 						if err := submitClientCallFailure(runCtx, callbackProvider, localConfig, event.Data, fmt.Sprintf("当前%s不允许执行本地命令", requestModeLabel(request.RequestMode))); err != nil {
@@ -478,6 +577,13 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 						emit(tui.Event{Kind: tui.EventStatsUpdate, Stats: metrics})
 					}
 					toolName := nestedStringValue(event.Data, "function", "name")
+					if agentLoopController != nil && !agentLoopController.ToolsAllowed(sessionState.SessionID, firstNonEmpty(stringMapValue(event.Data, "run_id"), request.RunID)) {
+						emit(tui.Event{Kind: tui.EventErrorNote, Text: "用户已暂停或停止当前执行，已拒绝新的本地工具。"})
+						if err := submitClientCallFailure(runCtx, callbackProvider, localConfig, event.Data, "用户已暂停或停止当前执行"); err != nil {
+							return err
+						}
+						continue
+					}
 					if !modeAllowsClientTool(request.RequestMode, toolName) {
 						emit(tui.Event{Kind: tui.EventErrorNote, Text: fmt.Sprintf("已拒绝客户端工具 %s：当前为%s。", toolName, requestModeLabel(request.RequestMode))})
 						if err := submitClientCallFailure(runCtx, callbackProvider, localConfig, event.Data, fmt.Sprintf("当前%s不允许执行本地工具 %s", requestModeLabel(request.RequestMode), toolName)); err != nil {
@@ -542,7 +648,15 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 					}
 				case provider.EventError:
 					normalizedErr := normalizeStreamEventError(event.Data["error"])
-					if skillRetryCount < 1 {
+					allowSkillRetry := normalizeRequestMode(request.RequestMode) != provider.RequestTypeAgent
+					if agentLoopStore != nil {
+						recoveryState, stateErr := agentLoopStore.LoadRecovery(sessionState.SessionID)
+						if stateErr != nil {
+							return stateErr
+						}
+						allowSkillRetry = recoveryState.PendingStart
+					}
+					if skillRetryCount < 1 && allowSkillRetry {
 						missingSkillNames := detectMissingSkillNames(event.Data, normalizedErr)
 						if len(missingSkillNames) > 0 {
 							installedAny, installErr := a.autoInstallCandidates(
@@ -567,6 +681,8 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 							}
 							if installedAny {
 								skillRetryCount++
+								request.RunID = newRequestRunID()
+								request.AgentLoopAction = ""
 								retryRequested = true
 								emit(tui.Event{Kind: tui.EventProgressNote, Text: fmt.Sprintf("检测到缺失技能 %s，已完成补装，正在自动重试。", strings.Join(missingSkillNames, ", "))})
 								break eventLoop
@@ -803,6 +919,31 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		trimmed := strings.TrimSpace(command)
 		commandProvider := authRefreshProvider()
 		switch {
+		case trimmed == "/pause" || trimmed == "/cancel":
+			store, storeErr := agentloop.DefaultStore()
+			if storeErr != nil {
+				return tui.LocalCommandResult{}, storeErr
+			}
+			controller := agentloop.NewController(commandProvider, store)
+			var response *provider.AgentLoopControlResponse
+			var controlErr error
+			if trimmed == "/pause" {
+				response, controlErr = controller.Pause(commandCtx, snapshot.SessionID, "")
+			} else {
+				response, controlErr = controller.Cancel(commandCtx, snapshot.SessionID, "")
+			}
+			if controlErr != nil {
+				return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventErrorNote, Text: controlErr.Error()}}}, nil
+			}
+			action := "暂停"
+			if trimmed == "/cancel" {
+				action = "停止"
+			}
+			text := fmt.Sprintf("%s请求已受理（status=%s），等待服务端权威状态。", action, response.Status)
+			if trimmed == "/pause" && response.CheckpointID == "" {
+				text += " 当前尚未生成暂停检查点。"
+			}
+			return tui.LocalCommandResult{Handled: true, Events: []tui.Event{{Kind: tui.EventSystemNote, Text: text}}}, nil
 		case trimmed == "/help":
 			return tui.LocalCommandResult{
 				Handled: true,
