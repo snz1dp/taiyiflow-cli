@@ -7,3 +7,6 @@
 /node22
 /python3.12
 /rg
+docs/node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
