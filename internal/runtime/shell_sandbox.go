@@ -124,56 +124,119 @@ func isSandboxRuntimeError(err error) bool {
 
 // sensitivePaths returns absolute paths that should always be denied
 // regardless of sandbox roots. Includes both user-level and system-level
-// sensitive paths, with platform-specific entries.
+// sensitive paths, with platform-specific entries. 清单与桌面端
+// taiyiflow-electron src/utils/sandbox/path-sandbox.ts 的 sensitivePaths()
+// 保持对齐，是 isSensitivePath 与 OS 沙盒拒绝规则的统一数据源。
 func sensitivePaths() []string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil
 	}
 	paths := []string{
+		// SSH/GPG/AWS 凭据目录
 		filepath.Join(homeDir, ".ssh"),
 		filepath.Join(homeDir, ".gnupg"),
 		filepath.Join(homeDir, ".aws"),
+		// Shell 配置文件（可能含环境变量、别名、API Key 等）
+		filepath.Join(homeDir, ".zshrc"),
+		filepath.Join(homeDir, ".bashrc"),
+		filepath.Join(homeDir, ".bash_profile"),
+		filepath.Join(homeDir, ".zprofile"),
+		filepath.Join(homeDir, ".profile"),
+		filepath.Join(homeDir, ".env"),
+		filepath.Join(homeDir, ".gitconfig"),
+		// Shell 历史记录文件（证据文件，清空操作属于证据销毁）
+		filepath.Join(homeDir, ".bash_history"),
+		filepath.Join(homeDir, ".zsh_history"),
+		filepath.Join(homeDir, ".python_history"),
 		// 云平台凭证目录
 		filepath.Join(homeDir, ".kube"),
 		filepath.Join(homeDir, ".docker"),
 		filepath.Join(homeDir, ".azure"),
 		filepath.Join(homeDir, ".config", "gcloud"),
 		filepath.Join(homeDir, ".config", "azure"),
+		filepath.Join(homeDir, ".oci"),
 		// Git 与包管理器凭证文件
 		filepath.Join(homeDir, ".git-credentials"),
 		filepath.Join(homeDir, ".netrc"),
 		filepath.Join(homeDir, ".npmrc"),
 		filepath.Join(homeDir, ".pypirc"),
+		filepath.Join(homeDir, ".gem"),
+		// 基础设施即代码凭据
+		filepath.Join(homeDir, ".terraform.d"),
+		filepath.Join(homeDir, ".ansible"),
+		filepath.Join(homeDir, ".vault-token"),
+		// PKI 与本地密钥环
+		filepath.Join(homeDir, ".pki"),
+		filepath.Join(homeDir, ".local", "share", "keyring"),
+		// 浏览器密码库（可能存储已保存的密码、Cookie、会话令牌）
+		filepath.Join(homeDir, ".mozilla"),
+		filepath.Join(homeDir, ".thunderbird"),
+		filepath.Join(homeDir, ".config", "google-chrome"),
+		filepath.Join(homeDir, ".config", "chromium"),
+	}
+	if runtime.GOOS != "windows" {
+		// 系统级敏感文件（用户账户、认证数据库、系统 SSH 配置与私钥、关键配置）
+		paths = append(paths,
+			"/etc/passwd",
+			"/etc/passwd-",
+			"/etc/shadow",
+			"/etc/shadow-",
+			"/etc/gshadow",
+			"/etc/gshadow-",
+			"/etc/sudoers",
+			"/etc/ssh",
+			"/etc/ssl/private",
+			"/etc/letsencrypt",
+			"/etc/hosts",
+			"/etc/fstab",
+		)
 	}
 	switch runtime.GOOS {
 	case "darwin":
 		paths = append(paths,
 			filepath.Join(homeDir, "Library", "Keychains"),
-			"/etc/passwd",
+			filepath.Join(homeDir, "Library", "Application Support", "Google", "Chrome"),
+			filepath.Join(homeDir, "Library", "Application Support", "Chromium"),
+			filepath.Join(homeDir, "Library", "Application Support", "Firefox"),
 			"/etc/master.passwd",
-			"/etc/sudoers",
 			"/private/etc/passwd",
 			"/private/etc/master.passwd",
 			"/private/etc/sudoers",
 		)
 	case "linux":
-		paths = append(paths,
-			"/etc/passwd",
-			"/etc/shadow",
-			"/etc/gshadow",
-			"/etc/sudoers",
-		)
+		// /etc/* 已在上方统一追加
 	case "windows":
 		systemRoot := os.Getenv("SystemRoot")
 		if systemRoot == "" {
 			systemRoot = `C:\Windows`
 		}
+		systemDrive := os.Getenv("SystemDrive")
+		if systemDrive == "" {
+			systemDrive = `C:`
+		}
 		paths = append(paths,
+			// Windows hosts 文件（域名解析劫持）
+			filepath.Join(systemRoot, "System32", "drivers", "etc", "hosts"),
+			// 注册表蜂巢文件（密码哈希、系统配置）
 			filepath.Join(systemRoot, "System32", "config", "SAM"),
 			filepath.Join(systemRoot, "System32", "config", "SYSTEM"),
 			filepath.Join(systemRoot, "System32", "config", "SECURITY"),
+			filepath.Join(systemRoot, "System32", "config", "SOFTWARE"),
+			filepath.Join(systemRoot, "System32", "config", "DEFAULT"),
+			// Windows 修复目录（含 SAM 备份）
+			filepath.Join(systemRoot, "repair"),
+			// 事件日志目录（证据文件）
+			filepath.Join(systemRoot, "System32", "winevt", "Logs"),
+			// 启动管理器配置
+			filepath.Join(systemDrive, "Boot", "BCD"),
+			// Windows 凭据管理器（凭据、DPAPI 主密钥）
 			filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Credentials"),
+			filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Crypto"),
+			filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Protect"),
+			filepath.Join(homeDir, "AppData", "Local", "Microsoft", "Credentials"),
+			// PowerShell 历史记录（证据文件）
+			filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Windows", "PowerShell", "PSReadLine"),
 		)
 	}
 	return paths

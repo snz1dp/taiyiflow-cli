@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -136,6 +138,64 @@ func TestGuardDangerousCommandSafeCommand(t *testing.T) {
 	err := guardDangerousCommand(payload, cfg)
 	if err != nil {
 		t.Fatalf("expected safe command to pass, got: %v", err)
+	}
+}
+
+// TestGuardDangerousCommandAllowRuleDoesNotBypassGuards verifies that a
+// tool-level allow rule no longer bypasses the dangerous-command guards:
+// allow only skips approval confirmation, high-risk commands stay blocked
+// in auto mode（对齐 Electron 端 handler 硬检查语义）.
+func TestGuardDangerousCommandAllowRuleDoesNotBypassGuards(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "rm -rf /",
+	}
+	cfg := internalconfig.Config{
+		ApprovalMode:    "auto",
+		PermissionRules: []internalconfig.PermissionRule{{ToolName: "shell_exec", Action: "allow"}},
+	}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected rm -rf / to stay blocked under allow rule in auto mode, but got nil error")
+	}
+}
+
+// TestGuardSensitiveFileAccessShellConfig verifies that reading shell config
+// files (which may embed API keys and tokens) is blocked in auto approval mode.
+func TestGuardSensitiveFileAccessShellConfig(t *testing.T) {
+	payload := commandArguments{
+		Mode:       "shell",
+		RawCommand: "cat ~/.zshrc",
+	}
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	err := guardDangerousCommand(payload, cfg)
+	if err == nil {
+		t.Fatal("expected cat ~/.zshrc to be blocked, but got nil error")
+	}
+}
+
+// TestIsSensitivePathExtendedLists verifies the expanded sensitive-path list
+// (shell configs, history files, browser profile stores) and that ordinary
+// workspace paths are unaffected.
+func TestIsSensitivePathExtendedLists(t *testing.T) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir available")
+	}
+	blocked := []string{
+		filepath.Join(homeDir, ".zshrc"),
+		filepath.Join(homeDir, ".env"),
+		filepath.Join(homeDir, ".bash_history"),
+		filepath.Join(homeDir, ".mozilla"),
+	}
+	for _, p := range blocked {
+		if !isSensitivePath(p) {
+			t.Errorf("expected %q to be treated as sensitive", p)
+		}
+	}
+	wd, err := os.Getwd()
+	if err == nil && isSensitivePath(filepath.Join(wd, "main.go")) {
+		t.Error("expected ordinary workspace path to not be sensitive")
 	}
 }
 
@@ -1095,7 +1155,8 @@ func TestGuardDestructive_RmRfHome(t *testing.T) {
 	}
 }
 
-// L3-15: 强制删除工作目录外文件
+// L3-15: 强制删除工作目录外文件（/etc/hosts 现归入敏感文件清单，先命中
+// L3-13 删除敏感文件分支，同样 fail-closed）
 func TestGuardDestructive_RmForceEtcHosts(t *testing.T) {
 	payload := commandArguments{Mode: "shell", RawCommand: "rm -f /etc/hosts"}
 	cfg := internalconfig.Config{ApprovalMode: "auto"}
@@ -1103,8 +1164,8 @@ func TestGuardDestructive_RmForceEtcHosts(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected rm -f /etc/hosts to be blocked")
 	}
-	if !strings.Contains(err.Error(), "系统") {
-		t.Fatalf("expected system file deletion error, got: %v", err)
+	if !strings.Contains(err.Error(), "敏感") {
+		t.Fatalf("expected sensitive file deletion error, got: %v", err)
 	}
 }
 

@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 
@@ -504,59 +503,12 @@ func isWithinRoot(target string, root string) bool {
 }
 
 func isSensitivePath(target string) bool {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	blocked := []string{
-		filepath.Join(homeDir, ".ssh"),
-		filepath.Join(homeDir, ".gnupg"),
-		filepath.Join(homeDir, ".aws"),
-		// 云平台凭证目录
-		filepath.Join(homeDir, ".kube"),
-		filepath.Join(homeDir, ".docker"),
-		filepath.Join(homeDir, ".azure"),
-		filepath.Join(homeDir, ".config", "gcloud"),
-		filepath.Join(homeDir, ".config", "azure"),
-		// Git 与包管理器凭证文件
-		filepath.Join(homeDir, ".git-credentials"),
-		filepath.Join(homeDir, ".netrc"),
-		filepath.Join(homeDir, ".npmrc"),
-		filepath.Join(homeDir, ".pypirc"),
-	}
-	switch runtime.GOOS {
-	case "darwin":
-		blocked = append(blocked,
-			filepath.Join(homeDir, "Library", "Keychains"),
-			"/etc/passwd",
-			"/etc/master.passwd",
-			"/etc/sudoers",
-			"/private/etc/passwd",
-			"/private/etc/master.passwd",
-			"/private/etc/sudoers",
-		)
-	case "linux":
-		blocked = append(blocked,
-			"/etc/passwd",
-			"/etc/shadow",
-			"/etc/gshadow",
-			"/etc/sudoers",
-		)
-	case "windows":
-		// Windows 敏感注册表蜂巢文件和凭证目录
-		blocked = append(blocked,
-			filepath.Join(os.Getenv("SystemRoot"), "System32", "config", "SAM"),
-			filepath.Join(os.Getenv("SystemRoot"), "System32", "config", "SYSTEM"),
-			filepath.Join(os.Getenv("SystemRoot"), "System32", "config", "SECURITY"),
-			filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Credentials"),
-		)
-	}
 	// 解析符号链接，确保 /private/etc/* 等链接路径也能被拦截。
 	cleanTarget, err := filepath.EvalSymlinks(target)
 	if err != nil {
 		cleanTarget = target
 	}
-	for _, item := range blocked {
+	for _, item := range sensitivePaths() {
 		if isWithinRoot(cleanTarget, item) || cleanTarget == item {
 			return true
 		}
@@ -619,12 +571,11 @@ func isSensitiveEnvKey(key string) bool {
 }
 
 func guardDangerousCommand(payload commandArguments, config internalconfig.Config) error {
+	// deny 立即拒绝；allow 仅跳过审批确认（runCommand 层），不在守卫内短路——
+	// 高危命令守卫在 auto 模式下仍需生效（对齐 Electron 端 handler 硬检查语义）。
 	if action, matched := evaluatePermissionAction(config, "shell_exec", payload.RawCommand+" "+payload.Command+" "+strings.Join(payload.Args, " ")); matched {
-		switch action {
-		case "deny":
+		if action == "deny" {
 			return newToolError("PERMISSION_DENIED", "命中权限规则，拒绝执行")
-		case "allow":
-			return nil
 		}
 	}
 	preview := strings.ToLower(strings.TrimSpace(payload.RawCommand + " " + payload.Command + " " + strings.Join(payload.Args, " ")))
@@ -836,6 +787,26 @@ func sensitivePathFragmentsForGuard() []string {
 		"system32\\drivers\\etc\\hosts",
 		// Windows 凭证目录
 		"microsoft\\credentials",
+		// Shell 配置文件（可能含 API Key、TOKEN 等环境变量）
+		".zshrc", ".bashrc", ".bash_profile", ".zprofile", ".profile", ".env",
+		".gitconfig",
+		// Shell 历史记录（证据文件）
+		"psreadline", "consolehost_history.txt",
+		// 基础设施即代码与 PKI 凭据
+		"/.gem/", "/.terraform.d", "/.ansible", ".vault-token", "/.pki/",
+		".local/share/keyring", ".local\\share\\keyring",
+		".config/oci/", ".config\\oci\\",
+		// 浏览器密码库
+		"/.mozilla", "/.thunderbird", ".config/google-chrome/", ".config/chromium/",
+		"library/application support/google/chrome",
+		"library/application support/chromium",
+		"library/application support/firefox",
+		// 系统关键文件补充
+		"/etc/hosts", "/etc/fstab", "/etc/ssh", "/etc/ssl/private",
+		"/etc/letsencrypt", "/etc/passwd-", "/etc/shadow-", "/etc/gshadow-",
+		// Windows 补充
+		"system32\\config\\software", "system32\\config\\default",
+		"system32\\winevt", "microsoft\\crypto", "microsoft\\protect",
 	}
 }
 
@@ -1039,6 +1010,7 @@ func guardDestructiveActions(payload commandArguments, preview string) error {
 	historyPaths := []string{
 		".bash_history", ".zsh_history", ".python_history",
 		".lesshst", ".viminfo", "authorized_keys",
+		"psreadline", "consolehost_history.txt",
 	}
 
 	// --- L3-13, L3-14, L3-15: rm 系列删除 ---
