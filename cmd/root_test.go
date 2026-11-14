@@ -404,27 +404,6 @@ func (s stubProvider) GetOnlineDesktopClients(context.Context) ([]provider.Onlin
 	return nil, nil
 }
 
-// AgentApp 接口桩（P6.2）：测试不触达 agentapp 命令，返回零值即可满足接口。
-func (s stubProvider) ListAgentApps(context.Context, bool, int, int) ([]provider.AgentApp, error) {
-	return nil, nil
-}
-
-func (s stubProvider) ListAgentAppPlugins(context.Context, string, int, int) (*provider.AgentAppPluginPage, error) {
-	return &provider.AgentAppPluginPage{}, nil
-}
-
-func (s stubProvider) ListAgentAppInstallRecords(context.Context, string, int, int) (*provider.AgentAppInstallRecordPage, error) {
-	return &provider.AgentAppInstallRecordPage{}, nil
-}
-
-func (s stubProvider) InstallAgentApp(context.Context, provider.AgentAppInstallRequest) (*provider.AgentAppInstallRecord, error) {
-	return &provider.AgentAppInstallRecord{}, nil
-}
-
-func (s stubProvider) UninstallAgentApp(context.Context, string) (*provider.AgentAppInstallRecord, error) {
-	return &provider.AgentAppInstallRecord{}, nil
-}
-
 func streamWithEvents(events ...provider.StreamEvent) <-chan provider.StreamEvent {
 	stream := make(chan provider.StreamEvent, len(events))
 	for _, event := range events {
