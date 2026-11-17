@@ -128,52 +128,53 @@ func isSandboxRuntimeError(err error) bool {
 // taiyiflow-electron src/utils/sandbox/path-sandbox.ts 的 sensitivePaths()
 // 保持对齐，是 isSensitivePath 与 OS 沙盒拒绝规则的统一数据源。
 func sensitivePaths() []string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	paths := []string{
-		// SSH/GPG/AWS 凭据目录
-		filepath.Join(homeDir, ".ssh"),
-		filepath.Join(homeDir, ".gnupg"),
-		filepath.Join(homeDir, ".aws"),
-		// Shell 配置文件（可能含环境变量、别名、API Key 等）
-		filepath.Join(homeDir, ".zshrc"),
-		filepath.Join(homeDir, ".bashrc"),
-		filepath.Join(homeDir, ".bash_profile"),
-		filepath.Join(homeDir, ".zprofile"),
-		filepath.Join(homeDir, ".profile"),
-		filepath.Join(homeDir, ".env"),
-		filepath.Join(homeDir, ".gitconfig"),
-		// Shell 历史记录文件（证据文件，清空操作属于证据销毁）
-		filepath.Join(homeDir, ".bash_history"),
-		filepath.Join(homeDir, ".zsh_history"),
-		filepath.Join(homeDir, ".python_history"),
-		// 云平台凭证目录
-		filepath.Join(homeDir, ".kube"),
-		filepath.Join(homeDir, ".docker"),
-		filepath.Join(homeDir, ".azure"),
-		filepath.Join(homeDir, ".config", "gcloud"),
-		filepath.Join(homeDir, ".config", "azure"),
-		filepath.Join(homeDir, ".oci"),
-		// Git 与包管理器凭证文件
-		filepath.Join(homeDir, ".git-credentials"),
-		filepath.Join(homeDir, ".netrc"),
-		filepath.Join(homeDir, ".npmrc"),
-		filepath.Join(homeDir, ".pypirc"),
-		filepath.Join(homeDir, ".gem"),
-		// 基础设施即代码凭据
-		filepath.Join(homeDir, ".terraform.d"),
-		filepath.Join(homeDir, ".ansible"),
-		filepath.Join(homeDir, ".vault-token"),
-		// PKI 与本地密钥环
-		filepath.Join(homeDir, ".pki"),
-		filepath.Join(homeDir, ".local", "share", "keyring"),
-		// 浏览器密码库（可能存储已保存的密码、Cookie、会话令牌）
-		filepath.Join(homeDir, ".mozilla"),
-		filepath.Join(homeDir, ".thunderbird"),
-		filepath.Join(homeDir, ".config", "google-chrome"),
-		filepath.Join(homeDir, ".config", "chromium"),
+	// 家目录解析失败时仍返回系统级敏感路径，避免整体 fail-open。
+	homeDir, _ := os.UserHomeDir()
+	var paths []string
+	if homeDir != "" {
+		paths = append(paths,
+			// SSH/GPG/AWS 凭据目录
+			filepath.Join(homeDir, ".ssh"),
+			filepath.Join(homeDir, ".gnupg"),
+			filepath.Join(homeDir, ".aws"),
+			// Shell 配置文件（可能含环境变量、别名、API Key 等）
+			filepath.Join(homeDir, ".zshrc"),
+			filepath.Join(homeDir, ".bashrc"),
+			filepath.Join(homeDir, ".bash_profile"),
+			filepath.Join(homeDir, ".zprofile"),
+			filepath.Join(homeDir, ".profile"),
+			filepath.Join(homeDir, ".env"),
+			filepath.Join(homeDir, ".gitconfig"),
+			// Shell 历史记录文件（证据文件，清空操作属于证据销毁）
+			filepath.Join(homeDir, ".bash_history"),
+			filepath.Join(homeDir, ".zsh_history"),
+			filepath.Join(homeDir, ".python_history"),
+			// 云平台凭证目录
+			filepath.Join(homeDir, ".kube"),
+			filepath.Join(homeDir, ".docker"),
+			filepath.Join(homeDir, ".azure"),
+			filepath.Join(homeDir, ".config", "gcloud"),
+			filepath.Join(homeDir, ".config", "azure"),
+			filepath.Join(homeDir, ".oci"),
+			// Git 与包管理器凭证文件
+			filepath.Join(homeDir, ".git-credentials"),
+			filepath.Join(homeDir, ".netrc"),
+			filepath.Join(homeDir, ".npmrc"),
+			filepath.Join(homeDir, ".pypirc"),
+			filepath.Join(homeDir, ".gem"),
+			// 基础设施即代码凭据
+			filepath.Join(homeDir, ".terraform.d"),
+			filepath.Join(homeDir, ".ansible"),
+			filepath.Join(homeDir, ".vault-token"),
+			// PKI 与本地密钥环
+			filepath.Join(homeDir, ".pki"),
+			filepath.Join(homeDir, ".local", "share", "keyring"),
+			// 浏览器密码库（可能存储已保存的密码、Cookie、会话令牌）
+			filepath.Join(homeDir, ".mozilla"),
+			filepath.Join(homeDir, ".thunderbird"),
+			filepath.Join(homeDir, ".config", "google-chrome"),
+			filepath.Join(homeDir, ".config", "chromium"),
+		)
 	}
 	if runtime.GOOS != "windows" {
 		// 系统级敏感文件（用户账户、认证数据库、系统 SSH 配置与私钥、关键配置）
@@ -194,11 +195,15 @@ func sensitivePaths() []string {
 	}
 	switch runtime.GOOS {
 	case "darwin":
+		if homeDir != "" {
+			paths = append(paths,
+				filepath.Join(homeDir, "Library", "Keychains"),
+				filepath.Join(homeDir, "Library", "Application Support", "Google", "Chrome"),
+				filepath.Join(homeDir, "Library", "Application Support", "Chromium"),
+				filepath.Join(homeDir, "Library", "Application Support", "Firefox"),
+			)
+		}
 		paths = append(paths,
-			filepath.Join(homeDir, "Library", "Keychains"),
-			filepath.Join(homeDir, "Library", "Application Support", "Google", "Chrome"),
-			filepath.Join(homeDir, "Library", "Application Support", "Chromium"),
-			filepath.Join(homeDir, "Library", "Application Support", "Firefox"),
 			"/etc/master.passwd",
 			"/private/etc/passwd",
 			"/private/etc/master.passwd",
@@ -208,6 +213,9 @@ func sensitivePaths() []string {
 		// /etc/* 已在上方统一追加
 	case "windows":
 		systemRoot := os.Getenv("SystemRoot")
+		if systemRoot == "" {
+			systemRoot = os.Getenv("WINDIR")
+		}
 		if systemRoot == "" {
 			systemRoot = `C:\Windows`
 		}
@@ -230,14 +238,18 @@ func sensitivePaths() []string {
 			filepath.Join(systemRoot, "System32", "winevt", "Logs"),
 			// 启动管理器配置
 			filepath.Join(systemDrive, "Boot", "BCD"),
-			// Windows 凭据管理器（凭据、DPAPI 主密钥）
-			filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Credentials"),
-			filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Crypto"),
-			filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Protect"),
-			filepath.Join(homeDir, "AppData", "Local", "Microsoft", "Credentials"),
-			// PowerShell 历史记录（证据文件）
-			filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Windows", "PowerShell", "PSReadLine"),
 		)
+		if homeDir != "" {
+			paths = append(paths,
+				// Windows 凭据管理器（凭据、DPAPI 主密钥）
+				filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Credentials"),
+				filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Crypto"),
+				filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Protect"),
+				filepath.Join(homeDir, "AppData", "Local", "Microsoft", "Credentials"),
+				// PowerShell 历史记录（证据文件）
+				filepath.Join(homeDir, "AppData", "Roaming", "Microsoft", "Windows", "PowerShell", "PSReadLine"),
+			)
+		}
 	}
 	return paths
 }

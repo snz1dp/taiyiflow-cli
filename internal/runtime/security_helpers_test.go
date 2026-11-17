@@ -2237,3 +2237,65 @@ func TestGuardWindows_EnvVar_SafeCommand_DDrive(t *testing.T) {
 		t.Fatalf("expected dir D:\\Users\\test\\Documents to be allowed, got %v", err)
 	}
 }
+
+func TestContainsSensitiveFragment(t *testing.T) {
+	cases := []struct {
+		preview  string
+		fragment string
+		want     bool
+	}{
+		{"cat .env", ".env", true},
+		{"cat ~/.env", ".env", true},
+		{"cat '.env'", ".env", true},
+		{"cat .env*", ".env", true},
+		{"cat .env/", ".env", true},
+		{"cat .env.example", ".env", false},
+		{"cat .env.local", ".env", false},
+		{"cat .envrc", ".env", false},
+		{"cat my.env", ".env", false},
+		{"cat .zshrc", ".zshrc", true},
+		{"cat .zshrc.bak", ".zshrc", false},
+		{"cat user.profile", ".profile", false},
+		{"get-psreadlineoption", "psreadline", true},
+		{"cat ~/.ssh/id_rsa", ".ssh/", true},
+		{"cat /etc/passwd-", "/etc/passwd", true},
+		{`type c:\users\t\.gem\credentials`, `\.gem\`, true},
+	}
+	for _, tt := range cases {
+		if got := containsSensitiveFragment(tt.preview, tt.fragment); got != tt.want {
+			t.Errorf("containsSensitiveFragment(%q, %q) = %t, want %t", tt.preview, tt.fragment, got, tt.want)
+		}
+	}
+}
+
+func TestGuardSensitiveFileAccessEnvDerivedNames(t *testing.T) {
+	cfg := internalconfig.Config{ApprovalMode: "auto"}
+	blocked := []string{
+		"cat .env",
+		"cat ~/.env",
+		"grep KEY .env",
+		"cat .zshrc",
+		`type C:\Users\test\.terraform.d\credentials`,
+		`type C:\Users\test\.gem\credentials`,
+		`type C:\Users\test\.mozilla\firefox\profiles.ini`,
+		"powershell -c \"Get-Content (Get-PSReadLineOption).HistorySavePath\"",
+	}
+	for _, cmd := range blocked {
+		if err := guardDangerousCommand(commandArguments{Mode: "shell", RawCommand: cmd}, cfg); err == nil {
+			t.Errorf("expected %q to be blocked", cmd)
+		}
+	}
+	allowed := []string{
+		"cat .env.example",
+		"cat .env.local",
+		"grep KEY .env.production",
+		"ls .env.example",
+		"cat my.env",
+		"cat user.profile",
+	}
+	for _, cmd := range allowed {
+		if err := guardDangerousCommand(commandArguments{Mode: "shell", RawCommand: cmd}, cfg); err != nil {
+			t.Errorf("expected %q to be allowed, got %v", cmd, err)
+		}
+	}
+}

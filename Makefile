@@ -6,8 +6,6 @@ APP_NAME := taiyiflow-cli
 GO ?= go
 NPM ?= npm
 CGO_ENABLED ?= 0
-# 宿主仓库共享 schema 路径（sync-plugin-schema 目标使用，可按本机布局覆盖）
-HOST_SCHEMA_PATH ?= ../taiyiflow-electron/schemas/plugin-manifest.schema.json
 DARWIN_CGO_ENABLED ?= 1
 # linux/386 需要 CGO_ENABLED=1 以创建 extra M（cgoHasExtraM），
 # 否则信号到达非 Go 线程时 sigFetchG 返回 nil，badsignal 直接 exit(2) 崩溃。
@@ -52,7 +50,7 @@ TAIYIFLOW_COMPUTER_LIVE_BROWSER ?= chrome
 RELEASE_CROSS_PLATFORMS ?= linux/amd64 linux/arm64 windows/amd64 windows/386 windows/arm64
 RELEASE_DARWIN_PLATFORMS ?= darwin/amd64 darwin/arm64
 
-.PHONY: help build build-all build-release build-release-cross build-release-386 build-release-386-local build-release-386-musl build-release-386-musl-local build-release-darwin-native verify-computer-live-darwin release browser-extension-dist browser-extension-dist-docker test clean check-go check-npm check-docker check-browser-extension-dist sync-plugin-schema
+.PHONY: help build build-all build-release build-release-cross build-release-386 build-release-386-local build-release-386-musl build-release-386-musl-local build-release-darwin-native verify-computer-live-darwin release browser-extension-dist browser-extension-dist-docker test clean check-go check-npm check-docker check-browser-extension-dist
 
 help:
 	@printf '%s\n' \
@@ -185,17 +183,6 @@ release: check-docker browser-extension-dist-docker
 
 test: check-go
 	@"$(GO)" test ./...
-
-# 同步宿主共享 schema 到 CLI 嵌入目录（DevKit 批次 2，plugin-devkit-plan.md 4.1）。
-# 宿主修改 schemas/plugin-manifest.schema.json 后执行，保证 CLI 校验与宿主一致。
-sync-plugin-schema:
-	@if [ -f "$(HOST_SCHEMA_PATH)" ]; then \
-		cp "$(HOST_SCHEMA_PATH)" internal/plugins/schemas/plugin-manifest.schema.json; \
-		echo "已同步宿主 schema 到 internal/plugins/schemas/"; \
-	else \
-		echo "宿主 schema 不存在: $(HOST_SCHEMA_PATH)（请确认 taiyiflow-electron 仓库路径）"; \
-		exit 1; \
-	fi
 
 clean:
 	@rm -rf $(BUILD_DIR) $(APP_NAME)

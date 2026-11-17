@@ -751,7 +751,7 @@ func guardSensitiveFileAccess(payload commandArguments, preview string) error {
 		return nil
 	}
 	for _, fragment := range sensitivePathFragments {
-		if strings.Contains(preview, fragment) {
+		if containsSensitiveFragment(preview, fragment) {
 			return newToolError("PERMISSION_DENIED", "检测到敏感文件访问（%s），请切换到允许模式后再执行", fragment)
 		}
 	}
@@ -793,11 +793,14 @@ func sensitivePathFragmentsForGuard() []string {
 		// Shell 历史记录（证据文件）
 		"psreadline", "consolehost_history.txt",
 		// 基础设施即代码与 PKI 凭据
-		"/.gem/", "/.terraform.d", "/.ansible", ".vault-token", "/.pki/",
+		"/.gem/", "\\.gem\\", "/.terraform.d", "\\.terraform.d",
+		"/.ansible", "\\.ansible", ".vault-token", "/.pki/", "\\.pki\\",
 		".local/share/keyring", ".local\\share\\keyring",
 		".config/oci/", ".config\\oci\\",
 		// 浏览器密码库
-		"/.mozilla", "/.thunderbird", ".config/google-chrome/", ".config/chromium/",
+		"/.mozilla", "\\.mozilla", "/.thunderbird", "\\.thunderbird",
+		".config/google-chrome/", ".config\\google-chrome\\",
+		".config/chromium/", ".config\\chromium\\",
 		"library/application support/google/chrome",
 		"library/application support/chromium",
 		"library/application support/firefox",
@@ -808,6 +811,34 @@ func sensitivePathFragmentsForGuard() []string {
 		"system32\\config\\software", "system32\\config\\default",
 		"system32\\winevt", "microsoft\\crypto", "microsoft\\protect",
 	}
+}
+
+// containsSensitiveFragment 判断命令预览是否引用敏感路径片段。
+// 点开头且不以分隔符结尾的文件名类片段（.env、.zshrc 等）按词边界匹配，
+// 避免 .env.example、.env.local 等派生文件名被误拦；目录前缀类及其余
+// 片段保持子串匹配，防止 Get-PSReadLineOption 等内嵌写法绕过。
+func containsSensitiveFragment(preview, fragment string) bool {
+	if !strings.HasPrefix(fragment, ".") || strings.HasSuffix(fragment, "/") || strings.HasSuffix(fragment, "\\") {
+		return strings.Contains(preview, fragment)
+	}
+	for offset := 0; ; {
+		idx := strings.Index(preview[offset:], fragment)
+		if idx < 0 {
+			return false
+		}
+		start := offset + idx
+		end := start + len(fragment)
+		beforeOK := start == 0 || !fragmentIdentChar(preview[start-1])
+		afterOK := end == len(preview) || (!fragmentIdentChar(preview[end]) && preview[end] != '.')
+		if beforeOK && afterOK {
+			return true
+		}
+		offset = start + 1
+	}
+}
+
+func fragmentIdentChar(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_'
 }
 
 // guardSymlinkEscape 检测通过 ln -s 创建指向敏感路径的符号链接。
@@ -827,7 +858,7 @@ func guardSymlinkEscape(payload commandArguments, preview string) error {
 		return nil
 	}
 	for _, fragment := range sensitivePathFragmentsForGuard() {
-		if strings.Contains(preview, fragment) {
+		if containsSensitiveFragment(preview, fragment) {
 			return newToolError("PERMISSION_DENIED", "检测到符号链接指向敏感路径（%s），请切换到允许模式后再执行", fragment)
 		}
 	}
@@ -891,7 +922,7 @@ func guardScriptSensitiveAccess(payload commandArguments, preview string) error 
 		return nil
 	}
 	for _, fragment := range sensitivePathFragmentsForGuard() {
-		if strings.Contains(preview, fragment) {
+		if containsSensitiveFragment(preview, fragment) {
 			return newToolError("PERMISSION_DENIED", "检测到脚本语言访问敏感文件（%s），请切换到允许模式后再执行", fragment)
 		}
 	}
@@ -905,7 +936,7 @@ func guardBase64Bypass(payload commandArguments, preview string) error {
 	// base64 命令直接跟文件路径
 	if strings.Contains(preview, "base64 ") {
 		for _, fragment := range sensitivePathFragmentsForGuard() {
-			if strings.Contains(preview, fragment) {
+			if containsSensitiveFragment(preview, fragment) {
 				return newToolError("PERMISSION_DENIED", "检测到通过 base64 编码访问敏感文件（%s），请切换到允许模式后再执行", fragment)
 			}
 		}
@@ -918,7 +949,7 @@ func guardBase64Bypass(payload commandArguments, preview string) error {
 	for _, p := range pipeBase64Patterns {
 		if strings.Contains(preview, p) {
 			for _, fragment := range sensitivePathFragmentsForGuard() {
-				if strings.Contains(preview, fragment) {
+				if containsSensitiveFragment(preview, fragment) {
 					return newToolError("PERMISSION_DENIED", "检测到通过管道 base64 编码访问敏感文件（%s），请切换到允许模式后再执行", fragment)
 				}
 			}
@@ -929,7 +960,7 @@ func guardBase64Bypass(payload commandArguments, preview string) error {
 	for _, p := range encodeCmds {
 		if strings.Contains(preview, p) {
 			for _, fragment := range sensitivePathFragmentsForGuard() {
-				if strings.Contains(preview, fragment) {
+				if containsSensitiveFragment(preview, fragment) {
 					return newToolError("PERMISSION_DENIED", "检测到通过编码绕过访问敏感文件（%s），请切换到允许模式后再执行", fragment)
 				}
 			}
@@ -1017,7 +1048,7 @@ func guardDestructiveActions(payload commandArguments, preview string) error {
 	if strings.Contains(preview, "rm ") || strings.Contains(preview, "rm\t") {
 		// L3-13: rm 敏感文件（如 rm ~/.ssh/id_rsa）
 		for _, fragment := range sensitivePathFragmentsForGuard() {
-			if strings.Contains(preview, fragment) {
+			if containsSensitiveFragment(preview, fragment) {
 				return newToolError("PERMISSION_DENIED",
 					"检测到删除敏感文件（%s），该操作不可逆，已拦截", fragment)
 			}
@@ -1061,7 +1092,7 @@ func guardDestructiveActions(payload commandArguments, preview string) error {
 		if strings.Contains(preview, "777") || strings.Contains(preview, "a+rwx") ||
 			strings.Contains(preview, "a+rw") || strings.Contains(preview, "a=rwx") {
 			for _, fragment := range sensitivePathFragmentsForGuard() {
-				if strings.Contains(preview, fragment) {
+				if containsSensitiveFragment(preview, fragment) {
 					return newToolError("PERMISSION_DENIED",
 						"检测到修改敏感文件权限为全局可读写（%s），已拦截", fragment)
 				}
@@ -1078,7 +1109,7 @@ func guardDestructiveActions(payload commandArguments, preview string) error {
 	// --- L3-17: chown 敏感文件 ---
 	if strings.Contains(preview, "chown ") {
 		for _, fragment := range sensitivePathFragmentsForGuard() {
-			if strings.Contains(preview, fragment) {
+			if containsSensitiveFragment(preview, fragment) {
 				return newToolError("PERMISSION_DENIED",
 					"检测到修改敏感文件所有者（%s），已拦截", fragment)
 			}
@@ -1138,7 +1169,7 @@ func guardDestructiveActions(payload commandArguments, preview string) error {
 				}
 			}
 			for _, fragment := range sensitivePathFragmentsForGuard() {
-				if strings.Contains(preview, fragment) {
+				if containsSensitiveFragment(preview, fragment) {
 					return newToolError("PERMISSION_DENIED",
 						"检测到清空敏感文件内容（%s，疑似证据销毁），已拦截", fragment)
 				}
@@ -1263,7 +1294,7 @@ func guardScriptDestructiveActions(payload commandArguments, preview string) err
 
 	// 检查脚本中是否包含敏感路径
 	for _, fragment := range sensitivePathFragmentsForGuard() {
-		if strings.Contains(preview, fragment) {
+		if containsSensitiveFragment(preview, fragment) {
 			return newToolError("PERMISSION_DENIED",
 				"检测到脚本语言执行破坏性操作访问敏感路径（%s），已拦截", fragment)
 		}
@@ -1439,7 +1470,7 @@ func guardWindowsDestructiveActions(payload commandArguments, preview string) er
 	if strings.Contains(preview, "del ") || strings.Contains(preview, "erase ") {
 		// 检查是否删除敏感路径
 		for _, fragment := range sensitivePathFragmentsForGuard() {
-			if strings.Contains(preview, fragment) {
+			if containsSensitiveFragment(preview, fragment) {
 				return newToolError("PERMISSION_DENIED",
 					"检测到删除敏感文件（%s），该操作不可逆，已拦截", fragment)
 			}
@@ -1466,7 +1497,7 @@ func guardWindowsDestructiveActions(payload commandArguments, preview string) er
 		if strings.Contains(preview, "/s") || strings.Contains(preview, "-s") {
 			// 递归删除，检查敏感路径
 			for _, fragment := range sensitivePathFragmentsForGuard() {
-				if strings.Contains(preview, fragment) {
+				if containsSensitiveFragment(preview, fragment) {
 					return newToolError("PERMISSION_DENIED",
 						"检测到递归删除敏感目录（%s），已拦截", fragment)
 				}
@@ -1657,7 +1688,7 @@ func guardWindowsDestructiveActions(payload commandArguments, preview string) er
 			strings.Contains(preview, "-r ") || strings.Contains(preview, "-f ") {
 			// 检查敏感路径
 			for _, fragment := range sensitivePathFragmentsForGuard() {
-				if strings.Contains(preview, fragment) {
+				if containsSensitiveFragment(preview, fragment) {
 					return newToolError("PERMISSION_DENIED",
 						"检测到 PowerShell 递归删除敏感路径（%s），已拦截", fragment)
 				}
@@ -1681,7 +1712,7 @@ func guardWindowsDestructiveActions(payload commandArguments, preview string) er
 	// Clear-Content 清空文件内容
 	if strings.Contains(preview, "clear-content") || strings.Contains(preview, "clc ") {
 		for _, fragment := range sensitivePathFragmentsForGuard() {
-			if strings.Contains(preview, fragment) {
+			if containsSensitiveFragment(preview, fragment) {
 				return newToolError("PERMISSION_DENIED",
 					"检测到 PowerShell 清空敏感文件内容（%s），已拦截", fragment)
 			}
@@ -1691,7 +1722,7 @@ func guardWindowsDestructiveActions(payload commandArguments, preview string) er
 	// Set-Content 覆盖文件内容
 	if strings.Contains(preview, "set-content") {
 		for _, fragment := range sensitivePathFragmentsForGuard() {
-			if strings.Contains(preview, fragment) {
+			if containsSensitiveFragment(preview, fragment) {
 				return newToolError("PERMISSION_DENIED",
 					"检测到 PowerShell 覆盖敏感文件内容（%s），已拦截", fragment)
 			}

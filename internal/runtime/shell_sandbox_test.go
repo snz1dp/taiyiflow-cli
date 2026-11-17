@@ -423,3 +423,34 @@ func TestLinuxBwrapArgsNoGlobalEtc(t *testing.T) {
 func execLookPath(name string) (string, error) {
 	return exec.LookPath(name)
 }
+
+// TestSensitivePathsSurvivesHomeDirFailure 验证家目录解析失败时系统级
+// 敏感路径仍然受保护，不整体 fail-open。
+func TestSensitivePathsSurvivesHomeDirFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", "")
+		t.Setenv("HOMEDRIVE", "")
+		t.Setenv("HOMEPATH", "")
+	} else {
+		t.Setenv("HOME", "")
+	}
+	paths := sensitivePaths()
+	if len(paths) == 0 {
+		t.Fatal("sensitivePaths must not fail open when home dir is unavailable")
+	}
+	if runtime.GOOS != "windows" {
+		found := false
+		for _, p := range paths {
+			if p == "/etc/passwd" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("/etc/passwd must remain protected without HOME")
+		}
+		if !isSensitivePath("/etc/passwd") {
+			t.Error("isSensitivePath(/etc/passwd) must be true without HOME")
+		}
+	}
+}

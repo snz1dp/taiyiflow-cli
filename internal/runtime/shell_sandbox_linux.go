@@ -48,6 +48,7 @@ func buildSandboxedCommandPlatform(ctx context.Context, payload commandArguments
 //   - Specific /etc files: read-only (only essential config files)
 //   - /dev, /proc: virtual filesystems for process management
 //   - workdir + allowRoots: read-write
+//   - Sensitive paths inside bound roots: masked (empty tmpfs / read-only /dev/null)
 //   - Everything else: not visible (not mounted)
 func buildBwrapArgs(workDir string, allowRoots []string) []string {
 	var args []string
@@ -88,17 +89,41 @@ func buildBwrapArgs(workDir string, allowRoots []string) []string {
 	args = append(args, "--proc", "/proc")
 
 	// Read-write paths: workdir and sandbox roots.
+	// 敏感路径与 darwin profile 的 deny 规则对齐：绑定根内的敏感目录用空
+	// tmpfs 覆盖、敏感文件用 /dev/null 只读覆盖；根本身位于敏感路径内则
+	// 跳过绑定（fail-closed）。仅覆盖宿主上真实存在的路径，避免 bwrap
+	// 在宿主目录中创建挂载点。
+	sensitive := sensitivePaths()
+	overlaid := map[string]bool{}
 	seen := map[string]bool{}
-	if workDir != "" {
-		args = append(args, "--bind", workDir, workDir)
-		seen[workDir] = true
-	}
-	for _, root := range allowRoots {
+	bindRoot := func(root string) {
 		if seen[root] {
-			continue
+			return
+		}
+		seen[root] = true
+		for _, sp := range sensitive {
+			if isWithinRoot(root, sp) {
+				return
+			}
 		}
 		args = append(args, "--bind", root, root)
-		seen[root] = true
+		for _, sp := range sensitive {
+			if overlaid[sp] || !isWithinRoot(sp, root) || !pathExists(sp) {
+				continue
+			}
+			overlaid[sp] = true
+			if info, err := os.Stat(sp); err == nil && info.IsDir() {
+				args = append(args, "--tmpfs", sp)
+			} else {
+				args = append(args, "--ro-bind", "/dev/null", sp)
+			}
+		}
+	}
+	if workDir != "" {
+		bindRoot(workDir)
+	}
+	for _, root := range allowRoots {
+		bindRoot(root)
 	}
 
 	// Unshare all namespaces (pid, ipc, uts, user) but keep network shared.
