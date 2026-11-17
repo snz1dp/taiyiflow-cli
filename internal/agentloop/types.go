@@ -45,8 +45,14 @@ type RecoveryState struct {
 	UpdatedAt          time.Time       `json:"updated_at"`
 }
 
+// FreezeResumable 判定可自动续跑的网络冻结中断，不要求本地已持有检查点：
+// 冻结关闭事件可能先于 checkpoint 事件到达，恢复时可再向服务端查询检查点。
+func (s RecoveryState) FreezeResumable() bool {
+	return s.Intent == IntentResume && s.AwaitingResume && !s.InvalidatedByUser && s.PauseReason == "network" && !s.RequiresUserResume && s.RunID != ""
+}
+
 func (s RecoveryState) AutoResumable() bool {
-	return s.Intent == IntentResume && s.AwaitingResume && !s.InvalidatedByUser && s.PauseReason == "network" && !s.RequiresUserResume && s.RunID != "" && s.CheckpointID != "" && s.CheckpointVersion > 0
+	return s.FreezeResumable() && s.CheckpointID != "" && s.CheckpointVersion > 0
 }
 
 func (s RecoveryState) ResumeRequest() (provider.StreamRequest, error) {

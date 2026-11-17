@@ -183,7 +183,7 @@ func (c *Controller) ObserveEvent(event provider.StreamEvent) (EventInfo, error)
 }
 
 func terminalIsResumable(state RecoveryState, info EventInfo) bool {
-	return !info.RunFinished && state.AutoResumable()
+	return !info.RunFinished && state.FreezeResumable()
 }
 
 // TerminalIsResumableFreeze 判断终态事件是否只是网络冻结导致的断流：这类中断仍可由恢复循环续跑。
@@ -195,7 +195,7 @@ func (c *Controller) TerminalIsResumableFreeze(sessionID string, info EventInfo)
 	if err != nil {
 		return false
 	}
-	return state.AutoResumable()
+	return state.FreezeResumable()
 }
 
 // finalizeTerminal 落地真终态：标记结束后删除恢复状态；用户暂停需保留 run 身份供显式恢复，
@@ -217,7 +217,8 @@ func (c *Controller) finalizeTerminal(sessionID, runID string, info EventInfo) e
 	if _, err := c.Store.MarkTerminal(sessionID, runID); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := c.Store.ClearRecovery(sessionID, runID); err != nil && !errors.Is(err, os.ErrNotExist) {
+	// 锁竞争时跳过删除：MarkTerminal 已中和恢复能力，残留状态不会被自动续跑。
+	if err := c.Store.ClearRecovery(sessionID, runID); err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, ErrClaimed) {
 		return err
 	}
 	return nil
@@ -406,8 +407,9 @@ type ResumeAttempt struct {
 	Request    provider.StreamRequest
 	claim      *RecoveryClaim
 
-	mu    sync.Mutex
-	ready bool
+	mu             sync.Mutex
+	ready          bool
+	retryScheduled bool
 }
 
 func (a *ResumeAttempt) Observe(event provider.StreamEvent) (EventInfo, error) {
@@ -422,7 +424,7 @@ func (a *ResumeAttempt) Observe(event provider.StreamEvent) (EventInfo, error) {
 		}
 	}
 	if info.NetworkFreeze {
-		a.controller.scheduleRetry(a.state, info.RetryAfter)
+		a.scheduleRetryOnce(info.RetryAfter)
 	}
 	return info, err
 }
@@ -432,7 +434,7 @@ func (a *ResumeAttempt) Close() {
 	ready := a.ready
 	a.mu.Unlock()
 	if !ready {
-		a.controller.scheduleRetry(a.state, 0)
+		a.scheduleRetryOnce(0)
 	}
 	if a.claim != nil {
 		_ = a.claim.Release()
@@ -440,7 +442,22 @@ func (a *ResumeAttempt) Close() {
 	}
 }
 
+// scheduleRetryOnce 保证同一次恢复尝试只登记一次重试：冻结事件与随后的 Close
+// 都会触发登记，不去重会让每次冻结消耗双倍恢复次数。
+func (a *ResumeAttempt) scheduleRetryOnce(serverDelay time.Duration) {
+	a.mu.Lock()
+	scheduled := a.retryScheduled
+	a.retryScheduled = true
+	a.mu.Unlock()
+	if !scheduled {
+		a.controller.scheduleRetry(a.state, serverDelay)
+	}
+}
+
 func (c *Controller) scheduleRetry(state RecoveryState, serverDelay time.Duration) {
+	if current, err := c.Store.LoadRecovery(state.SessionID); err == nil {
+		state = current
+	}
 	if state.RecoveryAttempts >= maxRecoveryAttempts || state.Intent != IntentResume {
 		return
 	}
@@ -512,13 +529,13 @@ func IsLateToolResultRejected(err error) bool {
 	if err == nil {
 		return false
 	}
+	var httpErr *provider.HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
 	message := strings.ToLower(err.Error())
 	if !strings.Contains(message, "tool_call_paused") && !strings.Contains(message, "late result") && !strings.Contains(message, "迟到") {
 		return false
-	}
-	var httpErr *provider.HTTPError
-	if !errors.As(err, &httpErr) {
-		return true
 	}
 	// 用户暂停冻结即作废：后端以 400 + 机器码 tool_call_paused 拒绝迟到结果，须与 409/410/422
 	// 一样识别为丢弃信号，否则会被当成可重试而无限补报。

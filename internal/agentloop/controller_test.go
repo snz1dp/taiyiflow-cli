@@ -22,6 +22,7 @@ type fakeProvider struct {
 	streams         []<-chan provider.StreamEvent
 	streamErr       error
 	submitErr       error
+	controlErr      error
 	messages        *provider.SessionMessageList
 	messageErr      error
 	calls           []string
@@ -61,6 +62,9 @@ func (f *fakeProvider) ListSessionMessages(_ context.Context, _ string, _ string
 func (f *fakeProvider) PauseAgentLoop(_ context.Context, _ string, request provider.AgentLoopControlRequest) (*provider.AgentLoopControlResponse, error) {
 	f.calls = append(f.calls, "pause")
 	f.controlRequests = append(f.controlRequests, request)
+	if f.controlErr != nil {
+		return nil, f.controlErr
+	}
 	return &provider.AgentLoopControlResponse{RunID: request.RunID, RequestID: request.RequestID, Status: "pause_requested"}, nil
 }
 
@@ -69,6 +73,9 @@ func (f *fakeProvider) CancelAgentLoop(ctx context.Context, _ string, request pr
 	f.controlRequests = append(f.controlRequests, request)
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
+	}
+	if f.controlErr != nil {
+		return nil, f.controlErr
 	}
 	if f.cancelled != nil {
 		close(f.cancelled)

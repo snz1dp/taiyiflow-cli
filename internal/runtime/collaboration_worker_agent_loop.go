@@ -173,11 +173,13 @@ func (w *collaborationWorker) executeAgentLoopNotification(ctx context.Context, 
 				"checkpoint_id":      notification.CheckpointID,
 				"checkpoint_version": notification.CheckpointVersion,
 			}); err != nil {
-				w.logf("发送 AgentLoop 恢复通知 ACK 失败: notification_id=%s err=%v", notification.NotificationID, err)
-				return
+				// ACK 失败不能遗弃恢复流：继续消费并执行工具，否则 run 僵死等待工具结果。
+				// 通知认领保持 pending，TTL 过期后重投会因 ErrAlreadyRunning 被安全忽略。
+				w.logf("发送 AgentLoop 恢复通知 ACK 失败（继续消费恢复流）: notification_id=%s err=%v", notification.NotificationID, err)
+			} else {
+				complete()
 			}
 			acknowledged = true
-			complete()
 		}
 		switch event.Type {
 		case provider.EventBuiltIn:
@@ -195,12 +197,23 @@ func (w *collaborationWorker) executeAgentLoopNotification(ctx context.Context, 
 }
 
 func (w *collaborationWorker) recordAgentLoopCheckpointState(notification agentLoopResumeNotification) {
-	if w.agentLoop == nil || w.agentLoop.store == nil {
+	if w.agentLoop == nil || w.agentLoop.store == nil || w.agentLoop.controller == nil {
 		return
 	}
 	checkpoint := notification.checkpoint()
 	if checkpoint.ID == "" || checkpoint.SessionID == "" || checkpoint.RunID == "" || checkpoint.Version <= 0 {
 		w.logf("忽略字段不全的 AgentLoop checkpoint_state")
+		return
+	}
+	// 与主动发现路径一致：原端仍活跃时不得记录 checkpoint_state，
+	// 否则 RecordCheckpointState 会抹掉共享存储里的 Active 标志，诱发 worker 抢跑接管。
+	active, err := w.agentLoop.controller.PrimaryActive(checkpoint.SessionID)
+	if err != nil {
+		w.logf("确认 AgentLoop 原端活跃状态失败: checkpoint_id=%s err=%v", checkpoint.ID, err)
+		return
+	}
+	if active {
+		w.logf("AgentLoop 原端仍活跃，忽略 checkpoint_state: session_id=%s checkpoint_id=%s", checkpoint.SessionID, checkpoint.ID)
 		return
 	}
 	if _, err := w.agentLoop.store.RecordCheckpointState(checkpoint); err != nil {

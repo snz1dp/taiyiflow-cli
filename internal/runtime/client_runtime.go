@@ -1032,17 +1032,13 @@ func (r *ClientRuntime) submitCallback(
 		lastErr = providerClient.SubmitClientCallResult(callbackCtx, callback)
 		if lastErr == nil {
 			if queued {
-				return r.agentLoopStore.RemoveToolCallback(callback.FlowID, callback.SessionID, callback.RunID, callback.CallID)
+				r.removeQueuedCallback(callback)
 			}
 			return nil
 		}
-		if queued {
-			if agentloop.IsLateToolResultRejected(lastErr) {
-				return r.agentLoopStore.RemoveToolCallback(callback.FlowID, callback.SessionID, callback.RunID, callback.CallID)
-			}
-			if _, markErr := r.agentLoopStore.MarkToolCallbackAttempt(callback.FlowID, callback.SessionID, callback.RunID, callback.CallID); markErr != nil {
-				return errors.Join(lastErr, markErr)
-			}
+		if queued && (agentloop.IsLateToolResultRejected(lastErr) || agentloop.IsPermanentCallbackRejection(lastErr)) {
+			r.removeQueuedCallback(callback)
+			return nil
 		}
 		if attempt < maxRetries {
 			timer := time.NewTimer(retryDelay)
@@ -1056,12 +1052,28 @@ func (r *ClientRuntime) submitCallback(
 		}
 	}
 	if queued {
-		if r.stderr != nil {
-			fmt.Fprintf(r.stderr, "警告: 客户端工具结果已持久化，等待网络恢复后继续补报: call_id=%s err=%v\n", callback.CallID, lastErr)
+		// 内联重试只计一次队列尝试，避免快速耗尽补报上限；后续由补报循环按退避继续。
+		if _, markErr := r.agentLoopStore.MarkToolCallbackAttempt(callback.FlowID, callback.SessionID, callback.RunID, callback.CallID); markErr != nil {
+			r.warnCallbackQueue("登记补报尝试失败", callback.CallID, markErr)
 		}
+		r.warnCallbackQueue("客户端工具结果已持久化，等待网络恢复后继续补报", callback.CallID, lastErr)
 		return nil
 	}
 	return fmt.Errorf("回调提交失败（已重试 %d 次）: %w", maxRetries, lastErr)
+}
+
+// removeQueuedCallback 服务端已受理或权威拒绝后清理队列记录；清理失败仅告警，
+// 不能把磁盘错误当成回调失败返回（结果已被服务端消费）。
+func (r *ClientRuntime) removeQueuedCallback(callback provider.ClientCallResult) {
+	if err := r.agentLoopStore.RemoveToolCallback(callback.FlowID, callback.SessionID, callback.RunID, callback.CallID); err != nil {
+		r.warnCallbackQueue("清理已上报工具结果记录失败（不影响服务端结果）", callback.CallID, err)
+	}
+}
+
+func (r *ClientRuntime) warnCallbackQueue(message, callID string, err error) {
+	if r.stderr != nil {
+		fmt.Fprintf(r.stderr, "警告: %s: call_id=%s err=%v\n", message, callID, err)
+	}
 }
 
 func (r *ClientRuntime) confirmCommand(arguments map[string]any, config internalconfig.Config) (bool, error) {
@@ -1263,6 +1275,7 @@ func (r *ClientRuntime) runSingleCommand(
 	if err := command.Start(); err != nil {
 		return nil, fmt.Errorf("启动命令失败: %w", err), nil
 	}
+	assignProcessTree(command)
 
 	if r.streamCallback == nil {
 		r.writeStreamEventf(r.stdout, "\n[执行客户端命令] %s\n", commandPreview(arguments))
@@ -1292,6 +1305,7 @@ func (r *ClientRuntime) runSingleCommand(
 	}()
 
 	waitErr := command.Wait()
+	releaseProcessTree(command)
 	// 有界等待：进程已退出但后台子进程（如 `&` 后台化）可能仍持有 stdout/stderr pipe 写端，
 	// 导致 io.Copy 无法收到 EOF，copyGroup.Wait() 永久阻塞。
 	// 设置 5 秒兜底超时，超时后使用已收集的输出继续处理。

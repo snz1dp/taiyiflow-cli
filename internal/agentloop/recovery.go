@@ -143,8 +143,19 @@ func (s *Store) UpdateRecovery(sessionID string, update func(*RecoveryState) err
 }
 
 func (s *Store) ClearRecovery(sessionID string, runID string) error {
-	unlock := s.lock("recovery:" + strings.TrimSpace(sessionID))
+	sessionID = strings.TrimSpace(sessionID)
+	unlock := s.lock("recovery:" + sessionID)
 	defer unlock()
+	path := s.recoveryPath(sessionID)
+	lockPath := path + ".lock"
+	owner, acquired, err := s.acquireFile(lockPath, 30*time.Second, "state")
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return ErrClaimed
+	}
+	defer s.releaseFile(lockPath, owner)
 	state, err := s.LoadRecovery(sessionID)
 	if err != nil {
 		return err
@@ -152,7 +163,6 @@ func (s *Store) ClearRecovery(sessionID string, runID string) error {
 	if runID != "" && state.RunID != "" && state.RunID != strings.TrimSpace(runID) {
 		return nil
 	}
-	path := s.recoveryPath(sessionID)
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

@@ -80,9 +80,13 @@ func (s *Store) ListDueToolCallbacks(now time.Time) ([]PendingToolCallback, erro
 		}
 		var pending PendingToolCallback
 		if err := readJSON(s.path("callbacks", entry.Name()), &pending); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				s.quarantineCallbackFile(entry.Name())
+			}
 			continue
 		}
 		if err := validateVersion(pending.Version); err != nil || validateCallback(pending.Result) != nil {
+			s.quarantineCallbackFile(entry.Name())
 			continue
 		}
 		if !pending.NextRetryAt.IsZero() && pending.NextRetryAt.After(now) {
@@ -125,4 +129,11 @@ func (s *Store) RemoveToolCallback(flowID, sessionID, runID, callID string) erro
 		return err
 	}
 	return nil
+}
+
+// quarantineCallbackFile 把无法解析或身份不全的记录移出补报队列（改名保留原文件供排查），
+// 否则坏记录会被每次列举静默跳过、永久占用磁盘。
+func (s *Store) quarantineCallbackFile(name string) {
+	path := s.path("callbacks", name)
+	_ = os.Rename(path, path+".corrupt")
 }

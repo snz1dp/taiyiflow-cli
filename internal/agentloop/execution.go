@@ -94,6 +94,10 @@ func (c *Controller) run(ctx context.Context, prepared provider.StreamRequest, s
 					return
 				case <-heartbeat.C:
 					if err := c.Heartbeat(prepared.SessionID, currentRunID); err != nil {
+						// 跨进程锁竞争是瞬时状态，跳过本次心跳即可，不能中止执行。
+						if errors.Is(err, ErrClaimed) {
+							continue
+						}
 						emitExecutionError(streamCtx, output, fmt.Errorf("保存 AgentLoop 活跃状态失败: %w", err))
 						return
 					}

@@ -2654,7 +2654,7 @@ func readSSE(ctx context.Context, reader io.Reader, output chan<- provider.Strea
 }
 
 func readHTTPError(prefix string, response *http.Response) error {
-	content, _ := io.ReadAll(response.Body)
+	content, _ := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 	message := strings.TrimSpace(string(content))
 	if message == "" {
 		message = response.Status

@@ -143,6 +143,11 @@ func randomOwner() (string, error) {
 }
 
 func (s *Store) acquireFile(path string, staleAfter time.Duration, status string) (string, bool, error) {
+	unlock, err := lockStoreFile(path)
+	if err != nil {
+		return "", false, err
+	}
+	defer unlock()
 	owner, err := randomOwner()
 	if err != nil {
 		return "", false, fmt.Errorf("create agentloop claim owner: %w", err)
@@ -195,6 +200,11 @@ func (s *Store) acquireFile(path string, staleAfter time.Duration, status string
 }
 
 func (s *Store) releaseFile(path string, owner string) error {
+	unlock, err := lockStoreFile(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	var claim fileClaim
 	if err := readJSON(path, &claim); err != nil {
 		if errors.Is(err, os.ErrNotExist) {

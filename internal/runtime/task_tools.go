@@ -258,6 +258,7 @@ func (m *localTaskManager) startTask(
 			return nil, fmt.Errorf("启动后台任务失败: %w", err)
 		}
 	}
+	assignProcessTree(command)
 
 	storeDir, err := defaultTaskStoreDir()
 	if err != nil {
@@ -339,6 +340,7 @@ func (m *localTaskManager) waitTask(
 		_, _ = io.Copy(taskStreamWriter{task: task, stderr: true}, stderrPipe)
 	}()
 	waitErr := command.Wait()
+	releaseProcessTree(command)
 	// 有界等待：进程已退出但后台子进程（如 `&` 后台化）可能仍持有 stdout/stderr pipe 写端，
 	// 导致 io.Copy 无法收到 EOF，copyGroup.Wait() 永久阻塞。
 	// 设置 5 秒兜底超时，超时后关闭 pipe 并使用已收集的输出。
@@ -397,6 +399,7 @@ func (m *localTaskManager) waitTask(
 				if err == nil {
 					retryStderr, err := retryCommand.StderrPipe()
 					if err == nil && retryCommand.Start() == nil {
+						assignProcessTree(retryCommand)
 						var retryGroup sync.WaitGroup
 						retryGroup.Add(2)
 						go func() {
@@ -408,6 +411,7 @@ func (m *localTaskManager) waitTask(
 							_, _ = io.Copy(taskStreamWriter{task: task, stderr: true}, retryStderr)
 						}()
 						waitErr = retryCommand.Wait()
+						releaseProcessTree(retryCommand)
 						retryGroup.Wait()
 						command = retryCommand
 					}
@@ -457,6 +461,7 @@ func (m *localTaskManager) waitTask(
 				if err == nil {
 					retryStderr, err := retryCommand.StderrPipe()
 					if err == nil && retryCommand.Start() == nil {
+						assignProcessTree(retryCommand)
 						var retryGroup sync.WaitGroup
 						retryGroup.Add(2)
 						go func() {
@@ -468,6 +473,7 @@ func (m *localTaskManager) waitTask(
 							_, _ = io.Copy(taskStreamWriter{task: task, stderr: true}, retryStderr)
 						}()
 						waitErr = retryCommand.Wait()
+						releaseProcessTree(retryCommand)
 						retryGroup.Wait()
 						command = retryCommand
 					}

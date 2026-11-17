@@ -2,7 +2,9 @@ package agentloop
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -46,6 +48,7 @@ func (c *Controller) control(ctx context.Context, sessionID, runID, intent strin
 	if intent == IntentStopped {
 		action = "cancel"
 	}
+	var previous RecoveryState
 	state, err = c.Store.UpdateRecovery(sessionID, func(state *RecoveryState) error {
 		if state.RunID != runID {
 			return fmt.Errorf("控制请求 run_id 与当前执行不匹配")
@@ -53,6 +56,7 @@ func (c *Controller) control(ctx context.Context, sessionID, runID, intent strin
 		if state.Intent == IntentStopped && intent != IntentStopped {
 			return fmt.Errorf("cancel 已优先于 pause 生效")
 		}
+		previous = *state
 		if state.ControlAction != action || state.ControlRequestID == "" {
 			state.ControlRequestID = NewIdentifier()
 		}
@@ -78,12 +82,40 @@ func (c *Controller) control(ctx context.Context, sessionID, runID, intent strin
 		response, err = c.Provider.PauseAgentLoop(ctx, sessionID, request)
 	}
 	if err != nil {
+		c.rollbackControlIntent(sessionID, state.ControlRequestID, previous, err)
 		return nil, err
 	}
 	if response != nil && response.RunID != "" && response.RunID != runID {
 		return nil, fmt.Errorf("控制响应属于其他 run: %s", strings.TrimSpace(response.RunID))
 	}
 	return response, nil
+}
+
+// rollbackControlIntent 在服务端明确拒绝（4xx，408 除外）时恢复控制前的本地意图，
+// 避免「本地已暂停/作废、服务端仍在执行」的永久背离。网络错误/5xx 结果不确定，
+// 保持 fail-safe：本地意图不回滚，用户可凭同一 ControlRequestID 幂等重试。
+func (c *Controller) rollbackControlIntent(sessionID, requestID string, previous RecoveryState, rpcErr error) {
+	var httpErr *provider.HTTPError
+	if !errors.As(rpcErr, &httpErr) {
+		return
+	}
+	if httpErr.StatusCode < http.StatusBadRequest || httpErr.StatusCode >= http.StatusInternalServerError || httpErr.StatusCode == http.StatusRequestTimeout {
+		return
+	}
+	_, _ = c.Store.UpdateRecovery(sessionID, func(state *RecoveryState) error {
+		if state.ControlRequestID != requestID {
+			return nil
+		}
+		state.Intent = previous.Intent
+		state.ControlAction = previous.ControlAction
+		state.ControlRequestID = previous.ControlRequestID
+		state.PendingStart = previous.PendingStart
+		state.Active = previous.Active
+		state.AwaitingResume = previous.AwaitingResume
+		state.InvalidatedByUser = previous.InvalidatedByUser
+		state.NextRetryAt = previous.NextRetryAt
+		return nil
+	})
 }
 
 func (c *Controller) ToolsAllowed(sessionID, runID string) bool {

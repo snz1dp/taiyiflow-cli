@@ -458,8 +458,8 @@ func TestSubmitCallback_PersistsBeforeRetryAndFlushesLater(t *testing.T) {
 	if err != nil {
 		t.Fatalf("首次上报前必须持久化工具结果: %v", err)
 	}
-	if pending.Attempts != 2 || pending.CreatedAt.IsZero() {
-		t.Fatalf("unexpected pending callback: %#v", pending)
+	if pending.Attempts != 1 || pending.CreatedAt.IsZero() {
+		t.Fatalf("内联重试应只计一次队列尝试: %#v", pending)
 	}
 	stub.mu.Lock()
 	stub.callbackErr = nil

@@ -2,7 +2,9 @@ package agentloop
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"snz1.cn/gitrepo/dp/ai/taiyi/taiyiflow-cli/internal/provider"
@@ -113,6 +115,10 @@ func (c *Controller) Attach(ctx context.Context, request ObserverRequest, handle
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
+				if observerTargetGone(err) {
+					_, err = c.Store.CloseObserver(request.SessionID)
+					return err
+				}
 				state, err = c.recordObserverFailure(request.SessionID, handlers)
 				if err != nil {
 					return err
@@ -129,6 +135,9 @@ func (c *Controller) Attach(ctx context.Context, request ObserverRequest, handle
 		state, err = c.Store.LoadObserver(request.SessionID)
 		if err != nil {
 			return err
+		}
+		if state.Closed {
+			return nil
 		}
 		if state.SubscriptionID == "" {
 			state, err = c.Store.UpdateObserver(request.SessionID, func(state *ObserverState) error {
@@ -215,6 +224,10 @@ func (c *Controller) Attach(ctx context.Context, request ObserverRequest, handle
 				}
 			}
 			if info.Terminal {
+				// 冻结导致的断流不是真终态：保持观察，等待原端续跑后重连。
+				if c.TerminalIsResumableFreeze(request.SessionID, info) {
+					break
+				}
 				closed = true
 				break
 			}
@@ -277,10 +290,24 @@ func (c *Controller) pollObserver(ctx context.Context, state ObserverState, hand
 	if err != nil {
 		return err
 	}
+	if metadata == nil {
+		return fmt.Errorf("attach 轮询未返回会话执行元数据")
+	}
 	if handlers.OnMetadata != nil {
 		if err := handlers.OnMetadata(metadata); err != nil {
 			return err
 		}
+	}
+	if !metadata.Executing {
+		// run 已结束（网络冻结期 executing 仍为 true）：落地最终快照后关闭观察，避免无限轮询。
+		if metadata.FlowID != "" {
+			state.FlowID = metadata.FlowID
+		}
+		if err := c.refreshObserverSnapshot(ctx, state, handlers); err != nil {
+			return err
+		}
+		_, err = c.Store.CloseObserver(state.SessionID)
+		return err
 	}
 	state, err = c.Store.UpdateObserver(state.SessionID, func(current *ObserverState) error {
 		if metadata.ExecutingRunID != "" && current.RunID != metadata.ExecutingRunID {
@@ -354,4 +381,13 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// observerTargetGone 会话已被服务端删除（404/410）时观察目标不复存在，继续重试没有意义。
+func observerTargetGone(err error) bool {
+	var httpErr *provider.HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	return httpErr.StatusCode == http.StatusNotFound || httpErr.StatusCode == http.StatusGone
 }
